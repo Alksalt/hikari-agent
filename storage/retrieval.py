@@ -79,11 +79,27 @@ def _normalize_lower_is_better(values: dict[Any, float]) -> dict[Any, float]:
 def _hydrate(kind: str, ref_id: int) -> dict[str, Any] | None:
     if kind == "fact":
         rec = db.get_fact(ref_id)
-        if not rec or rec.get("valid_to"):
+        if not rec:
+            return None
+        # T3.1 — bi-temporal active check: drop the candidate if it's been
+        # invalidated/superseded (``valid_to`` set in the past). A future
+        # ``valid_to`` is still active; this mirrors the SQL predicate
+        # ``valid_to IS NULL OR valid_to > datetime('now')``.
+        if not _fact_active(rec.get("valid_to")):
+            return None
+        # Defense in depth — also drop rows whose explicit status was flipped
+        # but whose ``valid_to`` wasn't (shouldn't happen, but cheap to check).
+        status = (rec.get("status") or "active")
+        if status not in ("active", ""):
             return None
         text = f"{rec['subject']} {rec['predicate']} {rec['object']}"
         iso = rec.get("valid_from") or rec.get("created_at")
         importance = rec.get("importance") or 5
+        return {
+            "text": text, "iso": iso, "importance": int(importance),
+            "last_recalled_at": rec.get("last_recalled_at"),
+            "recall_hit_count": int(rec.get("recall_hit_count") or 0),
+        }
     elif kind == "episode":
         rec = db.get_episode(ref_id)
         if not rec:
@@ -91,9 +107,28 @@ def _hydrate(kind: str, ref_id: int) -> dict[str, Any] | None:
         text = rec["summary"]
         iso = rec.get("created_at")
         importance = rec.get("importance") or 5
-    else:
-        return None
-    return {"text": text, "iso": iso, "importance": int(importance)}
+        return {"text": text, "iso": iso, "importance": int(importance)}
+    return None
+
+
+def _fact_active(valid_to: Any) -> bool:
+    """Return True when a fact row should be considered live right now.
+
+    Mirrors the SQL predicate ``valid_to IS NULL OR valid_to > datetime('now')``.
+    Malformed timestamps are treated as expired — conservative for retrieval.
+    """
+    if valid_to is None:
+        return True
+    raw = str(valid_to).strip()
+    if not raw:
+        return True
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts > datetime.now(UTC)
 
 
 def retrieve(query: str, limit: int = 8) -> list[Hit]:
