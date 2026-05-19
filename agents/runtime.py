@@ -155,6 +155,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__calc",
     "mcp__hikari_utility__python_run",
     "mcp__hikari_utility__currency_convert",
+    "mcp__hikari_utility__arxiv_search",
+    "mcp__hikari_utility__places_search",
+    "mcp__hikari_utility__place_open_now",
     "Read", "Glob", "Grep",
 ]
 

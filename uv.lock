@@ -57,12 +57,37 @@ wheels = [
 ]
 
 [[package]]
+<<<<<<< HEAD
 name = "asteval"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/8f/d4/c19cac7814b8ec273804ebee3c5d3c69ee2084cb75f25297cb4177a6aa85/asteval-1.0.8.tar.gz", hash = "sha256:7175134331726df0e1569f4ab5fa59266192cf1b365db0ff463c978842075cbb", size = 53989, upload-time = "2025-12-17T20:56:08.383Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/31/6cf181011dc738c33bf6ba7aea2e8e1d3c1f71b7dab1942f3054f66f6202/asteval-1.0.8-py3-none-any.whl", hash = "sha256:6c64385c6ff859a474953c124987c7ee8354d781c76509b2c598741c4d1d28e9", size = 22968, upload-time = "2025-12-17T20:56:07.457Z" },
+=======
+name = "arxiv"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/48/88c8e9c42712760ca9e74e52f6c4a388ee9e9939e341bfd8da295a9d1b17/arxiv-4.0.0.tar.gz", hash = "sha256:1d30a1dba5054e0df9b1d63f8e190b58e6a59d0c2f4ccec344ce1de5bafe546d", size = 198009, upload-time = "2026-05-17T23:42:30.952Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/50/4d01d219958b19b5aaca6ae74820b181baea438cd034d5b3c04b4cf4f75e/arxiv-4.0.0-py3-none-any.whl", hash = "sha256:fc7e65e74d0fba21df2c521df24119d015fcb839dd5c4feb683ee35548c932c4", size = 13014, upload-time = "2026-05-17T23:42:29.246Z" },
+]
+
+[[package]]
+name = "astral"
+version = "3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/d1/1adbf06a38dc339e41a1666f6c7135924594c20fd46e060fb263248c564d/astral-3.2.tar.gz", hash = "sha256:9b7c3b412e9e69d172cfb24be0e6addcc9f1bd01a28db8bebe66d75ccc533d88", size = 48075, upload-time = "2022-11-05T18:12:02.913Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/80/d6edd9c3259913cfe39aff2bea4da65de5ad0235a578405e37aabace5f2c/astral-3.2-py3-none-any.whl", hash = "sha256:cb7b49a3f0d4c64ae666be131276d2a3226134c598db10e672028cf8ff855f83", size = 38325, upload-time = "2022-11-05T18:12:01.164Z" },
+>>>>>>> phase-10-arxiv-places
 ]
 
 [[package]]
@@ -72,6 +97,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c03148528be8cac2408564a6c9a0cc7e9171802bc1d26985/attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32", size = 952055, upload-time = "2026-03-19T14:22:25.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309", size = 67548, upload-time = "2026-03-19T14:22:23.645Z" },
+]
+
+[[package]]
+name = "babel"
+version = "2.18.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/b2/51899539b6ceeeb420d40ed3cd4b7a40519404f9baf3d4ac99dc413a834b/babel-2.18.0.tar.gz", hash = "sha256:b80b99a14bd085fcacfa15c9165f651fbb3406e66cc603abf11c5750937c992d", size = 9959554, upload-time = "2026-02-01T12:30:56.078Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/f5/21d2de20e8b8b0408f0681956ca2c69f1320a3848ac50e6e7f39c6159675/babel-2.18.0-py3-none-any.whl", hash = "sha256:e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35", size = 10196845, upload-time = "2026-02-01T12:30:53.445Z" },
 ]
 
 [[package]]
@@ -436,14 +470,22 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
+<<<<<<< HEAD
     { name = "asteval" },
+=======
+    { name = "arxiv" },
+>>>>>>> phase-10-arxiv-places
     { name = "beautifulsoup4" },
     { name = "claude-agent-sdk" },
     { name = "fastembed" },
     { name = "httpx" },
     { name = "lxml" },
     { name = "obsidiantools" },
+<<<<<<< HEAD
     { name = "pykakasi" },
+=======
+    { name = "osm-opening-hours-humanized" },
+>>>>>>> phase-10-arxiv-places
     { name = "python-dotenv" },
     { name = "python-frontmatter" },
     { name = "python-telegram-bot" },
@@ -463,14 +505,22 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "apscheduler", specifier = ">=3.10" },
+<<<<<<< HEAD
     { name = "asteval", specifier = ">=1.0.8" },
+=======
+    { name = "arxiv", specifier = ">=4.0.0" },
+>>>>>>> phase-10-arxiv-places
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "claude-agent-sdk", specifier = ">=0.2.82" },
     { name = "fastembed", specifier = ">=0.4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "lxml", specifier = ">=5.0" },
     { name = "obsidiantools", specifier = ">=0.10" },
+<<<<<<< HEAD
     { name = "pykakasi", specifier = ">=2.3.0" },
+=======
+    { name = "osm-opening-hours-humanized", specifier = ">=1.0.0b7" },
+>>>>>>> phase-10-arxiv-places
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-frontmatter", specifier = ">=1.1" },
     { name = "python-telegram-bot", specifier = ">=21.0" },
@@ -605,6 +655,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "lark-parser"
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/ee/fd1192d7724419ddfe15b6f17d1c8742800d4de917c0adac3b6aaf22e921/lark-parser-0.12.0.tar.gz", hash = "sha256:15967db1f1214013dca65b1180745047b9be457d73da224fcda3d9dd4e96a138", size = 235029, upload-time = "2021-08-30T09:14:44.484Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/00/90f05db333fe1aa6b6ffea83a35425b7d53ea95c8bba0b1597f226cf1d5f/lark_parser-0.12.0-py2.py3-none-any.whl", hash = "sha256:0eaf30cb5ba787fe404d73a7d6e61df97b21d5a63ac26c5008c78a494373c675", size = 103498, upload-time = "2021-08-30T13:01:01.603Z" },
 ]
 
 [[package]]
@@ -954,6 +1013,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/19/e4/0f9d1a5718b1781c610c1e354765a3820597081754277a6a9a2b50705702/onnxruntime-1.26.0-cp314-cp314-win_arm64.whl", hash = "sha256:31d71a53490e46910877d0902b5ad99c69a5955e5c7ea6c82863519410e1ba7c", size = 13140121, upload-time = "2026-05-08T19:07:57.804Z" },
     { url = "https://files.pythonhosted.org/packages/1c/42/3b8e635f067d06d9f45bede470b8d539d101a4166c272213158dfd08b6ce/onnxruntime-1.26.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d7b6d258fb78fdfcf049795bcfaa74dcb90ae7baa277afd21e6fd28b83f2c496", size = 16057240, upload-time = "2026-05-08T19:07:25.163Z" },
     { url = "https://files.pythonhosted.org/packages/93/99/f2be40a31b908d96b861ae0ce98582fa376c18a7f816b9d5eb4cd6aa0a4c/onnxruntime-1.26.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4eefd386a45202aefb7a5132b94f32df9d506c9edcc7faf2fc60d65183f4b183", size = 18197382, upload-time = "2026-05-08T19:07:46.965Z" },
+]
+
+[[package]]
+name = "osm-opening-hours-humanized"
+version = "1.0.0b7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "astral" },
+    { name = "babel" },
+    { name = "lark-parser" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/13/0df805db78da93fed804f0634615208135f81eff6f2dd0fb707b31b88c22/osm_opening_hours_humanized-1.0.0b7-py3-none-any.whl", hash = "sha256:b16ffa70bc2ddfd9c28efd19bdc1c71bd8de5f173a7e17cfbe09aad2cb909d8f", size = 50602, upload-time = "2025-02-20T21:30:45.685Z" },
 ]
 
 [[package]]

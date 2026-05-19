@@ -23,6 +23,8 @@ dependencies = [
     "lxml>=5.0",
     "pykakasi>=2.3.0",
     "asteval>=1.0.8",
+    "arxiv>=4.0.0",
+    "osm-opening-hours-humanized>=1.0.0b7",
 ]
 
 [dependency-groups]
