@@ -306,6 +306,39 @@ async def run_proactive(seed_prompt: str) -> str:
 
 
 async def run_reflection_call(prompt: str) -> str:
-    """Single LLM call for the daily reflection (no tool use expected)."""
-    return await _run_query(prompt, max_turns=3, max_budget_usd=0.30,
-                            log_to_memory=False)
+    """Single LLM call for the daily reflection (no tool use expected).
+
+    Uses a stripped-down ClaudeAgentOptions with a neutral system prompt —
+    NOT the Hikari persona — so the model produces raw YAML rather than
+    staying in character. No MCP servers, no hooks, no session resume.
+    """
+    options = ClaudeAgentOptions(
+        model=MODEL_PRIMARY,
+        fallback_model=MODEL_FALLBACK,
+        cwd=str(REPO_ROOT),
+        system_prompt=(
+            "You are a structured-output assistant. "
+            "Follow the instructions in the user message exactly. "
+            "Produce only the requested YAML — no prose, no markdown fences "
+            "unless the instructions ask for them, no explanations."
+        ),
+        allowed_tools=[],
+        mcp_servers={},
+        max_turns=3,
+        max_budget_usd=0.30,
+        permission_mode="acceptEdits",
+        # No resume — reflection is stateless; don't fork the chat session.
+        resume=None,
+    )
+    parts: list[str] = []
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                if msg.subtype != "success":
+                    logger.warning("reflection call ended subtype=%s", msg.subtype)
+    return "".join(parts).strip()

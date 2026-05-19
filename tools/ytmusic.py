@@ -9,6 +9,7 @@ graceful 'yt music is being weird' message instead of a stack trace.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -59,9 +60,10 @@ def _shape_track(t: dict[str, Any]) -> dict[str, Any]:
 )
 async def ytmusic_recent(args: dict[str, Any]) -> dict[str, Any]:
     limit = int(args.get("limit") or cfg.get("ytmusic.default_history_limit") or 5)
+    loop = asyncio.get_event_loop()
     try:
-        ytm = _client()
-        history = ytm.get_history() or []
+        ytm = await loop.run_in_executor(None, lambda: _client())
+        history = await loop.run_in_executor(None, lambda: ytm.get_history()) or []
     except FileNotFoundError as e:
         return _ok(f"yt music isn't configured: {e}")
     except Exception as e:
@@ -88,9 +90,12 @@ async def ytmusic_search(args: dict[str, Any]) -> dict[str, Any]:
         return _ok("refused: empty query")
     filt = (args.get("filter") or "songs").strip()
     limit = int(args.get("limit") or 10)
+    loop = asyncio.get_event_loop()
     try:
-        ytm = _client()
-        results = ytm.search(query, filter=filt, limit=limit) or []
+        ytm = await loop.run_in_executor(None, lambda: _client())
+        results = await loop.run_in_executor(
+            None, lambda: ytm.search(query, filter=filt, limit=limit)
+        ) or []
     except FileNotFoundError as e:
         return _ok(f"yt music isn't configured: {e}")
     except Exception as e:
@@ -107,9 +112,12 @@ async def ytmusic_search(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def ytmusic_library(args: dict[str, Any]) -> dict[str, Any]:
     limit = int(args.get("limit") or 25)
+    loop = asyncio.get_event_loop()
     try:
-        ytm = _client()
-        songs = ytm.get_library_songs(limit=limit) or []
+        ytm = await loop.run_in_executor(None, lambda: _client())
+        songs = await loop.run_in_executor(
+            None, lambda: ytm.get_library_songs(limit=limit)
+        ) or []
     except FileNotFoundError as e:
         return _ok(f"yt music isn't configured: {e}")
     except Exception as e:
