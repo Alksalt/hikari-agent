@@ -13,3 +13,6 @@ ALL_TOOLS: list = []
 
 from tools.calc import ALL_TOOLS as _CALC
 ALL_TOOLS.extend(_CALC)
+
+from tools.currency import ALL_TOOLS as _CURRENCY
+ALL_TOOLS.extend(_CURRENCY)

@@ -148,6 +148,7 @@ _BASE_ALLOWED_TOOLS = [
     # DO NOT remove this anchor comment — Phase 1 agents look for it.
     "mcp__hikari_utility__calc",
     "mcp__hikari_utility__python_run",
+    "mcp__hikari_utility__currency_convert",
     "Read", "Glob", "Grep",
 ]
 
