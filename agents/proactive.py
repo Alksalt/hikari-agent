@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
 
@@ -664,3 +664,72 @@ async def sync_pending_gcal_reminders() -> int:
         db.reminder_update_gcal_event(row["id"], event_id)
         synced += 1
     return synced
+
+
+# ---------- T7.2: recurring-location detection ----------
+
+def detect_recurring_location_pattern(
+    window_days: int = 7, min_visits: int = 3,
+) -> dict | None:
+    """Return ``{lat, lon, label, visit_count}`` if the user visited the same
+    coords (rounded to 3 decimals = ~110m precision) ``min_visits`` or more
+    times in the last ``window_days``. Otherwise ``None``.
+
+    Surfacing pattern is the lead's call — this just provides the signal.
+    The 3-decimal bucket keeps tiny GPS jitter from breaking the count
+    (a phone sitting at one spot pings within ~10-30m of itself).
+    """
+    from collections import Counter
+
+    rows = db.photo_locations_recent(limit=50)
+    if not rows:
+        return None
+
+    cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    recent: list[dict] = []
+    for r in rows:
+        try:
+            raw_ts = r.get("received_at")
+            if not raw_ts:
+                continue
+            # SQLite returns the datetime('now') default as a UTC string with
+            # no offset; treat it as UTC. ISO strings already-tagged with
+            # tzinfo are honored.
+            if isinstance(raw_ts, str):
+                # ``datetime.fromisoformat`` tolerates "2026-05-19 10:21:33"
+                # (the sqlite default format) since 3.11.
+                t = datetime.fromisoformat(raw_ts)
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=UTC)
+            else:
+                t = raw_ts  # already a datetime
+                if getattr(t, "tzinfo", None) is None:
+                    t = t.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            continue
+        if t < cutoff:
+            continue
+        recent.append(r)
+
+    if not recent:
+        return None
+
+    counts = Counter(
+        (round(float(r["lat"]), 3), round(float(r["lon"]), 3))
+        for r in recent
+    )
+    if not counts:
+        return None
+    (lat, lon), n = counts.most_common(1)[0]
+    if n < min_visits:
+        return None
+
+    # Find a label from any matching row (prefer non-empty).
+    label = next(
+        (r["label"] for r in recent
+         if round(float(r["lat"]), 3) == lat
+         and round(float(r["lon"]), 3) == lon
+         and r.get("label")),
+        None,
+    )
+    return {"lat": lat, "lon": lon, "label": label, "visit_count": n}

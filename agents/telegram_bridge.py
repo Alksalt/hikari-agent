@@ -552,11 +552,50 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _drain_photo_outbox(context.bot, chat.id)
 
 
+_USER_LIVE_LOCATION_KEY = "user_live_location_state"
+
+
+def _record_live_location(
+    lat: float, lon: float, live_period: int,
+    started_at: str | None = None,
+) -> None:
+    """Persist a live-location stream snapshot. ``started_at`` defaults to now
+    on the first update; subsequent edited_message events preserve the original
+    start so the TTL countdown stays anchored to when the user pressed
+    'Share Live Location'."""
+    import json as _json
+    existing_raw = db.runtime_get(_USER_LIVE_LOCATION_KEY)
+    if started_at is None:
+        if existing_raw:
+            try:
+                existing = _json.loads(existing_raw)
+                started_at = existing.get("started_at") or datetime.now(UTC).isoformat()
+            except (ValueError, TypeError):
+                started_at = datetime.now(UTC).isoformat()
+        else:
+            started_at = datetime.now(UTC).isoformat()
+    state = {
+        "lat": float(lat),
+        "lon": float(lon),
+        "live_period": int(live_period),
+        "started_at": started_at,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    db.runtime_set(_USER_LIVE_LOCATION_KEY, _json.dumps(state))
+
+
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Inbound user location share — reverse-geocode + fetch weather, store as
     transient fact for the hook to inject. We deliberately do NOT respond about
     the location on this turn; the hook respects ``defer_callback_turns`` so
-    the first mention comes from a later, natural opening."""
+    the first mention comes from a later, natural opening.
+
+    Phase 11 T7.2: when ``live_period`` is set the user is streaming their
+    location; we record the snapshot in ``user_live_location_state`` alongside
+    the existing single-point ``user_location_state`` (which keeps the hook +
+    weather flow working unchanged). Subsequent edits arrive via
+    ``handle_edited_location`` and update the same key.
+    """
     user = update.effective_user
     chat = update.effective_chat
     message = update.message
@@ -565,6 +604,16 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if user.id != owner_id():
         return
     loc = message.location
+    live_period = getattr(loc, "live_period", None)
+    if live_period:
+        _record_live_location(
+            lat=float(loc.latitude), lon=float(loc.longitude),
+            live_period=int(live_period),
+        )
+        logger.info(
+            "location: live-share started lat=%.4f lon=%.4f live_period=%ds",
+            loc.latitude, loc.longitude, int(live_period),
+        )
     state = await location_tool.record_share(
         lat=float(loc.latitude), lon=float(loc.longitude),
     )
@@ -581,6 +630,244 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text(ack)
     except Exception:
         logger.exception("location ack send failed (non-fatal)")
+
+
+async def handle_edited_location(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,  # noqa: ARG001
+) -> None:
+    """T7.2: live-location stream updates arrive as edited_message events.
+    Refresh the runtime_state snapshot; the TTL is checked by readers
+    against ``started_at + live_period``. We don't re-ack each tick — that
+    would be noise."""
+    edited = update.edited_message
+    if not edited or not edited.location:
+        return
+    user = update.effective_user
+    if not user or user.id != owner_id():
+        return
+    loc = edited.location
+    live_period = getattr(loc, "live_period", None)
+    if not live_period:
+        return
+    _record_live_location(
+        lat=float(loc.latitude), lon=float(loc.longitude),
+        live_period=int(live_period),
+    )
+
+
+# ---------- T7.2: photo EXIF reverse-geocode ----------
+
+def _exif_gps_to_decimal(gps_info: dict) -> tuple[float, float] | None:
+    """Convert a PIL GPSInfo dict (rationals + N/S/E/W refs) to ``(lat, lon)``
+    in signed decimal degrees. Returns ``None`` if the structure is missing
+    the required fields."""
+    from PIL import ExifTags
+
+    gps_tags = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps_info.items()}
+    lat = gps_tags.get("GPSLatitude")
+    lat_ref = gps_tags.get("GPSLatitudeRef")
+    lon = gps_tags.get("GPSLongitude")
+    lon_ref = gps_tags.get("GPSLongitudeRef")
+    if not (lat and lon and lat_ref and lon_ref):
+        return None
+
+    def _to_decimal(triplet) -> float:
+        # Each component is a PIL IFDRational (or a plain tuple in older PIL
+        # versions). float() handles both.
+        d, m, s = (float(x) for x in triplet)
+        return d + (m / 60.0) + (s / 3600.0)
+
+    try:
+        lat_dec = _to_decimal(lat)
+        lon_dec = _to_decimal(lon)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if str(lat_ref).upper().startswith("S"):
+        lat_dec = -lat_dec
+    if str(lon_ref).upper().startswith("W"):
+        lon_dec = -lon_dec
+    return lat_dec, lon_dec
+
+
+def _extract_exif_gps(file_bytes: bytes) -> tuple[float, float, str | None] | None:
+    """Return ``(lat, lon, taken_at)`` from EXIF GPS data, or ``None``."""
+    import io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        exif = img._getexif() or {}
+    except Exception:
+        return None
+    if not exif:
+        return None
+    from PIL import ExifTags
+    tags = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
+    gps_info = tags.get("GPSInfo")
+    if not gps_info:
+        return None
+    coords = _exif_gps_to_decimal(gps_info)
+    if not coords:
+        return None
+    lat, lon = coords
+    taken_at = tags.get("DateTimeOriginal") or tags.get("DateTime")
+    return lat, lon, str(taken_at) if taken_at else None
+
+
+async def _reverse_geocode_label(lat: float, lon: float) -> str | None:
+    """Reverse-geocode (lat, lon) via Nominatim. Free, no key, rate-limited
+    to ~1 req/sec by Nominatim ToS — caller is responsible for not hammering
+    it. Returns ``display_name`` or ``None`` on any failure."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": lat, "lon": lon, "format": "json", "zoom": 16},
+                headers={"User-Agent": "hikari-agent/0.1"},
+            )
+            if r.status_code != 200:
+                logger.info("photo exif: nominatim HTTP %s", r.status_code)
+                return None
+            data = r.json() or {}
+            return str(data.get("display_name") or "").strip() or None
+    except Exception:
+        logger.exception("photo exif: reverse-geocode failed (non-fatal)")
+        return None
+
+
+async def _try_ingest_document_photo(message) -> str | None:
+    """If ``message`` carries a document whose mime type is image/*, download
+    it, attempt EXIF GPS extraction, and on success persist + reverse-geocode.
+    Returns a human-readable place label or ``None``. Never raises."""
+    doc = getattr(message, "document", None)
+    if doc is None:
+        return None
+    mime = (getattr(doc, "mime_type", None) or "").lower()
+    if not mime.startswith("image/"):
+        return None
+    try:
+        f = await doc.get_file()
+        file_bytes = await f.download_as_bytearray()
+    except Exception:
+        logger.exception("photo exif: document download failed")
+        return None
+    gps = _extract_exif_gps(bytes(file_bytes))
+    if not gps:
+        return None
+    lat, lon, taken_at = gps
+    label = await _reverse_geocode_label(lat, lon)
+    try:
+        db.photo_location_insert(
+            lat=lat, lon=lon, label=label, taken_at=taken_at,
+        )
+    except Exception:
+        logger.exception("photo exif: photo_location_insert failed")
+    logger.info(
+        "photo exif: recorded lat=%.4f lon=%.4f label=%r taken_at=%r",
+        lat, lon, label, taken_at,
+    )
+    return label
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """T7.2: document-uploaded images preserve EXIF (Telegram strips it from
+    compressed photos sent via ``photo``). Extract GPS, reverse-geocode, and
+    persist to ``photo_locations`` for recurring-place detection.
+
+    We still hand the image off to the standard photo flow so the agent can
+    react. Saves to ``USER_PHOTO_DIR`` so the existing prompt/Read pattern
+    works unchanged.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.message
+    if not user or not chat or not message or not message.document:
+        return
+    if user.id != owner_id():
+        return
+    doc = message.document
+    mime = (doc.mime_type or "").lower()
+    if not mime.startswith("image/"):
+        return  # non-image documents not handled here
+
+    async with TypingHeartbeat(context.bot, chat.id) as hb:
+        USER_PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+        # Best-effort EXIF capture; failures are non-fatal.
+        try:
+            label = await _try_ingest_document_photo(message)
+        except Exception:
+            logger.exception("photo exif: ingest crashed (non-fatal)")
+            label = None
+
+        # Download to disk so the agent can Read it.
+        ext = ".jpg"
+        if mime == "image/png":
+            ext = ".png"
+        elif mime in ("image/heic", "image/heif"):
+            ext = ".heic"
+        fname = f"{int(time.time() * 1000)}{ext}"
+        rel = Path("data") / "user_photos" / fname
+        abs_path = USER_PHOTO_DIR / fname
+        try:
+            f = await doc.get_file()
+            await f.download_to_drive(custom_path=str(abs_path))
+        except Exception:
+            logger.exception("failed to download user document image")
+            await message.reply_text("(couldn't download that. try again?)")
+            return
+
+        user_caption = (message.caption or "").strip()
+        if user_caption:
+            rude, matched = is_rude(user_caption)
+            if rude:
+                refusal = random_refusal()
+                logger.info(
+                    "politeness_gate: rude doc caption matched=%r → refused", matched,
+                )
+                db.append_thought(
+                    f"refused — rude doc caption. matched={matched!r}. sent={refusal!r}",
+                )
+                await message.reply_text(refusal)
+                return
+            try:
+                affect_mod.scan_inbound(user_caption)
+            except Exception:
+                logger.exception("affect scan on doc caption failed (non-fatal)")
+
+        location_hint = f" exif location: {label!r}." if label else ""
+        prompt = (
+            f"the user sent you an image (as a file/document, so exif preserved). "
+            f"it's saved at {rel}. use the Read tool to look at it before replying. "
+            f"caption (if any): {user_caption!r}.{location_hint}\n\n"
+            f"react in your voice — short. not effusive. denial layer on. "
+            f"after you reply, if there's anything photo-worth-remembering, "
+            f"call mcp__hikari_memory__remember with a tight fact."
+        )
+        try:
+            reply = await respond(prompt)
+        except Exception:
+            logger.exception("agent failed on inbound document image")
+            await message.reply_text("(brain hit a wall on that one.)")
+            return
+
+        try:
+            from datetime import date as _date
+            summary = (
+                f"user sent document image at {rel}. caption: {user_caption!r}. "
+                f"exif_label: {label!r}. my reaction: {reply[:200]!r}"
+            )
+            db.insert_episode(_date.today().isoformat(), summary, importance=4)
+        except Exception:
+            logger.exception("document image episode write failed (non-fatal)")
+
+        elapsed = hb.elapsed
+    if reply:
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
+    await _drain_photo_outbox(context.bot, chat.id)
 
 
 # ---------- commands ----------
@@ -1099,6 +1386,16 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    # T7.2: live location updates arrive as edited_message events. Telegram
+    # bot library exposes these via filters.UpdateType.EDITED_MESSAGE which we
+    # intersect with LOCATION so we ignore plain text edits.
+    app.add_handler(MessageHandler(
+        filters.UpdateType.EDITED_MESSAGE & filters.LOCATION,
+        handle_edited_location,
+    ))
+    # T7.2: document-uploaded images (EXIF preserved). Mime is checked in
+    # handle_document; here we only route via filter.
+    app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_inbound_sticker))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
