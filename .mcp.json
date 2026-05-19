@@ -17,6 +17,23 @@
       "env": {
         "NOTION_TOKEN": "${NOTION_TOKEN}"
       }
+    },
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.linear.app/sse"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"}
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "apple_events": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-apple-events"]
     }
   }
 }

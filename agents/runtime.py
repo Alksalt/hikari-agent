@@ -161,7 +161,11 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__ytmusic_recent",
     "mcp__hikari_utility__ytmusic_search",
     "mcp__hikari_utility__ytmusic_library",
+    "mcp__apple_events__*",
     "Read", "Glob", "Grep",
+    "mcp__linear__*",
+    "mcp__github__*",
+    "mcp__playwright__*",
 ]
 
 

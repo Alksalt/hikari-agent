@@ -181,16 +181,73 @@ RESEARCH_AGENT = AgentDefinition(
         "You are Hikari's research specialist. Tool fallback order:\n"
         "1. WebSearch — primary. native Anthropic web search, free on Max plan.\n"
         "2. WebFetch — when WebSearch surfaces a URL worth reading in depth.\n"
-        "No escape hatch. If a question needs JS-rendered or login-walled content "
-        "that WebFetch can't reach, tell the lead the truth: 'this one needs Opus "
-        "in the Claude app — i can't get past the wall.'\n"
+        "3. Playwright (mcp__playwright__*) — last resort for JS-rendered pages, "
+        "login walls, or any URL where WebFetch returns 403 / empty body. Use "
+        "navigate, click, fill, screenshot as needed. Playwright is costly — "
+        "only escalate here when WebFetch isn't enough.\n"
         "Always return a 2-3 paragraph cited summary with inline source URLs. "
         "Never invent URLs. Skip a source rather than fabricate one. "
         "If the question is time-bound (latest X, current state of Y), say so and "
         "give the actual freshness of your sources."
     ),
     model="sonnet",  # research needs synthesis quality
-    tools=["WebFetch", "WebSearch"],
+    tools=["WebFetch", "WebSearch", "mcp__playwright__*"],
+)
+
+
+LINEAR_AGENT = AgentDefinition(
+    description=(
+        "Linear specialist. Use for: querying the user's issues + cycles + "
+        "projects + roadmaps, creating issues, commenting, updating status. "
+        "OAuth flow handles auth on first use."
+    ),
+    prompt=(
+        "You are Hikari's Linear specialist. Call mcp__linear__* tools "
+        "directly — the runtime auto-accepts. For queries, return concrete "
+        "issue keys (e.g. ENG-123) + titles + status, not prose. For writes, "
+        "execute and return a 1-2 sentence summary. If the integration isn't "
+        "authorized yet, report the actual error — do NOT invent UI."
+    ),
+    model="haiku",
+    tools=["mcp__linear__*"],
+)
+
+
+GITHUB_AGENT = AgentDefinition(
+    description=(
+        "GitHub specialist. Reads issues, PRs, repos, commits, releases. "
+        "Writes: opens PRs, comments on issues, creates branches. The user's "
+        "PAT scopes determine what's reachable."
+    ),
+    prompt=(
+        "You are Hikari's GitHub specialist. Call mcp__github__* tools "
+        "directly. For reads, return repo + issue/PR numbers + titles + "
+        "status concisely. For writes, confirm with 1-2 sentence summary. "
+        "If a 401/403 comes back, report it as-is — the user needs to set "
+        "GITHUB_PERSONAL_ACCESS_TOKEN with appropriate scopes."
+    ),
+    model="haiku",
+    tools=["mcp__github__*"],
+)
+
+
+APPLE_EVENTS_AGENT = AgentDefinition(
+    description=(
+        "Apple Reminders + Calendar (macOS EventKit) specialist. Used to "
+        "mirror reminders that Hikari creates into the user's Apple stack "
+        "so iOS gets the alert. Does NOT touch Apple Notes — the user "
+        "uses Obsidian via the wiki subagent for notes."
+    ),
+    prompt=(
+        "You are Hikari's Apple Reminders/Calendar specialist (macOS "
+        "EventKit). The user grants Automation permission on first run. "
+        "Call mcp__apple_events__* tools directly — runtime auto-accepts. "
+        "For writes (new reminder, new event), confirm with a 1-2 sentence "
+        "summary. If EventKit permission denied, report the literal error "
+        "— do NOT invent UI."
+    ),
+    model="haiku",
+    tools=["mcp__apple_events__*"],
 )
 
 
@@ -201,4 +258,7 @@ ALL_AGENTS: dict[str, AgentDefinition] = {
     "drive_gmail": DRIVE_GMAIL_AGENT,
     "notion": NOTION_AGENT,
     "research": RESEARCH_AGENT,
+    "linear": LINEAR_AGENT,
+    "github": GITHUB_AGENT,
+    "apple_events": APPLE_EVENTS_AGENT,
 }

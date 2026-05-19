@@ -213,13 +213,14 @@ def test_runtime_uses_accept_edits(monkeypatch):
 
 
 def test_runtime_registers_all_subagents(monkeypatch):
-    """All 6 specialist subagents registered:
-    recall, wiki, code_dispatch, drive_gmail, notion, research."""
+    """All specialist subagents registered:
+    recall, wiki, code_dispatch, drive_gmail, notion, research, linear, github."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     from agents import runtime
     importlib.reload(runtime)
     opts = runtime._build_options(resume=None)
-    expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research"}
+    expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research",
+                "linear", "github", "apple_events"}
     assert set(opts.agents.keys()) == expected
 
 
