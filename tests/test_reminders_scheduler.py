@@ -48,3 +48,21 @@ async def test_repeat_daily_reinserts_next_day():
     next_fire = datetime.fromisoformat(active[0]["fire_at"])
     orig = datetime.fromisoformat(past)
     assert (next_fire - orig).days == 1
+
+@pytest.mark.asyncio
+async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", "/tmp/fake-creds.json")
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    rid = db.reminder_insert(
+        fire_at=fire, text="meeting", lead_minutes=0, repeat=None,
+        gcal_sync_pending=True,
+    )
+    from agents import proactive
+    async def fake_run_proactive(prompt, **kwargs):
+        return "event_id: 'abc123xyz'\n"
+    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
+    n = await proactive.sync_pending_gcal_reminders()
+    assert n == 1
+    row = db.reminder_get(rid)
+    assert row["gcal_sync_pending"] == 0
+    assert row["gcal_event_id"] == "abc123xyz"

@@ -528,3 +528,41 @@ async def fire_due_reminders(send_text) -> int:
                 gcal_sync_pending=False,
             )
     return fired
+
+
+async def sync_pending_gcal_reminders() -> int:
+    """Drain reminders.gcal_sync_pending — for each row, delegate to the
+    drive_gmail subagent to create a Google Calendar event, then store the
+    returned event_id. Best-effort: failures stay pending for retry."""
+    import os
+    if not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        return 0
+    pending = db.reminders_pending_gcal_sync(limit=10)
+    if not pending:
+        return 0
+    synced = 0
+    for row in pending:
+        prompt = (
+            "[calendar mirror only — do NOT reply to the user. delegate to the "
+            "drive_gmail specialist: call the calendar create_event tool with "
+            f"start_iso={row['fire_at']!r}, end_iso=(start + 30min), "
+            f"title={row['text']!r}, description='hikari reminder #" + str(row["id"]) + "'. "
+            f"return ONLY YAML: event_id: '<id>'  (no fences, no commentary).]"
+        )
+        try:
+            raw = await run_proactive(prompt)
+        except Exception:
+            logger.exception("gcal sync: subagent failed for reminder #%s", row["id"])
+            continue
+        try:
+            data = yaml.safe_load(_strip_fences(raw)) or {}
+            event_id = str(data.get("event_id") or "").strip()
+        except yaml.YAMLError:
+            logger.warning("gcal sync: invalid YAML for reminder #%s", row["id"])
+            continue
+        if not event_id:
+            logger.warning("gcal sync: empty event_id for reminder #%s", row["id"])
+            continue
+        db.reminder_update_gcal_event(row["id"], event_id)
+        synced += 1
+    return synced
