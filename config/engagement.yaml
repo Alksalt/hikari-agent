@@ -693,3 +693,65 @@ scheduler:
   # IANA timezone for cron jobs (daily_reflection, morning_brief, etc.).
   # CronTrigger(hour=N) fires at N o'clock in THIS zone.
   timezone: "Europe/Oslo"
+
+# ============================================================================
+# Phase 10: utility features
+# ============================================================================
+
+morning_brief:
+  # Master toggle. Hikari can flip this in core_blocks via update_core_block.
+  enabled: true
+  # 06:00 local time per scheduler.timezone.
+  hour: 6
+  minute: 0
+  # Max age of last location share to use it as the brief's location.
+  # Falls back to HOME_LAT/HOME_LON env vars when older.
+  max_stale_location_hours: 48
+  # Forecast sources to merge. Order = preference; if one fails, the brief
+  # still ships with whatever succeeded.
+  sources:
+    - "open_meteo"
+    - "met_no"
+
+reminders:
+  # Poll interval in seconds for the fire-due-reminders scheduler job.
+  poll_interval_sec: 60
+  # GCal sync poll interval in seconds (separate job — avoids blocking
+  # reminder_create on a slow LLM round-trip).
+  gcal_sync_interval_sec: 300
+  # Default lead time when caller doesn't specify (used when a reminder is
+  # tied to an event start time).
+  default_lead_minutes: 60
+
+translate:
+  # DeepL Free is preferred; falls back to LibreTranslate (self-host or
+  # public instance) when DEEPL_API_KEY is missing.
+  preferred_backend: "deepl"
+  libretranslate_endpoint: "https://libretranslate.com/translate"
+  supported_targets: ["ru", "en", "uk", "no", "ja", "ja_romaji"]
+
+calc:
+  # asteval-based in-process calculator. Wall-clock timeout in seconds.
+  timeout_sec: 5
+  # Whether to expose the heavier python_run (subprocess + sandbox-exec).
+  python_run_enabled: true
+  # Max stdout bytes returned from python_run.
+  python_run_max_output_bytes: 1048576
+
+currency:
+  endpoint: "https://api.frankfurter.app/latest"
+
+arxiv:
+  default_categories: ["cs.LG", "cs.AI", "cs.CL", "stat.ML"]
+  default_days: 14
+  default_limit: 10
+
+places:
+  overpass_endpoint: "https://overpass-api.de/api/interpreter"
+  default_radius_m: 500
+  user_agent: "hikari-agent/0.1"
+
+ytmusic:
+  # Browser cookie auth blob path (see scripts/setup_ytmusic.md).
+  browser_json_path_env: "YTMUSIC_BROWSER_JSON_PATH"
+  default_history_limit: 5
