@@ -96,3 +96,28 @@ async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
     row = db.reminder_get(rid)
     assert row["gcal_sync_pending"] == 0
     assert row["gcal_event_id"] == "abc123xyz"
+
+
+@pytest.mark.asyncio
+async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    rid = db.reminder_insert(
+        fire_at=fire, text="grocery list", lead_minutes=0, repeat=None,
+        gcal_sync_pending=False,
+    )
+    # Manually flip apple_sync_pending on (simulating reminder_create with sync_to_apple=True)
+    from storage.db import _conn
+    with _conn() as conn:
+        conn.execute("UPDATE reminders SET apple_sync_pending=1 WHERE id=?", (rid,))
+    from agents import proactive
+    async def fake_run_proactive(prompt, **kwargs):
+        return "event_id: 'ABC-EVENT-123'\n"
+    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
+    # Patch sys.platform to darwin so the guard passes regardless of test host
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    n = await proactive.sync_pending_apple_reminders()
+    assert n == 1
+    row = db.reminder_get(rid)
+    assert row["apple_sync_pending"] == 0
+    assert row["apple_event_id"] == "ABC-EVENT-123"

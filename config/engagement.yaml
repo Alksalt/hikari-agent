@@ -154,6 +154,11 @@ memory:
   # this get dropped entirely (their embeddings + FTS rows too). Daily
   # backup launchd (03:00) mirrors hikari.db to iCloud before this fires.
   episodes_retention_days: 180
+  # T3.2: Ebbinghaus forgetting curve over fact recall. tau is the half-life
+  # in seconds (default 7 days). Each successful recall multiplies tau by
+  # 1.5^hit_count so frequently-touched facts decay slower — rehearsal
+  # effect. Lower values = harsher forgetting; 0 disables the decay.
+  recall_decay_tau_seconds: 604800
 
 codex:
   # Phase 8: directory containing the codex/ review reports. Relative paths
@@ -721,6 +726,8 @@ reminders:
   # GCal sync poll interval in seconds (separate job — avoids blocking
   # reminder_create on a slow LLM round-trip).
   gcal_sync_interval_sec: 300
+  # Apple Reminders sync poll interval in seconds (macOS only).
+  apple_sync_interval_sec: 300
   # Default lead time when caller doesn't specify (used when a reminder is
   # tied to an event start time).
   default_lead_minutes: 60

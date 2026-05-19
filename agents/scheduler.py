@@ -99,6 +99,19 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=120,
     )
 
+    import sys
+    if sys.platform == "darwin":
+        from .proactive import sync_pending_apple_reminders
+        apple_interval = int(cfg.get("reminders.apple_sync_interval_sec", 300))
+        async def _apple_sync_job():
+            return await sync_pending_apple_reminders()
+        scheduler.add_job(
+            _apple_sync_job,
+            IntervalTrigger(seconds=apple_interval),
+            id="reminders_apple_sync",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+
     from .proactive import sync_pending_gcal_reminders
     gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
     if _calendar_creds_healthy():

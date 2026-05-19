@@ -692,6 +692,47 @@ def get_fact(fact_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def facts_mark_recalled(fact_ids: list[int]) -> int:
+    """T3.2 — stamp ``last_recalled_at = now`` and increment
+    ``recall_hit_count`` for every id in ``fact_ids``. Returns the number
+    of rows updated.
+
+    Idempotent under concurrent calls because the increment is done in a
+    single SQL statement (``recall_hit_count + 1``), not a Python-side
+    read-modify-write. Empty input is a no-op.
+    """
+    ids = [int(i) for i in (fact_ids or []) if i]
+    if not ids:
+        return 0
+    now = _now()
+    placeholders = ",".join("?" * len(ids))
+    with _conn() as c:
+        cur = c.execute(
+            f"UPDATE facts SET last_recalled_at = ?, "
+            f"recall_hit_count = COALESCE(recall_hit_count, 0) + 1 "
+            f"WHERE id IN ({placeholders})",
+            (now, *ids),
+        )
+    return cur.rowcount or 0
+
+
+def fact_backdate_created_at(fact_id: int, iso_ts: str) -> None:
+    """Test/admin helper: forcibly rewrite the ``created_at``, ``valid_from``,
+    and ``last_recalled_at`` timestamps for a fact. The recall-decay logic
+    reads these to age out stale rows — tests need a way to inject "this
+    fact is two months old" without ``time.sleep``.
+
+    Production code should never call this. It exists in the public surface
+    so the test suite doesn't have to monkey-patch ``_conn()``.
+    """
+    with _conn() as c:
+        c.execute(
+            "UPDATE facts SET created_at = ?, valid_from = ?, "
+            "last_recalled_at = ? WHERE id = ?",
+            (iso_ts, iso_ts, iso_ts, int(fact_id)),
+        )
+
+
 # ---------- messages ----------
 
 def append_message(role: str, content: str) -> int:

@@ -48,16 +48,20 @@ _VALID_REPEAT = {None, "", "daily", "weekly", "monthly", "yearly"}
     "1h before my 14:00 meeting' -> when_iso=14:00, lead_minutes=60, fires at 13:00). "
     "repeat one of {daily, weekly, monthly, yearly} for simple repeats, or an "
     "RRULE string for advanced. sync_to_gcal=True queues a Google Calendar mirror "
-    "(non-blocking — the GCal sync job drains the queue separately).",
+    "(non-blocking — the GCal sync job drains the queue separately). "
+    "sync_to_apple=True queues an Apple Reminders mirror (macOS only, non-blocking).",
     {"when_iso": str, "text": str, "lead_minutes": int, "repeat": str,
-     "sync_to_gcal": bool},
+     "sync_to_gcal": bool, "sync_to_apple": bool},
 )
 async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
+    import sys
     when_iso = (args.get("when_iso") or "").strip()
     text = (args.get("text") or "").strip()
     lead_minutes = int(args.get("lead_minutes") or 0)
     repeat = (args.get("repeat") or "").strip() or None
     sync_to_gcal = bool(args.get("sync_to_gcal", True))
+    # Default True on macOS; False elsewhere (EventKit is Apple-only).
+    sync_to_apple = bool(args.get("sync_to_apple", sys.platform == "darwin"))
 
     if not text:
         return _ok("refused: empty text")
@@ -78,11 +82,13 @@ async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
         lead_minutes=lead_minutes,
         repeat=repeat,
         gcal_sync_pending=sync_to_gcal,
+        apple_sync_pending=sync_to_apple,
     )
     return _ok(
         f"reminder #{rid} set for {when.isoformat()} "
         f"(lead {lead_minutes}m, repeat {repeat or 'none'}, "
-        f"gcal_sync {'queued' if sync_to_gcal else 'skipped'})",
+        f"gcal_sync {'queued' if sync_to_gcal else 'skipped'}, "
+        f"apple_sync {'queued' if sync_to_apple else 'skipped'})",
         data={"id": rid},
     )
 

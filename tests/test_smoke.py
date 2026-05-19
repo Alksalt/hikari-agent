@@ -145,12 +145,17 @@ def test_scheduler_builds(monkeypatch):
 
     sched = build_scheduler(noop)
     ids = {j.id for j in sched.get_jobs()}
-    assert ids == {
+    # Phase 11: reminders_apple_sync is added on macOS only.
+    import sys
+    expected = {
         "heartbeat", "reengage", "consolidation",
         "daily_reflection", "calendar_heartbeat", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
         "morning_brief",
     }
+    if sys.platform == "darwin":
+        expected.add("reminders_apple_sync")
+    assert ids == expected
 
 
 def test_proactive_should_send_logic(tmp_path, monkeypatch):
