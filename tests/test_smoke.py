@@ -130,8 +130,13 @@ def test_telegram_bridge_imports():
     importlib.reload(telegram_bridge)
 
 
-def test_scheduler_builds():
+def test_scheduler_builds(monkeypatch):
+    """Phase 8: ``memory_prune`` is always wired; ``calendar_heartbeat`` is
+    gated on the runtime healthy flag / env var. Test the gated-on shape."""
     from agents.scheduler import build_scheduler
+    from storage import db as _db_mod
+
+    _db_mod.runtime_set("calendar_heartbeat_healthy", "1")
 
     async def noop(_t: str) -> None:
         return None
@@ -140,7 +145,7 @@ def test_scheduler_builds():
     ids = {j.id for j in sched.get_jobs()}
     assert ids == {
         "heartbeat", "reengage", "consolidation",
-        "daily_reflection", "calendar_heartbeat",
+        "daily_reflection", "calendar_heartbeat", "memory_prune",
     }
 
 

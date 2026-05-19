@@ -14,13 +14,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import MessageReactionUpdated, ReactionTypeEmoji, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    MessageReactionHandler,
     filters,
 )
 
@@ -51,6 +52,7 @@ from .bridge_ux import (
 )
 from .log_scrub import install_root_filter
 from .politeness_gate import is_rude, random_refusal
+from . import post_filter
 from .post_filter import filter_outgoing
 from .runtime import REPO_ROOT, owner_id, respond
 from .scheduler import build_scheduler
@@ -68,6 +70,83 @@ def _user_voice_dir() -> Path:
 
 def _mood() -> str:
     return (db.get_core_block("mood_today") or "focused").strip().lower() or "focused"
+
+
+def _typing_refresh_sec() -> float:
+    return float(cfg.get("typing.refresh_sec", 4.0))
+
+
+class TypingHeartbeat:
+    """Phase 8 — keep the Telegram typing indicator alive while the agent is
+    working. Starts immediately on entry (before any LLM/STT call), refreshes
+    every ``typing.refresh_sec`` seconds, and stops cleanly on exit. Used as
+    an async context manager so the typing state always cleans up even when
+    the inner block raises.
+
+    Pattern:
+        async with TypingHeartbeat(bot, chat_id) as hb:
+            reply = await respond(user_text)
+        # hb tells _send_with_choreography how long the user already waited.
+    """
+
+    def __init__(self, bot, chat_id: int):
+        self._bot = bot
+        self._chat_id = chat_id
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self._started_at: float = 0.0
+
+    @property
+    def elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self._started_at) if self._started_at else 0.0
+
+    async def __aenter__(self) -> "TypingHeartbeat":
+        self._started_at = time.monotonic()
+        # Fire one ChatAction.TYPING immediately so the user sees it within
+        # ~100ms of sending — no waiting for the agent to start.
+        try:
+            await self._bot.send_chat_action(
+                chat_id=self._chat_id, action=ChatAction.TYPING,
+            )
+        except Exception:
+            logger.exception("typing heartbeat: initial send_chat_action failed")
+        self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._stop.set()
+        if self._task is not None:
+            # Cancel proactively so we don't wait up to refresh_sec for the
+            # loop to notice the stop event on its own timer tick. The loop
+            # tolerates CancelledError silently — see _loop body.
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                # CancelledError is the expected path; everything else gets
+                # logged inside the loop itself.
+                pass
+        return False
+
+    async def _loop(self) -> None:
+        refresh = _typing_refresh_sec()
+        try:
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=refresh)
+                    return  # stop was set during the wait
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    await self._bot.send_chat_action(
+                        chat_id=self._chat_id, action=ChatAction.TYPING,
+                    )
+                except Exception:
+                    logger.exception("typing heartbeat: refresh send failed")
+        except asyncio.CancelledError:
+            # __aexit__ cancelled us during cleanup. Exit silently — caller
+            # already set the stop event and is shutting down.
+            return
 
 
 async def _drain_photo_outbox(bot, chat_id: int) -> int:
@@ -92,14 +171,21 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
     return sent
 
 
-async def _send_with_choreography(bot, message, reply_text: str) -> None:
+async def _send_with_choreography(
+    bot, message, reply_text: str, elapsed_real: float = 0.0,
+) -> None:
     """Run outgoing filter, then type-indicator + delay, then send.
 
     The post_filter pass catches Claude's default assistant patter and obvious
     sycophancy collapses. Short safety-voice replies get swapped for an in-voice
-    short phrase. Longer triggers are logged to character_thoughts (Hikari's
-    diary) for the daily reflection to notice; the original text still ships
-    until ``refusal_filter.enable_llm_rewrite`` is turned on.
+    short phrase. Longer drift triggers go through the Phase 8 bounded rewrite
+    path before falling back to a deterministic short reply.
+
+    Phase 8: the typing indicator is now held alive by ``TypingHeartbeat`` from
+    the moment the user message arrives. ``elapsed_real`` is the time we've
+    already spent in the agent path; if it exceeds the synthesized typing
+    delay, the artificial delay is skipped so we don't stack real latency on
+    top of fake latency.
     """
     chat_id = message.chat_id
     mood = _mood()
@@ -113,29 +199,37 @@ async def _send_with_choreography(bot, message, reply_text: str) -> None:
             f"hits={filtered.refusal_hits[:3]}"
         )
     elif filtered.needs_llm_rewrite:
-        # Detected but not auto-rewritten (rewrite path opt-in via config). Log
-        # so daily reflection notices the pattern.
-        db.append_thought(
-            "post_filter triggered (not rewritten): "
-            f"refusal_hits={filtered.refusal_hits[:3]} "
-            f"sycophancy={filtered.sycophancy_triggered} "
-            f"anchor_violations={filtered.sycophancy_violations[:2]}"
+        # Phase 8: bounded LLM rewrite. One Haiku turn, no tools. If the
+        # rewrite still trips the filter, fall back to a deterministic short
+        # in-voice phrase rather than shipping the drift.
+        text_to_send = await post_filter.rewrite_or_fallback(
+            reply_text, filtered, mood, where="bridge",
         )
 
-    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     delay = compute_typing_delay(text_to_send, mood)
+    remaining = max(0.0, delay - elapsed_real)
 
-    if should_false_start(text_to_send):
+    if should_false_start(text_to_send) and remaining > 0:
         # Half the delay, brief gap, then resume typing for the rest.
-        await asyncio.sleep(max(0.5, delay / 2))
+        await asyncio.sleep(max(0.5, remaining / 2))
         # Telegram has no "stop typing" — the indicator decays after a few seconds.
         await asyncio.sleep(false_start_pause_sec())
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         await asyncio.sleep(false_start_resume_sec())
-    else:
-        await asyncio.sleep(delay)
+    elif remaining > 0:
+        await asyncio.sleep(remaining)
 
-    await message.reply_text(text_to_send)
+    sent_msg = await message.reply_text(text_to_send)
+
+    # Phase 8: stamp the assistant row in `messages` with the Telegram
+    # outbound message_id so 👍/👎 reactions can be joined back to the reply.
+    try:
+        if sent_msg is not None and getattr(sent_msg, "message_id", None):
+            db.update_last_assistant_telegram_msg_id(int(sent_msg.message_id))
+    except Exception:
+        logger.exception(
+            "post_send: failed to stamp telegram_message_id (non-fatal)"
+        )
 
     # Outbound-counter bump + sticker gate. Bump first so the value passed in
     # reflects this just-sent reply; the sticker module reads the same shared
@@ -230,15 +324,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message.reply_text(action_line)
         return
 
-    try:
-        reply = await respond(user_text)
-    except Exception:
-        logger.exception("agent failed for: %r", message.text[:80])
-        await message.reply_text("(brain hit a wall. try again.)")
-        return
+    # Phase 8: start the typing heartbeat IMMEDIATELY so the user sees the
+    # indicator while the agent is actually working, not after the reply is
+    # already in hand.
+    async with TypingHeartbeat(context.bot, chat.id) as hb:
+        try:
+            reply = await respond(user_text)
+        except Exception:
+            logger.exception("agent failed for: %r", message.text[:80])
+            await message.reply_text("(brain hit a wall. try again.)")
+            return
 
+        elapsed = hb.elapsed
     if reply:
-        await _send_with_choreography(context.bot, message, reply)
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
     n = await _drain_photo_outbox(context.bot, chat.id)
     if n and not reply:
         logger.info("sent %d photo(s) with no accompanying text", n)
@@ -256,65 +357,73 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user.id != owner_id():
         return
 
-    USER_PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-    largest = message.photo[-1]
-    f = await largest.get_file()
-    fname = f"{int(time.time() * 1000)}.jpg"
-    rel = Path("data") / "user_photos" / fname
-    abs_path = USER_PHOTO_DIR / fname
-    try:
-        await f.download_to_drive(custom_path=str(abs_path))
-    except Exception:
-        logger.exception("failed to download user photo")
-        await message.reply_text("(couldn't download that. try again?)")
-        return
-
-    user_caption = (message.caption or "").strip()
-    # Run the same inbound gates as text messages on the caption (if any).
-    if user_caption:
-        rude, matched = is_rude(user_caption)
-        if rude:
-            refusal = random_refusal()
-            logger.info(
-                "politeness_gate: rude photo caption matched=%r → refused", matched
-            )
-            db.append_thought(
-                f"refused — rude photo caption. matched={matched!r}. sent={refusal!r}"
-            )
-            await message.reply_text(refusal)
-            return
+    # Phase 8: start typing heartbeat before the download — photo handling has
+    # the longest pipeline (download → Read → respond) so user feedback is
+    # critical here.
+    async with TypingHeartbeat(context.bot, chat.id) as hb:
+        USER_PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+        largest = message.photo[-1]
+        f = await largest.get_file()
+        fname = f"{int(time.time() * 1000)}.jpg"
+        rel = Path("data") / "user_photos" / fname
+        abs_path = USER_PHOTO_DIR / fname
         try:
-            affect_mod.scan_inbound(user_caption)
+            await f.download_to_drive(custom_path=str(abs_path))
         except Exception:
-            logger.exception("affect scan on caption failed (non-fatal)")
-    prompt = (
-        f"the user sent you a photo. it's saved at {rel}. "
-        f"use the Read tool to look at it before replying. "
-        f"caption (if any): {user_caption!r}.\n\n"
-        f"react in your voice — short. not effusive. denial layer on. "
-        f"after you reply, if there's anything photo-worth-remembering "
-        f"(an object, a setting, a mood worth a future callback), "
-        f"call mcp__hikari_memory__remember with a tight fact "
-        f"(subject='photo', predicate='showed', object='<thing>')."
-    )
-    try:
-        reply = await respond(prompt)
-    except Exception:
-        logger.exception("agent failed on inbound photo")
-        await message.reply_text("(brain hit a wall on that photo.)")
-        return
-    # Record an episode so we can callback later ("how's the plant?").
-    try:
-        from datetime import date as _date
-        summary = (
-            f"user sent photo at {rel}. user_caption: {user_caption!r}. "
-            f"my reaction: {reply[:200]!r}"
+            logger.exception("failed to download user photo")
+            await message.reply_text("(couldn't download that. try again?)")
+            return
+
+        user_caption = (message.caption or "").strip()
+        # Run the same inbound gates as text messages on the caption (if any).
+        if user_caption:
+            rude, matched = is_rude(user_caption)
+            if rude:
+                refusal = random_refusal()
+                logger.info(
+                    "politeness_gate: rude photo caption matched=%r → refused", matched
+                )
+                db.append_thought(
+                    f"refused — rude photo caption. matched={matched!r}. sent={refusal!r}"
+                )
+                await message.reply_text(refusal)
+                return
+            try:
+                affect_mod.scan_inbound(user_caption)
+            except Exception:
+                logger.exception("affect scan on caption failed (non-fatal)")
+        prompt = (
+            f"the user sent you a photo. it's saved at {rel}. "
+            f"use the Read tool to look at it before replying. "
+            f"caption (if any): {user_caption!r}.\n\n"
+            f"react in your voice — short. not effusive. denial layer on. "
+            f"after you reply, if there's anything photo-worth-remembering "
+            f"(an object, a setting, a mood worth a future callback), "
+            f"call mcp__hikari_memory__remember with a tight fact "
+            f"(subject='photo', predicate='showed', object='<thing>')."
         )
-        db.insert_episode(_date.today().isoformat(), summary, importance=4)
-    except Exception:
-        logger.exception("photo episode write failed (non-fatal)")
+        try:
+            reply = await respond(prompt)
+        except Exception:
+            logger.exception("agent failed on inbound photo")
+            await message.reply_text("(brain hit a wall on that photo.)")
+            return
+        # Record an episode so we can callback later ("how's the plant?").
+        try:
+            from datetime import date as _date
+            summary = (
+                f"user sent photo at {rel}. user_caption: {user_caption!r}. "
+                f"my reaction: {reply[:200]!r}"
+            )
+            db.insert_episode(_date.today().isoformat(), summary, importance=4)
+        except Exception:
+            logger.exception("photo episode write failed (non-fatal)")
+
+        elapsed = hb.elapsed
     if reply:
-        await _send_with_choreography(context.bot, message, reply)
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
     await _drain_photo_outbox(context.bot, chat.id)
 
 
@@ -332,85 +441,93 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user.id != owner_id():
         return
 
-    voice_dir = _user_voice_dir()
-    voice_dir.mkdir(parents=True, exist_ok=True)
-    f = await message.voice.get_file()
-    fname = f"{int(time.time() * 1000)}.ogg"
-    abs_path = voice_dir / fname
-    try:
-        await f.download_to_drive(custom_path=str(abs_path))
-    except Exception:
-        logger.exception("failed to download user voice note")
-        await message.reply_text("(couldn't download that. try again?)")
-        return
+    # Phase 8: typing heartbeat starts before the download. Voice note path:
+    # download → Whisper transcribe → respond → reply, all under one heartbeat.
+    async with TypingHeartbeat(context.bot, chat.id) as hb:
+        voice_dir = _user_voice_dir()
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        f = await message.voice.get_file()
+        fname = f"{int(time.time() * 1000)}.ogg"
+        abs_path = voice_dir / fname
+        try:
+            await f.download_to_drive(custom_path=str(abs_path))
+        except Exception:
+            logger.exception("failed to download user voice note")
+            await message.reply_text("(couldn't download that. try again?)")
+            return
 
-    duration_sec = float(getattr(message.voice, "duration", 0) or 0)
-    max_duration = float(cfg.get("voice.max_duration_sec", 300))
-    graceful_reply = str(
-        cfg.get("voice.graceful_failure_reply")
-        or "(can't transcribe right now. type it instead.)"
-    )
-    if duration_sec > max_duration:
-        logger.info(
-            "voice note rejected: duration %.1fs > max %.1fs", duration_sec, max_duration
+        duration_sec = float(getattr(message.voice, "duration", 0) or 0)
+        max_duration = float(cfg.get("voice.max_duration_sec", 300))
+        graceful_reply = str(
+            cfg.get("voice.graceful_failure_reply")
+            or "(can't transcribe right now. type it instead.)"
         )
-        await message.reply_text(graceful_reply)
-        return
+        if duration_sec > max_duration:
+            logger.info(
+                "voice note rejected: duration %.1fs > max %.1fs",
+                duration_sec, max_duration,
+            )
+            await message.reply_text(graceful_reply)
+            return
 
-    try:
-        transcript = await voice_tool.transcribe_voice(abs_path)
-    except voice_tool.VoiceTranscribeError as e:
-        logger.info("voice transcription failed: %s", e)
-        await message.reply_text(graceful_reply)
-        return
-    except Exception:
-        logger.exception("voice transcription crashed unexpectedly")
-        await message.reply_text(graceful_reply)
-        return
+        try:
+            transcript = await voice_tool.transcribe_voice(abs_path)
+        except voice_tool.VoiceTranscribeError as e:
+            logger.info("voice transcription failed: %s", e)
+            await message.reply_text(graceful_reply)
+            return
+        except Exception:
+            logger.exception("voice transcription crashed unexpectedly")
+            await message.reply_text(graceful_reply)
+            return
 
-    rude, matched = is_rude(transcript)
-    if rude:
-        refusal = random_refusal()
-        logger.info(
-            "politeness_gate: rude voice transcript matched=%r → refused", matched
+        rude, matched = is_rude(transcript)
+        if rude:
+            refusal = random_refusal()
+            logger.info(
+                "politeness_gate: rude voice transcript matched=%r → refused", matched
+            )
+            db.append_thought(
+                f"refused — rude voice transcript. matched={matched!r}. sent={refusal!r}"
+            )
+            await message.reply_text(refusal)
+            return
+
+        try:
+            affect_mod.scan_inbound(transcript)
+        except Exception:
+            logger.exception("affect scan on transcript failed (non-fatal)")
+
+        prefix = str(cfg.get("voice.transcript_prefix") or "[voice note]")
+        prompt = (
+            f"the user sent you a voice note ({duration_sec:.0f}s). "
+            f"{prefix}: {transcript!r}\n\n"
+            f"react in your voice — short. denial layer on. you can comment on "
+            f"how they sounded (tired, rushed, lit up) if it's there."
         )
-        db.append_thought(
-            f"refused — rude voice transcript. matched={matched!r}. sent={refusal!r}"
-        )
-        await message.reply_text(refusal)
-        return
+        try:
+            reply = await respond(prompt)
+        except Exception:
+            logger.exception("agent failed on inbound voice note")
+            await message.reply_text("(brain hit a wall on that one.)")
+            return
 
-    try:
-        affect_mod.scan_inbound(transcript)
-    except Exception:
-        logger.exception("affect scan on transcript failed (non-fatal)")
+        try:
+            from datetime import date as _date
+            summary = (
+                f"user sent voice note ({duration_sec:.0f}s). "
+                f"transcript: {transcript!r}. my reaction: {reply[:200]!r}"
+            )
+            db.insert_episode(_date.today().isoformat(), summary, importance=4)
+        except Exception:
+            logger.exception("voice episode write failed (non-fatal)")
 
-    prefix = str(cfg.get("voice.transcript_prefix") or "[voice note]")
-    prompt = (
-        f"the user sent you a voice note ({duration_sec:.0f}s). "
-        f"{prefix}: {transcript!r}\n\n"
-        f"react in your voice — short. denial layer on. you can comment on "
-        f"how they sounded (tired, rushed, lit up) if it's there."
-    )
-    try:
-        reply = await respond(prompt)
-    except Exception:
-        logger.exception("agent failed on inbound voice note")
-        await message.reply_text("(brain hit a wall on that one.)")
-        return
-
-    try:
-        from datetime import date as _date
-        summary = (
-            f"user sent voice note ({duration_sec:.0f}s). "
-            f"transcript: {transcript!r}. my reaction: {reply[:200]!r}"
-        )
-        db.insert_episode(_date.today().isoformat(), summary, importance=4)
-    except Exception:
-        logger.exception("voice episode write failed (non-fatal)")
+        elapsed = hb.elapsed
 
     if reply:
-        await _send_with_choreography(context.bot, message, reply)
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
     await _drain_photo_outbox(context.bot, chat.id)
 
 
@@ -575,6 +692,46 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def handle_message_reaction(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,  # noqa: ARG001
+) -> None:
+    """Phase 8 — owner reacted to one of Hikari's outbound messages with
+    a 👍 or 👎. Map to +1/-1 and persist for the drift-vs-feedback comparison.
+
+    Other emojis are ignored. Non-owner reactions are rejected at the gate.
+    """
+    rxn: MessageReactionUpdated | None = update.message_reaction
+    if rxn is None:
+        return
+    user = rxn.user
+    if user is None or user.id != owner_id():
+        return
+
+    # Telegram sends the NEW reaction set. Treat the first matching emoji as
+    # the user's vote. Removing the reaction (empty new_reaction) → no-op.
+    rating: int | None = None
+    for r in rxn.new_reaction or []:
+        if not isinstance(r, ReactionTypeEmoji):
+            continue
+        emoji = r.emoji
+        if emoji == "👍":
+            rating = 1
+            break
+        if emoji == "👎":
+            rating = -1
+            break
+    if rating is None:
+        return
+
+    try:
+        db.feedback_record(int(rxn.message_id), rating)
+    except Exception:
+        logger.exception(
+            "feedback_record failed for msg_id=%s rating=%s",
+            rxn.message_id, rating,
+        )
+
+
 def build_application() -> Application:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -590,6 +747,9 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Phase 8: 👍/👎 ground-truth for the drift judge. Owner-only handler;
+    # writes a +1 / -1 row into user_feedback keyed by the outbound message_id.
+    app.add_handler(MessageReactionHandler(handle_message_reaction))
     return app
 
 
@@ -625,13 +785,19 @@ def main() -> None:
     async def post_init(application: Application) -> None:
         async def send_text(text: str) -> None:
             # Run outgoing filter so proactive heartbeats can't leak
-            # safety-voice patter either.
+            # safety-voice patter either. Phase 8: when the filter flags a
+            # rewrite-worthy hit, attempt one bounded Haiku rewrite before
+            # falling back to a deterministic short reply.
             filtered = filter_outgoing(text)
             to_send = filtered.text
             if filtered.refusal_short_replaced:
                 db.append_thought(
                     "proactive: short-replaced safety-voice. "
                     f"hits={filtered.refusal_hits[:3]}"
+                )
+            elif filtered.needs_llm_rewrite:
+                to_send = await post_filter.rewrite_or_fallback(
+                    text, filtered, mood=_mood(), where="proactive",
                 )
             await application.bot.send_message(chat_id=owner_id(), text=to_send)
 
@@ -655,7 +821,14 @@ def main() -> None:
 
     app.post_init = post_init
     logger.info("starting hikari-agent (full stack)")
-    app.run_polling(drop_pending_updates=True)
+    # Phase 8: include MESSAGE_REACTION so 👍/👎 ground-truth gets delivered.
+    # Telegram excludes reactions from the default allowed_updates set.
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=[
+            *Update.ALL_TYPES,
+        ],
+    )
 
 
 if __name__ == "__main__":

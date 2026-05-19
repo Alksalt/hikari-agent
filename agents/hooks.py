@@ -11,6 +11,7 @@ recall-agent's prompt formatter can reuse them.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -281,19 +282,76 @@ async def log_tool_failure(
     return {}
 
 
-def _is_defer_gated(tool_name: str) -> bool:
-    gated = cfg.get("approvals.defer_gated_tools") or []
-    return tool_name in gated
+def _is_defer_gated(tool_name: str, tool_input: dict[str, Any] | None = None) -> bool:
+    """Decide whether a tool call must be deferred for owner approval.
 
+    Phase 8: ``defer_gated_tools`` entries are *regex patterns* matched against
+    the full qualified tool name. A match always defers unless the tool has a
+    per-arg condition in ``defer_when_args_match`` — in which case the call
+    only defers when the named arg contains one of the configured needles.
 
-def _tier_for_tool(tool_name: str) -> int:
-    """Infer tier from config. Falls back to Tier-1 if not explicitly mapped.
-
-    Tier-2 tools (irreversible side effects) are listed in
-    ``approvals.tier_2_tools``. Everything else defaults to Tier-1.
+    Returns True iff the call should be deferred.
     """
-    tier_2 = cfg.get("approvals.tier_2_tools") or []
-    return 2 if tool_name in tier_2 else 1
+    gated = cfg.get("approvals.defer_gated_tools") or []
+    if not gated:
+        return False
+
+    matched_pattern: str | None = None
+    for pat in gated:
+        try:
+            if re.fullmatch(str(pat), tool_name):
+                matched_pattern = str(pat)
+                break
+        except re.error:
+            logger.warning("defer_gated_tools: invalid regex %r", pat)
+            continue
+
+    if matched_pattern is None:
+        return False
+
+    arg_specs = cfg.get("approvals.defer_when_args_match") or {}
+    # Phase 8 / review-H1: arg-spec keys are matched against the tool name with
+    # the SAME regex semantics as ``defer_gated_tools``, so a wildcard pattern
+    # like ``^mcp__hikari_dispatch__.*$`` in the gated list still finds its
+    # condition spec under a key that matches that name. Exact-string keys
+    # remain valid (they're trivially regex-valid).
+    spec = None
+    for key, candidate in arg_specs.items():
+        try:
+            if re.fullmatch(str(key), tool_name):
+                spec = candidate
+                break
+        except re.error:
+            logger.warning("defer_when_args_match: invalid regex key %r", key)
+            continue
+    if not spec:
+        return True  # unconditional defer
+
+    if not isinstance(tool_input, dict):
+        return True  # be conservative when args are missing
+
+    key = str(spec.get("key") or "")
+    needles_raw = spec.get("contains_any") or []
+    case_insensitive = bool(spec.get("case_insensitive", True))
+    if not key or not needles_raw:
+        return True
+
+    raw_val = tool_input.get(key)
+    haystack = str(raw_val) if raw_val is not None else ""
+    if case_insensitive:
+        haystack = haystack.lower()
+        needles = [str(n).lower() for n in needles_raw]
+    else:
+        needles = [str(n) for n in needles_raw]
+
+    return any(n and n in haystack for n in needles)
+
+
+def _tier_for_tool(tool_name: str) -> int:  # noqa: ARG001
+    """Phase 8: single-tier model. Everything that defers uses tier 2
+    (CONFIRM-SEND). Kept as a function for backwards compatibility with the
+    legacy approval row schema."""
+    return 2
 
 
 def _summary_for_defer(tool_name: str, tool_input: dict[str, Any]) -> str:
@@ -323,28 +381,37 @@ async def defer_gated_tools(
     tool_input = input_data.get("tool_input") or {}
     sdk_tool_use_id = str(input_data.get("tool_use_id") or tool_use_id or "")
 
-    if not tool_name or not _is_defer_gated(tool_name):
+    input_dict = tool_input if isinstance(tool_input, dict) else {}
+    if not tool_name or not _is_defer_gated(tool_name, input_dict):
         return {}
 
     # Persist + prompt are best-effort; if either fails we still defer (we'd
     # rather lose a confirmation than autorun a gated tool).
     try:
+        import asyncio as _asyncio
+
         from tools import approvals as approval_tools
         tier = _tier_for_tool(tool_name)
-        summary = _summary_for_defer(tool_name, tool_input)
+        summary = _summary_for_defer(tool_name, input_dict)
         chat_id = approval_tools.owner_chat_id()
         approval_id = db.approval_create_deferred(
             chat_id=chat_id,
             tool_name=tool_name,
             tier=tier,
             summary=summary,
-            args=tool_input if isinstance(tool_input, dict) else {},
+            args=input_dict,
             deferred_tool_use_id=sdk_tool_use_id,
-            deferred_tool_input=tool_input if isinstance(tool_input, dict) else {},
+            deferred_tool_input=input_dict,
         )
         logger.info(
             "defer_gated_tools: deferring %s (tool_use_id=%s, approval_id=%s)",
             tool_name, sdk_tool_use_id, approval_id,
+        )
+        # Phase 8 — Codex P0 fix: the defer path now schedules its own timeout
+        # watcher (previously only the legacy in-process callback path did,
+        # so the "60s" copy in the prompt was a lie for SDK defer).
+        _asyncio.create_task(
+            approval_tools._timeout_watcher(approval_id, chat_id)
         )
         # Best-effort out-of-band Telegram prompt. Wrap in try so the hook
         # still returns "defer" even if Telegram is unreachable.

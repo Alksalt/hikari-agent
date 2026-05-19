@@ -134,12 +134,33 @@ def test_filter_outgoing_short_replaces_safety_voice():
 
 
 def test_filter_outgoing_flags_sycophancy_detected(monkeypatch, tmp_path):
-    """Sycophancy detection always fires; LLM rewrite is opt-in via config flag."""
+    """Sycophancy detection always fires. Phase 8: rewrite path is now on by
+    default — the bridge will attempt a bounded rewrite + fallback. The
+    detection-only mode is opt-out via ``sycophancy_guard.enable_llm_rewrite:
+    false`` (or post_filter.rewrite_strategy: detection_only)."""
+    # Override the global config so this assertion measures the gate, not the
+    # default. Detection-only path = filter triggers but no rewrite requested.
+    cfg_text = """
+sycophancy_guard:
+  enabled: true
+  enable_llm_rewrite: false
+  collapse_phrases:
+    - "(?i)\\\\byou're (totally |absolutely |completely )?right\\\\b"
+    - "(?i)\\\\bgreat (point|idea|question|insight)\\\\b"
+    - "(?i)\\\\bI (totally |completely )?agree( with you)?\\\\b"
+  max_collapses_per_reply: 1
+  anchor_violations: []
+"""
+    p = tmp_path / "engagement.yaml"
+    p.write_text(cfg_text, encoding="utf-8")
+    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
+    config.reload()
+    post_filter.reload_patterns()
+
     txt = "you're totally right. great idea. I agree completely with that."
     res = post_filter.filter_outgoing(txt)
-    # Detection is always on
     assert res.sycophancy_triggered
-    # Rewrite is gated on opt-in config flag (default off).
+    # With enable_llm_rewrite=False the filter detects but does NOT request rewrite.
     assert not res.needs_llm_rewrite
 
 

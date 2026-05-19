@@ -6,7 +6,8 @@ private 'thought' entry to the character_thoughts table (never injected).
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import yaml
 
@@ -275,10 +276,209 @@ async def run_daily_reflection() -> bool:
         decayed[0], decayed[1],
         obs_written, noticings_written,
     )
+
+    # Phase 8: morning dispatch. Write a small markdown summary to the wiki
+    # so the user has observability without grepping logs. Best-effort —
+    # failures never block the reflection write path.
+    try:
+        _write_morning_dispatch(
+            today=date.today(),
+            drift_avg=drift_avg,
+            drift_below=drift_below,
+        )
+    except Exception:
+        logger.exception("morning_dispatch write failed (non-fatal)")
+
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
     )
+
+
+def _write_morning_dispatch(
+    today: date,
+    drift_avg: float | None,
+    drift_below: int,
+) -> Path | None:
+    """Phase 8: emit ``morning_dispatch_<date>.md`` to the wiki.
+
+    Sections:
+      - yesterday's message count
+      - drift average + below-threshold count
+      - top 3 lexicon promotions
+      - new noticings in the last 24h
+      - open loops with ages
+      - drift-vs-feedback divergence (when D-3 data is available)
+
+    Idempotent: re-running on the same date overwrites the file. Returns the
+    written path or None if disabled / unwritable.
+    """
+    from . import config as cfg
+
+    try:
+        from tools.wiki import VAULT_ROOT
+    except Exception:
+        logger.exception("morning_dispatch: cannot import VAULT_ROOT")
+        return None
+
+    base = VAULT_ROOT / "projects" / "hikari-agent" / "morning_dispatch"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.exception("morning_dispatch: mkdir failed for %s", base)
+        return None
+
+    fname = f"morning_dispatch_{today.isoformat()}.md"
+    target = base / fname
+
+    # Yesterday's window: prior 24h to today's 00:00 local.
+    today_dt = datetime(today.year, today.month, today.day)
+    yesterday_dt = today_dt - timedelta(days=1)
+    yesterday_iso = yesterday_dt.isoformat()
+    today_iso = today_dt.isoformat()
+
+    msg_count = _count_messages_between(yesterday_iso, today_iso)
+    lex_top = _top_lexicon(limit=3)
+    new_noticings = _noticings_since(yesterday_iso, limit=10)
+    open_loops = _open_loops_with_ages()
+    feedback = _drift_vs_feedback(cfg=cfg)
+
+    lines: list[str] = []
+    lines.append(f"# Morning dispatch — {today.isoformat()}")
+    lines.append("")
+    lines.append("## traffic")
+    lines.append(f"- messages in the last 24h: **{msg_count}**")
+    lines.append("")
+    lines.append("## persona drift (7d window)")
+    if drift_avg is None:
+        lines.append("- no samples this week.")
+    else:
+        flag = " ⚠️" if drift_avg < 0.7 else ""
+        lines.append(f"- average score: **{drift_avg:.2f}**{flag}")
+        lines.append(f"- below-threshold samples: **{drift_below}**")
+    lines.append("")
+    lines.append("## lexicon top")
+    if not lex_top:
+        lines.append("- (nothing promoted yet.)")
+    else:
+        for row in lex_top:
+            phrase = str(row.get("phrase") or "")
+            weight = float(row.get("weight") or 0.0)
+            source = str(row.get("source") or "")
+            lines.append(f"- `{phrase}` (weight={weight:.2f}, source={source})")
+    lines.append("")
+    lines.append("## new noticings (last 24h)")
+    if not new_noticings:
+        lines.append("- (none.)")
+    else:
+        for n in new_noticings:
+            lines.append(f"- [{n.get('signal')}] {n.get('summary')}")
+    lines.append("")
+    lines.append("## open loops")
+    if not open_loops:
+        lines.append("- (clean board.)")
+    else:
+        for loop in open_loops:
+            age = loop.get("_age_days")
+            age_str = f" ({age}d old)" if age is not None else ""
+            lines.append(f"- #{loop.get('id')}{age_str} — {loop.get('subject')}")
+    lines.append("")
+    lines.append("## ground-truth feedback")
+    if feedback is None:
+        lines.append("- (no 👍/👎 reactions logged yet.)")
+    else:
+        lines.append(
+            f"- agree={feedback.get('agree', 0)}, "
+            f"disagree={feedback.get('disagree', 0)}"
+        )
+        examples = feedback.get("examples") or []
+        if examples:
+            lines.append("- recent divergences:")
+            for ex in examples[:3]:
+                lines.append(f"  - {ex}")
+
+    try:
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        logger.exception("morning_dispatch: write failed for %s", target)
+        return None
+    logger.info("morning_dispatch: wrote %s", target)
+    return target
+
+
+def _count_messages_between(start_iso: str, end_iso: str) -> int:
+    try:
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE ts >= ? AND ts < ?",
+                (start_iso, end_iso),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        logger.exception("morning_dispatch: msg count failed")
+        return 0
+
+
+def _top_lexicon(limit: int) -> list[dict]:
+    try:
+        return list(db.lexicon_top(limit=limit))
+    except Exception:
+        logger.exception("morning_dispatch: lexicon_top failed")
+        return []
+
+
+def _noticings_since(since_iso: str, limit: int) -> list[dict]:
+    """Most-recent noticings created since ``since_iso``, up to ``limit``."""
+    try:
+        with db._conn() as c:
+            rows = c.execute(
+                "SELECT signal, summary, created_at FROM noticings "
+                "WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
+                (since_iso, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.exception("morning_dispatch: noticings query failed")
+        return []
+
+
+def _open_loops_with_ages() -> list[dict]:
+    try:
+        loops = list(db.open_tasks())
+    except Exception:
+        logger.exception("morning_dispatch: open_tasks failed")
+        return []
+    now = datetime.now(UTC)
+    out: list[dict] = []
+    for loop in loops:
+        item = dict(loop)
+        created = item.get("created_at")
+        if created:
+            try:
+                ts = datetime.fromisoformat(str(created))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                item["_age_days"] = max(0, (now - ts).days)
+            except (ValueError, TypeError):
+                item["_age_days"] = None
+        else:
+            item["_age_days"] = None
+        out.append(item)
+    return out
+
+
+def _drift_vs_feedback(cfg) -> dict | None:
+    """Phase 8 / D-3 hook: compare the drift judge's recent scores against
+    user 👍/👎 reactions when the helper exists. Returns None when D-3 hasn't
+    landed yet."""
+    helper = getattr(db, "feedback_compare_to_drift", None)
+    if helper is None:
+        return None
+    try:
+        return helper(window_days=int(cfg.get("drift_telemetry.window_days", 7)))
+    except Exception:
+        logger.exception("morning_dispatch: feedback compare failed")
+        return None
 
 
 async def maybe_run_session_consolidation() -> None:

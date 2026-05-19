@@ -48,7 +48,13 @@ DISPATCH_EVENTS: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue(
 _OWNER_CHAT_ID: int | None = None
 
 WORK_DIR_ROOT = Path("/Users/alt/work_dir")
-DEFAULT_ALLOWED_TOOLS = "Read,Edit,Write,Bash,Glob,Grep"
+# Phase 8: default to read-only. If the model passes allowed_tools that
+# includes Edit/Write/Bash, the PreToolUse arg-gate (config:
+# approvals.defer_when_args_match) defers the call until the owner types
+# CONFIRM-SEND. After approval the resume invokes the sibling
+# `dispatch_claude_session_confirmed` which carries the requested allowlist
+# verbatim and skips the gate.
+DEFAULT_ALLOWED_TOOLS = "Read,Grep,Glob,WebFetch,WebSearch"
 DEFAULT_MAX_TURNS = 80
 DEFAULT_BUDGET_USD = 3.00
 
@@ -185,20 +191,9 @@ async def _run_session(task_id: str, repo_path: Path, task: str,
     })
 
 
-@tool(
-    "dispatch_claude_session",
-    "Spawn a background Claude Code session on the user's Mac Mini to do real "
-    "coding/research work in a specific repo. Returns immediately with a task_id; "
-    "the user gets progress updates and a final result via Telegram. Use for "
-    "anything that would take more than a minute: 'review the meria repo for bugs', "
-    "'add tests to module X', 'investigate why deploy is failing'. "
-    "repo_path must be absolute and under /Users/alt/work_dir/. "
-    "task should be a clear, scoped instruction (1-3 sentences). "
-    "allowed_tools is comma-separated (default 'Read,Edit,Write,Bash,Glob,Grep'). "
-    "max_turns caps how many agent turns the dispatched session can take.",
-    {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
-)
-async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:
+async def _do_dispatch(args: dict[str, Any]) -> dict[str, Any]:
+    """Shared dispatch body — used by both the public (gated) and confirmed
+    (post-approval) tool variants. Returns the MCP envelope directly."""
     repo_arg = (args.get("repo_path") or "").strip()
     task_text = (args.get("task") or "").strip()
     allowed_raw = (args.get("allowed_tools") or "").strip() or DEFAULT_ALLOWED_TOOLS
@@ -239,4 +234,44 @@ async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-ALL_TOOLS = [dispatch_claude_session]
+@tool(
+    "dispatch_claude_session",
+    "Spawn a background Claude Code session on the user's Mac Mini to investigate "
+    "or modify a specific repo. Returns immediately with a task_id; user gets "
+    "progress + final via Telegram. Default allowed_tools is read-only "
+    "(Read,Grep,Glob,WebFetch,WebSearch) — these dispatches auto-run. To allow "
+    "code mutation, pass allowed_tools that includes Edit / Write / Bash; that "
+    "form is owner-gated (CONFIRM-SEND required before the dispatch starts). "
+    "repo_path must be absolute and under /Users/alt/work_dir/. "
+    "task should be a clear, scoped instruction (1-3 sentences). "
+    "max_turns caps how many agent turns the dispatched session can take.",
+    {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
+)
+async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:
+    return await _do_dispatch(args)
+
+
+@tool(
+    "dispatch_claude_session_confirmed",
+    "POST-APPROVAL execution path for dispatch_claude_session — performs the "
+    "actual dispatch WITHOUT going through the approval gate. NOT in Hikari's "
+    "default allowed_tools; only injected per-turn by the defer-resume codepath "
+    "in tools/approvals._resume_after_defer. If you (the lead agent) see this "
+    "tool in your allowlist, you were invoked via the resume path; call it once "
+    "with the args from the system prompt and stop.",
+    {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
+)
+async def dispatch_claude_session_confirmed(args: dict[str, Any]) -> dict[str, Any]:
+    return await _do_dispatch(args)
+
+
+# Public tools — registered on the always-on `hikari_dispatch` MCP server.
+PUBLIC_TOOLS = [dispatch_claude_session]
+
+# Phase 8: confirmed-sibling for the dispatch arg-gate. Lives on a separate
+# `hikari_dispatch_confirmed` MCP server attached only during the resume turn
+# (see agents/runtime._dispatch_confirmed_server).
+CONFIRMED_TOOLS = [dispatch_claude_session_confirmed]
+
+# Backwards-compat alias.
+ALL_TOOLS = PUBLIC_TOOLS

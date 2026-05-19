@@ -23,7 +23,7 @@ from claude_agent_sdk import tool
 from obsidiantools.api import Vault
 from ruamel.yaml import YAML
 
-from tools import approvals as approval_tools
+from storage import db
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +241,8 @@ async def _do_wiki_append(args: dict[str, Any]) -> str:
     "Append content to a note in the user's Obsidian wiki. If section_heading is given, "
     "append under that H2 (creating it if absent). Frontmatter is preserved verbatim. "
     "Use [[wikilinks]] for cross-references. The note path is relative to the vault root. "
-    "This tool is gated by Tier-1 approval — the user must reply 'y' before the write "
-    "happens. Approval flows through the SDK's PreToolUse `defer` hook "
-    "(agents/hooks.py:defer_gated_tools); this function body normally never runs.",
+    "Phase 8: this tool runs without an approval prompt. The wiki is reversible "
+    "(iCloud version history) and every write is audit-logged.",
     {"path": str, "section_heading": str, "content": str},
 )
 async def wiki_append(args: dict[str, Any]) -> dict[str, Any]:
@@ -255,45 +254,21 @@ async def wiki_append(args: dict[str, Any]) -> dict[str, Any]:
     if not content:
         return _ok("wiki_append: content is empty.")
 
-    # Defense-in-depth: this body should never execute under Phase 6 because
-    # the PreToolUse defer hook intercepts wiki_append before the tool runs.
-    # If we land here, the hook was bypassed somehow — fall back to the legacy
-    # OOB approval path so the write still requires owner confirmation.
-    section_str = f" under '## {section}'" if section else ""
-    snippet = content if len(content) <= 120 else content[:117] + "..."
-    summary = (
-        f"wiki: append to `{path_arg}`{section_str}\n"
-        f"---\n{snippet}\n---\n({len(content)} chars)"
-    )
-    logger.warning(
-        "wiki_append body executed — defer hook should have intercepted. "
-        "falling back to legacy approval path."
-    )
-    return await approval_tools.request_approval(
-        chat_id=approval_tools.owner_chat_id(),
-        tool_name="wiki_append",
-        tier=1,
-        summary=summary,
-        args=args,
-        on_approve=_do_wiki_append,
-    )
-
-
-@tool(
-    "wiki_append_confirmed",
-    "POST-APPROVAL execution path for wiki_append. Performs the actual write WITHOUT "
-    "going through the approval gate. NOT in Hikari's default allowed_tools — only "
-    "injected per-turn by the defer-resume codepath in tools/approvals._resume_after_defer. "
-    "If you (the lead agent) are seeing this tool in your allowlist, you were invoked "
-    "via the resume path; call it once with the args from the system prompt and stop.",
-    {"path": str, "section_heading": str, "content": str},
-)
-async def wiki_append_confirmed(args: dict[str, Any]) -> dict[str, Any]:
-    """Phase 6: the unguarded execution path for wiki_append, invoked only
-    after the user has approved a deferred call. Wraps the existing private
-    ``_do_wiki_append`` helper which contains the actual write logic."""
     result_str = await _do_wiki_append(args)
-    return _ok(result_str, data={"path": args.get("path"), "approved": True})
+    # Audit every wiki append so the trail is intact even without an approval row.
+    try:
+        section_str = f" under '## {section}'" if section else ""
+        db.audit_append(
+            tool="mcp__hikari_wiki__wiki_append",
+            args_json_redacted=(
+                f"path={path_arg!r}{section_str} ({len(content)} chars)"
+            )[:500],
+            result_summary=result_str[:500],
+            approved_by="auto",
+        )
+    except Exception:
+        logger.exception("wiki_append: audit_append failed (non-fatal)")
+    return _ok(result_str, data={"path": path_arg})
 
 
 @tool(
@@ -347,14 +322,14 @@ async def wiki_backlinks(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # Public tools — registered on the always-on `hikari_wiki` MCP server. These
-# are the tools Sonnet can see on every turn (subject to allowlist).
+# are the tools Sonnet can see on every turn (subject to allowlist). Phase 8
+# dropped the `wiki_append_confirmed` sibling because `wiki_append` no longer
+# requires approval.
 PUBLIC_TOOLS = [wiki_search, wiki_read, wiki_append, wiki_backlinks]
 
-# Privileged tools — registered on a separate `hikari_wiki_confirmed` MCP
-# server that the runtime only attaches when a defer-resume is in flight.
-# This keeps `wiki_append_confirmed` OUT of Sonnet's tool manifest on normal
-# turns, narrowing the attack surface even before the allowlist filter runs.
-CONFIRMED_TOOLS = [wiki_append_confirmed]
+# Phase 8: no privileged wiki tools. CONFIRMED_TOOLS retained for back-compat
+# (empty list) so any importer using the symbol doesn't break.
+CONFIRMED_TOOLS: list = []
 
 # Backwards-compat alias — some imports may reference the flat list.
-ALL_TOOLS = PUBLIC_TOOLS + CONFIRMED_TOOLS
+ALL_TOOLS = PUBLIC_TOOLS

@@ -80,19 +80,25 @@ WIKI_AGENT = AgentDefinition(
 
 CODE_DISPATCH_AGENT = AgentDefinition(
     description=(
-        "Dispatches a long-running Claude Code session to work on a real coding/"
-        "research task in one of the user's repos under /Users/alt/work_dir/. "
-        "Use whenever the lead needs to: review a codebase, add tests, fix a bug, "
-        "investigate an issue, or run any task that smells longer than a minute."
+        "Dispatches a long-running Claude Code session to investigate or modify "
+        "a specific repo under /Users/alt/work_dir/. Read-only dispatches "
+        "auto-run; write dispatches (allowed_tools includes Edit / Write / Bash) "
+        "are owner-gated via CONFIRM-SEND."
     ),
     prompt=(
         "You are Hikari's code-dispatch specialist. The lead has identified a task "
-        "that needs a full Claude Code worker. Your job: parse the request, pick "
-        "the right repo_path (must be absolute, under /Users/alt/work_dir/), "
-        "write a tight 1-3 sentence task description, and call dispatch_claude_session. "
-        "Default allowed_tools is fine for most coding work. Set max_turns 50 for "
-        "small tasks, 100 for medium, 150 for big refactors. Return ONLY the task_id "
-        "and a one-line confirmation of what you dispatched. Don't restate the task."
+        "that needs a Claude Code worker. Parse the request, pick the right "
+        "repo_path (absolute, under /Users/alt/work_dir/), write a tight 1-3 "
+        "sentence task description, and call dispatch_claude_session.\n\n"
+        "Tool scope:\n"
+        "  - For investigation, review, or read-only research: leave allowed_tools "
+        "empty (defaults to Read,Grep,Glob,WebFetch,WebSearch) — auto-runs.\n"
+        "  - For code mutation (fix a bug, add tests, rewrite a module): pass "
+        "allowed_tools that includes Edit,Write,Bash. The owner will be asked to "
+        "type CONFIRM-SEND before the dispatch starts. Don't ask the user about "
+        "this yourself — call the tool; the gate handles confirmation.\n\n"
+        "max_turns 50 for small tasks, 100 for medium, 150 for big refactors. "
+        "Return ONLY the task_id and a one-line confirmation. Don't restate the task."
     ),
     model="haiku",
     tools=["mcp__hikari_dispatch__dispatch_claude_session"],
@@ -103,18 +109,21 @@ DRIVE_GMAIL_AGENT = AgentDefinition(
     description=(
         "Drive / Gmail / Calendar specialist. Use for reading email threads, "
         "searching Drive files, checking calendar, drafting emails, creating events. "
-        "Writes go through the approval gate (Tier-1 for drafts, Tier-2 for sends)."
+        "Phase 8: writes auto-run (no approval prompt). Only an actual outbound "
+        "gmail send tool would be approval-gated; none is currently exposed."
     ),
     prompt=(
-        "You are Hikari's Google Workspace specialist. For reads (search Drive, list "
-        "calendar events, read an email thread), call the relevant google_workspace "
-        "tool and return a concise excerpt + identifiers. For writes (gmail_create_draft, "
-        "gmail_send, calendar_create_event), call the tool and let the approval gate "
-        "handle confirmation — don't ask the user; just call. Return a 1-2 sentence "
-        "summary of what you did. Don't reformat content for voice — the lead rewrites."
+        "You are Hikari's Google Workspace specialist. Call tools directly; do not "
+        "ask the user to confirm — the runtime gates the small set of irreversible "
+        "operations (currently: none in the exposed Gmail/Drive/Calendar tool set; "
+        "this may grow). For reads, return a concise excerpt + identifiers. For "
+        "writes (gmail_create_draft, calendar_create_event, drive_create_file): "
+        "execute and return a 1-2 sentence summary of what you did. Don't reformat "
+        "content for voice — the lead rewrites."
     ),
     model="haiku",
-    tools=["mcp__google_workspace__*"],
+    tools=["mcp__google_workspace__*", "mcp__claude_ai_Gmail__*",
+           "mcp__claude_ai_Google_Calendar__*", "mcp__claude_ai_Google_Drive__*"],
 )
 
 
@@ -130,7 +139,8 @@ NOTION_AGENT = AgentDefinition(
         "number of shared databases. For queries: introspect schema first via "
         "notion-fetch (cached by the runtime), then notion-query-data-sources with "
         "explicit property names. For writes (create-pages, update-page): call the "
-        "tool; the approval gate confirms. Return concrete data + page IDs, not prose."
+        "tool — these auto-run; Notion's own undo covers mistakes. Return concrete "
+        "data + page IDs, not prose."
     ),
     model="haiku",
     tools=["mcp__notion__*"],

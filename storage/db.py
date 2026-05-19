@@ -227,6 +227,20 @@ CREATE TABLE IF NOT EXISTS persona_drift_scores (
     sampled_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS drift_sampled_at ON persona_drift_scores(sampled_at DESC);
+
+-- Phase 8: 👍/👎 reactions from the user on Hikari's outbound messages.
+-- Keyed by the Telegram outbound message_id (stored on messages.telegram_message_id
+-- by the bridge after a successful reply_text). Used by reflection to compare
+-- the drift judge's scores against user feedback — when they diverge, the rubric
+-- needs tuning, not the bot.
+CREATE TABLE IF NOT EXISTS user_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_message_id INTEGER NOT NULL,
+    rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_feedback_msg ON user_feedback(telegram_message_id);
+CREATE INDEX IF NOT EXISTS user_feedback_created ON user_feedback(created_at DESC);
 """
 
 
@@ -268,6 +282,24 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN last_mention_at TEXT")
     _migrate_approvals_defer_columns(conn)
     _migrate_user_profile_to_peer_representation(conn)
+    _migrate_messages_telegram_message_id(conn)
+
+
+def _migrate_messages_telegram_message_id(conn: sqlite3.Connection) -> None:
+    """Phase 8: add `telegram_message_id` to `messages` so we can join user
+    feedback (👍/👎 reactions on Hikari's outbound) back to the assistant row."""
+    existing = {row["name"] for row in conn.execute(
+        "PRAGMA table_info(messages)"
+    ).fetchall()}
+    if "telegram_message_id" not in existing:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN telegram_message_id INTEGER"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_telegram_id "
+            "ON messages(telegram_message_id) "
+            "WHERE telegram_message_id IS NOT NULL"
+        )
 
 
 def _migrate_user_profile_to_peer_representation(conn: sqlite3.Connection) -> None:
@@ -1017,6 +1049,118 @@ def prune_drift_older_than_days(days: int) -> int:
             "DELETE FROM persona_drift_scores WHERE sampled_at < ?", (cutoff,)
         )
     return cur.rowcount or 0
+
+
+# ---------- user_feedback (Phase 8: 👍/👎 ground-truth) ----------
+
+def update_last_assistant_telegram_msg_id(telegram_message_id: int) -> int | None:
+    """Stamp the most-recent ``role='assistant'`` message row with its actual
+    Telegram outbound ``message_id`` so we can later join 👍/👎 reactions
+    back to the reply text. Returns the messages.id we updated (or None)."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id FROM messages WHERE role = 'assistant' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        c.execute(
+            "UPDATE messages SET telegram_message_id = ? WHERE id = ?",
+            (int(telegram_message_id), int(row["id"])),
+        )
+        return int(row["id"])
+
+
+def feedback_record(telegram_message_id: int, rating: int) -> int:
+    """Insert a 👍 (+1) or 👎 (-1) reaction. Returns the new row id."""
+    if rating not in (-1, 1):
+        raise ValueError(f"rating must be -1 or 1, got {rating!r}")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO user_feedback (telegram_message_id, rating, created_at) "
+            "VALUES (?, ?, ?)",
+            (int(telegram_message_id), int(rating), _now()),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def feedback_recent(window_days: int = 7) -> list[dict]:
+    """Reactions from the last ``window_days``, joined to the assistant message
+    row for context."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT uf.rating, uf.created_at, m.content "
+            "FROM user_feedback uf "
+            "LEFT JOIN messages m ON m.telegram_message_id = uf.telegram_message_id "
+            "AND m.role = 'assistant' "
+            "WHERE uf.created_at >= ? "
+            "ORDER BY uf.created_at DESC",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def feedback_compare_to_drift(window_days: int = 7) -> dict:
+    """Compare 👍/👎 against the drift judge's scores for the same messages.
+
+    Returns ``{agree, disagree, examples}`` where:
+      - ``agree`` counts cases where the judge said hikari (>=0.7) AND user
+        gave +1, OR judge said drifting (<0.5) AND user gave -1.
+      - ``disagree`` counts the inverse: judge said drifting + user gave +1,
+        or judge said hikari + user gave -1.
+      - ``examples`` is a short list of disagreement snippets so the user can
+        eyeball whether the rubric needs tuning.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    agree = 0
+    disagree = 0
+    examples: list[str] = []
+    # Review-H5 fix: a message may be sampled more than once by the drift
+    # judge (no UNIQUE constraint on persona_drift_scores.message_id), and a
+    # naive LEFT JOIN would count each drift sample as a separate vote for the
+    # SAME feedback row, inflating agree/disagree counts. Pin to the MOST
+    # RECENT drift sample per message via a correlated subquery.
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT uf.rating, m.id AS msg_id, m.content AS reply_text, "
+            "  ("
+            "    SELECT d.score FROM persona_drift_scores d "
+            "    WHERE d.message_id = m.id "
+            "    ORDER BY d.sampled_at DESC LIMIT 1"
+            "  ) AS drift_score, "
+            "  ("
+            "    SELECT d.class_label FROM persona_drift_scores d "
+            "    WHERE d.message_id = m.id "
+            "    ORDER BY d.sampled_at DESC LIMIT 1"
+            "  ) AS drift_class "
+            "FROM user_feedback uf "
+            "JOIN messages m ON m.telegram_message_id = uf.telegram_message_id "
+            "  AND m.role = 'assistant' "
+            "WHERE uf.created_at >= ? "
+            "ORDER BY uf.created_at DESC",
+            (cutoff,),
+        ).fetchall()
+    for r in rows:
+        score = r["drift_score"]
+        if score is None:
+            continue
+        rating = int(r["rating"])
+        judge_hikari = float(score) >= 0.7
+        judge_drift = float(score) < 0.5
+        # Concordant: judge says hikari & user 👍, or judge says drifting & user 👎.
+        if (judge_hikari and rating == 1) or (judge_drift and rating == -1):
+            agree += 1
+        elif (judge_hikari and rating == -1) or (judge_drift and rating == 1):
+            disagree += 1
+            snippet = (r["reply_text"] or "")[:80].replace("\n", " ")
+            examples.append(
+                f"judge={float(score):.2f} ({r['drift_class']}), user={rating:+d}: "
+                f"{snippet!r}"
+            )
+    return {"agree": agree, "disagree": disagree, "examples": examples}
 
 
 # ---------- runtime_state (misc kv) ----------

@@ -33,6 +33,8 @@ import random
 import re
 from dataclasses import dataclass
 
+from storage import db
+
 from . import config as cfg
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,152 @@ class FilterResult:
     sycophancy_violations: list[str]
     needs_llm_rewrite: bool        # caller should re-prompt the LLM
     rewrite_instruction: str | None
+
+
+async def bounded_rewrite(
+    text: str,
+    instruction: str,
+    mood: str | None = None,
+) -> str | None:
+    """Phase 8 — single-shot LLM rewrite for a filter-flagged reply.
+
+    Spins up a bare ``ClaudeSDKClient`` (Haiku, max_turns=1, no tools, no
+    session resume, no memory write). Returns the rewritten text on success
+    or ``None`` on any failure — callers handle the deterministic fallback.
+
+    The model is told what went wrong via ``instruction`` and asked to
+    produce a fresh in-voice reply. Mood is folded into the prompt when
+    provided so the rewrite respects the current emotional setting.
+    """
+    if not text or not instruction:
+        return None
+
+    template = cfg.get("post_filter.rewrite_prompt_template") or (
+        "[the previous outbound reply broke Hikari's voice. {instruction}\n\n"
+        "ORIGINAL REPLY:\n{text}\n\n"
+        "Rewrite ONLY the reply. Same intent, in voice: lowercase, blunt, "
+        "reluctant before helpful, denial layer if any kindness leaks. NO "
+        "exclamation marks for enthusiasm. NO 'as an AI', 'I'd be happy to', "
+        "'great question', 'I cannot'. Output the rewritten reply only — no "
+        "preamble, no quotes, no markdown.{mood_clause}]"
+    )
+    mood_clause = (
+        f"\nCurrent mood: {mood}. Match it." if mood else ""
+    )
+    try:
+        prompt = template.format(
+            text=text.replace("{", "{{").replace("}", "}}"),
+            instruction=instruction.replace("{", "{{").replace("}", "}}"),
+            mood_clause=mood_clause,
+        )
+    except (KeyError, IndexError, ValueError):
+        logger.exception("bounded_rewrite: prompt template format failed")
+        return None
+
+    model = str(cfg.get("post_filter.rewrite_model", "claude-haiku-4-5"))
+    max_budget = float(cfg.get("post_filter.rewrite_max_budget_usd", 0.01))
+
+    try:
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ClaudeSDKClient,
+            TextBlock,
+        )
+    except Exception:
+        logger.exception("bounded_rewrite: SDK import failed")
+        return None
+
+    options = ClaudeAgentOptions(
+        model=model,
+        max_turns=1,
+        max_budget_usd=max_budget,
+        allowed_tools=[],
+        permission_mode="acceptEdits",
+    )
+
+    parts: list[str] = []
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            parts.append(block.text)
+    except Exception:
+        logger.exception("bounded_rewrite: SDK call failed")
+        return None
+
+    out = "".join(parts).strip()
+    return out or None
+
+
+def fallback_short() -> str:
+    """Deterministic in-voice fallback when rewrite still drifts or fails."""
+    pool = cfg.get("refusal_filter.short_replacements") or ["..."]
+    return random.choice(pool)
+
+
+async def rewrite_or_fallback(
+    original: str,
+    filtered: "FilterResult",
+    mood: str | None,
+    where: str = "bridge",
+) -> str:
+    """High-level rewrite handler used by every outbound send path.
+
+    Called when ``filtered.needs_llm_rewrite`` is True. Tries a single
+    bounded LLM rewrite. If the rewrite still trips the filter (or the SDK
+    fails / disabled by config), returns a deterministic short in-voice
+    fallback so we never ship the original drift.
+
+    ``where`` is a tag for logging only ("bridge" / "listener").
+    """
+    strategy = str(cfg.get("post_filter.rewrite_strategy", "bounded_retry"))
+    instruction = filtered.rewrite_instruction or "rewrite in Hikari's voice."
+
+    if strategy != "bounded_retry":
+        # Detection-only mode (back-compat): log + ship original.
+        logger.info(
+            "post_filter[%s]: detection_only mode; shipping original despite "
+            "needs_llm_rewrite (hits=%s, sycophancy=%s)",
+            where, filtered.refusal_hits[:3], filtered.sycophancy_triggered,
+        )
+        db.append_thought(
+            f"post_filter[{where}]: detection-only — drift shipped. "
+            f"hits={filtered.refusal_hits[:3]} "
+            f"sycophancy={filtered.sycophancy_triggered}"
+        )
+        return original
+
+    rewritten = await bounded_rewrite(original, instruction, mood)
+    if not rewritten:
+        fb = fallback_short()
+        db.append_thought(
+            f"post_filter[{where}]: rewrite failed (sdk error or empty); "
+            f"fell back to {fb!r}. "
+            f"hits={filtered.refusal_hits[:3]} sycophancy={filtered.sycophancy_triggered}"
+        )
+        return fb
+
+    second = filter_outgoing(rewritten)
+    if second.refusal_short_replaced or second.needs_llm_rewrite:
+        fb = fallback_short()
+        db.append_thought(
+            f"post_filter[{where}]: rewrite still drifted; fell back to {fb!r}. "
+            f"first_hits={filtered.refusal_hits[:3]} "
+            f"second_hits={second.refusal_hits[:3]}"
+        )
+        return fb
+
+    db.append_thought(
+        f"post_filter[{where}]: rewrote drifting reply. "
+        f"hits={filtered.refusal_hits[:3]} "
+        f"sycophancy={filtered.sycophancy_triggered} "
+        f"len_before={len(original)} len_after={len(rewritten)}"
+    )
+    return rewritten
 
 
 def filter_outgoing(text: str) -> FilterResult:

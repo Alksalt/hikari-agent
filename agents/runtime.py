@@ -28,12 +28,14 @@ from claude_agent_sdk import (
 )
 
 from storage import db
+from tools import codex as codex_tools
 from tools import dispatch as dispatch_tools
 from tools import memory as memory_tools
 from tools import photos as photo_tools
 from tools import wiki as wiki_tools
 
 from . import handoff as handoff_mod
+from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
 from .subagents import ALL_AGENTS
 
@@ -77,34 +79,43 @@ def _photo_server():
 
 @cache
 def _wiki_server():
-    # Only the PUBLIC subset (no wiki_append_confirmed). The privileged
-    # post-approval tool is on a separate server attached per-resume-turn so
-    # its schema isn't even visible to Sonnet on a normal turn.
+    # Phase 8: wiki_append no longer has an approval gate, so there are no
+    # privileged sibling tools to hide behind a conditional server. All public
+    # wiki tools live here.
     return create_sdk_mcp_server(name="hikari_wiki", tools=wiki_tools.PUBLIC_TOOLS)
 
 
 @cache
-def _wiki_confirmed_server():
-    """The post-approval execution tools (e.g. ``wiki_append_confirmed``).
-    Only attached to ``mcp_servers`` when a defer-resume is in flight."""
+def _dispatch_server():
+    return create_sdk_mcp_server(name="hikari_dispatch", tools=dispatch_tools.PUBLIC_TOOLS)
+
+
+@cache
+def _codex_server():
+    """Phase 8: small MCP server that exposes the codex/ review reports to
+    Hikari (list + read). Wrapped as untrusted on read."""
+    return create_sdk_mcp_server(name="hikari_codex", tools=codex_tools.ALL_TOOLS)
+
+
+@cache
+def _dispatch_confirmed_server():
+    """The post-approval execution tool for the dispatch arg-gate
+    (`dispatch_claude_session_confirmed`). Attached to ``mcp_servers`` only
+    during a defer-resume turn so its schema isn't in the manifest otherwise."""
     return create_sdk_mcp_server(
-        name="hikari_wiki_confirmed", tools=wiki_tools.CONFIRMED_TOOLS,
+        name="hikari_dispatch_confirmed", tools=dispatch_tools.CONFIRMED_TOOLS,
     )
 
 
 def _confirmed_tool_names() -> set[str]:
-    """Set of fully-qualified tool names that live on the confirmed server.
+    """Set of fully-qualified tool names that live on a confirmed server.
 
-    Used by ``_build_options`` to decide whether to attach the confirmed
-    server based on ``extra_allowed_tools``.
+    Used by ``_build_options`` to decide whether to attach a confirmed
+    server based on ``extra_allowed_tools``. Phase 8: only the dispatch
+    arg-gate uses this mechanism.
     """
-    return {f"mcp__hikari_wiki_confirmed__{t.name}"
-            for t in wiki_tools.CONFIRMED_TOOLS}
-
-
-@cache
-def _dispatch_server():
-    return create_sdk_mcp_server(name="hikari_dispatch", tools=dispatch_tools.ALL_TOOLS)
+    return {f"mcp__hikari_dispatch_confirmed__{t.name}"
+            for t in dispatch_tools.CONFIRMED_TOOLS}
 
 
 _BASE_ALLOWED_TOOLS = [
@@ -121,6 +132,8 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_wiki__wiki_append",
     "mcp__hikari_wiki__wiki_backlinks",
     "mcp__hikari_dispatch__dispatch_claude_session",
+    "mcp__hikari_codex__list_codex_reports",
+    "mcp__hikari_codex__read_codex_report",
     "Read", "Glob", "Grep",
 ]
 
@@ -137,13 +150,15 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         "hikari_photo": _photo_server(),
         "hikari_wiki": _wiki_server(),
         "hikari_dispatch": _dispatch_server(),
+        "hikari_codex": _codex_server(),
     }
-    # Attach the privileged confirmed-tools server only when the resume path
-    # explicitly opts in via extra_allowed_tools. On a normal turn the schema
-    # for wiki_append_confirmed is not in the MCP manifest at all.
+    # Phase 8: attach the privileged dispatch-confirmed server only when the
+    # resume path explicitly opts in via extra_allowed_tools. On a normal turn
+    # the schema for dispatch_claude_session_confirmed is not in the MCP
+    # manifest at all.
     needed = _confirmed_tool_names()
     if extra_allowed_tools and any(t in needed for t in extra_allowed_tools):
-        mcp_servers["hikari_wiki_confirmed"] = _wiki_confirmed_server()
+        mcp_servers["hikari_dispatch_confirmed"] = _dispatch_confirmed_server()
     return ClaudeAgentOptions(
         model=MODEL_PRIMARY,
         fallback_model=MODEL_FALLBACK,
@@ -157,10 +172,14 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         hooks={
             "UserPromptSubmit": [HookMatcher(hooks=[inject_memory])],
             "PostToolUseFailure": [HookMatcher(hooks=[log_tool_failure])],
-            # Phase 6: intercept gated tools (e.g. wiki_append) with native
-            # SDK defer, replacing the bespoke OOB callback pattern. See
-            # agents/hooks.py:defer_gated_tools.
+            # Phase 6: intercept gated tools (e.g. dispatch with write) with
+            # native SDK defer, replacing the bespoke OOB callback pattern.
+            # See agents/hooks.py:defer_gated_tools.
             "PreToolUse": [HookMatcher(hooks=[defer_gated_tools])],
+            # Phase 8: wrap untrusted external tool outputs (Gmail / Calendar
+            # / Drive / Notion / Web*) via wrap_untrusted before the model
+            # sees them. Generic boundary, one hook, config-driven patterns.
+            "PostToolUse": [HookMatcher(hooks=[make_post_tool_use_hook()])],
         },
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
@@ -182,8 +201,8 @@ async def _run_query(prompt: str, *, max_turns: int = 15,
 
     ``extra_allowed_tools`` is used by the defer-resume codepath in
     ``tools/approvals._resume_after_defer`` to inject post-approval sibling
-    tools (e.g. ``wiki_append_confirmed``) for one turn only — the next
-    normal turn rebuilds options with the base allowlist.
+    tools (e.g. ``dispatch_claude_session_confirmed``) for one turn only —
+    the next normal turn rebuilds options with the base allowlist.
     """
     async with _RUN_LOCK:
         session_id = db.get_session_id()

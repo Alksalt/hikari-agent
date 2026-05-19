@@ -1,17 +1,15 @@
-"""Out-of-band tiered approval framework.
+"""Out-of-band approval framework — single-tier (Phase 8).
 
 Pattern: gated tools call `request_approval(...)` which inserts an approval row,
-sends an in-voice prompt to the user via Telegram, registers an on-approve callback,
-and **returns immediately** to the LLM with a "queued for approval" message. The
-agent can move on or react. When the user replies (`y` for Tier-1, `CONFIRM-SEND`
-for Tier-2), the bridge calls `resolve_pending_approval(...)` which runs the
-captured callback and writes an audit row.
+sends a Telegram prompt, registers an on-approve callback, and returns
+immediately with a "queued for approval" message. When the user replies
+`CONFIRM-SEND`, the bridge calls `resolve_pending_approval(...)` which runs
+the captured callback and writes an audit row.
 
-Tiers:
-  - Tier 1: 'y' / 'yes' to confirm. For: wiki_append, notion_create_*, draft email,
-    any reversible write.
-  - Tier 2: typed phrase 'CONFIRM-SEND'. For: gmail_send, calendar_create_event
-    with attendees, git push, irreversible operations.
+Phase 8 collapsed the prior Tier-1 (`y/yes/ok/go`) path. Per user directive
+"delete as much approval as possible", the gate is now reserved for
+irreversible/outbound operations only — wiki/Notion/draft writes auto-run.
+Everything that defers requires the explicit phrase `CONFIRM-SEND`.
 """
 
 from __future__ import annotations
@@ -64,13 +62,14 @@ def _timeout_sec() -> int:
     return int(cfg.get("approvals.timeout_sec", 60))
 
 
-def _tier_1_hint() -> str:
-    return f"reply `y` to confirm, anything else to skip. {_timeout_sec()}s."
-
-
-def _tier_2_hint() -> str:
+def _confirm_hint() -> str:
+    """Phase 8: single hint format — typed-phrase confirmation only."""
     phrase = cfg.get("approvals.tier_2_phrase", "CONFIRM-SEND")
     return f"type {phrase} exactly to send. {_timeout_sec()}s."
+
+
+# Backwards-compat alias for any legacy caller.
+_tier_2_hint = _confirm_hint
 
 
 def _ok(text: str, data: Any = None) -> dict[str, Any]:
@@ -97,16 +96,13 @@ async def _safe_send(chat_id: int, text: str) -> None:
         logger.exception("approval send_message failed")
 
 
-async def send_defer_prompt(chat_id: int, tier: int, summary: str) -> None:
+async def send_defer_prompt(chat_id: int, tier: int, summary: str) -> None:  # noqa: ARG001
     """Compose + send the user-facing approval prompt for a defer event.
 
-    Called from the PreToolUse defer hook in ``agents/hooks.py``. Mirrors
-    the prompt style of the legacy ``request_approval`` path so users see a
-    consistent experience whether a tool was deferred via SDK or via the
-    old in-process callback pattern.
+    Phase 8: tier is ignored (kept for callsite compatibility); the hint is
+    always the typed-phrase form. Tier-1 (`y`) confirmation no longer exists.
     """
-    hint = _tier_2_hint() if tier == 2 else _tier_1_hint()
-    prompt = f"⏸️  {summary}\n\n{hint}"
+    prompt = f"⏸️  {summary}\n\n{_confirm_hint()}"
     await _safe_send(chat_id, prompt)
 
 
@@ -114,32 +110,33 @@ async def request_approval(
     *,
     chat_id: int,
     tool_name: str,
-    tier: int,
+    tier: int = 2,  # noqa: ARG002 — accepted for backwards compatibility, ignored
     summary: str,
     args: dict[str, Any],
     on_approve: Callable[[dict[str, Any]], Awaitable[Any]],
 ) -> dict[str, Any]:
-    """Queue an approval request. Returns a result dict for the calling tool."""
-    if tier not in (1, 2):
-        raise ValueError(f"tier must be 1 or 2, got {tier}")
+    """Queue an approval request. Returns a result dict for the calling tool.
+
+    Phase 8: ``tier`` is accepted but ignored — every approval uses
+    CONFIRM-SEND. The parameter is preserved so legacy callers don't break.
+    """
     if db.approval_pending_for(chat_id):
         return _ok(
             "approval queue is busy — there's already one waiting. "
             "ask the user to resolve that first, then retry."
         )
 
-    aid = db.approval_create(chat_id, tool_name, tier, summary, args)
-    hint = _tier_2_hint() if tier == 2 else _tier_1_hint()
-    prompt = f"⏸️  {summary}\n\n{hint}"
+    aid = db.approval_create(chat_id, tool_name, 2, summary, args)
+    prompt = f"⏸️  {summary}\n\n{_confirm_hint()}"
     await _safe_send(chat_id, prompt)
 
     PENDING_CALLBACKS[aid] = (asyncio.Event(), on_approve, args)
     asyncio.create_task(_timeout_watcher(aid, chat_id))
 
     return _ok(
-        f"approval queued (id {aid}, tier {tier}). user has {_timeout_sec()}s. "
-        f"don't repeat the summary back to them — they just saw it. "
-        f"acknowledge briefly in voice if you want, then move on."
+        f"approval queued (id {aid}). user has {_timeout_sec()}s to type "
+        f"CONFIRM-SEND. don't repeat the summary back to them — they just "
+        f"saw it. acknowledge briefly in voice if you want, then move on."
     )
 
 
@@ -168,27 +165,18 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     if not pending:
         return False
     aid = int(pending["id"])
-    tier = int(pending["tier"])
     text_clean = text.strip()
 
-    # Coerce to str defensively — YAML can parse bare yes/no as bool.
-    tier_1_phrases = [
-        str(p).lower() for p in cfg.get("approvals.tier_1_phrases", []) or []
-    ]
+    # Phase 8: single-tier model. Confirmation is the explicit phrase only.
+    # Reject phrases stay; everything else falls through to normal chat.
     reject_phrases = [
         str(p).lower() for p in cfg.get("approvals.reject_phrases", []) or []
     ]
-    tier_2_phrase = str(cfg.get("approvals.tier_2_phrase", "CONFIRM-SEND"))
+    confirm_phrase = str(cfg.get("approvals.tier_2_phrase", "CONFIRM-SEND"))
     lower = text_clean.lower()
 
-    if tier == 1:
-        approved = lower in tier_1_phrases
-        rejected = lower in reject_phrases
-    elif tier == 2:
-        approved = text_clean == tier_2_phrase
-        rejected = lower in reject_phrases
-    else:
-        return False
+    approved = text_clean == confirm_phrase
+    rejected = lower in reject_phrases
 
     if approved:
         # Route by row shape — defer rows have a deferred_tool_use_id; legacy
@@ -249,14 +237,14 @@ async def _run_approval(aid: int, pending: dict[str, Any]) -> bool:
 
 
 async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
-    """Phase 6: resume a deferred SDK tool call after user approval.
+    """Phase 6/8: resume a deferred SDK tool call after user approval.
 
     The PreToolUse hook halted the SDK with ``permissionDecision="defer"``;
     the SDK exited and the original ``_run_query`` returned. We resume by
     starting a *fresh* ``_run_query`` (same ``session_id``) with a synthetic
     system-prompt that tells Sonnet to call the post-approval sibling tool
-    (e.g. ``wiki_append_confirmed``) with the captured args. The sibling tool
-    is added to ``allowed_tools`` for just this turn via
+    (e.g. ``dispatch_claude_session_confirmed``) with the captured args. The
+    sibling tool is added to ``allowed_tools`` for just this turn via
     ``extra_allowed_tools``.
 
     The original ``deferred_tool_use_id`` is recorded in the audit log so the
@@ -272,7 +260,7 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
         tool_input = {}
 
     # Look up the post-approval sibling tool from config. Note: the runtime
-    # attaches the `hikari_wiki_confirmed` MCP server only when the resume
+    # attaches the matching `*_confirmed` MCP server only when the resume
     # codepath passes the matching tool name via `extra_allowed_tools`, so the
     # name we read here must match the server-namespaced form.
     confirmed_map = cfg.get("approvals.defer_confirmed_tools") or {}

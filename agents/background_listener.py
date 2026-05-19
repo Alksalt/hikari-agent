@@ -20,6 +20,7 @@ from storage import db
 from tools.dispatch import DISPATCH_EVENTS
 
 from . import config as cfg
+from . import post_filter
 from .post_filter import filter_outgoing
 
 if TYPE_CHECKING:
@@ -148,7 +149,11 @@ async def _handle_event(bot: Bot, task_id: str, event_type: str,
 
 async def _safe_send(bot: Bot, chat_id: int, text: str) -> None:
     """Run the outgoing filter then send. Same filter applied to interactive
-    replies, so listener messages can't leak safety-voice patter either."""
+    replies, so listener messages can't leak safety-voice patter either.
+
+    Phase 8: when the filter flags a rewrite-worthy hit, attempt one bounded
+    Haiku rewrite before falling back to a deterministic short reply.
+    """
     try:
         filtered = filter_outgoing(text)
         to_send = filtered.text
@@ -156,6 +161,10 @@ async def _safe_send(bot: Bot, chat_id: int, text: str) -> None:
             db.append_thought(
                 "listener: short-replaced safety-voice in dispatch ping. "
                 f"hits={filtered.refusal_hits[:3]}"
+            )
+        elif filtered.needs_llm_rewrite:
+            to_send = await post_filter.rewrite_or_fallback(
+                text, filtered, mood=None, where="listener",
             )
         await bot.send_message(chat_id=chat_id, text=to_send)
     except Exception:  # noqa: BLE001

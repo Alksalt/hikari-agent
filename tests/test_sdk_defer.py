@@ -1,5 +1,10 @@
-"""Phase 6 SDK-defer migration tests: PreToolUse defer hook, deferred-row
-persistence + recovery, resume-via-fresh-_run_query, concurrency lock."""
+"""Phase 6/8 SDK-defer migration tests: PreToolUse defer hook, deferred-row
+persistence + recovery, resume-via-fresh-_run_query, concurrency lock.
+
+Phase 8 reshaped the approval matrix: ``wiki_append`` is no longer gated, and
+``dispatch_claude_session`` is conditionally gated based on its ``allowed_tools``
+arg. These tests use the dispatch arg-gate as the canonical defer scenario.
+"""
 
 from __future__ import annotations
 
@@ -42,28 +47,31 @@ def test_approvals_table_has_defer_columns():
 def test_approval_create_deferred_round_trip():
     aid = db.approval_create_deferred(
         chat_id=12345,
-        tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1,
-        summary="wiki: append something",
-        args={"path": "p.md", "content": "hi"},
+        tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2,
+        summary="dispatch: edit repo",
+        args={"repo_path": "/Users/alt/work_dir/x", "task": "fix bug",
+              "allowed_tools": "Read,Edit,Bash"},
         deferred_tool_use_id="tu_test_001",
-        deferred_tool_input={"path": "p.md", "content": "hi"},
+        deferred_tool_input={"repo_path": "/Users/alt/work_dir/x",
+                             "task": "fix bug",
+                             "allowed_tools": "Read,Edit,Bash"},
     )
     assert aid > 0
     row = db.approval_pending_for(12345)
     assert row is not None
     assert row["deferred_tool_use_id"] == "tu_test_001"
-    assert row["deferred_tool_name"] == "mcp__hikari_wiki__wiki_append"
-    assert json.loads(row["deferred_tool_input_json"])["content"] == "hi"
+    assert row["deferred_tool_name"] == "mcp__hikari_dispatch__dispatch_claude_session"
+    assert json.loads(row["deferred_tool_input_json"])["allowed_tools"] == "Read,Edit,Bash"
 
 
 def test_approvals_pending_deferred_returns_only_defer_rows():
     """approvals_pending_deferred filters out legacy (no deferred_tool_use_id) rows."""
     # A legacy row (no deferred fields).
-    db.approval_create(12345, "legacy_tool", 1, "...", {"x": 1})
+    db.approval_create(12345, "legacy_tool", 2, "...", {"x": 1})
     # A defer row.
     db.approval_create_deferred(
-        chat_id=12345, tool_name="t", tier=1, summary="s",
+        chat_id=12345, tool_name="t", tier=2, summary="s",
         args={}, deferred_tool_use_id="tu_a", deferred_tool_input={},
     )
     deferred = db.approvals_pending_deferred()
@@ -87,9 +95,11 @@ async def test_defer_hook_returns_defer_for_gated_tool(monkeypatch):
     monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send)
 
     out = await hooks.defer_gated_tools(
-        {"tool_name": "mcp__hikari_wiki__wiki_append",
+        {"tool_name": "mcp__hikari_dispatch__dispatch_claude_session",
          "tool_use_id": "tu_abc",
-         "tool_input": {"path": "x.md", "content": "yo"}},
+         "tool_input": {"repo_path": "/Users/alt/work_dir/x",
+                        "task": "fix bug",
+                        "allowed_tools": "Read,Edit,Bash"}},
         None, None,
     )
     assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
@@ -145,21 +155,27 @@ async def test_resume_after_defer_invokes_run_query_with_extra_tool(monkeypatch)
 
     aid = db.approval_create_deferred(
         chat_id=12345,
-        tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1,
-        summary="wiki: append cabbage",
-        args={"path": "personal.md", "content": "cold rice"},
+        tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2,
+        summary="dispatch: edit cabbage repo",
+        args={"repo_path": "/Users/alt/work_dir/cabbage",
+              "task": "ripen the cabbage",
+              "allowed_tools": "Read,Edit,Bash"},
         deferred_tool_use_id="tu_xyz",
-        deferred_tool_input={"path": "personal.md", "content": "cold rice"},
+        deferred_tool_input={"repo_path": "/Users/alt/work_dir/cabbage",
+                             "task": "ripen the cabbage",
+                             "allowed_tools": "Read,Edit,Bash"},
     )
     pending = db.approval_pending_for(12345)
     consumed = await approval_tools._resume_after_defer(aid, pending)
     assert consumed is True
     # Resume called the LLM with the sibling tool in allowlist.
-    assert captured["extra_allowed_tools"] == ["mcp__hikari_wiki_confirmed__wiki_append_confirmed"]
+    assert captured["extra_allowed_tools"] == [
+        "mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"
+    ]
     # The synthetic prompt references the args.
-    assert "cold rice" in captured["prompt"]
-    assert "wiki_append_confirmed" in captured["prompt"]
+    assert "ripen the cabbage" in captured["prompt"]
+    assert "dispatch_claude_session_confirmed" in captured["prompt"]
     # Reply was sent.
     assert any("done" in t for _, t in sent)
 
@@ -195,8 +211,8 @@ async def test_resume_after_defer_aborts_without_confirmed_mapping(monkeypatch, 
     monkeypatch.setattr(runtime_mod, "_run_query", fake_run_query)
 
     aid = db.approval_create_deferred(
-        chat_id=12345, tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1, summary="...",
+        chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2, summary="...",
         args={}, deferred_tool_use_id="tu_oops", deferred_tool_input={},
     )
     pending = db.approval_pending_for(12345)
@@ -232,11 +248,16 @@ async def test_resolve_routes_defer_row_to_resume(monkeypatch):
     monkeypatch.setattr(approval_tools, "_run_approval", fake_run_approval)
 
     db.approval_create_deferred(
-        chat_id=12345, tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1, summary="...",
+        chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2, summary="...",
         args={}, deferred_tool_use_id="tu_routed", deferred_tool_input={},
     )
-    handled = await approval_tools.resolve_pending_approval(12345, "y")
+    # Phase 8: only CONFIRM-SEND triggers; a stray "y" should NOT consume.
+    handled_y = await approval_tools.resolve_pending_approval(12345, "y")
+    assert handled_y is False
+    assert routed["resume"] == 0
+    # The explicit phrase routes through to resume.
+    handled = await approval_tools.resolve_pending_approval(12345, "CONFIRM-SEND")
     assert handled is True
     assert routed["resume"] == 1
     assert routed["legacy"] == 0
@@ -299,15 +320,18 @@ async def test_resume_handles_braces_in_tool_input(monkeypatch):
 
     aid = db.approval_create_deferred(
         chat_id=12345,
-        tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1,
+        tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2,
         summary="...",
         # The content literally contains JSON braces that would break str.format
         # if not escaped.
-        args={"path": "p.md", "content": '{"key": "value", "list": [1,2]}'},
+        args={"repo_path": "/Users/alt/work_dir/x",
+              "task": '{"key": "value", "list": [1,2]}',
+              "allowed_tools": "Read,Edit"},
         deferred_tool_use_id="tu_braces",
-        deferred_tool_input={"path": "p.md",
-                             "content": '{"key": "value", "list": [1,2]}'},
+        deferred_tool_input={"repo_path": "/Users/alt/work_dir/x",
+                             "task": '{"key": "value", "list": [1,2]}',
+                             "allowed_tools": "Read,Edit"},
     )
     pending = db.approval_pending_for(12345)
     consumed = await approval_tools._resume_after_defer(aid, pending)
@@ -339,11 +363,14 @@ async def test_resume_failure_keeps_row_as_rejected_not_approved(monkeypatch):
 
     aid = db.approval_create_deferred(
         chat_id=12345,
-        tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1, summary="...",
-        args={"path": "p.md", "content": "hi"},
+        tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2, summary="...",
+        args={"repo_path": "/Users/alt/work_dir/x", "task": "fail",
+              "allowed_tools": "Read,Edit"},
         deferred_tool_use_id="tu_fail",
-        deferred_tool_input={"path": "p.md", "content": "hi"},
+        deferred_tool_input={"repo_path": "/Users/alt/work_dir/x",
+                             "task": "fail",
+                             "allowed_tools": "Read,Edit"},
     )
     pending = db.approval_pending_for(12345)
     await approval_tools._resume_after_defer(aid, pending)
@@ -370,9 +397,10 @@ async def test_defer_hook_still_defers_when_oob_send_fails(monkeypatch):
     monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send)
 
     out = await hooks.defer_gated_tools(
-        {"tool_name": "mcp__hikari_wiki__wiki_append",
+        {"tool_name": "mcp__hikari_dispatch__dispatch_claude_session",
          "tool_use_id": "tu_no_telegram",
-         "tool_input": {"path": "x.md", "content": "y"}},
+         "tool_input": {"repo_path": "/Users/alt/work_dir/x", "task": "t",
+                        "allowed_tools": "Read,Edit"}},
         None, None,
     )
     assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
@@ -399,8 +427,8 @@ async def test_recover_deferred_approvals_resurfaces_prompt(monkeypatch):
 
     # Plant a stale defer row.
     db.approval_create_deferred(
-        chat_id=12345, tool_name="mcp__hikari_wiki__wiki_append",
-        tier=1, summary="wiki: append something pending",
+        chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2, summary="dispatch: edit pending",
         args={"x": 1}, deferred_tool_use_id="tu_stale",
         deferred_tool_input={"x": 1},
     )
@@ -413,5 +441,5 @@ async def test_recover_deferred_approvals_resurfaces_prompt(monkeypatch):
     assert len(sent) == 1
     chat_id, tier, summary = sent[0]
     assert chat_id == 12345
-    assert tier == 1
+    assert tier == 2
     assert "still waiting" in summary.lower()

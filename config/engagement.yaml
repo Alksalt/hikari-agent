@@ -47,30 +47,50 @@ proactive:
   reengage_max_hours: 6
 
 approvals:
+  # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
+  # phrase. Tier-1 (y/yes/ok/go) is gone — too loose a match for irreversible
+  # operations, and we now gate so few things that the higher-friction phrase
+  # is the right default.
   timeout_sec: 60
-  # YAML quirk: bare "yes"/"no"/"on"/"off" parse as booleans. Quote tokens
-  # we want as strings so they round-trip cleanly.
-  tier_1_phrases: ["y", "yes", "ok", "go"]
   tier_2_phrase: "CONFIRM-SEND"
-  # Bare "n"/"no" intentionally excluded — they are common enough as
-  # conversational replies ("no I disagree", "no it isn't") that auto-rejecting
-  # a pending approval on them surprised users. Explicit "cancel"/"stop" only.
+  # Bare "n"/"no" intentionally excluded — too common as conversational
+  # replies ("no I disagree"). Explicit "cancel"/"stop" only.
   reject_phrases: ["cancel", "stop", "abort"]
-  # Phase 6: SDK native defer migration. Tools listed here trigger
-  # permissionDecision="defer" via a PreToolUse hook, halting the SDK turn
-  # until the user replies. Resume runs a fresh _run_query that invokes the
-  # post-approval sibling tool (e.g. wiki_append_confirmed).
+  # Patterns (matched via re.fullmatch against the qualified tool name) that
+  # trigger permissionDecision="defer" via the PreToolUse hook. The SDK halts;
+  # user types CONFIRM-SEND; resume runs a fresh _run_query that calls the
+  # post-approval sibling tool (see defer_confirmed_tools).
+  #
+  # Phase 8 matrix (per user choice "delete as much approval as possible"):
+  #   - dispatch_claude_session — only when its allowed_tools arg includes
+  #     Edit/Write/Bash (see defer_when_args_match below)
+  #
+  # gmail_send is not gated yet because no MCP-exposed Gmail send tool exists
+  # in the current configuration. When one appears, add its pattern here
+  # (e.g. "^mcp__claude_ai_Gmail__send.*$") and a defer_confirmed_tools entry
+  # OR wire the external-tool bypass mechanism in hooks._GATE_BYPASS.
   defer_gated_tools:
-    - "mcp__hikari_wiki__wiki_append"
+    - "^mcp__hikari_dispatch__dispatch_claude_session$"
+  # Arg-conditional defer. Map qualified tool name → condition spec.
+  # Spec keys: key (str, arg name), contains_any (list of substring needles),
+  # case_insensitive (bool, default true). If the named arg's string form
+  # contains any of the needles, defer. Otherwise auto-allow (even though the
+  # tool is in defer_gated_tools). Tools NOT in this map always defer when
+  # their pattern matches.
+  defer_when_args_match:
+    "mcp__hikari_dispatch__dispatch_claude_session":
+      key: "allowed_tools"
+      contains_any: ["Edit", "Write", "Bash"]
+      case_insensitive: true
   defer_resume_prompt_template: |
     [system: the deferred tool call {tool_use_id} ({tool_name}) was approved
     by the owner. execute it now by calling {confirmed_tool} with these args:
     {tool_input}. do not ask for confirmation; do not paraphrase the args.]
-  # Map gated tool -> its post-approval execution tool (no approval gate).
-  # NOTE: the confirmed tool is on the `hikari_wiki_confirmed` MCP server
-  # (attached only during a resume turn), NOT the public `hikari_wiki` server.
+  # Map gated tool → post-approval sibling that bypasses the gate. Sibling
+  # lives on a separate "_confirmed" MCP server attached only during the
+  # resume turn, so its schema isn't in the manifest on normal turns.
   defer_confirmed_tools:
-    "mcp__hikari_wiki__wiki_append": "mcp__hikari_wiki_confirmed__wiki_append_confirmed"
+    "mcp__hikari_dispatch__dispatch_claude_session": "mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"
   # When resurfacing a deferred approval after a bot restart, prepend this:
   defer_restart_resurface_suffix: " (still waiting on this from before the restart.)"
 
@@ -129,6 +149,17 @@ episodes:
   # Prune episodes older than this many days during daily reflection.
   prune_older_than_days: 30
 
+memory:
+  # Phase 8: monthly retention sweep at 04:00 on day 1. Episodes older than
+  # this get dropped entirely (their embeddings + FTS rows too). Daily
+  # backup launchd (03:00) mirrors hikari.db to iCloud before this fires.
+  episodes_retention_days: 180
+
+codex:
+  # Phase 8: directory containing the codex/ review reports. Relative paths
+  # resolve against the current working directory (i.e. the bot's repo root).
+  reports_dir: "./codex"
+
 # ============================================================================
 # Stage 1: persona hardening — refusal filter, politeness gate, sycophancy guard
 # ============================================================================
@@ -174,7 +205,10 @@ refusal_filter:
   # short-replace fires. Guards against discarding a legit short reply that
   # happens to contain a banned token.
   short_replace_match_fraction: 0.35
-  enable_llm_rewrite: false   # opt-in once Stage 2 settles
+  # Phase 8: rewrite path is now real — a bounded Haiku turn that re-writes
+  # the drifting reply in voice, with deterministic fallback if the rewrite
+  # also drifts. See post_filter.bounded_rewrite + rewrite_or_fallback.
+  enable_llm_rewrite: true
 
 politeness_gate:
   enabled: true
@@ -225,6 +259,29 @@ sycophancy_guard:
     default — fight it. rewrite holding your position. don't apologize for having one.
     if you genuinely changed your mind, say so plainly — once — and move on. never
     say "you're right" in a way that hollows out your own view.]
+  # Phase 8: matches refusal_filter — request the bounded LLM rewrite when an
+  # anchor violation or excessive collapse triggers.
+  enable_llm_rewrite: true
+
+post_filter:
+  # Phase 8: bounded LLM rewrite for outbound replies that the post_filter
+  # flagged with needs_llm_rewrite=True. One Haiku turn, no tools, no session
+  # resume, no memory write. If the rewrite still drifts, fall back to a
+  # deterministic short in-voice phrase from refusal_filter.short_replacements.
+  rewrite_strategy: "bounded_retry"   # alt: "detection_only" (ship original, log)
+  rewrite_model: "claude-haiku-4-5"
+  rewrite_max_budget_usd: 0.01
+  rewrite_prompt_template: |
+    [the previous outbound reply broke Hikari's voice. {instruction}
+
+    ORIGINAL REPLY:
+    {text}
+
+    Rewrite ONLY the reply. Same intent, in voice: lowercase, blunt,
+    reluctant before helpful, denial layer if any kindness leaks. NO
+    exclamation marks for enthusiasm. NO 'as an AI', 'I'd be happy to',
+    'great question', 'I cannot'. Output the rewritten reply only — no
+    preamble, no quotes, no markdown.{mood_clause}]
 
 # ============================================================================
 # Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay
@@ -545,13 +602,32 @@ location:
 
 prompt_injection:
   enabled: true
-  # Tools whose outputs are treated as untrusted attacker surface.
+  # Tools whose outputs are treated as untrusted attacker surface (used by
+  # flag_args_with_untrusted_content + is_untrusted_source). Substring match.
   untrusted_tools:
     - "mcp__hikari_wiki__wiki_read"
     - "mcp__google_workspace__"
-    - "mcp__hikari_research__web_fetch"
-    - "mcp__hikari_research__browser_navigate"
-    - "mcp__hikari_research__tavily_search"
+    - "mcp__claude_ai_Gmail__"
+    - "mcp__claude_ai_Google_Calendar__"
+    - "mcp__claude_ai_Google_Drive__"
+    - "mcp__notion__"
+    - "WebFetch"
+    - "WebSearch"
+  # Phase 8: regex patterns for the generic PostToolUse wrap hook
+  # (agents/external_wrap_hook.py). When any of these match the qualified
+  # tool name, the tool's text output is automatically wrapped via
+  # wrap_untrusted before the model sees it. One hook, all external surfaces
+  # — replaces the prior per-tool wrap pattern (which only covered wiki_read
+  # and was a Codex P1 enforcement gap).
+  wrap_patterns:
+    - "^mcp__hikari_wiki__wiki_read$"
+    - "^mcp__google_workspace__"
+    - "^mcp__claude_ai_Gmail__"
+    - "^mcp__claude_ai_Google_Calendar__"
+    - "^mcp__claude_ai_Google_Drive__"
+    - "^mcp__notion__"
+    - "^WebFetch$"
+    - "^WebSearch$"
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted
