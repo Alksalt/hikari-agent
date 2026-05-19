@@ -152,6 +152,8 @@ def test_scheduler_builds(monkeypatch):
         "daily_reflection", "calendar_heartbeat", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
         "morning_brief",
+        # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
+        "weekly_consolidation",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

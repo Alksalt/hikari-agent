@@ -234,6 +234,25 @@ CREATE TABLE IF NOT EXISTS persona_drift_scores (
 );
 CREATE INDEX IF NOT EXISTS drift_sampled_at ON persona_drift_scores(sampled_at DESC);
 
+-- Phase 11: SPASM-style persona drift probes (arxiv 2604.09212).
+-- Three fixed probe questions (values / emotion_coping / motivation) are
+-- baselined once via agents.drift_judge.baseline_persona_probes, then
+-- re-asked every 4h. Cosine distance between baseline embedding and
+-- current embedding is the drift signal. Independent of the per-outbound
+-- persona_drift_scores Haiku judge — those catch turn-level slips, these
+-- catch slow worldview shifts.
+CREATE TABLE IF NOT EXISTS persona_drift_probes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    probe_key TEXT NOT NULL,         -- 'values' | 'emotion_coping' | 'motivation'
+    distance REAL NOT NULL,          -- cosine distance vs baseline, ~0 = on-persona
+    current_response TEXT,           -- snippet of today's answer (for audit)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS persona_drift_probes_created
+    ON persona_drift_probes(created_at DESC);
+CREATE INDEX IF NOT EXISTS persona_drift_probes_key
+    ON persona_drift_probes(probe_key, created_at DESC);
+
 -- Phase 8: 👍/👎 reactions from the user on Hikari's outbound messages.
 -- Keyed by the Telegram outbound message_id (stored on messages.telegram_message_id
 -- by the bridge after a successful reply_text). Used by reflection to compare
@@ -295,6 +314,21 @@ CREATE TABLE IF NOT EXISTS fact_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_fact_relations_subject ON fact_relations(subject_fact_id);
 CREATE INDEX IF NOT EXISTS idx_fact_relations_object ON fact_relations(object_fact_id);
+
+-- Phase 11: weekly sleep-time consolidation archive (Letta sleep-time pattern,
+-- Apr 2025). The current week's consolidation lives in core_blocks under the
+-- ``weekly_consolidation`` label so it flows into the system prompt every turn;
+-- when a new weekly pass runs, the previous core_block content is snapshotted
+-- here before being overwritten. Lets us reconstruct the trail of week-over-
+-- week deltas without bloating the always-on prompt.
+CREATE TABLE IF NOT EXISTS weekly_consolidations_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_ending TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    episode_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week ON weekly_consolidations_archive(week_ending);
 """
 
 
@@ -888,6 +922,51 @@ def episode_summaries_recent(topic: str | None = None,
     return out
 
 
+# ---------- Phase 11: weekly sleep-time consolidation archive ----------
+
+def weekly_consolidation_insert(
+    week_ending: str,
+    summary_text: str,
+    episode_count: int,
+) -> int:
+    """Archive a completed week's consolidation summary. Returns the new row id.
+
+    Called by the weekly sleep-time consolidation job (``run_weekly_consolidation``)
+    immediately before it overwrites the ``weekly_consolidation`` core_block with
+    the new week's text. The archive preserves the trail of past summaries so
+    the user can drill back without bloating the always-on prompt.
+
+    ``week_ending`` is the ISO date the snapshot represents (typically the
+    Sunday the consolidation job ran). ``episode_count`` is informational —
+    the number of underlying episodes/thoughts the summary was synthesized from.
+    """
+    body = (summary_text or "").strip()
+    if not body:
+        raise ValueError("weekly_consolidation_insert: summary_text is required")
+    week = (week_ending or "").strip()
+    if not week:
+        raise ValueError("weekly_consolidation_insert: week_ending is required")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO weekly_consolidations_archive "
+            "(week_ending, summary_text, episode_count) VALUES (?, ?, ?)",
+            (week, body, int(episode_count)),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def weekly_consolidations_recent(limit: int = 10) -> list[dict[str, Any]]:
+    """Most-recent archived weekly consolidations, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, week_ending, summary_text, episode_count, created_at "
+            "FROM weekly_consolidations_archive "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------- T3.3: fact relations (knowledge graph) ----------
 
 def fact_relation_insert(subject_id: int, predicate: str, object_id: int) -> int:
@@ -1430,6 +1509,60 @@ def prune_drift_older_than_days(days: int) -> int:
             "DELETE FROM persona_drift_scores WHERE sampled_at < ?", (cutoff,)
         )
     return cur.rowcount or 0
+
+
+# ---------- persona_drift_probes (Phase 11 SPASM-style probes) ----------
+
+def persona_drift_probe_insert(
+    probe_key: str,
+    distance: float,
+    current_response: str | None = None,
+) -> int:
+    """Append a probe sample. Returns row id.
+
+    ``distance`` is clamped to [0.0, 2.0] (the theoretical range of cosine
+    distance is [0, 2]; in practice fastembed answers always come back
+    [0, 1]). ``current_response`` is truncated to 1000 chars — enough to
+    audit the answer without bloating the table.
+    """
+    snippet = (current_response or "")[:1000]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO persona_drift_probes "
+            "(probe_key, distance, current_response, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (probe_key, max(0.0, min(2.0, float(distance))), snippet, _now()),
+        )
+    return cur.lastrowid
+
+
+def persona_drift_probe_recent(probe_key: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Recent probe samples for one key, newest first. Used by the daily
+    reflection / debugging tooling."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, probe_key, distance, current_response, created_at "
+            "FROM persona_drift_probes "
+            "WHERE probe_key = ? ORDER BY created_at DESC LIMIT ?",
+            (probe_key, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def persona_drift_probe_avg(probe_key: str, window_days: int = 7) -> float | None:
+    """Mean cosine distance for one probe over the window. None if no samples."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT AVG(distance) AS avg, COUNT(*) AS n "
+            "FROM persona_drift_probes "
+            "WHERE probe_key = ? AND created_at >= ?",
+            (probe_key, cutoff),
+        ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return float(row["avg"])
 
 
 # ---------- user_feedback (Phase 8: 👍/👎 ground-truth) ----------

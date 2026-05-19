@@ -897,3 +897,181 @@ async def _consolidate_yesterday() -> dict[str, int]:
             logger.exception("consolidation: _dedup_near_duplicates failed")
 
     return stats
+
+
+# ---------- Phase 11: weekly sleep-time consolidation ----------
+
+# Letta sleep-time pattern (Apr 2025): live agent serves user, sleep agent
+# consolidates memory during downtime. Up to 18% accuracy gain reported,
+# 5× less test-time compute. We borrow only the consolidation half — Hikari
+# already serves online; the sleep agent runs once per week, synthesizes a
+# 200-word "what i noticed about him this week" doc, and parks it in
+# core_blocks so it flows into every system-prompt build for the next week.
+WEEKLY_WINDOW_DAYS = 7
+WEEKLY_SUMMARY_WORD_CAP = 220  # ~200 target + small overrun tolerance
+
+
+def _read_week_window() -> dict[str, list[dict]]:
+    """Read the last WEEKLY_WINDOW_DAYS from each source table the weekly
+    consolidation cares about. Returns ``{thoughts, episodes, observations,
+    noticings}``. Empty lists for tables with no activity in the window.
+
+    Kept as a single helper so the test suite can monkeypatch one function
+    instead of four.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=WEEKLY_WINDOW_DAYS)).isoformat()
+    out: dict[str, list[dict]] = {
+        "thoughts": [], "episodes": [], "observations": [], "noticings": [],
+    }
+    try:
+        with db._conn() as c:
+            out["thoughts"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, thought, created_at FROM character_thoughts "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["episodes"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, date, summary, created_at FROM episodes "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["observations"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, kind, summary, created_at FROM observations "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["noticings"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, signal, summary, created_at FROM noticings "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+    except Exception:
+        logger.exception("weekly_consolidation: window read failed")
+    return out
+
+
+def _build_weekly_consolidation_prompt(window: dict[str, list[dict]]) -> str:
+    """Compose the neutral structured-prompt the reflection LLM sees. Keep
+    the call cheap — feed snippets, not full bodies."""
+    def _fmt(rows: list[dict], label: str, body_key: str, limit: int = 40) -> str:
+        if not rows:
+            return f"## {label}\n(none in the last 7 days)"
+        lines = [f"## {label}"]
+        for r in rows[:limit]:
+            snippet = str(r.get(body_key) or "").strip().replace("\n", " ")
+            if len(snippet) > 220:
+                snippet = snippet[:220] + "…"
+            created = str(r.get("created_at") or "?")[:10]
+            lines.append(f"- [{created}] {snippet}")
+        if len(rows) > limit:
+            lines.append(f"(+{len(rows) - limit} more truncated)")
+        return "\n".join(lines)
+
+    return (
+        "Write a single ~200-word summary of what Hikari has noticed about "
+        "this person across the last 7 days. First person from Hikari's view, "
+        "dry tone, lowercase, no markdown, no bullets, no headers. This is "
+        "going into her long-term context — it should read like an internal "
+        "memo, not a chat reply. Focus on patterns, not events. Mention what "
+        "she's tracking, what shifted, what she's not saying out loud. Output "
+        "ONLY the prose — no preamble, no sign-off.\n\n"
+        f"{_fmt(window['thoughts'], 'private thoughts (her diary)', 'thought')}\n\n"
+        f"{_fmt(window['episodes'], 'session episodes', 'summary')}\n\n"
+        f"{_fmt(window['observations'], 'observations (patterns)', 'summary')}\n\n"
+        f"{_fmt(window['noticings'], 'noticings (week-over-week shifts)', 'summary')}"
+    )
+
+
+async def run_weekly_consolidation() -> bool:
+    """Sleep-time consolidation pass — runs weekly (Sunday 04:30 local).
+
+    Reads the last 7 days of character_thoughts + episodes + observations +
+    noticings, synthesizes a single ~200-word "what i've noticed about him
+    this week" document via a cheap structured-prompt LLM call, stores it
+    as ``core_blocks['weekly_consolidation']``. The previous week's content
+    is archived to ``weekly_consolidations_archive`` before being overwritten.
+
+    Returns True on success (block written), False if the week is empty or
+    the LLM/storage step failed. Wrapped in try/except so a failure here
+    cannot affect a daily reflection that may be in flight.
+
+    Letta sleep-time pattern (Apr 2025): live agent serves user, sleep agent
+    consolidates memory during downtime. Up to 18% accuracy gain reported,
+    5× less test-time compute. We use only the consolidation half — the live
+    agent (Hikari) is always-on.
+
+    The new core_block is read by ``agents.hooks._format_core_blocks`` (which
+    injects every core_block except the legacy ``user_profile``) so no
+    further wiring is required for the model to see it.
+    """
+    try:
+        window = _read_week_window()
+
+        total_rows = sum(len(v) for v in window.values())
+        if total_rows == 0:
+            logger.info(
+                "weekly_consolidation: empty week (no thoughts/episodes/"
+                "observations/noticings in last %dd) — skipping",
+                WEEKLY_WINDOW_DAYS,
+            )
+            return False
+
+        prompt = _build_weekly_consolidation_prompt(window)
+        try:
+            raw = await run_reflection_call(prompt)
+        except Exception:
+            logger.exception("weekly_consolidation: LLM call failed")
+            return False
+        summary = _strip_fences(raw).strip()
+        if not summary:
+            logger.warning("weekly_consolidation: LLM returned empty body")
+            return False
+        # Cap if the model ignored the word ceiling.
+        summary = " ".join(summary.split()[:WEEKLY_SUMMARY_WORD_CAP])
+
+        # Archive the previous week's block before overwriting.
+        try:
+            existing = db.get_core_block("weekly_consolidation")
+            if existing:
+                # week_ending = today's ISO date when the new pass runs.
+                # episode_count is informational — count of episodes in the
+                # *previous* week is unknown after the fact, so we record
+                # the current window's episode count as a rough proxy.
+                db.weekly_consolidation_insert(
+                    week_ending=date.today().isoformat(),
+                    summary_text=existing,
+                    episode_count=len(window["episodes"]),
+                )
+        except Exception:
+            logger.exception(
+                "weekly_consolidation: archive of previous block failed "
+                "(non-fatal — proceeding with overwrite)"
+            )
+
+        try:
+            db.upsert_core_block("weekly_consolidation", summary)
+        except Exception:
+            logger.exception("weekly_consolidation: upsert_core_block failed")
+            return False
+
+        logger.info(
+            "weekly_consolidation: wrote %d-char summary from "
+            "thoughts=%d episodes=%d observations=%d noticings=%d",
+            len(summary),
+            len(window["thoughts"]),
+            len(window["episodes"]),
+            len(window["observations"]),
+            len(window["noticings"]),
+        )
+        return True
+    except Exception:
+        logger.exception("weekly_consolidation: top-level failure (non-fatal)")
+        return False
