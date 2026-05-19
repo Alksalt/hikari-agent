@@ -154,6 +154,8 @@ def test_scheduler_builds(monkeypatch):
         "morning_brief",
         # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
         "weekly_consolidation",
+        # Phase 11: SPASM persona drift probes (every 4h, default on).
+        "persona_probes",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

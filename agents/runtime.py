@@ -309,6 +309,49 @@ async def run_proactive(seed_prompt: str) -> str:
                             log_to_memory=False)
 
 
+async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
+                            max_budget_usd: float = 0.20) -> str:
+    """Single in-character turn without session resume.
+
+    Used by:
+      - PersonaEval drift probes (agents.drift_judge.run_persona_probes) —
+        runs probe questions against the live persona and compares the
+        response to a stored baseline.
+      - Anti-sycophancy eval tests (tests/persona/test_sycophancy.py) —
+        fires SycEval / ELEPHANT prompts at a fresh persona session and
+        scores the response via Haiku.
+
+    Differs from ``_run_query`` in three ways:
+      - No session resume — every call is a fresh conversation.
+      - No write-back to ``messages`` (log_to_memory off; ``append_message``
+        is skipped). Probe answers must not pollute the chat history.
+      - No shared ``_RUN_LOCK`` — these calls never resume the live session,
+        so they cannot race with user turns or proactive jobs.
+
+    The full persona + MCP servers + hooks are kept so the response is
+    representative of how Hikari actually talks today. That's the whole
+    point: SPASM probes measure drift in the *production* persona, not a
+    stripped-down test rig.
+    """
+    options = _build_options(
+        resume=None,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+    )
+    parts: list[str] = []
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                if msg.subtype != "success":
+                    logger.warning("isolated turn ended subtype=%s", msg.subtype)
+    return "".join(parts).strip()
+
+
 async def run_reflection_call(prompt: str) -> str:
     """Single LLM call for the daily reflection (no tool use expected).
 

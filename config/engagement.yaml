@@ -177,6 +177,15 @@ persona:
   # Applied at: session_handoff format + session consolidation transcript.
   egocentric_projection: true
 
+  # Phase 11: SPASM-style persona drift probes
+  # (arxiv 2604.09212 + arxiv 2508.10014 PersonaEval). Every N hours, fire
+  # three fixed probe questions (values / emotion_coping / motivation)
+  # against the live persona and measure cosine distance from a stored
+  # baseline. Independent of the per-turn Haiku drift judge — those catch
+  # turn-level voice slips, probes catch slow worldview shifts.
+  drift_probes_enabled: true
+  drift_probes_interval_hours: 4
+
 refusal_filter:
   # Patterns that signal Claude's default assistant/safety voice leaked through.
   # All patterns are tightened to require an assistant-voice completion so we
