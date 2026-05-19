@@ -441,8 +441,10 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
         return False
 
     title = event.get("title") or "(untitled event)"
+    from .injection_guard import wrap_untrusted
+    safe_title = wrap_untrusted("google_calendar_title", title)
     seed = (
-        f"upcoming in ~{mins_until_rounded}min: {title}. give them a tight "
+        f"upcoming in ~{mins_until_rounded}min: {safe_title}. give them a tight "
         "in-voice prep prompt — no questions, no chirpy reminder. one line."
     )
     mood = _mood_from_core()
@@ -544,7 +546,11 @@ async def sync_pending_gcal_reminders() -> int:
     drive_gmail subagent to create a Google Calendar event, then store the
     returned event_id. Best-effort: failures stay pending for retry."""
     import os
-    if not os.environ.get("GOOGLE_WORKSPACE_REFRESH_TOKEN"):
+    if not all(os.environ.get(k) for k in (
+        "GOOGLE_WORKSPACE_CLIENT_ID",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET",
+        "GOOGLE_WORKSPACE_REFRESH_TOKEN",
+    )):
         return 0
     pending = db.reminders_pending_gcal_sync(limit=10)
     if not pending:

@@ -102,8 +102,10 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
     from .proactive import sync_pending_gcal_reminders
     gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
     if _calendar_creds_healthy():
+        async def _gcal_sync_job():
+            return await sync_pending_gcal_reminders()
         scheduler.add_job(
-            sync_pending_gcal_reminders,
+            _gcal_sync_job,
             IntervalTrigger(seconds=gcal_interval),
             id="reminders_gcal_sync",
             coalesce=True, max_instances=1, misfire_grace_time=600,

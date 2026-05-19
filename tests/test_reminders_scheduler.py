@@ -79,6 +79,8 @@ async def test_overdue_daily_repeat_advances_to_future_not_past():
 
 @pytest.mark.asyncio
 async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake-client-secret")
     monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake-refresh-token")
     fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     rid = db.reminder_insert(
