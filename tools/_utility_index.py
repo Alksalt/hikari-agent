@@ -10,3 +10,6 @@ from __future__ import annotations
 # merge-friendliness.
 
 ALL_TOOLS: list = []
+
+from tools.ytmusic import ALL_TOOLS as _YTMUSIC
+ALL_TOOLS.extend(_YTMUSIC)

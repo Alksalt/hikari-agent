@@ -146,6 +146,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_codex__read_codex_report",
     # Phase 10 utility tools (appended per feature during Phase 1 parallel work).
     # DO NOT remove this anchor comment — Phase 1 agents look for it.
+    "mcp__hikari_utility__ytmusic_recent",
+    "mcp__hikari_utility__ytmusic_search",
+    "mcp__hikari_utility__ytmusic_library",
     "Read", "Glob", "Grep",
 ]
 
