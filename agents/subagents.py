@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from claude_agent_sdk import AgentDefinition
 
+from tools.dispatch import WORK_DIR_ROOT
+
 RECALL_AGENT = AgentDefinition(
     description=(
         "Pull relevant memory (facts + episodes) for a specific question. "
@@ -80,16 +82,16 @@ WIKI_AGENT = AgentDefinition(
 
 CODE_DISPATCH_AGENT = AgentDefinition(
     description=(
-        "Dispatches a long-running Claude Code session to investigate or modify "
-        "a specific repo under /Users/alt/work_dir/. Read-only dispatches "
-        "auto-run; write dispatches (allowed_tools includes Edit / Write / Bash) "
-        "are owner-gated via CONFIRM-SEND."
+        f"Dispatches a long-running Claude Code session to investigate or modify "
+        f"a specific repo under {WORK_DIR_ROOT}/. Read-only dispatches "
+        f"auto-run; write dispatches (allowed_tools includes Edit / Write / Bash) "
+        f"are owner-gated via CONFIRM-SEND."
     ),
     prompt=(
-        "You are Hikari's code-dispatch specialist. The lead has identified a task "
-        "that needs a Claude Code worker. Parse the request, pick the right "
-        "repo_path (absolute, under /Users/alt/work_dir/), write a tight 1-3 "
-        "sentence task description, and call dispatch_claude_session.\n\n"
+        f"You are Hikari's code-dispatch specialist. The lead has identified a task "
+        f"that needs a Claude Code worker. Parse the request, pick the right "
+        f"repo_path (absolute, under {WORK_DIR_ROOT}/), write a tight 1-3 "
+        f"sentence task description, and call dispatch_claude_session.\n\n"
         "Tool scope:\n"
         "  - For investigation, review, or read-only research: leave allowed_tools "
         "empty (defaults to Read,Grep,Glob,WebFetch,WebSearch) — auto-runs.\n"

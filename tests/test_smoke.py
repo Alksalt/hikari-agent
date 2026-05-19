@@ -333,7 +333,7 @@ def test_dispatch_tool_registered(monkeypatch):
 
 
 def test_dispatch_rejects_outside_workdir(tmp_path, monkeypatch):
-    """Dispatch should reject repos not under /Users/alt/work_dir."""
+    """Dispatch should reject repos not under WORK_DIR_ROOT."""
     import asyncio
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")

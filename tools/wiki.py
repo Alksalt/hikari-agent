@@ -12,6 +12,7 @@ on watchdog FS events; for now, restart-on-change is acceptable.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from functools import lru_cache
@@ -28,8 +29,9 @@ from storage import db
 logger = logging.getLogger(__name__)
 
 VAULT_ROOT = Path(
-    "/Users/alt/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki"
-)
+    os.environ.get("HIKARI_WIKI_VAULT")
+    or Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki"
+).expanduser()
 
 _yaml = YAML(typ="rt")
 _yaml.preserve_quotes = True

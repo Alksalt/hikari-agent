@@ -6,7 +6,7 @@ native message types (AssistantMessage / ToolUseBlock / ResultMessage), trivial 
 extraction. Trade-off: dies if Hikari restarts — recovered via session_id resume.
 
 Each call:
-  1. Validates repo_path (must exist + under /Users/alt/work_dir/).
+  1. Validates repo_path (must exist + under WORK_DIR_ROOT — see env HIKARI_WORK_DIR).
   2. Pre-allocates task_id = uuid.
   3. Inserts background_tasks row (status='queued').
   4. Spawns an asyncio.Task that runs the session; pushes events to a global queue
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -47,7 +48,13 @@ DISPATCH_EVENTS: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue(
 # Set by telegram_bridge.post_init so the dispatch tool can resolve owner chat.
 _OWNER_CHAT_ID: int | None = None
 
-WORK_DIR_ROOT = Path("/Users/alt/work_dir")
+# Root that all dispatched repos must live under. Set HIKARI_WORK_DIR to override;
+# default is the parent of this repo (so sibling repos under the same agents/ or
+# work_dir/ folder are dispatchable without configuration).
+WORK_DIR_ROOT = Path(
+    os.environ.get("HIKARI_WORK_DIR")
+    or Path(__file__).resolve().parent.parent.parent
+).expanduser().resolve()
 # Phase 8: default to read-only. If the model passes allowed_tools that
 # includes Edit/Write/Bash, the PreToolUse arg-gate (config:
 # approvals.defer_when_args_match) defers the call until the owner types
@@ -242,7 +249,7 @@ async def _do_dispatch(args: dict[str, Any]) -> dict[str, Any]:
     "(Read,Grep,Glob,WebFetch,WebSearch) — these dispatches auto-run. To allow "
     "code mutation, pass allowed_tools that includes Edit / Write / Bash; that "
     "form is owner-gated (CONFIRM-SEND required before the dispatch starts). "
-    "repo_path must be absolute and under /Users/alt/work_dir/. "
+    f"repo_path must be absolute and under {WORK_DIR_ROOT}/. "
     "task should be a clear, scoped instruction (1-3 sentences). "
     "max_turns caps how many agent turns the dispatched session can take.",
     {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
