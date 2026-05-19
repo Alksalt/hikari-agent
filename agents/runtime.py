@@ -152,6 +152,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__reminder_snooze",
     "mcp__hikari_utility__weather_fetch",
     "mcp__hikari_utility__translate",
+    "mcp__hikari_utility__calc",
+    "mcp__hikari_utility__python_run",
+    "mcp__hikari_utility__currency_convert",
     "Read", "Glob", "Grep",
 ]
 
