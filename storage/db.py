@@ -241,6 +241,25 @@ CREATE TABLE IF NOT EXISTS user_feedback (
 );
 CREATE INDEX IF NOT EXISTS user_feedback_msg ON user_feedback(telegram_message_id);
 CREATE INDEX IF NOT EXISTS user_feedback_created ON user_feedback(created_at DESC);
+
+-- Phase 10: scheduled reminders. Fired by the reminders_fire scheduler job
+-- (storage.db.reminder_due returns rows whose effective fire time has passed).
+-- Optional Google Calendar mirror via gcal_event_id, drained by the
+-- reminders_gcal_sync job (separate from the fire job so reminder_create
+-- returns immediately without an LLM round-trip).
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fire_at TEXT NOT NULL,
+    lead_minutes INTEGER NOT NULL DEFAULT 0,
+    text TEXT NOT NULL,
+    repeat TEXT,
+    gcal_event_id TEXT,
+    gcal_sync_pending INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    fired_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
 """
 
 
@@ -1507,3 +1526,79 @@ def bulk_insert_episodes(rows: Iterable[dict[str, Any]]) -> int:
             )
             n += 1
     return n
+
+
+# ---------- Phase 10: reminders ----------
+
+def reminder_insert(*, fire_at: str, text: str, lead_minutes: int = 0,
+                    repeat: str | None = None,
+                    gcal_event_id: str | None = None,
+                    gcal_sync_pending: bool = False) -> int:
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reminders "
+            "(fire_at, lead_minutes, text, repeat, gcal_event_id, gcal_sync_pending) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (fire_at, lead_minutes, text, repeat, gcal_event_id,
+             1 if gcal_sync_pending else 0),
+        )
+        return cur.lastrowid
+
+
+def reminder_list(active_only: bool = True) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        sql = "SELECT * FROM reminders"
+        if active_only:
+            sql += " WHERE status = 'active'"
+        sql += " ORDER BY fire_at ASC"
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def reminder_due() -> list[dict[str, Any]]:
+    """Rows whose effective fire time has passed and are still active."""
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM reminders "
+            "WHERE status = 'active' "
+            "AND datetime(fire_at, '-' || lead_minutes || ' minutes') <= datetime('now') "
+            "ORDER BY fire_at ASC"
+        ).fetchall()]
+
+
+def reminder_mark_fired(reminder_id: int) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET status = 'fired', fired_at = datetime('now') WHERE id = ?",
+            (reminder_id,),
+        )
+
+
+def reminder_cancel(reminder_id: int) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET status = 'cancelled' WHERE id = ?",
+            (reminder_id,),
+        )
+
+
+def reminder_get(reminder_id: int) -> dict[str, Any] | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def reminder_update_gcal_event(reminder_id: int, event_id: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET gcal_event_id = ?, gcal_sync_pending = 0 WHERE id = ?",
+            (event_id, reminder_id),
+        )
+
+
+def reminders_pending_gcal_sync(limit: int = 10) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM reminders WHERE gcal_sync_pending = 1 AND status = 'active' "
+            "ORDER BY created_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()]
