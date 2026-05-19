@@ -68,7 +68,9 @@ def test_full_schema_present(tmp_path, monkeypatch):
                 "tasks", "character_thoughts", "runtime_state", "fts",
                 "vec_facts", "vec_episodes",
                 # Phase 2 + Phase 3
-                "background_tasks", "approvals", "audit_log"}
+                "background_tasks", "approvals", "audit_log",
+                # Phase 10
+                "reminders"}
     missing = expected - rows
     assert not missing, f"missing tables: {missing}"
     # entities table was dropped
@@ -146,6 +148,8 @@ def test_scheduler_builds(monkeypatch):
     assert ids == {
         "heartbeat", "reengage", "consolidation",
         "daily_reflection", "calendar_heartbeat", "memory_prune",
+        "reminders_fire", "reminders_gcal_sync",
+        "morning_brief",
     }
 
 

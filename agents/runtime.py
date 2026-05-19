@@ -99,6 +99,15 @@ def _codex_server():
 
 
 @cache
+def _utility_server():
+    """Phase 10: combined MCP server hosting weather, reminders, translation,
+    calc, currency, arxiv, places, ytmusic. Each feature contributes tools to
+    tools._utility_index.ALL_TOOLS."""
+    from tools import _utility_index
+    return create_sdk_mcp_server(name="hikari_utility", tools=_utility_index.ALL_TOOLS)
+
+
+@cache
 def _dispatch_confirmed_server():
     """The post-approval execution tool for the dispatch arg-gate
     (`dispatch_claude_session_confirmed`). Attached to ``mcp_servers`` only
@@ -135,6 +144,23 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_dispatch__dispatch_claude_session",
     "mcp__hikari_codex__list_codex_reports",
     "mcp__hikari_codex__read_codex_report",
+    # Phase 10 utility tools (appended per feature during Phase 1 parallel work).
+    # DO NOT remove this anchor comment — Phase 1 agents look for it.
+    "mcp__hikari_utility__reminder_create",
+    "mcp__hikari_utility__reminder_list",
+    "mcp__hikari_utility__reminder_cancel",
+    "mcp__hikari_utility__reminder_snooze",
+    "mcp__hikari_utility__weather_fetch",
+    "mcp__hikari_utility__translate",
+    "mcp__hikari_utility__calc",
+    "mcp__hikari_utility__python_run",
+    "mcp__hikari_utility__currency_convert",
+    "mcp__hikari_utility__arxiv_search",
+    "mcp__hikari_utility__places_search",
+    "mcp__hikari_utility__place_open_now",
+    "mcp__hikari_utility__ytmusic_recent",
+    "mcp__hikari_utility__ytmusic_search",
+    "mcp__hikari_utility__ytmusic_library",
     "Read", "Glob", "Grep",
 ]
 
@@ -152,6 +178,7 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         "hikari_wiki": _wiki_server(),
         "hikari_dispatch": _dispatch_server(),
         "hikari_codex": _codex_server(),
+        "hikari_utility": _utility_server(),
     }
     # Phase 8: attach the privileged dispatch-confirmed server only when the
     # resume path explicitly opts in via extra_allowed_tools. On a normal turn

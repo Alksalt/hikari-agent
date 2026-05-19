@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import zoneinfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,11 +23,22 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
     )
     from .reflection import maybe_run_session_consolidation, run_daily_reflection
 
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    tz_name = cfg.get("scheduler.timezone", "UTC")
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("scheduler: invalid timezone %r, falling back to UTC", tz_name)
+        tz = zoneinfo.ZoneInfo("UTC")
+    scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours
+    # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours.
+    # APScheduler's iscoroutinefunction() doesn't recognize a lambda wrapping an async fn,
+    # so we use an `async def` wrapper for every async job — otherwise the executor runs the
+    # lambda in a thread pool, gets back an unawaited coroutine, Python warns and the work
+    # never actually happens.
+    async def _heartbeat_job(): return await maybe_send_heartbeat(send_text)
     scheduler.add_job(
-        lambda: maybe_send_heartbeat(send_text),
+        _heartbeat_job,
         IntervalTrigger(minutes=30),
         id="heartbeat",
         coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -41,8 +53,15 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         calendar_interval = int(
             cfg.get("calendar_heartbeat.scheduler_interval_minutes", 5)
         )
+        # APScheduler dispatches sync vs async via inspect.iscoroutinefunction.
+        # A lambda wrapping an async fn is not detected as async -> the
+        # executor calls it sync, gets back an un-awaited coroutine,
+        # Python logs "coroutine ... was never awaited". Wrap with an
+        # `async def` so the executor awaits it properly.
+        async def _calendar_job():
+            return await maybe_send_calendar_heartbeat(send_text)
         scheduler.add_job(
-            lambda: maybe_send_calendar_heartbeat(send_text),
+            _calendar_job,
             IntervalTrigger(minutes=calendar_interval),
             id="calendar_heartbeat",
             coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -54,8 +73,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         )
 
     # Re-engagement nudge: every 15 min, fires only when she had last word + user silent 2-6h
+    async def _reengage_job(): return await maybe_send_reengagement(send_text)
     scheduler.add_job(
-        lambda: maybe_send_reengagement(send_text),
+        _reengage_job,
         IntervalTrigger(minutes=15),
         id="reengage",
         coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -69,6 +89,32 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
 
+    from .proactive import fire_due_reminders
+    reminder_poll = int(cfg.get("reminders.poll_interval_sec", 60))
+    async def _fire_reminders_job(): return await fire_due_reminders(send_text)
+    scheduler.add_job(
+        _fire_reminders_job,
+        IntervalTrigger(seconds=reminder_poll),
+        id="reminders_fire",
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+
+    from .proactive import sync_pending_gcal_reminders
+    gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
+    if _calendar_creds_healthy():
+        scheduler.add_job(
+            sync_pending_gcal_reminders,
+            IntervalTrigger(seconds=gcal_interval),
+            id="reminders_gcal_sync",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+    else:
+        logger.info(
+            "reminders_gcal_sync: skipped — calendar creds unhealthy. "
+            "pending gcal mirrors will accumulate; new reminders still fire "
+            "locally via the reminders_fire job."
+        )
+
     # Daily reflection: 09:00 local (use OS-local TZ via cron trigger without tz)
     scheduler.add_job(
         run_daily_reflection,
@@ -76,6 +122,18 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         id="daily_reflection",
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
+
+    if bool(cfg.get("morning_brief.enabled", True)):
+        from .morning_brief import maybe_send_morning_brief
+        mb_hour = int(cfg.get("morning_brief.hour", 6))
+        mb_minute = int(cfg.get("morning_brief.minute", 0))
+        async def _morning_brief_job(): return await maybe_send_morning_brief(send_text)
+        scheduler.add_job(
+            _morning_brief_job,
+            CronTrigger(hour=mb_hour, minute=mb_minute),
+            id="morning_brief",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
 
     # Phase 8: monthly memory prune. Episodes older than the configured
     # retention window get dropped (their embeddings + FTS rows too). Runs
@@ -94,12 +152,12 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
 
 def _calendar_creds_healthy() -> bool:
-    """Phase 8: cheap startup gate. If the bridge wrote
+    """Phase 8 (Phase 10 update): cheap startup gate. If the bridge wrote
     ``runtime_state.calendar_heartbeat_healthy = '1'`` after a successful
     probe call, the job runs; otherwise it sits out.
 
-    Default: if the env var ``GOOGLE_SERVICE_ACCOUNT_JSON`` is set, treat as
-    healthy unless explicitly disabled. Bridge probes can override.
+    Default: if all three OAuth env vars for google-workspace-mcp are set,
+    treat as healthy unless explicitly disabled. Bridge probes can override.
     """
     import os
     from storage import db
@@ -107,8 +165,14 @@ def _calendar_creds_healthy() -> bool:
     explicit = db.runtime_get("calendar_heartbeat_healthy")
     if explicit is not None:
         return str(explicit).strip() == "1"
-    # Fallback: presence of the service-account env var.
-    return bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    # Fallback: presence of the OAuth env var trio (Phase 10 — was
+    # GOOGLE_SERVICE_ACCOUNT_JSON, but the upstream package uses OAuth
+    # user creds, not service-account JSON).
+    return all(os.environ.get(k) for k in (
+        "GOOGLE_WORKSPACE_CLIENT_ID",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET",
+        "GOOGLE_WORKSPACE_REFRESH_TOKEN",
+    ))
 
 
 def _run_memory_prune(retention_days: int) -> None:

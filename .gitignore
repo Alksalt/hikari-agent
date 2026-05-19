@@ -10,3 +10,11 @@ data/
 dist/
 build/
 .DS_Store
+secrets/
+
+# Hikari runtime DB (real one lives at data/hikari.db; stub at root is from earlier path)
+/hikari.db
+hikari.db
+*.db-shm
+*.db-wal
+

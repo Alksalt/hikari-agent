@@ -1127,10 +1127,17 @@ def main() -> None:
             import json
             mcp = json.loads((REPO_ROOT / ".mcp.json").read_text())
             servers = mcp.get("mcpServers", {})
-            if "google_workspace" in servers and not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+            _gw_missing = [k for k in (
+                "GOOGLE_WORKSPACE_CLIENT_ID",
+                "GOOGLE_WORKSPACE_CLIENT_SECRET",
+                "GOOGLE_WORKSPACE_REFRESH_TOKEN",
+            ) if not os.environ.get(k)]
+            if "google_workspace" in servers and _gw_missing:
                 logger.warning(
                     "google_workspace MCP is registered in .mcp.json but "
-                    "GOOGLE_SERVICE_ACCOUNT_JSON is not set — the server will fail to start."
+                    "OAuth env vars %s are not set — the server will fail to "
+                    "authenticate. Run scripts/setup_google_oauth.py.",
+                    _gw_missing,
                 )
         except Exception:  # noqa: BLE001
             pass
