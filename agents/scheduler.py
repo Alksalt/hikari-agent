@@ -76,6 +76,25 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
 
+    from .proactive import fire_due_reminders
+    reminder_poll = int(cfg.get("reminders.poll_interval_sec", 60))
+    scheduler.add_job(
+        lambda: fire_due_reminders(send_text),
+        IntervalTrigger(seconds=reminder_poll),
+        id="reminders_fire",
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+
+    from .proactive import sync_pending_gcal_reminders
+    gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
+    if _calendar_creds_healthy():
+        scheduler.add_job(
+            sync_pending_gcal_reminders,
+            IntervalTrigger(seconds=gcal_interval),
+            id="reminders_gcal_sync",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+
     # Daily reflection: 09:00 local (use OS-local TZ via cron trigger without tz)
     scheduler.add_job(
         run_daily_reflection,

@@ -467,3 +467,102 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
         title, mins_until_rounded,
     )
     return True
+
+
+# ---------- Phase 10: reminders fire job ----------
+
+def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
+    """Compute next occurrence iso for a simple repeat. Returns None for
+    one-shots."""
+    from datetime import timedelta
+    from dateutil.relativedelta import relativedelta
+    from dateutil.rrule import rrulestr
+    when = datetime.fromisoformat(fire_at_iso)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    if not repeat:
+        return None
+    if repeat == "daily":
+        return (when + timedelta(days=1)).isoformat()
+    if repeat == "weekly":
+        return (when + timedelta(weeks=1)).isoformat()
+    if repeat == "monthly":
+        return (when + relativedelta(months=1)).isoformat()
+    if repeat == "yearly":
+        return (when + relativedelta(years=1)).isoformat()
+    if repeat.upper().startswith("RRULE:"):
+        try:
+            rule = rrulestr(repeat, dtstart=when)
+            nxt = rule.after(when, inc=False)
+            return nxt.isoformat() if nxt else None
+        except Exception:
+            logger.exception("invalid RRULE: %r", repeat)
+            return None
+    return None
+
+
+async def fire_due_reminders(send_text) -> int:
+    """Drain reminder_due() — for each row, format + send + mark fired.
+    If row has a repeat spec, insert the next occurrence as a fresh row.
+    Returns count fired."""
+    due = db.reminder_due()
+    if not due:
+        return 0
+    fired = 0
+    for row in due:
+        text = f"reminder: {row['text']}"
+        try:
+            await send_text(text)
+        except Exception:
+            logger.exception("fire_due_reminders: send_text failed for #%s", row["id"])
+            continue
+        db.reminder_mark_fired(row["id"])
+        fired += 1
+        nxt = _next_occurrence(row["fire_at"], row.get("repeat") or "")
+        if nxt:
+            db.reminder_insert(
+                fire_at=nxt,
+                text=row["text"],
+                lead_minutes=row["lead_minutes"],
+                repeat=row["repeat"],
+                gcal_sync_pending=False,
+            )
+    return fired
+
+
+async def sync_pending_gcal_reminders() -> int:
+    """Drain reminders.gcal_sync_pending — for each row, delegate to the
+    drive_gmail subagent to create a Google Calendar event, then store the
+    returned event_id. Best-effort: failures stay pending for retry."""
+    import os
+    if not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        return 0
+    pending = db.reminders_pending_gcal_sync(limit=10)
+    if not pending:
+        return 0
+    synced = 0
+    for row in pending:
+        prompt = (
+            "[calendar mirror only — do NOT reply to the user. delegate to the "
+            "drive_gmail specialist: call the calendar create_event tool with "
+            f"start_iso={row['fire_at']!r}, end_iso=(start + 30min), "
+            f"title={row['text']!r}, description='hikari reminder #" + str(row["id"]) + "'. "
+            f"return ONLY YAML: event_id: '<id>'  (no fences, no commentary).]"
+        )
+        try:
+            raw = await run_proactive(prompt)
+        except Exception:
+            logger.exception("gcal sync: subagent failed for reminder #%s", row["id"])
+            continue
+        try:
+            data = yaml.safe_load(_strip_fences(raw)) or {}
+            event_id = str(data.get("event_id") or "").strip()
+        except yaml.YAMLError:
+            logger.warning("gcal sync: invalid YAML for reminder #%s", row["id"])
+            continue
+        if not event_id:
+            logger.warning("gcal sync: empty event_id for reminder #%s", row["id"])
+            continue
+        db.reminder_update_gcal_event(row["id"], event_id)
+        synced += 1
+    return synced
