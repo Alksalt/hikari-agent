@@ -1191,6 +1191,31 @@ def runtime_get_int(key: str, default: int = 0) -> int:
         return default
 
 
+def runtime_increment(key: str, by: int = 1) -> int:
+    """Atomic +N on a runtime_state integer key. Treats a missing or
+    non-integer value as 0. Returns the new total.
+
+    Uses a single SQL UPSERT with an arithmetic expression so it survives
+    concurrent calls without a Python-side lock — fixes the read-modify-write
+    race in counter bumps (Phase 9 review-F3).
+    """
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO runtime_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = CAST("
+            "  CAST(COALESCE(runtime_state.value, '0') AS INTEGER) + ? "
+            "AS TEXT)",
+            (key, str(int(by)), int(by)),
+        )
+        row = c.execute(
+            "SELECT value FROM runtime_state WHERE key = ?", (key,)
+        ).fetchone()
+    try:
+        return int(row["value"]) if row else int(by)
+    except (ValueError, TypeError):
+        return int(by)
+
+
 # ---------- background_tasks (long-running dispatched work) ----------
 
 def bg_task_create(

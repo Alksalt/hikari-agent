@@ -566,6 +566,27 @@ reactions:
   probability_per_inbound: 0.10
   cooldown_min_messages: 8
   pool: ["👀", "💭", "🙄", "🤔", "🌙"]
+  # Phase 9: reaction-ONLY reply mode. Roll once per inbound user message
+  # BEFORE respond(); on hit, ship a reaction and skip the LLM call entirely.
+  # Free + low-effort response. Substantive messages (questions, long text)
+  # bypass this gate and always get a real reply.
+  solo_reaction_probability: 0.05
+
+reactions_as_turns:
+  # Phase 9: when the owner reacts to one of Hikari's messages with an emoji
+  # (other than 👍/👎, which stay silent for the drift-judge feedback channel),
+  # treat the reaction as a conversational nudge and trigger a Hikari turn.
+  enabled: true
+  # If true, 👍/👎 ALSO trigger a reply (in addition to recording feedback).
+  # Default false — keeps the ground-truth channel un-influenced by replies.
+  feedback_emojis_also_reply: false
+  # Don't fire two reaction-turns back-to-back within this window. Prevents
+  # rapid-tap loops + cost runaway.
+  cooldown_sec: 90
+  # Hard daily cap to bound spend in the worst case.
+  max_per_day: 20
+  # In irritable mood, skip the reply ~half the time (in voice).
+  irritable_skip_probability: 0.5
 
 stickers:
   enabled: true
@@ -573,8 +594,21 @@ stickers:
   cooldown_min_messages: 12
   mood_blocklist: ["irritable"]
   # fill file_ids here once your sticker pack is curated. empty = disabled.
-  # to get file_ids: send a sticker to your bot, look at the message dict.
+  # easiest path: /grab_stickers start, send each sticker to the bot, then
+  # /grab_stickers stop — bot prints a YAML snippet to paste here.
   pool: []
+  # Phase 9: sticker-ONLY reply mode. Roll once per inbound user message
+  # BEFORE respond(); on hit, ship a sticker and skip the LLM call entirely.
+  # Mood blocklist above also applies to this path.
+  solo_reply_probability: 0.03
+
+nonverbal:
+  # Phase 9: shared daily cap across sticker-only + reaction-only modes so
+  # they can't dominate a chatty day.
+  max_per_day: 25
+  # User messages this long (chars) or longer always get a real text reply,
+  # never a non-verbal placeholder. Questions ("?") also force a real reply.
+  min_text_for_substantive: 60
 
 photo_in:
   enabled: true

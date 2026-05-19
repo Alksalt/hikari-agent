@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,6 +37,7 @@ from . import affect as affect_mod
 from . import belief_frame as belief_mod
 from . import config as cfg
 from . import drift_judge as drift_mod
+from . import nonverbal as nonverbal_mod
 from . import reactions as reactions_mod
 from . import stickers as stickers_mod
 from .background_listener import (
@@ -293,10 +295,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("affect scan failed (non-fatal)")
 
+    # Probabilistic reaction — fires occasionally as a non-verbal nod.
+    try:
+        await reactions_mod.maybe_react(context.bot, chat.id, message.message_id)
+    except Exception:
+        logger.exception("reactions: maybe_react failed (non-fatal)")
+
+    # Ignore mechanic — roll first, before any agent work
+    mood = _mood()
+    ignore, action_line = should_ignore(mood)
+    if ignore and action_line:
+        await message.reply_text(action_line)
+        return
+
+    # Phase 9: non-verbal reply modes (sticker-only / reaction-only) roll
+    # BEFORE respond() AND BEFORE belief-frame priming so we save both the
+    # LLM cost and avoid stamping a wasted-priming thought when we short-
+    # circuit (review-F5). Heuristics inside ``nonverbal.maybe_nonverbal_reply``
+    # skip on questions / common substantive openers / long messages / daily
+    # cap so substantive turns always reach the real reply path.
+    nonverbal_kind = nonverbal_mod.maybe_nonverbal_reply(message.text, mood)
+    if nonverbal_kind == "sticker":
+        await nonverbal_mod.send_sticker_only(context.bot, chat.id)
+        return
+    if nonverbal_kind == "reaction":
+        await nonverbal_mod.send_reaction_only(
+            context.bot, chat.id, message.message_id,
+        )
+        return
+
     # Belief-frame guard — if the user is asserting a factual claim as their
     # belief ("i think X", "i'm pretty sure X"), prepend an adversarial
     # instruction so the recall subagent looks for contradictions instead of
     # confirmations. Mitigates Stanford-AI-Index 2026 sycophancy-under-belief.
+    # Moved AFTER the non-verbal gate (Phase 9 review-F5): when a non-verbal
+    # reply short-circuits the turn, this priming is never used, so don't
+    # bother stamping a misleading character_thoughts entry.
     user_text = message.text
     try:
         bm_hit, bm_fragment = belief_mod.is_belief_assertion(user_text)
@@ -310,19 +344,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         db.append_thought(
             f"belief-frame detected: {bm_fragment!r}. recall adversarial mode primed."
         )
-
-    # Probabilistic reaction — fires occasionally as a non-verbal nod.
-    try:
-        await reactions_mod.maybe_react(context.bot, chat.id, message.message_id)
-    except Exception:
-        logger.exception("reactions: maybe_react failed (non-fatal)")
-
-    # Ignore mechanic — roll first, before any agent work
-    mood = _mood()
-    ignore, action_line = should_ignore(mood)
-    if ignore and action_line:
-        await message.reply_text(action_line)
-        return
 
     # Phase 8: start the typing heartbeat IMMEDIATELY so the user sees the
     # indicator while the agent is actually working, not after the reply is
@@ -610,6 +631,120 @@ async def cmd_unsilence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text("fine. you can hear me again.")
 
 
+_STICKER_CAPTURE_MODE_KEY = "sticker_capture_mode"
+_STICKER_CAPTURE_POOL_KEY = "sticker_capture_pool"
+
+
+async def cmd_grab_stickers(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Phase 9 — capture file_ids of every sticker the owner sends, then
+    print a YAML snippet ready to paste into config/engagement.yaml.
+
+    Subcommands:
+      /grab_stickers          — show status
+      /grab_stickers start    — enter capture mode (every inbound sticker captured)
+      /grab_stickers stop     — exit capture mode + print the YAML snippet
+      /grab_stickers reset    — exit + drop the accumulated pool
+    """
+    import json
+
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+
+    arg = (context.args[0].strip().lower() if context.args else "").strip()
+    on = db.runtime_get(_STICKER_CAPTURE_MODE_KEY) == "1"
+    pool_json = db.runtime_get(_STICKER_CAPTURE_POOL_KEY) or "[]"
+    try:
+        pool = json.loads(pool_json)
+        if not isinstance(pool, list):
+            pool = []
+    except (ValueError, TypeError):
+        pool = []
+
+    if arg == "start":
+        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, "1")
+        # Don't clobber an existing partial pool — let user append across sessions.
+        await message.reply_text(
+            f"sticker capture ON. send me stickers; i'll log them. "
+            f"({len(pool)} already queued.) /grab_stickers stop to finish."
+        )
+        return
+
+    if arg in ("stop", "done", "finish"):
+        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
+        if not pool:
+            await message.reply_text(
+                "captured nothing. send stickers while capture is on first."
+            )
+            return
+        snippet_lines = ["stickers:", "  pool:"]
+        for fid in pool:
+            # Telegram file_ids today are alphanumeric + _ + -, but escape
+            # double quotes + backslashes defensively in case a future
+            # source emits anything weirder (review-F6).
+            fid_safe = str(fid).replace("\\", "\\\\").replace('"', '\\"')
+            snippet_lines.append(f'    - "{fid_safe}"')
+        snippet = "\n".join(snippet_lines)
+        await message.reply_text(
+            f"captured {len(pool)} sticker(s). paste this into "
+            f"config/engagement.yaml (replace the existing `stickers.pool:`):\n\n"
+            f"```\n{snippet}\n```"
+        )
+        # Leave the pool intact in case they want to capture more later.
+        return
+
+    if arg == "reset":
+        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
+        db.runtime_set(_STICKER_CAPTURE_POOL_KEY, None)
+        await message.reply_text("sticker capture cleared.")
+        return
+
+    # No arg → status.
+    state = "ON" if on else "off"
+    await message.reply_text(
+        f"sticker capture is {state}. {len(pool)} file_id(s) queued.\n"
+        f"/grab_stickers start | stop | reset"
+    )
+
+
+async def handle_inbound_sticker(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,  # noqa: ARG001
+) -> None:
+    """Phase 9 — when sticker-capture mode is on, log inbound owner stickers.
+
+    Outside capture mode, owner stickers are silently ignored (we don't have
+    a conversational handler for them yet)."""
+    import json
+
+    user = update.effective_user
+    message = update.message
+    if not user or not message or not message.sticker:
+        return
+    if user.id != owner_id():
+        return
+    if db.runtime_get(_STICKER_CAPTURE_MODE_KEY) != "1":
+        return
+
+    pool_json = db.runtime_get(_STICKER_CAPTURE_POOL_KEY) or "[]"
+    try:
+        pool = json.loads(pool_json)
+        if not isinstance(pool, list):
+            pool = []
+    except (ValueError, TypeError):
+        pool = []
+
+    file_id = message.sticker.file_id
+    if file_id in pool:
+        await message.reply_text(f"already have that one ({len(pool)} total).")
+        return
+    pool.append(file_id)
+    db.runtime_set(_STICKER_CAPTURE_POOL_KEY, json.dumps(pool))
+    await message.reply_text(f"captured ({len(pool)}). send more or /grab_stickers stop.")
+
+
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """List running + recent background tasks."""
     user = update.effective_user
@@ -692,13 +827,162 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def handle_message_reaction(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,  # noqa: ARG001
-) -> None:
-    """Phase 8 — owner reacted to one of Hikari's outbound messages with
-    a 👍 or 👎. Map to +1/-1 and persist for the drift-vs-feedback comparison.
+_REACTION_TURN_COOLDOWN_KEY = "reaction_turn_last_at"
+_REACTION_TURN_DAILY_KEY = "reaction_turn_count_day"
+_REACTION_TURN_DAY_KEY = "reaction_turn_count_date"
 
-    Other emojis are ignored. Non-owner reactions are rejected at the gate.
+
+def _reaction_turns_enabled() -> bool:
+    return bool(cfg.get("reactions_as_turns.enabled", True))
+
+
+def _reaction_feedback_also_replies() -> bool:
+    return bool(cfg.get("reactions_as_turns.feedback_emojis_also_reply", False))
+
+
+def _reaction_cooldown_sec() -> int:
+    return int(cfg.get("reactions_as_turns.cooldown_sec", 90))
+
+
+def _reaction_max_per_day() -> int:
+    return int(cfg.get("reactions_as_turns.max_per_day", 20))
+
+
+def _reaction_irritable_skip_prob() -> float:
+    return float(cfg.get("reactions_as_turns.irritable_skip_probability", 0.5))
+
+
+def _reaction_turn_within_cooldown() -> bool:
+    last = db.runtime_get(_REACTION_TURN_COOLDOWN_KEY)
+    if not last:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(last)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return False
+    return (datetime.now(UTC) - last_dt).total_seconds() < _reaction_cooldown_sec()
+
+
+def _reaction_turn_daily_count_bump() -> int:
+    """Returns the new count after the bump. Resets to 1 on a new UTC date.
+
+    Phase 9 review-F3: uses ``db.runtime_increment`` (atomic +1 via SQL) so
+    concurrent calls don't lose a bump."""
+    today = datetime.now(UTC).date().isoformat()
+    last_day = db.runtime_get(_REACTION_TURN_DAY_KEY)
+    if last_day != today:
+        db.runtime_set(_REACTION_TURN_DAY_KEY, today)
+        db.runtime_set(_REACTION_TURN_DAILY_KEY, "0")
+    return db.runtime_increment(_REACTION_TURN_DAILY_KEY, 1)
+
+
+def _reaction_turn_daily_count_peek() -> int:
+    """Read without bumping. Returns the current day's count (or 0 if new day)."""
+    today = datetime.now(UTC).date().isoformat()
+    last_day = db.runtime_get(_REACTION_TURN_DAY_KEY)
+    if last_day != today:
+        return 0
+    return db.runtime_get_int(_REACTION_TURN_DAILY_KEY, 0)
+
+
+def _lookup_assistant_text_by_telegram_msg_id(telegram_msg_id: int) -> str | None:
+    """Find the assistant message Hikari sent that the user just reacted to."""
+    try:
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT content FROM messages WHERE telegram_message_id = ? "
+                "AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+                (int(telegram_msg_id),),
+            ).fetchone()
+        return str(row["content"]) if row else None
+    except Exception:
+        logger.exception("lookup_assistant_text_by_telegram_msg_id failed")
+        return None
+
+
+async def _send_text_with_choreography(
+    bot, chat_id: int, text_to_send_in: str, *, elapsed_real: float = 0.0,
+) -> None:
+    """Phase 9 — same choreography as ``_send_with_choreography`` but without
+    threading the reply to a specific message. Used by reaction-triggered
+    turns (no user text to reply to)."""
+    mood = _mood()
+    filtered = filter_outgoing(text_to_send_in)
+    text_to_send = filtered.text
+    if filtered.refusal_short_replaced:
+        db.append_thought(
+            "reaction-turn: short-replaced safety-voice leak. "
+            f"hits={filtered.refusal_hits[:3]}"
+        )
+    elif filtered.needs_llm_rewrite:
+        text_to_send = await post_filter.rewrite_or_fallback(
+            text_to_send_in, filtered, mood, where="reaction-turn",
+        )
+
+    delay = compute_typing_delay(text_to_send, mood)
+    remaining = max(0.0, delay - elapsed_real)
+
+    # Phase 9 review-F2: match the false-start choreography from
+    # ``_send_with_choreography`` so reaction-triggered replies have the same
+    # human-typing rhythm as user-triggered ones. Reaction turns are usually
+    # short impulsive replies — exactly where false-starts feel natural.
+    if should_false_start(text_to_send) and remaining > 0:
+        await asyncio.sleep(max(0.5, remaining / 2))
+        await asyncio.sleep(false_start_pause_sec())
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            logger.exception(
+                "reaction-turn: typing refresh failed (non-fatal)"
+            )
+        await asyncio.sleep(false_start_resume_sec())
+    elif remaining > 0:
+        await asyncio.sleep(remaining)
+
+    try:
+        sent = await bot.send_message(chat_id=chat_id, text=text_to_send)
+    except Exception:
+        logger.exception("reaction-turn: send_message failed")
+        return
+
+    try:
+        if sent is not None and getattr(sent, "message_id", None):
+            db.update_last_assistant_telegram_msg_id(int(sent.message_id))
+    except Exception:
+        logger.exception(
+            "reaction-turn: telegram_message_id stamp failed (non-fatal)"
+        )
+
+    try:
+        stickers_mod._bump_outbound_counter()
+        outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
+        await stickers_mod.maybe_send_sticker(bot, chat_id, outbound_counter)
+    except Exception:
+        logger.exception("reaction-turn: maybe_send_sticker failed (non-fatal)")
+        outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
+
+    try:
+        asyncio.create_task(
+            drift_mod.maybe_judge_and_log(text_to_send, outbound_counter)
+        )
+    except Exception:
+        logger.exception("reaction-turn: drift_judge scheduling failed")
+
+
+async def handle_message_reaction(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Phase 8/9 — owner reacted to one of Hikari's outbound messages.
+
+    Two channels, kept separate:
+      - 👍 / 👎 → recorded in ``user_feedback`` for the drift-judge
+        ground-truth comparison. Silent unless
+        ``reactions_as_turns.feedback_emojis_also_reply`` is set.
+      - Any other emoji → triggers a Hikari turn (no typing needed). Gated by
+        cooldown + daily cap + mood. The synthetic prompt includes the
+        previous message text + the emoji so she can respond contextually.
     """
     rxn: MessageReactionUpdated | None = update.message_reaction
     if rxn is None:
@@ -707,29 +991,96 @@ async def handle_message_reaction(
     if user is None or user.id != owner_id():
         return
 
-    # Telegram sends the NEW reaction set. Treat the first matching emoji as
-    # the user's vote. Removing the reaction (empty new_reaction) → no-op.
-    rating: int | None = None
+    # Telegram sends the NEW reaction set. Removal (empty new_reaction) is a
+    # no-op for both channels — we don't undo previous feedback rows.
+    chosen_emoji: str | None = None
     for r in rxn.new_reaction or []:
-        if not isinstance(r, ReactionTypeEmoji):
-            continue
-        emoji = r.emoji
-        if emoji == "👍":
-            rating = 1
+        if isinstance(r, ReactionTypeEmoji):
+            chosen_emoji = r.emoji
             break
-        if emoji == "👎":
-            rating = -1
-            break
-    if rating is None:
+    if chosen_emoji is None:
         return
 
-    try:
-        db.feedback_record(int(rxn.message_id), rating)
-    except Exception:
-        logger.exception(
-            "feedback_record failed for msg_id=%s rating=%s",
-            rxn.message_id, rating,
+    is_feedback = chosen_emoji in ("👍", "👎")
+    if is_feedback:
+        rating = 1 if chosen_emoji == "👍" else -1
+        try:
+            db.feedback_record(int(rxn.message_id), rating)
+        except Exception:
+            logger.exception(
+                "feedback_record failed for msg_id=%s rating=%s",
+                rxn.message_id, rating,
+            )
+        # If feedback-also-replies is off (default), stop here.
+        if not _reaction_feedback_also_replies():
+            return
+
+    if not _reaction_turns_enabled():
+        return
+
+    # Gates: cooldown / daily cap / mood.
+    if _reaction_turn_within_cooldown():
+        logger.info("reaction-turn: cooldown active; skipping")
+        return
+    if _reaction_turn_daily_count_peek() >= _reaction_max_per_day():
+        logger.info("reaction-turn: daily cap reached; skipping")
+        return
+    mood = _mood()
+    if mood == "irritable" and random.random() < _reaction_irritable_skip_prob():
+        logger.info("reaction-turn: irritable mood skip")
+        return
+
+    # Look up the original message text Hikari sent. If the row is missing
+    # (e.g. user reacted to an old message pre-D-3), fall back to a generic
+    # prompt — better than dropping the turn entirely.
+    chat = rxn.chat
+    if chat is None or chat.id != owner_id():
+        # Shouldn't happen for a single-user bot but defends against shared use.
+        return
+    prev_text = _lookup_assistant_text_by_telegram_msg_id(int(rxn.message_id))
+
+    # Phase 9 review-F1: stamp cooldown + bump count IMMEDIATELY after the
+    # gate checks pass — before the mood roll, message lookup, prompt build,
+    # or respond() call. Two reactions arriving in the same asyncio tick
+    # would otherwise both pass the (still-empty) cooldown/cap window.
+    db.runtime_set(_REACTION_TURN_COOLDOWN_KEY, datetime.now(UTC).isoformat())
+    _reaction_turn_daily_count_bump()
+
+    if prev_text:
+        # Escape braces so the synthetic prompt doesn't trip str.format
+        # somewhere downstream, and truncate to keep the prompt tight.
+        snippet = prev_text[:500].replace("{", "{{").replace("}", "}}")
+        synthetic_prompt = (
+            f"[the user reacted to your previous message with {chosen_emoji}. "
+            f"they did not type anything — just the reaction. "
+            f"previous message text: {snippet!r}.\n\n"
+            f"reply in voice, short, as if they nudged you. it's a "
+            f"non-verbal poke — respond like one. one or two lines tops.]"
         )
+    else:
+        synthetic_prompt = (
+            f"[the user reacted with {chosen_emoji} to one of your messages "
+            f"but the original text isn't in memory. react back briefly in "
+            f"voice — one line.]"
+        )
+
+    bot = context.bot if context is not None else None
+    if bot is None:
+        logger.warning("reaction-turn: bot is None on context; cannot send")
+        return
+
+    started = time.monotonic()
+    try:
+        reply = await respond(synthetic_prompt)
+    except Exception:
+        logger.exception("reaction-turn: respond() failed")
+        return
+    if not reply:
+        return
+    elapsed = max(0.0, time.monotonic() - started)
+    await _send_text_with_choreography(
+        bot, chat.id, reply, elapsed_real=elapsed,
+    )
 
 
 def build_application() -> Application:
@@ -743,9 +1094,13 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("cost", cmd_cost))
+    # Phase 9: sticker-pack install — owner sends stickers while capture mode
+    # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
+    app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, handle_inbound_sticker))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     # Phase 8: 👍/👎 ground-truth for the drift judge. Owner-only handler;
     # writes a +1 / -1 row into user_feedback keyed by the outbound message_id.

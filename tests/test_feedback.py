@@ -241,19 +241,42 @@ async def test_reaction_handler_rejects_non_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reaction_handler_ignores_other_emojis(monkeypatch):
+async def test_reaction_handler_non_feedback_emoji_writes_no_feedback_row(
+    monkeypatch, tmp_path,
+):
+    """Original Phase 8 semantic preserved: non-👍/👎 emojis never go to
+    ``user_feedback``. Phase 9 added a reaction-as-turn path for those —
+    suppress that here with config so this test stays focused on the
+    feedback channel."""
+    cfg_text = "reactions_as_turns:\n  enabled: false\n"
+    p = tmp_path / "engagement.yaml"
+    p.write_text(cfg_text, encoding="utf-8")
+    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
+    from agents import config as _cfg
+    _cfg.reload()
+
     from agents import telegram_bridge
 
     rxn = SimpleNamespace(
         user=SimpleNamespace(id=12345),
+        chat=SimpleNamespace(id=12345),
         message_id=558,
         new_reaction=[SimpleNamespace(emoji="🌙")],
     )
     update = SimpleNamespace(message_reaction=rxn)
     monkeypatch.setattr(telegram_bridge, "ReactionTypeEmoji", SimpleNamespace)
 
-    await telegram_bridge.handle_message_reaction(update, None)
+    await telegram_bridge.handle_message_reaction(update, _ctx_with_bot())
     assert db.feedback_recent(window_days=1) == []
+
+
+def _ctx_with_bot():
+    from unittest.mock import AsyncMock
+    bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=999)),
+        send_chat_action=AsyncMock(),
+    )
+    return SimpleNamespace(bot=bot)
 
 
 @pytest.mark.asyncio
