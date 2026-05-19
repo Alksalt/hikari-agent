@@ -1595,6 +1595,14 @@ def reminder_update_gcal_event(reminder_id: int, event_id: str) -> None:
         )
 
 
+def reminder_update_fire_at(reminder_id: int, new_fire_at: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET fire_at = ? WHERE id = ?",
+            (new_fire_at, reminder_id),
+        )
+
+
 def reminders_pending_gcal_sync(limit: int = 10) -> list[dict[str, Any]]:
     with _conn() as conn:
         return [dict(r) for r in conn.execute(

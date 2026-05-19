@@ -38,6 +38,23 @@ async def test_calc_blocks_file_access():
     assert out["data"].get("result") is None or "err" in out["content"][0]["text"].lower()
 
 @pytest.mark.asyncio
+async def test_calc_blocks_import():
+    """R1 finding: asteval's Interpreter(minimal=False) exposed __import__.
+    The strip-list must include it so __import__('os').system(...) fails."""
+    from tools import calc
+    out = await calc.calc.handler({"expr": "__import__('os').system('echo escaped > /tmp/_calc_pwn')"})
+    assert out["data"].get("result") is None or "err" in out["content"][0]["text"].lower()
+    import os.path
+    assert not os.path.exists("/tmp/_calc_pwn"), "calc sandbox escape: __import__ executed"
+
+@pytest.mark.asyncio
+async def test_calc_blocks_getattr_introspection():
+    """getattr can be chained to reach __import__ via type lookups."""
+    from tools import calc
+    out = await calc.calc.handler({"expr": "getattr(object, '__class__')"})
+    assert out["data"].get("result") is None or "err" in out["content"][0]["text"].lower()
+
+@pytest.mark.asyncio
 async def test_calc_date_arithmetic():
     from tools import calc
     out = await calc.calc.handler({

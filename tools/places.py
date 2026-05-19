@@ -53,6 +53,14 @@ async def places_search(args: dict[str, Any]) -> dict[str, Any]:
         return _ok("refused: empty query")
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return _ok("refused: lat/lon out of range")
+    # Sanitize query before Overpass QL interpolation. The query goes into both
+    # regex (`~"…"`) and literal (`="…"`) string contexts; ", \, ], ;, \n would
+    # all let an attacker escape the literal and inject arbitrary QL (SSRF,
+    # large-bbox dumps). Allow only the chars a real place-search query needs.
+    import re as _re
+    query = _re.sub(r"[^a-z0-9\s\-_'À-ɏ]", "", query)[:64]
+    if not query:
+        return _ok("refused: query had no usable characters after sanitization")
 
     overpass_q = f"""
 [out:json][timeout:15];

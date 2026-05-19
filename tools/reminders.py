@@ -145,12 +145,7 @@ async def reminder_snooze(args: dict[str, Any]) -> dict[str, Any]:
     if when is None:
         return _ok(f"refused: reminder #{rid} has malformed fire_at")
     new_when = when + timedelta(minutes=by_minutes)
-    from storage.db import _conn
-    with _conn() as conn:
-        conn.execute(
-            "UPDATE reminders SET fire_at = ? WHERE id = ?",
-            (new_when.isoformat(), rid),
-        )
+    db.reminder_update_fire_at(rid, new_when.isoformat())
     return _ok(f"reminder #{rid} snoozed to {new_when.isoformat()}")
 
 

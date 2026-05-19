@@ -38,6 +38,42 @@ class _FakeAsyncClient:
 
 
 @pytest.mark.asyncio
+async def test_places_search_rejects_overpass_qli_chars(monkeypatch):
+    """R1 finding: user-supplied query was interpolated raw into Overpass QL.
+    Sanitizer must strip ", ], ;, \\, newlines so an attacker can't escape
+    the regex literal and inject arbitrary QL."""
+    from tools import places
+    import httpx
+    captured: dict = {}
+
+    class _CapturedClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs):
+            captured["data"] = kwargs.get("data", {}).get("data", "")
+            return _FakeResponse(200, {"elements": []})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: _CapturedClient())
+    await places.places_search.handler({
+        "query": '"]; out; injected~"', "lat": 59.91, "lon": 10.75, "radius_m": 500,
+    })
+    body = captured["data"]
+    # The dangerous chars from user input must NOT appear in the QL body.
+    # ", ], \ would close the regex literal; ; would inject a new statement.
+    # Template legitimately uses these (e.g. `[out:json][timeout:15];`), so we
+    # check the per-line user-substituted slots — content between the
+    # surrounding quotes of name/amenity/shop tags.
+    import re as _re
+    for m in _re.finditer(r'node\["[^"]+"[~=]"([^"]*)"', body):
+        substituted = m.group(1)
+        assert '"' not in substituted
+        assert ']' not in substituted
+        assert ';' not in substituted
+        assert '\\' not in substituted
+
+
+@pytest.mark.asyncio
 async def test_places_search_returns_named_pois(monkeypatch):
     from tools import places
     import httpx

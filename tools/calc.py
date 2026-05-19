@@ -37,9 +37,17 @@ def _run_asteval(expr: str, timeout_sec: float) -> tuple[Any, str | None]:
         return None, "asteval not installed"
 
     interp = Interpreter(minimal=False)
-    # Strip dangerous builtins asteval exposes by default. The advertised
-    # contract is "no file/network access" — open() and fromfile() leak that.
-    for _bad in ("open", "fromfile"):
+    # Strip every builtin that would let LLM-generated code escape the
+    # in-process calculator: __import__('os').system(...) was the original
+    # find. Belt-and-braces — kill anything that touches the import system,
+    # introspection, file/network IO, or arbitrary code execution.
+    _DANGEROUS = (
+        "__import__", "compile", "exec", "globals", "locals", "vars",
+        "getattr", "setattr", "delattr", "hasattr", "type", "object",
+        "open", "fromfile", "input", "breakpoint", "__builtins__",
+        "memoryview", "bytearray", "bytes",
+    )
+    for _bad in _DANGEROUS:
         interp.symtable.pop(_bad, None)
     interp.symtable["datetime"] = _datetime
     interp.symtable["date"] = _datetime.date
@@ -114,11 +122,23 @@ async def python_run(args: dict[str, Any]) -> dict[str, Any]:
     max_bytes = int(cfg.get("calc.python_run_max_output_bytes", 1_048_576))
     tmpdir = tempfile.mkdtemp(prefix=f"hikari-eval-{uuid.uuid4().hex[:8]}-")
     profile = _sandbox_exec_profile(tmpdir)
+    # -I (isolated) strips PYTHONPATH/PYTHONSTARTUP/user-site;
+    # -S (no site) additionally blocks sitecustomize.py in the venv — without
+    # -S an attacker who can drop a file into site-packages/sitecustomize.py
+    # gets code execution before the sandbox profile binds.
+    # Preserve DYLD_LIBRARY_PATH if set in the parent env — venv Python on
+    # macOS needs it to find libpython.dylib; otherwise the subprocess fails
+    # with a dyld error instead of running the user's code.
+    sub_env = {"PATH": "/usr/bin:/bin"}
+    if os.environ.get("DYLD_LIBRARY_PATH"):
+        sub_env["DYLD_LIBRARY_PATH"] = os.environ["DYLD_LIBRARY_PATH"]
+    if os.environ.get("DYLD_FALLBACK_LIBRARY_PATH"):
+        sub_env["DYLD_FALLBACK_LIBRARY_PATH"] = os.environ["DYLD_FALLBACK_LIBRARY_PATH"]
     try:
         proc = subprocess.run(
-            ["sandbox-exec", "-p", profile, sys.executable, "-I", "-c", code],
+            ["sandbox-exec", "-p", profile, sys.executable, "-I", "-S", "-c", code],
             capture_output=True, timeout=timeout, cwd=tmpdir,
-            env={"PATH": "/usr/bin:/bin"},
+            env=sub_env,
         )
         stdout = proc.stdout.decode("utf-8", errors="replace")[:max_bytes]
         stderr = proc.stderr.decode("utf-8", errors="replace")[:max_bytes]

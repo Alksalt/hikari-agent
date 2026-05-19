@@ -68,7 +68,9 @@ def test_full_schema_present(tmp_path, monkeypatch):
                 "tasks", "character_thoughts", "runtime_state", "fts",
                 "vec_facts", "vec_episodes",
                 # Phase 2 + Phase 3
-                "background_tasks", "approvals", "audit_log"}
+                "background_tasks", "approvals", "audit_log",
+                # Phase 10
+                "reminders"}
     missing = expected - rows
     assert not missing, f"missing tables: {missing}"
     # entities table was dropped

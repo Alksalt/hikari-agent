@@ -94,6 +94,12 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             id="reminders_gcal_sync",
             coalesce=True, max_instances=1, misfire_grace_time=600,
         )
+    else:
+        logger.info(
+            "reminders_gcal_sync: skipped — calendar creds unhealthy. "
+            "pending gcal mirrors will accumulate; new reminders still fire "
+            "locally via the reminders_fire job."
+        )
 
     # Daily reflection: 09:00 local (use OS-local TZ via cron trigger without tz)
     scheduler.add_job(
