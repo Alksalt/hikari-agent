@@ -52,20 +52,34 @@ def main() -> int:
         return 1
 
     flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), SCOPES)
-    # access_type=offline + prompt=consent ensures we get a refresh_token
-    # even on re-auth (otherwise the second time around you only get an
-    # access token).
-    # Bind explicitly to 127.0.0.1 (not "localhost") so the redirect URI
-    # Google receives is http://127.0.0.1:<port>/ — avoids the macOS dual-stack
-    # case where "localhost" resolves to ::1 (IPv6) but Python's HTTPServer
-    # only listens on IPv4.
+    # Pre-print the consent URL so the user can paste it into ANY browser
+    # (works when the script runs on a headless host or a different machine
+    # from where you want to grant consent). Then start the local server
+    # without auto-opening — user controls which browser handles it.
+    flow.redirect_uri = "http://127.0.0.1:8910/"
+    auth_url, _ = flow.authorization_url(
+        access_type="offline", prompt="consent",
+    )
+    print()
+    print("=" * 70)
+    print("OPEN THIS URL in any browser on any device:")
+    print()
+    print(auth_url)
+    print()
+    print("Then click Allow. The browser will redirect to 127.0.0.1:8910 —")
+    print("the script is listening there now. If you authorize from a different")
+    print("machine, the redirect MUST resolve to THIS host. Easiest: paste")
+    print("the consent URL into a browser on this same Mac.")
+    print("=" * 70)
+    print(flush=True)
+
     creds = flow.run_local_server(
         host="127.0.0.1",
         bind_addr="127.0.0.1",
-        port=0,
+        port=8910,
         access_type="offline",
         prompt="consent",
-        open_browser=True,
+        open_browser=False,
     )
 
     print()
