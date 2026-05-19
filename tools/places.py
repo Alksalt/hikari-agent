@@ -29,7 +29,7 @@ def _open_now(opening_hours: str | None) -> bool | None:
     if not opening_hours:
         return None
     try:
-        from humanized_opening_hours import OHParser
+        from osm_opening_hours_humanized import OHParser
         oh = OHParser(opening_hours)
         return oh.is_open()
     except Exception:
