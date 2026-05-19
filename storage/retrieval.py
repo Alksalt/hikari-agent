@@ -131,11 +131,75 @@ def _fact_active(valid_to: Any) -> bool:
     return ts > datetime.now(UTC)
 
 
+def _ebbinghaus_multiplier(
+    last_seen_iso: str | None,
+    hit_count: int,
+    tau_base_seconds: float,
+) -> float:
+    """T3.2 — exponential forgetting curve.
+
+    ``tau = tau_base * 1.5 ** hit_count`` — each successful recall stretches
+    the half-life so frequently-touched facts decay slower (rehearsal effect).
+    ``delta`` is seconds since ``last_seen_iso``; the result is
+    ``exp(-delta / tau)`` and lives in ``(0, 1]``.
+
+    A malformed or missing timestamp is treated as "infinitely old" — the
+    multiplier collapses toward zero and the fact loses ranking weight, which
+    is the conservative choice for unknown freshness.
+    """
+    if tau_base_seconds <= 0:
+        return 1.0
+    delta = _seconds_since(last_seen_iso)
+    tau = tau_base_seconds * (1.5 ** max(0, int(hit_count)))
+    if tau <= 0:
+        return 0.0
+    # Cap the exponent to avoid math.exp underflow on very stale rows; the
+    # value drops to ~1e-300 well before the cap, so this is just hygiene.
+    exponent = -min(700.0, delta / tau)
+    return math.exp(exponent)
+
+
+def _seconds_since(iso: str | None) -> float:
+    if not iso:
+        return float("inf")
+    raw = str(iso).strip()
+    if not raw:
+        return float("inf")
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return float("inf")
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - ts).total_seconds())
+
+
 def retrieve(query: str, limit: int = 8) -> list[Hit]:
-    """Retrieve top-N hits across facts + episodes using hybrid scoring."""
+    """Retrieve top-N hits across facts + episodes using hybrid scoring.
+
+    T3.2 layers an Ebbinghaus forgetting curve over the relevance signal:
+    each fact's relevance is multiplied by ``exp(-delta / tau)`` where
+    ``delta`` is seconds since last recall (or creation if never recalled)
+    and ``tau`` grows with ``recall_hit_count`` so frequently-touched facts
+    decay slower. Episodes are not decayed — they're already time-stamped
+    via the existing ``recency`` term.
+
+    After ranking, the returned facts have their ``last_recalled_at`` +
+    ``recall_hit_count`` bumped so the next call sees the updated tau.
+    """
     query = (query or "").strip()
     if not query:
         return []
+
+    # Lazy config import — avoids a hard dependency at import time which would
+    # break test fixtures that reload storage.db before agents.config loads.
+    try:
+        from agents import config as cfg
+        tau_base = float(
+            cfg.get("memory.recall_decay_tau_seconds", 604800)
+        )
+    except Exception:
+        tau_base = 604800.0
 
     bm25_rank: dict[tuple[str, int], float] = {}
     vec_dist: dict[tuple[str, int], float] = {}
@@ -180,6 +244,17 @@ def retrieve(query: str, limit: int = 8) -> list[Hit]:
         else:
             relevance = 0.0
 
+        # Ebbinghaus decay applies to fact relevance only. Episodes already
+        # have a recency term in the base score, and the recall_hit_count
+        # column doesn't exist on them.
+        if kind == "fact":
+            last_seen = rec.get("last_recalled_at") or rec.get("iso")
+            hit_count = int(rec.get("recall_hit_count") or 0)
+            decay_multiplier = _ebbinghaus_multiplier(
+                last_seen, hit_count, tau_base
+            )
+            relevance *= decay_multiplier
+
         recency = _recency_score(rec["iso"] or "")
         importance = rec["importance"] / 10.0
         score = (W_RECENCY * recency
@@ -194,4 +269,16 @@ def retrieve(query: str, limit: int = 8) -> list[Hit]:
         ))
 
     hits.sort(key=lambda h: h.score, reverse=True)
-    return hits[:limit]
+    top = hits[:limit]
+
+    # Bump access counters for the returned facts so the next recall sees a
+    # stretched tau. Best-effort — a DB write failure here must not break the
+    # recall return path (worst case the decay simply doesn't update).
+    fact_ids = [h.ref_id for h in top if h.kind == "fact"]
+    if fact_ids:
+        try:
+            db.facts_mark_recalled(fact_ids)
+        except Exception:
+            logger.exception("facts_mark_recalled failed (non-fatal)")
+
+    return top
