@@ -118,4 +118,10 @@ def format_for_injection(data: dict) -> str:
         content = (t.get("content") or "").strip()
         if content:
             lines.append(f"{role}: {content}")
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    # SPASM Egocentric Context Projection (arxiv 2604.09212): rewrite
+    # USER:/ASSISTANT: labels into [partner]:/[self]: so Hikari reads this
+    # handoff as her own first-person memory instead of a third-person log.
+    # Documented Cohen's d=-0.75 drop on emotion drift over 18-turn chats.
+    from . import ecp
+    return ecp.maybe_project(out)

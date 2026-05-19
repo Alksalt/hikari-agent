@@ -509,6 +509,12 @@ async def maybe_run_session_consolidation() -> None:
         return
 
     transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in msgs[-20:])
+    # SPASM Egocentric Context Projection (arxiv 2604.09212): rewrite role
+    # labels so the consolidation prompt reads the transcript as first-person
+    # memory instead of a third-person dialog log. Cohen's d=-0.75 on emotion
+    # drift; safe to apply because we're summarizing, not citing labels back.
+    from . import ecp
+    transcript = ecp.maybe_project(transcript)
     prompt = (
         "Summarize this Hikari conversation in 2-4 sentences. Capture: what was "
         "discussed, emotional tone, anything notable. Output ONLY the summary text.\n\n"

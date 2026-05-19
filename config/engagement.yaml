@@ -169,6 +169,14 @@ codex:
 # Stage 1: persona hardening — refusal filter, politeness gate, sycophancy guard
 # ============================================================================
 
+persona:
+  # SPASM Egocentric Context Projection (arxiv 2604.09212, ACL 2026):
+  # rewrite role labels in conversation history so the model reads it
+  # as first-person memory instead of third-person dialog log.
+  # Documented Cohen's d=-0.75 drop on emotion drift over 18 turns.
+  # Applied at: session_handoff format + session consolidation transcript.
+  egocentric_projection: true
+
 refusal_filter:
   # Patterns that signal Claude's default assistant/safety voice leaked through.
   # All patterns are tightened to require an assistant-voice completion so we
