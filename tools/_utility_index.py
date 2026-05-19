@@ -9,6 +9,8 @@ from __future__ import annotations
 # Imports are appended by each Phase 1 worktree. Keep them sorted for
 # merge-friendliness.
 from tools.reminders import ALL_TOOLS as _REMINDERS
+from tools.weather import ALL_TOOLS as _WEATHER
 
 ALL_TOOLS: list = []
 ALL_TOOLS.extend(_REMINDERS)
+ALL_TOOLS.extend(_WEATHER)

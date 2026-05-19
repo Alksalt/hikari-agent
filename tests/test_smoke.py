@@ -147,6 +147,7 @@ def test_scheduler_builds(monkeypatch):
         "heartbeat", "reengage", "consolidation",
         "daily_reflection", "calendar_heartbeat", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
+        "morning_brief",
     }
 
 

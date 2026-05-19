@@ -1,0 +1,118 @@
+"""Phase 10: daily morning weather brief — proactive at 06:00 local.
+
+Pipeline:
+  1. Gate: core_block 'morning_brief_status' must not be 'disabled'
+  2. Resolve location: most recent Telegram share (any age) -> HOME_LAT/LON
+  3. Fetch multi-source forecast via tools/weather.py
+  4. Build prompt, call run_proactive -> Hikari writes in voice
+  5. send_text the result
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from agents import config as cfg
+from agents.runtime import run_proactive
+from storage import db
+from tools.weather import fetch_forecast
+
+logger = logging.getLogger(__name__)
+
+
+def _is_disabled() -> bool:
+    block = (db.get_core_block("morning_brief_status") or "").strip().lower()
+    return block in {"disabled", "off", "no"}
+
+
+def _resolve_location() -> tuple[float, float, str | None] | None:
+    """Return (lat, lon, label_or_none) or None if we have nothing."""
+    raw = db.runtime_get("user_location_state")
+    if raw:
+        try:
+            state = json.loads(raw)
+            lat = float(state["lat"])
+            lon = float(state["lon"])
+            return lat, lon, state.get("label")
+        except (ValueError, KeyError, TypeError):
+            pass
+    lat_env = os.environ.get("HOME_LAT")
+    lon_env = os.environ.get("HOME_LON")
+    if lat_env and lon_env:
+        try:
+            return float(lat_env), float(lon_env), "home"
+        except ValueError:
+            pass
+    return None
+
+
+def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
+    c = forecast["consensus"]
+    sources = ", ".join(forecast["sources"].keys()) or "no sources"
+    high = c.get("temp_high_c")
+    low = c.get("temp_low_c")
+    spread = c.get("high_spread") or 0
+    where = f"in {label}" if label else "where you are"
+    disagreement = ""
+    if spread > 3:
+        disagreement = (
+            f"\n  note: sources disagree (spread {spread}°C) — mention briefly "
+            f"if it fits the voice."
+        )
+    return (
+        "You are writing a morning weather brief. ONE short message, in your "
+        "voice. Hikari is reluctant about being useful — make it dry, never "
+        "chirpy. No exclamation marks for enthusiasm. No 'good morning!'. "
+        "Stick to short. Don't list bullets.\n\n"
+        f"data:\n"
+        f"  location: {where}\n"
+        f"  high_c: {high}\n"
+        f"  low_c: {low}\n"
+        f"  sources: {sources}"
+        f"{disagreement}\n\n"
+        "Output ONLY the message text — no preamble, no quotes. If you can't "
+        "write something true to her voice, output NO_MESSAGE."
+    )
+
+
+async def maybe_send_morning_brief(send_text) -> bool:
+    """Returns True if a brief was sent."""
+    if _is_disabled():
+        logger.info("morning_brief: disabled via core_block")
+        return False
+    if not bool(cfg.get("morning_brief.enabled", True)):
+        return False
+    loc = _resolve_location()
+    if loc is None:
+        logger.info("morning_brief: no location available (no share, no HOME env)")
+        return False
+    lat, lon, label = loc
+    try:
+        forecast = await fetch_forecast(lat, lon)
+    except Exception:
+        logger.exception("morning_brief: fetch_forecast failed")
+        return False
+    if not forecast["sources"]:
+        logger.info("morning_brief: all weather sources failed")
+        return False
+    prompt = _build_prompt(forecast, label)
+    try:
+        text = (await run_proactive(prompt)).strip()
+    except Exception:
+        logger.exception("morning_brief: run_proactive failed")
+        return False
+    if not text or text.upper().startswith("NO_MESSAGE"):
+        return False
+    try:
+        await send_text(text)
+    except Exception:
+        logger.exception("morning_brief: send_text failed")
+        return False
+    db.runtime_set("last_morning_brief_sent",
+                   datetime.now(UTC).isoformat())
+    logger.info("morning_brief: sent (sources=%s)",
+                ",".join(forecast["sources"].keys()))
+    return True
