@@ -13,3 +13,6 @@ ALL_TOOLS: list = []
 
 from tools.arxiv_search import ALL_TOOLS as _ARXIV
 ALL_TOOLS.extend(_ARXIV)
+
+from tools.places import ALL_TOOLS as _PLACES
+ALL_TOOLS.extend(_PLACES)
