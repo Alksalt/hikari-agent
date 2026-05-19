@@ -265,16 +265,30 @@ async def run_daily_reflection() -> bool:
         except Exception:
             logger.exception("drift thought write failed (non-fatal)")
 
+    # T3.3: consolidation pass — topic-cluster episode summaries +
+    # co-occurrence edges between new facts + near-dup fact dedup. Wrapped
+    # in try/except so consolidation failure can't roll back the rest of
+    # the reflection (lexicon, peer model, etc. are already committed).
+    consolidation_stats = {
+        "topics": 0, "summaries": 0, "edges": 0, "deduped": 0,
+    }
+    try:
+        consolidation_stats = await _consolidate_yesterday()
+    except Exception:
+        logger.exception("consolidation pass failed (non-fatal)")
+
     logger.info(
         "reflection done: applied=%d thought=%s preoc=%s "
         "pruned_episodes=%d pruned_thoughts=%d lexicon_new=%d "
         "lexicon_decayed=%d lexicon_pruned=%d "
         "tasks_decayed=%d tasks_over_mentioned=%d "
-        "observations=%d noticings=%d",
+        "observations=%d noticings=%d "
+        "consolidation=%s",
         applied, bool(thought), bool(preoc), pruned, pruned_thoughts, promoted,
         lex_decayed, lex_pruned,
         decayed[0], decayed[1],
         obs_written, noticings_written,
+        consolidation_stats,
     )
 
     # Phase 8: morning dispatch. Write a small markdown summary to the wiki
@@ -292,6 +306,7 @@ async def run_daily_reflection() -> bool:
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
+        or consolidation_stats.get("summaries", 0) > 0
     )
 
 
@@ -600,3 +615,279 @@ async def reflection_after_task(task_id: str) -> None:
 
     logger.info("reflection_after_task %s: %d facts, %d loops, thought=%s",
                 task_id[:8], written, len(data.get("open_loops") or []), bool(thought))
+
+
+# ---------- T3.3: daily consolidation ----------
+
+# Cosine threshold for near-dup fact dedup. BGE-small returns L2-normalized
+# embeddings, so cos = 1 - (L2_dist ** 2) / 2 and cos >= 0.92 ⇔ L2 <= ~0.4.
+# Tighter than 0.92 over-merges; looser keeps too many paraphrases.
+NEAR_DUP_COSINE_THRESHOLD = 0.92
+
+
+def _episodes_in_window(window_hours: int = 24) -> list[dict]:
+    """Return episode rows created in the last ``window_hours`` (UTC)."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT * FROM episodes WHERE created_at >= ? ORDER BY created_at",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _facts_in_window(window_hours: int = 24) -> list[dict]:
+    """Active facts created in the last ``window_hours``."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT * FROM facts "
+            "WHERE created_at >= ? AND valid_to IS NULL "
+            "ORDER BY created_at",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _build_topic_tag_prompt(episodes: list[dict]) -> str:
+    """Ask the LLM to assign one short topic tag per episode."""
+    lines = [
+        "Tag each episode below with ONE lowercase topic from this set: "
+        "work, code, feelings, logistics, social, learning, other. "
+        "Output ONLY a valid YAML mapping of episode id -> tag, nothing else.\n",
+    ]
+    for ep in episodes:
+        snippet = (ep.get("summary") or "").strip().replace("\n", " ")[:300]
+        lines.append(f"- id {ep['id']}: {snippet}")
+    lines.append(
+        "\nExample output:\n"
+        "1: work\n"
+        "2: feelings\n"
+        "3: code"
+    )
+    return "\n".join(lines)
+
+
+async def _tag_topics(episodes: list[dict]) -> dict[int, str]:
+    """LLM topic assignment. Returns ``{episode_id: tag}``. Empty dict on
+    LLM/YAML failure — caller treats it as "all episodes -> other"."""
+    if not episodes:
+        return {}
+    prompt = _build_topic_tag_prompt(episodes)
+    try:
+        raw = await run_reflection_call(prompt)
+    except Exception:
+        logger.exception("consolidation: topic-tag LLM call failed")
+        return {}
+    try:
+        data = yaml.safe_load(_strip_fences(raw)) or {}
+    except yaml.YAMLError:
+        logger.warning("consolidation: topic-tag returned invalid YAML; got %r",
+                       raw[:200])
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[int, str] = {}
+    valid_topics = {"work", "code", "feelings", "logistics", "social",
+                    "learning", "other"}
+    for k, v in data.items():
+        try:
+            ep_id = int(k)
+        except (TypeError, ValueError):
+            continue
+        tag = str(v or "").strip().lower()
+        if tag not in valid_topics:
+            tag = "other"
+        out[ep_id] = tag
+    return out
+
+
+def _build_topic_summary_prompt(topic: str, episodes: list[dict]) -> str:
+    """Ask the LLM to write one 100-word topic summary."""
+    body = "\n\n".join(
+        f"### episode {e['id']} ({e.get('date', '?')})\n{e.get('summary') or ''}"
+        for e in episodes
+    )
+    return (
+        f"Write a single ~100-word summary of the user's day in the area '{topic}'. "
+        "Stay neutral and factual (this is for an internal memory log, not a chat "
+        "reply). Output ONLY the summary prose — no headers, no bullets, no YAML.\n\n"
+        f"{body}"
+    )
+
+
+async def _summarize_topic(topic: str, episodes: list[dict]) -> str:
+    """LLM topic summary. Empty string on failure — caller skips that topic."""
+    if not episodes:
+        return ""
+    prompt = _build_topic_summary_prompt(topic, episodes)
+    try:
+        raw = await run_reflection_call(prompt)
+    except Exception:
+        logger.exception("consolidation: topic-summary LLM call failed (%s)", topic)
+        return ""
+    body = _strip_fences(raw).strip()
+    # Cap to ~150 words just in case the LLM ignored instructions.
+    return " ".join(body.split()[:200])
+
+
+def _write_cooccurrence_edges(facts: list[dict]) -> int:
+    """Write ``co_occurs_with`` edges for every unordered pair of facts in
+    the window. Cap the pair count so a runaway reflection day can't blow
+    up the relation table.
+    """
+    if len(facts) < 2:
+        return 0
+    # O(n²) — for daily facts n stays modest. Cap defensively.
+    MAX_PAIRS = 500
+    written = 0
+    n = len(facts)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if written >= MAX_PAIRS:
+                logger.warning(
+                    "consolidation: hit MAX_PAIRS cap (%d) — skipping rest "
+                    "of %d facts", MAX_PAIRS, n,
+                )
+                return written
+            try:
+                db.fact_relation_insert(
+                    subject_id=int(facts[i]["id"]),
+                    predicate="co_occurs_with",
+                    object_id=int(facts[j]["id"]),
+                )
+                written += 1
+            except (ValueError, TypeError):
+                continue
+    return written
+
+
+def _dedup_near_duplicates(new_facts: list[dict]) -> int:
+    """For each new fact, find its nearest neighbor in ``vec_facts``. If
+    cosine similarity ≥ NEAR_DUP_COSINE_THRESHOLD AND the neighbor is an
+    older active fact, mark the older one ``superseded_by`` the new one.
+
+    Returns the count of facts deduped. Best-effort — embedding failures
+    skip the row silently.
+    """
+    deduped = 0
+    for new in new_facts:
+        new_id = int(new["id"])
+        # Read the new fact's stored embedding directly (it was written at
+        # insert time). If it's missing — model failed to load — skip.
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT vec FROM vec_facts WHERE id = ?", (new_id,)
+            ).fetchone()
+        if not row or not row["vec"]:
+            continue
+        # Use the existing KNN — give it back the same vector. We need a
+        # python list, so unpack via numpy (sqlite_vec returns bytes).
+        import struct
+        try:
+            raw_vec = bytes(row["vec"])
+            dim = len(raw_vec) // 4
+            q_vec = list(struct.unpack(f"{dim}f", raw_vec))
+        except (TypeError, struct.error):
+            continue
+        hits = db.vec_search("vec_facts", q_vec, k=5)
+        for h in hits:
+            cand_id = int(h["id"])
+            if cand_id == new_id:
+                continue
+            cand = db.get_fact(cand_id)
+            if not cand or cand.get("valid_to"):
+                continue
+            # Don't supersede something newer than us (sanity check).
+            try:
+                cand_ts = datetime.fromisoformat(
+                    str(cand["created_at"]).replace("Z", "+00:00")
+                )
+                new_ts = datetime.fromisoformat(
+                    str(new["created_at"]).replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                continue
+            if cand_ts >= new_ts:
+                continue
+            # L2 -> cosine for unit-normalized vectors:
+            #   cos = 1 - (L2² / 2)
+            l2 = float(h["distance"])
+            cos_sim = 1.0 - (l2 * l2) / 2.0
+            if cos_sim >= NEAR_DUP_COSINE_THRESHOLD:
+                try:
+                    db.mark_fact_invalid(
+                        cand_id, superseded_by=new_id,
+                        reason=(
+                            f"consolidation: near-dup of #{new_id} "
+                            f"(cos={cos_sim:.3f})"
+                        ),
+                    )
+                    deduped += 1
+                    break  # one supersession per new fact is enough
+                except Exception:
+                    logger.exception(
+                        "consolidation: mark_fact_invalid failed for #%d", cand_id
+                    )
+    return deduped
+
+
+async def _consolidate_yesterday() -> dict[str, int]:
+    """Daily consolidation — wraps the four sub-steps with their own
+    try/except so a failure in one (e.g. LLM unavailable for topic tagging)
+    doesn't block the others.
+
+    Returns a stats dict ``{topics, summaries, edges, deduped}``.
+    """
+    stats = {"topics": 0, "summaries": 0, "edges": 0, "deduped": 0}
+
+    # Episodes from the last 24h.
+    episodes = _episodes_in_window(window_hours=24)
+    if episodes:
+        topic_tags: dict[int, str] = {}
+        try:
+            topic_tags = await _tag_topics(episodes)
+        except Exception:
+            logger.exception("consolidation: _tag_topics raised")
+            topic_tags = {}
+
+        # Group episodes by topic — anything missing a tag falls into 'other'.
+        by_topic: dict[str, list[dict]] = {}
+        for ep in episodes:
+            tag = topic_tags.get(int(ep["id"]), "other")
+            by_topic.setdefault(tag, []).append(ep)
+        stats["topics"] = len(by_topic)
+
+        for topic, eps in by_topic.items():
+            try:
+                summary = await _summarize_topic(topic, eps)
+            except Exception:
+                logger.exception("consolidation: summarize failed (%s)", topic)
+                continue
+            if not summary:
+                continue
+            try:
+                db.episode_summary_insert(
+                    topic=topic,
+                    episode_ids=[int(e["id"]) for e in eps],
+                    summary_text=summary,
+                )
+                stats["summaries"] += 1
+            except Exception:
+                logger.exception("consolidation: episode_summary_insert failed")
+
+    # Co-occurrence edges across new facts in the same window.
+    new_facts = _facts_in_window(window_hours=24)
+    if new_facts:
+        try:
+            stats["edges"] = _write_cooccurrence_edges(new_facts)
+        except Exception:
+            logger.exception("consolidation: _write_cooccurrence_edges failed")
+
+        # Near-dup dedup against existing active facts.
+        try:
+            stats["deduped"] = _dedup_near_duplicates(new_facts)
+        except Exception:
+            logger.exception("consolidation: _dedup_near_duplicates failed")
+
+    return stats

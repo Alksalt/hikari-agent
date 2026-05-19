@@ -266,6 +266,35 @@ CREATE TABLE IF NOT EXISTS reminders (
     fired_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
+
+-- T3.3: topic-clustered episode summaries. One row per (topic, time-window)
+-- pair, with the per-cluster summary text + a JSON array of contributing
+-- episode ids so callers can drill down if needed. Written by the daily
+-- reflection consolidation pass.
+CREATE TABLE IF NOT EXISTS episode_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL,
+    episode_ids_json TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_episode_summaries_topic ON episode_summaries(topic);
+
+-- T3.3: typed edges between facts (graph). Today the only predicate is
+-- ``co_occurs_with`` (same-episode co-occurrence) but the column is free-
+-- text so future predicates (implies, contradicts, refines, ...) drop in
+-- without a migration.
+CREATE TABLE IF NOT EXISTS fact_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_fact_id INTEGER NOT NULL,
+    predicate TEXT NOT NULL,
+    object_fact_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (subject_fact_id) REFERENCES facts(id),
+    FOREIGN KEY (object_fact_id) REFERENCES facts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_relations_subject ON fact_relations(subject_fact_id);
+CREATE INDEX IF NOT EXISTS idx_fact_relations_object ON fact_relations(object_fact_id);
 """
 
 
@@ -800,6 +829,125 @@ def prune_episodes_older_than_days(days: int) -> int:
             c.execute(f"DELETE FROM fts WHERE kind = 'episode' AND ref_id IN ({qs})", ids)
             c.execute(f"DELETE FROM vec_episodes WHERE id IN ({qs})", ids)
     return len(ids)
+
+
+# ---------- T3.3: episode summaries (topic clusters) ----------
+
+def episode_summary_insert(
+    topic: str,
+    episode_ids: list[int],
+    summary_text: str,
+) -> int:
+    """Persist one topic-cluster summary. Returns the new row id.
+
+    ``episode_ids`` is stored as JSON so downstream readers can drill back
+    to the contributing episodes without a join table. The list is filtered
+    to ints — invalid ids are silently dropped rather than raising, because
+    the caller is the reflection job and a single bad id shouldn't break
+    the whole consolidation pass.
+    """
+    import json
+    clean_topic = (topic or "").strip()
+    body = (summary_text or "").strip()
+    if not clean_topic or not body:
+        raise ValueError("episode_summary_insert: topic and summary_text are required")
+    clean_ids = [int(i) for i in (episode_ids or []) if isinstance(i, (int, str))
+                 and str(i).lstrip("-").isdigit()]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO episode_summaries "
+            "(topic, episode_ids_json, summary_text) "
+            "VALUES (?, ?, ?)",
+            (clean_topic, json.dumps(clean_ids), body),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def episode_summaries_recent(topic: str | None = None,
+                             limit: int = 10) -> list[dict[str, Any]]:
+    """Most-recent episode summaries. Filter by topic if provided; otherwise
+    return all topics interleaved by ``created_at`` descending."""
+    import json
+    sql = "SELECT * FROM episode_summaries"
+    args: list[Any] = []
+    if topic:
+        sql += " WHERE topic = ?"
+        args.append(topic)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(int(limit))
+    with _conn() as c:
+        rows = c.execute(sql, args).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["episode_ids"] = json.loads(item.get("episode_ids_json") or "[]")
+        except (ValueError, TypeError):
+            item["episode_ids"] = []
+        out.append(item)
+    return out
+
+
+# ---------- T3.3: fact relations (knowledge graph) ----------
+
+def fact_relation_insert(subject_id: int, predicate: str, object_id: int) -> int:
+    """Insert a typed edge ``(subject_fact_id) --[predicate]--> (object_fact_id)``.
+
+    Self-edges (a fact relating to itself) are rejected — they're always noise
+    in the co-occurrence pass. Returns the new row id. The caller is expected
+    to dedupe; the table allows duplicate edges so a graph weight signal can
+    be built later by counting them.
+    """
+    s = int(subject_id)
+    o = int(object_id)
+    pred = (predicate or "").strip()
+    if not pred:
+        raise ValueError("fact_relation_insert: predicate is required")
+    if s == o:
+        raise ValueError("fact_relation_insert: refusing to create a self-edge")
+    if s <= 0 or o <= 0:
+        raise ValueError("fact_relation_insert: ids must be positive")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO fact_relations (subject_fact_id, predicate, object_fact_id) "
+            "VALUES (?, ?, ?)",
+            (s, pred, o),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def fact_relations_for(fact_id: int) -> list[dict[str, Any]]:
+    """Return all edges touching ``fact_id`` (as either subject or object),
+    joined with the matching fact rows so callers can render the graph
+    without a second query.
+
+    Each row carries ``subject``, ``predicate``, ``object`` keys for the
+    triple text + ``subject_fact_id`` / ``object_fact_id`` for ids +
+    ``direction`` ('out' when fact_id is the subject, 'in' otherwise).
+    """
+    fid = int(fact_id)
+    if not fid:
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT r.id, r.subject_fact_id, r.predicate AS edge_predicate, "
+            "       r.object_fact_id, r.created_at, "
+            "       s.subject || ' ' || s.predicate || ' ' || s.object AS subject_text, "
+            "       o.subject || ' ' || o.predicate || ' ' || o.object AS object_text "
+            "FROM fact_relations r "
+            "LEFT JOIN facts s ON s.id = r.subject_fact_id "
+            "LEFT JOIN facts o ON o.id = r.object_fact_id "
+            "WHERE r.subject_fact_id = ? OR r.object_fact_id = ? "
+            "ORDER BY r.created_at DESC",
+            (fid, fid),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        item["direction"] = "out" if item["subject_fact_id"] == fid else "in"
+        item["predicate"] = item.pop("edge_predicate")
+        out.append(item)
+    return out
 
 
 # ---------- tasks ----------
