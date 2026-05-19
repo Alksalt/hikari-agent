@@ -158,6 +158,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__arxiv_search",
     "mcp__hikari_utility__places_search",
     "mcp__hikari_utility__place_open_now",
+    "mcp__hikari_utility__ytmusic_recent",
+    "mcp__hikari_utility__ytmusic_search",
+    "mcp__hikari_utility__ytmusic_library",
     "Read", "Glob", "Grep",
 ]
 

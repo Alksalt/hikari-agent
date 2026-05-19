@@ -487,6 +487,7 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "sqlite-vec" },
     { name = "watchdog" },
+    { name = "ytmusicapi" },
 ]
 
 [package.dev-dependencies]
@@ -516,6 +517,7 @@ requires-dist = [
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "watchdog", specifier = ">=4.0" },
+    { name = "ytmusicapi", specifier = ">=1.12.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1959,4 +1961,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/82/dd/e5176e4b241c9f528402cebb238a36785a628179d7d8b71091154b3e4c9e/wrapt-2.1.2-cp314-cp314t-win_amd64.whl", hash = "sha256:08ffa54146a7559f5b8df4b289b46d963a8e74ed16ba3687f99896101a3990c5", size = 63969, upload-time = "2026-03-06T02:54:39Z" },
     { url = "https://files.pythonhosted.org/packages/5c/99/79f17046cf67e4a95b9987ea129632ba8bcec0bc81f3fb3d19bdb0bd60cd/wrapt-2.1.2-cp314-cp314t-win_arm64.whl", hash = "sha256:72aaa9d0d8e4ed0e2e98019cea47a21f823c9dd4b43c7b77bba6679ffcca6a00", size = 60554, upload-time = "2026-03-06T02:53:14.132Z" },
     { url = "https://files.pythonhosted.org/packages/1a/c7/8528ac2dfa2c1e6708f647df7ae144ead13f0a31146f43c7264b4942bf12/wrapt-2.1.2-py3-none-any.whl", hash = "sha256:b8fd6fa2b2c4e7621808f8c62e8317f4aae56e59721ad933bac5239d913cf0e8", size = 43993, upload-time = "2026-03-06T02:53:12.905Z" },
+]
+
+[[package]]
+name = "ytmusicapi"
+version = "1.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/16/728305b1e6d100f2f2c696f6de08b3717f3db323bd666a8246397d70bcad/ytmusicapi-1.12.0.tar.gz", hash = "sha256:9a466e633c43e90025b4c3dfa862f0f5677af4eacc8d2052ef9fc8f48cd65140", size = 434631, upload-time = "2026-04-29T18:42:40.503Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/20/9f1b0ff4c9ed441b2181259ff9c0250a9999ec811b08fe45627842453092/ytmusicapi-1.12.0-py3-none-any.whl", hash = "sha256:4130a3a7a0ab56eeeff33b343c8cf4a2f4ea14c206d96c221a7646ab0e61ebc8", size = 107799, upload-time = "2026-04-29T18:42:38.489Z" },
 ]
