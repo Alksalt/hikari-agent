@@ -137,12 +137,12 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
 
 def _calendar_creds_healthy() -> bool:
-    """Phase 8: cheap startup gate. If the bridge wrote
+    """Phase 8 (Phase 10 update): cheap startup gate. If the bridge wrote
     ``runtime_state.calendar_heartbeat_healthy = '1'`` after a successful
     probe call, the job runs; otherwise it sits out.
 
-    Default: if the env var ``GOOGLE_SERVICE_ACCOUNT_JSON`` is set, treat as
-    healthy unless explicitly disabled. Bridge probes can override.
+    Default: if all three OAuth env vars for google-workspace-mcp are set,
+    treat as healthy unless explicitly disabled. Bridge probes can override.
     """
     import os
     from storage import db
@@ -150,8 +150,14 @@ def _calendar_creds_healthy() -> bool:
     explicit = db.runtime_get("calendar_heartbeat_healthy")
     if explicit is not None:
         return str(explicit).strip() == "1"
-    # Fallback: presence of the service-account env var.
-    return bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    # Fallback: presence of the OAuth env var trio (Phase 10 — was
+    # GOOGLE_SERVICE_ACCOUNT_JSON, but the upstream package uses OAuth
+    # user creds, not service-account JSON).
+    return all(os.environ.get(k) for k in (
+        "GOOGLE_WORKSPACE_CLIENT_ID",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET",
+        "GOOGLE_WORKSPACE_REFRESH_TOKEN",
+    ))
 
 
 def _run_memory_prune(retention_days: int) -> None:

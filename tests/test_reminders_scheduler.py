@@ -51,7 +51,7 @@ async def test_repeat_daily_reinserts_next_day():
 
 @pytest.mark.asyncio
 async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", "/tmp/fake-creds.json")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake-refresh-token")
     fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     rid = db.reminder_insert(
         fire_at=fire, text="meeting", lead_minutes=0, repeat=None,

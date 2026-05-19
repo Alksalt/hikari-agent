@@ -2,11 +2,13 @@
   "_comment": "External MCP servers. Hikari delegates to specialist subagents (drive_gmail, notion, research) that own these servers. The bridge logs warnings at startup if required env vars are missing.",
   "mcpServers": {
     "google_workspace": {
-      "_comment": "Upstream entrypoint is broken (calls asyncio.run on a sync FastMCP.run). Bypass it by importing the module (which registers tools) then calling mcp.run() directly. Also: package name is google-workspace-mcp but no top-level executable matches — must use --from + python -c.",
+      "_comment": "Upstream uses OAuth user creds (NOT service account) — see scripts/setup_google_oauth.py for the one-time consent flow. Entrypoint workaround: package's own __main__ wraps a sync FastMCP.run() in asyncio.run(), so we bypass it by importing the module (which registers tools) then calling mcp.run() directly.",
       "command": "uvx",
       "args": ["--from", "google-workspace-mcp", "python", "-c", "import google_workspace_mcp.__main__ as m; m.mcp.run()"],
       "env": {
-        "GOOGLE_SERVICE_ACCOUNT_JSON": "${GOOGLE_SERVICE_ACCOUNT_JSON}"
+        "GOOGLE_WORKSPACE_CLIENT_ID": "${GOOGLE_WORKSPACE_CLIENT_ID}",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET": "${GOOGLE_WORKSPACE_CLIENT_SECRET}",
+        "GOOGLE_WORKSPACE_REFRESH_TOKEN": "${GOOGLE_WORKSPACE_REFRESH_TOKEN}"
       }
     },
     "notion": {

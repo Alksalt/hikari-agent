@@ -174,7 +174,9 @@ def test_calendar_creds_healthy_explicit_disable(monkeypatch):
     from agents import scheduler as sched_mod
 
     db.runtime_set("calendar_heartbeat_healthy", "0")
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+    for _k in ("GOOGLE_WORKSPACE_CLIENT_ID", "GOOGLE_WORKSPACE_CLIENT_SECRET",
+               "GOOGLE_WORKSPACE_REFRESH_TOKEN"):
+        monkeypatch.delenv(_k, raising=False)
     assert sched_mod._calendar_creds_healthy() is False
 
 
@@ -182,7 +184,9 @@ def test_calendar_creds_healthy_explicit_enable(monkeypatch):
     from agents import scheduler as sched_mod
 
     db.runtime_set("calendar_heartbeat_healthy", "1")
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+    for _k in ("GOOGLE_WORKSPACE_CLIENT_ID", "GOOGLE_WORKSPACE_CLIENT_SECRET",
+               "GOOGLE_WORKSPACE_REFRESH_TOKEN"):
+        monkeypatch.delenv(_k, raising=False)
     assert sched_mod._calendar_creds_healthy() is True
 
 
@@ -191,10 +195,14 @@ def test_calendar_creds_healthy_falls_back_to_env(monkeypatch):
     from agents import scheduler as sched_mod
 
     db.runtime_set("calendar_heartbeat_healthy", None)
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", '{"fake": "creds"}')
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake-id")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake-token")
     assert sched_mod._calendar_creds_healthy() is True
 
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+    for _k in ("GOOGLE_WORKSPACE_CLIENT_ID", "GOOGLE_WORKSPACE_CLIENT_SECRET",
+               "GOOGLE_WORKSPACE_REFRESH_TOKEN"):
+        monkeypatch.delenv(_k, raising=False)
     assert sched_mod._calendar_creds_healthy() is False
 
 
@@ -202,7 +210,9 @@ def test_build_scheduler_skips_calendar_job_when_unhealthy(monkeypatch):
     from agents import scheduler as sched_mod
 
     db.runtime_set("calendar_heartbeat_healthy", "0")
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+    for _k in ("GOOGLE_WORKSPACE_CLIENT_ID", "GOOGLE_WORKSPACE_CLIENT_SECRET",
+               "GOOGLE_WORKSPACE_REFRESH_TOKEN"):
+        monkeypatch.delenv(_k, raising=False)
 
     async def send_text(s):
         return None

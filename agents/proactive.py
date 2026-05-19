@@ -536,7 +536,7 @@ async def sync_pending_gcal_reminders() -> int:
     drive_gmail subagent to create a Google Calendar event, then store the
     returned event_id. Best-effort: failures stay pending for retry."""
     import os
-    if not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"):
+    if not os.environ.get("GOOGLE_WORKSPACE_REFRESH_TOKEN"):
         return 0
     pending = db.reminders_pending_gcal_sync(limit=10)
     if not pending:
