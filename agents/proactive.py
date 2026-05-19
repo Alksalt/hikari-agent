@@ -467,3 +467,64 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
         title, mins_until_rounded,
     )
     return True
+
+
+# ---------- Phase 10: reminders fire job ----------
+
+def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
+    """Compute next occurrence iso for a simple repeat. Returns None for
+    one-shots."""
+    from datetime import timedelta
+    from dateutil.relativedelta import relativedelta
+    from dateutil.rrule import rrulestr
+    when = datetime.fromisoformat(fire_at_iso)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    if not repeat:
+        return None
+    if repeat == "daily":
+        return (when + timedelta(days=1)).isoformat()
+    if repeat == "weekly":
+        return (when + timedelta(weeks=1)).isoformat()
+    if repeat == "monthly":
+        return (when + relativedelta(months=1)).isoformat()
+    if repeat == "yearly":
+        return (when + relativedelta(years=1)).isoformat()
+    if repeat.upper().startswith("RRULE:"):
+        try:
+            rule = rrulestr(repeat, dtstart=when)
+            nxt = rule.after(when, inc=False)
+            return nxt.isoformat() if nxt else None
+        except Exception:
+            logger.exception("invalid RRULE: %r", repeat)
+            return None
+    return None
+
+
+async def fire_due_reminders(send_text) -> int:
+    """Drain reminder_due() — for each row, format + send + mark fired.
+    If row has a repeat spec, insert the next occurrence as a fresh row.
+    Returns count fired."""
+    due = db.reminder_due()
+    if not due:
+        return 0
+    fired = 0
+    for row in due:
+        text = f"reminder: {row['text']}"
+        try:
+            await send_text(text)
+        except Exception:
+            logger.exception("fire_due_reminders: send_text failed for #%s", row["id"])
+            continue
+        db.reminder_mark_fired(row["id"])
+        fired += 1
+        nxt = _next_occurrence(row["fire_at"], row.get("repeat") or "")
+        if nxt:
+            db.reminder_insert(
+                fire_at=nxt,
+                text=row["text"],
+                lead_minutes=row["lead_minutes"],
+                repeat=row["repeat"],
+                gcal_sync_pending=False,
+            )
+    return fired
