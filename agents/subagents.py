@@ -145,8 +145,7 @@ DRIVE_GMAIL_AGENT = AgentDefinition(
         "do NOT tell the lead the user needs to 'click Allow' (no such UI exists)."
     ),
     model="haiku",
-    tools=["mcp__google_workspace__*", "mcp__claude_ai_Gmail__*",
-           "mcp__claude_ai_Google_Calendar__*", "mcp__claude_ai_Google_Drive__*"],
+    tools=["mcp__google_workspace__*"],
 )
 
 
