@@ -46,8 +46,36 @@ async def test_repeat_daily_reinserts_next_day():
     active = [r for r in all_rows if r["status"] == "active"]
     assert len(active) == 1
     next_fire = datetime.fromisoformat(active[0]["fire_at"])
-    orig = datetime.fromisoformat(past)
-    assert (next_fire - orig).days == 1
+    # After the clamp fix, base = max(past, now) ≈ now, so next_fire ≈ now+1day.
+    # Verify it's in the future and within a 25-hour window from now.
+    now = datetime.now(UTC)
+    assert next_fire > now, f"next fire_at {next_fire} should be in the future"
+    assert (next_fire - now).total_seconds() < 25 * 3600, \
+        f"next fire_at {next_fire} should be ~1 day from now, not further"
+
+@pytest.mark.asyncio
+async def test_overdue_daily_repeat_advances_to_future_not_past():
+    """If the scheduler was delayed 3 days, a daily reminder should fire once
+    and the next occurrence should be in the FUTURE, not 2 days in the past."""
+    sent: list[str] = []
+    async def fake_send(s: str): sent.append(s)
+    three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    rid = db.reminder_insert(
+        fire_at=three_days_ago, text="vitamins",
+        lead_minutes=0, repeat="daily",
+    )
+    from agents import proactive
+    await proactive.fire_due_reminders(fake_send)
+    # original fired once
+    assert db.reminder_get(rid)["status"] == "fired"
+    # next-occurrence row must be in the FUTURE
+    active = [r for r in db.reminder_list(active_only=False)
+              if r["status"] == "active"]
+    assert len(active) == 1
+    next_fire = datetime.fromisoformat(active[0]["fire_at"])
+    assert next_fire > datetime.now(UTC), \
+        f"next fire_at {next_fire} should be in the future"
+
 
 @pytest.mark.asyncio
 async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):

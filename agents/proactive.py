@@ -474,7 +474,12 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
 
 def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
     """Compute next occurrence iso for a simple repeat. Returns None for
-    one-shots."""
+    one-shots.
+
+    Clamps the base to max(when, now) so that if the scheduler was delayed
+    (bot offline, system sleep, missed cycles) we don't insert a past-timestamp
+    row that would re-fire on the very next poll and loop indefinitely.
+    """
     from datetime import timedelta
     from dateutil.relativedelta import relativedelta
     from dateutil.rrule import rrulestr
@@ -483,18 +488,21 @@ def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
         when = when.replace(tzinfo=UTC)
     if not repeat:
         return None
+    # Clamp: if the original fire_at is in the past (scheduler was delayed),
+    # advance from "now" instead so we don't insert another past-timestamp row.
+    base = max(when, datetime.now(UTC))
     if repeat == "daily":
-        return (when + timedelta(days=1)).isoformat()
+        return (base + timedelta(days=1)).isoformat()
     if repeat == "weekly":
-        return (when + timedelta(weeks=1)).isoformat()
+        return (base + timedelta(weeks=1)).isoformat()
     if repeat == "monthly":
-        return (when + relativedelta(months=1)).isoformat()
+        return (base + relativedelta(months=1)).isoformat()
     if repeat == "yearly":
-        return (when + relativedelta(years=1)).isoformat()
+        return (base + relativedelta(years=1)).isoformat()
     if repeat.upper().startswith("RRULE:"):
         try:
             rule = rrulestr(repeat, dtstart=when)
-            nxt = rule.after(when, inc=False)
+            nxt = rule.after(base, inc=False)
             return nxt.isoformat() if nxt else None
         except Exception:
             logger.exception("invalid RRULE: %r", repeat)
