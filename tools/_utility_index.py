@@ -10,3 +10,6 @@ from __future__ import annotations
 # merge-friendliness.
 
 ALL_TOOLS: list = []
+
+from tools.calc import ALL_TOOLS as _CALC
+ALL_TOOLS.extend(_CALC)
