@@ -10,3 +10,6 @@ from __future__ import annotations
 # merge-friendliness.
 
 ALL_TOOLS: list = []
+
+from tools.arxiv_search import ALL_TOOLS as _ARXIV
+ALL_TOOLS.extend(_ARXIV)
