@@ -22,6 +22,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
+    ProcessError,
     ResultMessage,
     TextBlock,
     create_sdk_mcp_server,
@@ -206,32 +207,51 @@ async def _run_query(prompt: str, *, max_turns: int = 15,
     """
     async with _RUN_LOCK:
         session_id = db.get_session_id()
-        options = _build_options(
-            resume=session_id,
-            max_turns=max_turns,
-            max_budget_usd=max_budget_usd,
-            extra_allowed_tools=extra_allowed_tools,
-        )
-
+        # If the stored session is unknown to the bundled CLI (cleared cache,
+        # cross-host DB copy, expired) the SDK subprocess exits with code 1
+        # before we ever send the prompt. Drop the bad ID and retry once with
+        # a fresh session so the bot self-heals instead of stalling on
+        # "(brain hit a wall)".
         parts: list[str] = []
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(prompt)
-            async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
-                elif isinstance(msg, ResultMessage):
-                    if msg.session_id:
-                        db.set_session_id(msg.session_id)
-                    if msg.subtype != "success":
-                        logger.warning("agent loop ended subtype=%s", msg.subtype)
-                    if msg.deferred_tool_use is not None:
-                        logger.info(
-                            "SDK halted on deferred tool: %s (id=%s)",
-                            msg.deferred_tool_use.name,
-                            msg.deferred_tool_use.id,
-                        )
+        for attempt in (1, 2):
+            options = _build_options(
+                resume=session_id,
+                max_turns=max_turns,
+                max_budget_usd=max_budget_usd,
+                extra_allowed_tools=extra_allowed_tools,
+            )
+            parts = []
+            try:
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(prompt)
+                    async for msg in client.receive_response():
+                        if isinstance(msg, AssistantMessage):
+                            for block in msg.content:
+                                if isinstance(block, TextBlock):
+                                    parts.append(block.text)
+                        elif isinstance(msg, ResultMessage):
+                            if msg.session_id:
+                                db.set_session_id(msg.session_id)
+                            if msg.subtype != "success":
+                                logger.warning("agent loop ended subtype=%s", msg.subtype)
+                            if msg.deferred_tool_use is not None:
+                                logger.info(
+                                    "SDK halted on deferred tool: %s (id=%s)",
+                                    msg.deferred_tool_use.name,
+                                    msg.deferred_tool_use.id,
+                                )
+                break
+            except ProcessError:
+                if attempt == 1 and session_id is not None:
+                    logger.warning(
+                        "SDK subprocess failed with stored session_id=%s; "
+                        "clearing and retrying with a fresh session",
+                        session_id,
+                    )
+                    db.set_session_id("")
+                    session_id = None
+                    continue
+                raise
 
         text = "".join(parts).strip()
         if log_to_memory and text:
