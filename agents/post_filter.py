@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 _CLICK_ALLOW_RE = re.compile(
     r"\b(click|hit|tap|press|accept)\s+allow\b"
-    r"|\bgrant\s+(\w+\s+){0,2}permission\b"
+    r"|\bgrant\s+(\w+\s+){0,2}(notion|gmail|google|claude|calendar|the\s+integration)\b"
+    r"|\b(notion|gmail|google|claude|calendar)\s+permission\b"
     r"|\bpermission\s+prompt\b"
     r"|\ballow\s+(notion|gmail|google|claude\s+code|the\s+integration|the\s+(notion|google|gmail))\b"
     r"|\bone-time\s+thing\s+on\s+your\s+end\b"

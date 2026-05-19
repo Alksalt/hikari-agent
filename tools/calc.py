@@ -106,16 +106,23 @@ def _run_asteval(expr: str, timeout_sec: float) -> tuple[Any, str | None]:
         return result, None
 
     # ThreadPoolExecutor + future.result(timeout=...) replaces signal.SIGALRM
-    # so this works from any thread, not just main. The worker keeps running
-    # if it overshoots (Python has no clean way to kill a thread) but the
-    # caller gets the timeout response on schedule and the orphan worker is
-    # bounded by asteval's own max-time / max-loops guards.
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="asteval") as pool:
+    # so this works from any thread, not just main. CRITICAL: do NOT use the
+    # context-manager form here — `with ...:` calls shutdown(wait=True) on
+    # exit, which would block the calling coroutine indefinitely waiting for
+    # the runaway worker (defeating the timeout entirely). Use shutdown(wait=
+    # False) and accept the orphan-thread leak. asteval has no built-in
+    # runtime guard, so an `expr` like `while True: pass` will leak a thread
+    # forever — bounded only by process lifetime. Worth it: blocking the
+    # event loop is worse than leaking one thread.
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asteval")
+    try:
         future = pool.submit(_eval)
         try:
             return future.result(timeout=timeout_sec)
         except FuturesTimeoutError:
             return None, f"eval exceeded {timeout_sec}s"
+    finally:
+        pool.shutdown(wait=False)
 
 
 @tool(
