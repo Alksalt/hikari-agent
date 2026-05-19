@@ -305,6 +305,14 @@ post_filter:
     'great question', 'I cannot'. Output the rewritten reply only — no
     preamble, no quotes, no markdown.{mood_clause}]
 
+# T8.2: Silicon Mirror Generator-Critic — Haiku critic between lead draft
+# and send. PASS ships, REWRITE re-prompts lead once. Adds one Haiku call
+# per outbound (~300ms p50). Toggle off if latency becomes a problem.
+voice_critic:
+  enabled: true
+  model: "claude-haiku-4-5"
+  max_budget_usd: 0.01
+
 # ============================================================================
 # Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay
 # ============================================================================

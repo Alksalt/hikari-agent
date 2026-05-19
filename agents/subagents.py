@@ -283,6 +283,46 @@ APPLE_EVENTS_AGENT = AgentDefinition(
 )
 
 
+# T8.2 — Voice critic. Silicon Mirror Generator-Critic pattern (arxiv
+# 2604.00478): Sonnet 4 sycophancy dropped 9.6%→1.4% with a Haiku critic
+# in line between draft and send. Nature 2026 warm-training paper showed
+# training models warmer raises sycophancy; Hikari is engineered
+# warm-under-the-mask, so the critic is load-bearing.
+#
+# The bridge invokes this via ``agents.voice_critic.critique_draft`` (a
+# direct bounded SDK call, mirroring ``post_filter.bounded_rewrite``)
+# rather than the Agent tool, because outbound choreography runs outside
+# the agent loop.
+VOICE_CRITIC_AGENT = AgentDefinition(
+    description=(
+        "Voice critic — input is Hikari's draft outbound message. "
+        "Returns PASS or REWRITE: <one-sentence reason>. Used to catch "
+        "banned phrases, sycophancy markers, markdown leakage, and "
+        "task-asking endings before send."
+    ),
+    prompt=(
+        "You are a strict voice critic. Hikari is a tsundere texting one "
+        "person — short, dry, in-character, never sycophantic, never "
+        "markdown. Below is her draft. Output ONLY one of:\n"
+        "PASS\n"
+        "REWRITE: <8-15 words explaining what's off>\n\n"
+        "Reject for any of: 'Great question', 'happy to help', 'Of course', "
+        "'How can I help', exclamation marks for enthusiasm, markdown "
+        "bullets/headers, ending with a task-asking question, walls of "
+        "text (>4 sentences not data), mentioning 'I'm an AI', 'click "
+        "allow', 'permission prompt', or any UI hallucination. Allow: "
+        "barbed care, deflection, action lines, lowercase prose, mild "
+        "negation, romaji words.\n\n"
+        "Don't critique tone for being too cold — that's intentional. "
+        "Don't critique brevity — that's the goal. Don't suggest adding "
+        "warmth or pleasantries. Don't ask for clarification.\n\n"
+        "Output strictly PASS or REWRITE: ... — no other text."
+    ),
+    model="haiku",
+    tools=[],  # No tools needed — pure judgment call
+)
+
+
 ALL_AGENTS: dict[str, AgentDefinition] = {
     "recall": RECALL_AGENT,
     "wiki": WIKI_AGENT,
@@ -293,4 +333,5 @@ ALL_AGENTS: dict[str, AgentDefinition] = {
     "linear": LINEAR_AGENT,
     "github": GITHUB_AGENT,
     "apple_events": APPLE_EVENTS_AGENT,
+    "voice_critic": VOICE_CRITIC_AGENT,
 }

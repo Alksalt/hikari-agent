@@ -2296,11 +2296,17 @@ def voice_critic_log_insert(
 
 def voice_critic_log_recent(limit: int = 50) -> list[dict[str, Any]]:
     """Recent voice-critic verdicts (newest first). Used by daily reflection
-    + ad-hoc inspection."""
+    + ad-hoc inspection.
+
+    Orders by id DESC because ``created_at`` defaults to ``datetime('now')``
+    (second precision) — back-to-back inserts share a timestamp and the
+    tiebreak would be unpredictable. id is monotonic by insertion order,
+    so it's a stable proxy.
+    """
     with _conn() as conn:
         rows = conn.execute(
             "SELECT id, draft, verdict, reason, rewritten, final_text, created_at "
-            "FROM voice_critic_log ORDER BY created_at DESC LIMIT ?",
+            "FROM voice_critic_log ORDER BY id DESC LIMIT ?",
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]

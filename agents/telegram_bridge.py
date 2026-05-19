@@ -40,6 +40,7 @@ from . import drift_judge as drift_mod
 from . import nonverbal as nonverbal_mod
 from . import reactions as reactions_mod
 from . import stickers as stickers_mod
+from . import voice_critic as voice_critic_mod
 from .background_listener import (
     listener_loop,
     recover_deferred_approvals,
@@ -173,6 +174,63 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
     return sent
 
 
+async def _run_voice_critic(reply_text: str) -> str:
+    """T8.2 — Silicon Mirror Generator-Critic gate on outbound drafts.
+
+    Runs the bounded Haiku critic (``voice_critic.critique_draft``) on
+    ``reply_text``. If PASS, returns the original. If REWRITE, re-prompts the
+    lead exactly once with the critic's reason prepended and returns the
+    second draft. ERROR / unparseable verdicts are treated as PASS so we
+    never drop a message on a critic malfunction.
+
+    Adds one Haiku call (~300ms p50) per outbound. Disable via
+    ``voice_critic.enabled`` in engagement.yaml if it becomes a latency
+    problem.
+
+    Logs every verdict to ``voice_critic_log`` for drift telemetry.
+    """
+    if not bool(cfg.get("voice_critic.enabled", True)):
+        return reply_text
+    verdict = await voice_critic_mod.critique_draft(reply_text)
+    if verdict.verdict == "PASS" or verdict.verdict == "ERROR":
+        try:
+            db.voice_critic_log_insert(
+                draft=reply_text,
+                verdict=verdict.verdict,
+                reason=verdict.reason,
+                rewritten=False,
+                final_text=reply_text,
+            )
+        except Exception:
+            logger.exception("voice_critic: log insert failed (non-fatal)")
+        return reply_text
+    # REWRITE — re-prompt the lead exactly once. No looping.
+    reason = verdict.reason or "rewrite — voice off"
+    rewrite_prompt = (
+        "[system: voice_critic flagged your previous draft. "
+        f"reason: {reason}. rewrite ONLY your last reply, in voice — same "
+        "intent, shorter if possible. output the rewrite directly, no "
+        "preamble.]"
+    )
+    try:
+        rewritten = await respond(rewrite_prompt)
+    except Exception:
+        logger.exception("voice_critic: rewrite respond() failed")
+        rewritten = ""
+    final = (rewritten or "").strip() or reply_text
+    try:
+        db.voice_critic_log_insert(
+            draft=reply_text,
+            verdict="REWRITE",
+            reason=reason,
+            rewritten=bool(rewritten),
+            final_text=final,
+        )
+    except Exception:
+        logger.exception("voice_critic: log insert failed (non-fatal)")
+    return final
+
+
 async def _send_with_choreography(
     bot, message, reply_text: str, elapsed_real: float = 0.0,
 ) -> None:
@@ -188,9 +246,19 @@ async def _send_with_choreography(
     already spent in the agent path; if it exceeds the synthesized typing
     delay, the artificial delay is skipped so we don't stack real latency on
     top of fake latency.
+
+    Phase 11 (T8.2): voice_critic runs BEFORE the deterministic filter. If
+    the critic returns REWRITE, the lead re-drafts once before the filter
+    sees anything. PASS / ERROR / unparseable all ship the original.
     """
     chat_id = message.chat_id
     mood = _mood()
+
+    # T8.2: Silicon Mirror critic. One bounded Haiku call.
+    try:
+        reply_text = await _run_voice_critic(reply_text)
+    except Exception:
+        logger.exception("voice_critic: gate crashed (non-fatal; shipping draft)")
 
     filtered = filter_outgoing(reply_text)
     text_to_send = filtered.text
