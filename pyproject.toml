@@ -1,0 +1,58 @@
+[project]
+name = "hikari-agent"
+version = "0.1.0"
+description = "Hikari — agentic Telegram bot on Claude Agent SDK (greenfield rewrite of hikari-tsukino-bot)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+
+dependencies = [
+    "claude-agent-sdk>=0.2.82",
+    "python-telegram-bot>=21.0",
+    "apscheduler>=3.10",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "fastembed>=0.4",
+    "sqlite-vec>=0.1.6",
+    "obsidiantools>=0.10",
+    "python-frontmatter>=1.1",
+    "ruamel.yaml>=0.18",
+    "watchdog>=4.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+browser = [
+    "browser-use>=0.2",
+    "langchain-anthropic>=0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.3",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "storage", "tools"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[project.scripts]
+hikari-agent = "agents.telegram_bridge:main"

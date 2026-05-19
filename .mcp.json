@@ -1,0 +1,19 @@
+{
+  "_comment": "External MCP servers. Hikari delegates to specialist subagents (drive_gmail, notion, research) that own these servers. The bridge logs warnings at startup if required env vars are missing.",
+  "mcpServers": {
+    "google_workspace": {
+      "command": "uvx",
+      "args": ["google-workspace-mcp"],
+      "env": {
+        "GOOGLE_SERVICE_ACCOUNT_JSON": "${GOOGLE_SERVICE_ACCOUNT_JSON}"
+      }
+    },
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "env": {
+        "NOTION_TOKEN": "${NOTION_TOKEN}"
+      }
+    }
+  }
+}

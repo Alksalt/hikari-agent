@@ -1,0 +1,4 @@
+[mcp_servers.google_workspace]
+args = ["google-workspace-mcp"]
+command = "uvx"
+env_vars = ["GOOGLE_SERVICE_ACCOUNT_JSON"]

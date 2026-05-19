@@ -1,0 +1,357 @@
+"""Phase 2-8 smoke tests — imports, persona, schema, retrieval, skills present."""
+
+from __future__ import annotations
+
+import importlib
+import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).parent.parent
+
+
+def test_persona_present():
+    claude_md = REPO_ROOT / "CLAUDE.md"
+    assert claude_md.is_file()
+    content = claude_md.read_text()
+    assert "Hikari Tsukino" in content
+    assert "never end a message asking for tasks" in content
+
+
+def test_all_skills_present():
+    skills_dir = REPO_ROOT / ".claude" / "skills"
+    expected = ["character-voice", "recall-memory", "generate-photo",
+                "schedule-heartbeat", "drive-search"]
+    for name in expected:
+        skill_md = skills_dir / name / "SKILL.md"
+        assert skill_md.is_file(), f"missing skill: {name}"
+        content = skill_md.read_text()
+        assert content.startswith("---"), f"{name} missing YAML frontmatter"
+        assert f"name: {name}" in content
+
+
+def test_bundled_skill_files():
+    skills_dir = REPO_ROOT / ".claude" / "skills"
+    assert (skills_dir / "character-voice" / "INTIMATE.md").is_file()
+    assert (skills_dir / "character-voice" / "LORE.md").is_file()
+    assert (skills_dir / "schedule-heartbeat" / "EXAMPLES.md").is_file()
+
+
+def test_appearance_asset():
+    assert (REPO_ROOT / "assets" / "APPEARANCE.md").is_file()
+
+
+def test_mcp_json_valid():
+    import json
+    data = json.loads((REPO_ROOT / ".mcp.json").read_text())
+    assert "mcpServers" in data
+
+
+def test_session_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    assert db.get_session_id() is None
+    db.set_session_id("sess-abc-123")
+    assert db.get_session_id() == "sess-abc-123"
+
+
+def test_full_schema_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    db.upsert_core_block("test", "value")
+    with db._conn() as c:
+        rows = {r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+        ).fetchall()}
+    expected = {"session", "core_blocks", "facts", "messages", "episodes",
+                "tasks", "character_thoughts", "runtime_state", "fts",
+                "vec_facts", "vec_episodes",
+                # Phase 2 + Phase 3
+                "background_tasks", "approvals", "audit_log"}
+    missing = expected - rows
+    assert not missing, f"missing tables: {missing}"
+    # entities table was dropped
+    assert "entities" not in rows
+
+
+def test_memory_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+
+    fid = db.insert_fact("user", "likes", "cold rice", importance=7, confidence=0.95)
+    assert fid > 0
+    active = db.active_facts_matching("user", "likes")
+    assert len(active) == 1
+    assert active[0]["object"] == "cold rice"
+
+    new_fid = db.insert_fact("user", "likes", "hot rice", importance=7, confidence=0.9)
+    db.supersede_fact(fid, new_fid, reason="user changed mind")
+    active = db.active_facts_matching("user", "likes")
+    assert len(active) == 1
+    assert active[0]["object"] == "hot rice"
+
+
+def test_tasks_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    tid = db.create_task("ask about the cabbage")
+    assert tid > 0
+    assert any(t["id"] == tid for t in db.open_tasks())
+    db.update_task(tid, status="completed")
+    assert not any(t["id"] == tid for t in db.open_tasks())
+
+
+def test_retrieval_returns_hits(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db, retrieval
+    importlib.reload(db)
+    importlib.reload(retrieval)
+    db.insert_fact("user", "works_at", "openai research labs", importance=8)
+    db.insert_fact("user", "drinks", "tea then coffee", importance=4)
+    db.insert_episode("2026-05-17", "talked about transformer attention papers", importance=6)
+
+    hits = retrieval.retrieve("openai", limit=5)
+    assert len(hits) >= 1
+    assert any("openai" in h.text.lower() for h in hits)
+
+
+def test_runtime_imports_lazily():
+    os.environ.pop("OWNER_TELEGRAM_ID", None)
+    from agents import runtime
+    importlib.reload(runtime)
+
+
+def test_telegram_bridge_imports():
+    os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+    from agents import telegram_bridge
+    importlib.reload(telegram_bridge)
+
+
+def test_scheduler_builds():
+    from agents.scheduler import build_scheduler
+
+    async def noop(_t: str) -> None:
+        return None
+
+    sched = build_scheduler(noop)
+    ids = {j.id for j in sched.get_jobs()}
+    assert ids == {
+        "heartbeat", "reengage", "consolidation",
+        "daily_reflection", "calendar_heartbeat",
+    }
+
+
+def test_proactive_should_send_logic(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    from agents import proactive
+    importlib.reload(proactive)
+    result = proactive.should_send_heartbeat()
+    assert isinstance(result, bool)
+
+
+def test_proactive_reengage_logic(tmp_path, monkeypatch):
+    """Re-engagement fires only when bot had last word and silence is in 2-6h window."""
+    import datetime as _dt
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    from agents import proactive
+    importlib.reload(proactive)
+
+    # No messages → no reengage
+    assert proactive.should_send_reengagement() is False
+
+    # User had last word → no reengage
+    db.append_message("user", "hi")
+    assert proactive.should_send_reengagement() is False
+
+    # Manually insert an old assistant message 3h ago
+    with db._conn() as c:
+        three_h_ago = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=3)).isoformat()
+        c.execute("INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)",
+                  ("assistant", "you went quiet. that's disruptive.", three_h_ago))
+    # quiet hours might still suppress — assert it's a bool, not an error
+    res = proactive.should_send_reengagement()
+    assert isinstance(res, bool)
+
+
+def test_photo_tool_refuses_irritable(tmp_path, monkeypatch):
+    """generate_photo refuses when mood is irritable (no OpenRouter call needed)."""
+    import asyncio
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    monkeypatch.setenv("HIKARI_PHOTO_OUTBOX", str(tmp_path / "outbox"))
+    from storage import db
+    importlib.reload(db)
+    from tools import photos
+    importlib.reload(photos)
+    out = asyncio.run(photos.generate_photo.handler({"mood": "irritable"}))
+    text = out["content"][0]["text"]
+    assert "refused" in text and "irritable" in text
+
+
+def test_runtime_uses_accept_edits(monkeypatch):
+    """Phase 3 dropped bypassPermissions in favor of acceptEdits + tighter allowlist."""
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from agents import runtime
+    importlib.reload(runtime)
+    opts = runtime._build_options(resume=None)
+    assert opts.permission_mode == "acceptEdits"
+
+
+def test_runtime_registers_all_subagents(monkeypatch):
+    """All 6 specialist subagents registered:
+    recall, wiki, code_dispatch, drive_gmail, notion, research."""
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from agents import runtime
+    importlib.reload(runtime)
+    opts = runtime._build_options(resume=None)
+    expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research"}
+    assert set(opts.agents.keys()) == expected
+
+
+def test_runtime_has_agent_tool(monkeypatch):
+    """The 'Agent' tool must be in allowed_tools or subagents never spawn."""
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from agents import runtime
+    importlib.reload(runtime)
+    opts = runtime._build_options(resume=None)
+    assert "Agent" in opts.allowed_tools
+
+
+def test_runtime_hikari_allowlist_minimal(monkeypatch):
+    """Hikari's own allowlist no longer includes google_workspace — drive_gmail subagent owns it."""
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from agents import runtime
+    importlib.reload(runtime)
+    opts = runtime._build_options(resume=None)
+    assert not any("google_workspace" in t for t in opts.allowed_tools)
+
+
+def test_background_tasks_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    db.bg_task_create("uuid-1", "claude_session", 99, "do x", meta={"repo": "/tmp"})
+    t = db.bg_task_get("uuid-1")
+    assert t["status"] == "queued"
+    db.bg_task_update("uuid-1", status="running", session_id="sess-x")
+    t = db.bg_task_get("uuid-1")
+    assert t["status"] == "running"
+    assert t["session_id"] == "sess-x"
+    assert len(db.bg_tasks_running()) == 1
+    db.bg_task_update("uuid-1", status="done", completed_at=db._now(),
+                      result_summary="ok", cost_usd=0.42, tool_use_count=5)
+    assert len(db.bg_tasks_running()) == 0
+
+
+def test_approval_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    aid = db.approval_create(99, "wiki_append", 1, "test", {"x": 1})
+    assert db.approval_pending_for(99)["id"] == aid
+    db.approval_resolve(aid, "approved")
+    assert db.approval_pending_for(99) is None
+
+
+def test_audit_log_hash_chain(tmp_path, monkeypatch):
+    """Each audit row's hash_prev = previous row's hash_self."""
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    a1 = db.audit_append("tool1", '{"x":1}', "ok", "owner")
+    a2 = db.audit_append("tool2", '{"y":2}', "ok", "owner")
+    a3 = db.audit_append("tool3", '{"z":3}', "ok", "owner")
+    with db._conn() as c:
+        rows = c.execute("SELECT id, hash_prev, hash_self FROM audit_log ORDER BY id").fetchall()
+    assert rows[0]["hash_prev"] == ""
+    assert rows[1]["hash_prev"] == rows[0]["hash_self"]
+    assert rows[2]["hash_prev"] == rows[1]["hash_self"]
+    assert a3 > a2 > a1
+
+
+def test_budget_window_tracks_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    from tools import budget
+    importlib.reload(budget)
+    for _ in range(5):
+        ok, n = budget.record_tool_call(123)
+        assert ok
+    assert budget.calls_in_window(123) == 5
+
+
+def test_budget_daily_cost(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    monkeypatch.setenv("HIKARI_DAILY_CAP_USD", "10.0")
+    from storage import db
+    importlib.reload(db)
+    from tools import budget
+    importlib.reload(budget)
+    assert budget.daily_cap() == 10.0
+    budget.record_cost(2.5)
+    assert abs(budget.cost_today() - 2.5) < 0.001
+    budget.record_cost(1.0)
+    assert abs(budget.cost_today() - 3.5) < 0.001
+
+
+def test_log_scrub_redacts_secrets():
+    import logging
+
+    from agents.log_scrub import RedactingFilter
+    msg = (
+        "leaked: Bearer abc123def456ghi789jkl secret "
+        "sk-ant-abcdefghijklmnopqrstuvwxyz1234567890"
+    )
+    rec = logging.LogRecord(
+        name="x", level=logging.ERROR, pathname="", lineno=0,
+        msg=msg,
+        args=(), exc_info=None,
+    )
+    RedactingFilter().filter(rec)
+    out = rec.getMessage()
+    assert "[REDACTED" in out
+    assert "abc123def456ghi789jkl" not in out
+
+
+def test_dispatch_tool_registered(monkeypatch):
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from tools import dispatch
+    names = [t.name for t in dispatch.ALL_TOOLS]
+    assert "dispatch_claude_session" in names
+
+
+def test_dispatch_rejects_outside_workdir(tmp_path, monkeypatch):
+    """Dispatch should reject repos not under /Users/alt/work_dir."""
+    import asyncio
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
+    from tools import dispatch
+    importlib.reload(dispatch)
+    dispatch.set_owner_chat_id(12345)
+    out = asyncio.run(dispatch.dispatch_claude_session.handler({
+        "repo_path": str(tmp_path),
+        "task": "do nothing",
+        "allowed_tools": "Read",
+        "max_turns": 5,
+    }))
+    text = out["content"][0]["text"]
+    assert "outside" in text.lower() or "work_dir" in text.lower()
+
+
+def test_silence_commands_persist(tmp_path, monkeypatch):
+    """/silence writes silence_until to runtime_state; /unsilence clears it."""
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    from storage import db
+    importlib.reload(db)
+    assert db.runtime_get("silence_until") is None
+    db.runtime_set("silence_until", "2099-01-01T00:00:00+00:00")
+    assert db.runtime_get("silence_until") == "2099-01-01T00:00:00+00:00"
+    db.runtime_set("silence_until", None)
+    assert db.runtime_get("silence_until") is None

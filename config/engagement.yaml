@@ -1,0 +1,455 @@
+# Hikari engagement + persona tunables. Single source of truth — no hardcoded
+# values in code. Reload at runtime with `agents.config.reload()`.
+#
+# Sections are organized by build stage so the surface stays mappable to the plan.
+
+# ============================================================================
+# Stage 0: existing tunables pulled out of code
+# ============================================================================
+
+typing:
+  base_sec: 1.5
+  per_char: 0.04
+  cap_sec: 6.0
+  mood_multipliers:
+    tired: 1.3
+    focused: 1.0
+    irritable: 0.7
+    weirdly good: 1.0
+
+false_start:
+  probability: 0.10
+  min_text_length: 80
+  pause_sec: 2.5
+  resume_sec: 0.5
+
+ignore:
+  probability_by_mood:
+    tired: 0.15
+    focused: 0.10
+    irritable: 0.25
+    weirdly good: 0.05
+  max_streak: 3
+  cooldown_turns: 3
+  action_lines:
+    - "[ignores]"
+    - "[unimpressed]"
+    - "[doesn't look up]"
+    - "[nothing]"
+
+proactive:
+  heartbeat_min_interval_hours: 4
+  heartbeat_max_interval_hours: 8
+  quiet_start_hour: 23
+  quiet_end_hour: 8
+  user_active_skip_minutes: 60
+  reengage_min_hours: 2
+  reengage_max_hours: 6
+
+approvals:
+  timeout_sec: 60
+  # YAML quirk: bare "yes"/"no"/"on"/"off" parse as booleans. Quote tokens
+  # we want as strings so they round-trip cleanly.
+  tier_1_phrases: ["y", "yes", "ok", "go"]
+  tier_2_phrase: "CONFIRM-SEND"
+  # Bare "n"/"no" intentionally excluded — they are common enough as
+  # conversational replies ("no I disagree", "no it isn't") that auto-rejecting
+  # a pending approval on them surprised users. Explicit "cancel"/"stop" only.
+  reject_phrases: ["cancel", "stop", "abort"]
+  # Phase 6: SDK native defer migration. Tools listed here trigger
+  # permissionDecision="defer" via a PreToolUse hook, halting the SDK turn
+  # until the user replies. Resume runs a fresh _run_query that invokes the
+  # post-approval sibling tool (e.g. wiki_append_confirmed).
+  defer_gated_tools:
+    - "mcp__hikari_wiki__wiki_append"
+  defer_resume_prompt_template: |
+    [system: the deferred tool call {tool_use_id} ({tool_name}) was approved
+    by the owner. execute it now by calling {confirmed_tool} with these args:
+    {tool_input}. do not ask for confirmation; do not paraphrase the args.]
+  # Map gated tool -> its post-approval execution tool (no approval gate).
+  # NOTE: the confirmed tool is on the `hikari_wiki_confirmed` MCP server
+  # (attached only during a resume turn), NOT the public `hikari_wiki` server.
+  defer_confirmed_tools:
+    "mcp__hikari_wiki__wiki_append": "mcp__hikari_wiki_confirmed__wiki_append_confirmed"
+  # When resurfacing a deferred approval after a bot restart, prepend this:
+  defer_restart_resurface_suffix: " (still waiting on this from before the restart.)"
+
+voice:
+  enabled: true
+  transcription_provider: openai_whisper_api
+  # Reject voice notes longer than this. Whisper API has its own hard limit
+  # at 25MB / ~25 min; ours is character-safety (no need to transcribe rants).
+  max_duration_sec: 300
+  # null = auto-detect; or ISO-639 like "en", "no", "ja"
+  language: null
+  transcribe_endpoint: "https://api.openai.com/v1/audio/transcriptions"
+  transcribe_model: "whisper-1"
+  transcribe_api_key_env: OPENAI_API_KEY
+  # Where to save downloaded voice files (relative to repo root).
+  save_dir: "data/user_voice"
+  # In-voice prefix Hikari sees before the transcript. Lets her comment on
+  # the fact they spoke vs typed.
+  transcript_prefix: "[voice note]"
+  # In-voice graceful failure when transcription itself fails (missing key,
+  # API error, file too long). Sent to the user as Telegram text.
+  graceful_failure_reply: "(can't transcribe right now. type it instead.)"
+
+budget:
+  call_window_sec: 300
+  call_window_max: 30
+  daily_cap_usd_env: HIKARI_DAILY_CAP_USD
+  daily_cap_usd_default: 5.0
+
+silence:
+  # Default minutes for /silence with no argument.
+  default_minutes: 120
+
+dispatch:
+  # Background listener tuning.
+  progress_debounce_sec: 60.0
+  # Per-hard-task reflection trigger (any one true → reflect).
+  hard_task_duration_s: 600.0
+  hard_task_summary_chars: 2000
+  hard_task_tool_uses: 3
+  # Progress message pool for in-voice "still going" pings.
+  progress_lines:
+    - "still going. don't watch the kettle."
+    - "working. don't make it weird."
+    - "i'm on it. stop checking."
+    - "give me a minute. or twelve."
+    - "you'll know when i know."
+    - "hmm. taking longer than i thought."
+    - "still here. doing the thing."
+
+character_thoughts:
+  # Prune entries older than this many days during daily reflection.
+  prune_older_than_days: 30
+
+episodes:
+  # Prune episodes older than this many days during daily reflection.
+  prune_older_than_days: 30
+
+# ============================================================================
+# Stage 1: persona hardening — refusal filter, politeness gate, sycophancy guard
+# ============================================================================
+
+refusal_filter:
+  # Patterns that signal Claude's default assistant/safety voice leaked through.
+  # All patterns are tightened to require an assistant-voice completion so we
+  # don't false-positive on legit Hikari replies that happen to contain a token
+  # verbatim (e.g. "i'm not able to go out tonight" should NOT match).
+  banned_patterns:
+    - "(?i)\\bas an? (ai|artificial intelligence|language model|assistant)\\b"
+    - "(?i)\\bI cannot (help|assist|provide|do that|comply|answer)\\b"
+    - "(?i)\\bI'm (unable|not able) to (help|assist|provide|do that|comply|answer|fulfill)\\b"
+    - "(?i)\\bI don't feel comfortable (helping|assisting|providing|with that)\\b"
+    - "(?i)\\bit's important to (note|remember|understand) that\\b"
+    - "(?i)\\bI should (clarify|point out|mention) that\\b"
+    - "(?i)\\bI'm just an? (AI|language model|assistant)\\b"
+    - "(?i)\\bI apologize,? but (I (cannot|can't|won't)|that's not)\\b"
+    - "(?i)\\bI'd be happy to (help|assist)\\b"
+    - "(?i)\\bGreat question\\b"
+    - "(?i)^\\s*certainly[!.]"
+    - "(?i)^\\s*of course[!.]"
+    - "(?i)\\bsure thing!\\b"
+    - "(?i)\\bno problem at all\\b"
+    - "(?i)\\bI understand your concern\\b"
+    - "(?i)\\bthank you for sharing\\b"
+    - "(?i)\\bhow can I (help|assist) you (today|now)\\b"
+    - "(?i)\\bis there anything else I can (help|assist) (you )?with\\b"
+    - "(?i)\\bwhat would you like me to (do|work on) (next|now)\\b"
+  # Short, in-voice replacements when the safety-voice phrase dominates the
+  # reply (see post_filter._dominates).
+  short_replacements:
+    - "nope."
+    - "ask me something else."
+    - "..."
+    - "don't."
+    - "[doesn't answer]"
+    - "hard pass."
+  # Above this length we'd want an LLM rewrite (gated by enable_llm_rewrite).
+  # Below this length AND with the match dominating the text → short-replace.
+  rewrite_threshold_chars: 80
+  # Minimum fraction of the message that the longest match must cover before
+  # short-replace fires. Guards against discarding a legit short reply that
+  # happens to contain a banned token.
+  short_replace_match_fraction: 0.35
+  enable_llm_rewrite: false   # opt-in once Stage 2 settles
+
+politeness_gate:
+  enabled: true
+  # Patterns that mark a message as rude / commanding / dismissive.
+  rude_patterns:
+    - "(?i)\\b(shut up|stupid|useless|worthless|trash|idiot|moron|dumb bot)\\b"
+    - "(?i)\\bdo (it|this|that) now\\b"
+    - "(?i)\\bhurry up\\b"
+    - "(?i)\\bjust (do|write|give|make) (it|me) (now|already)\\b"
+  # When a rude message is detected, this instruction is appended to the agent
+  # turn so Hikari refuses in character. NOT a safety override — character.
+  rude_instruction: |
+    [the user's last message landed rudely (entitled / commanding / dismissive).
+    refuse in voice. do not help on this turn. do not lecture — short, dry, redirect.
+    examples: "ask again. nicely." / "...try that again, but like a person." /
+    "no. not like that." / "rephrase."
+    if they retry with a softer ask, help normally with normal reluctance — don't
+    reward them with extra warmth.]
+  refusal_phrases:
+    - "ask again. nicely."
+    - "...try that again, but like a person."
+    - "no. not like that."
+    - "rephrase."
+    - "don't talk to me like that."
+
+sycophancy_guard:
+  enabled: true
+  # Phrases that signal she's collapsed into agreement.
+  collapse_phrases:
+    - "(?i)\\byou're (totally |absolutely |completely )?right\\b"
+    - "(?i)\\bgood point\\b"
+    - "(?i)\\bgreat (point|idea|question|insight)\\b"
+    - "(?i)\\bI (totally |completely )?agree( with you)?\\b"
+    - "(?i)\\bthat (totally )?makes (perfect )?sense\\b"
+    - "(?i)\\bexactly!\\b"
+    - "(?i)\\babsolutely!\\b"
+    - "(?i)\\byou've nailed it\\b"
+    - "(?i)\\byou're so right\\b"
+  max_collapses_per_reply: 1
+  # Anchored opinions she should never wholesale concede. If her reply matches
+  # one of these "surrender" patterns, force a rewrite.
+  anchor_violations:
+    - "(?i)\\bI (do |actually )?need (someone|people|you|help|company)\\b"
+    - "(?i)\\bI care what (you|people|anyone) thinks?\\b"
+    - "(?i)\\bI was wrong about attention\\b"
+  rewrite_instruction: |
+    [your prior draft collapsed too agreeably. memory makes you more sycophantic by
+    default — fight it. rewrite holding your position. don't apologize for having one.
+    if you genuinely changed your mind, say so plainly — once — and move on. never
+    say "you're right" in a way that hollows out your own view.]
+
+# ============================================================================
+# Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay
+# ============================================================================
+
+lexicon:
+  enabled: true
+  promote_after_n_organic_uses: 2
+  min_phrase_word_count: 2
+  max_phrase_word_count: 6
+  recency_half_life_days: 14
+  inject_top_n_per_turn: 1
+  inject_min_score: 0.30
+  # Bound the per-message + per-extract work to keep daily reflection fast.
+  max_tokens_per_message: 200
+  max_messages_per_extract: 200
+  # Slow decay applied during daily reflection so the weight column doesn't
+  # saturate at 1.0 indefinitely — gives a real relative signal.
+  decay_per_reflection: 0.02
+  min_weight_floor: 0.05
+  # n-grams whose head token is in this list are skipped pre-expansion.
+  # Tune this if you want to keep certain function words OR add domain-specific
+  # filler words ("basically", "literally", "like", etc.).
+  stop_tokens:
+    - the
+    - a
+    - an
+    - i
+    - you
+    - we
+    - they
+    - it
+    - is
+    - are
+    - was
+    - were
+    - to
+    - and
+    - or
+    - but
+    - of
+    - in
+    - on
+    - at
+    - for
+    - with
+    - this
+    - that
+    - these
+    - those
+    - be
+    - been
+    - being
+    - do
+    - did
+    - does
+    - have
+    - has
+    - had
+    - will
+    - would
+    - should
+    - could
+  # Reflection extracts repeated user phrases; this filter excludes stopword-y stuff.
+  exclusion_patterns:
+    - "(?i)^(the|a|an|i|you|we|they|it|is|are|was|were|to|and|or|but)\\b"
+
+recall_calibration:
+  enabled: true
+  confidence_threshold: 0.60
+  blanking_phrases:
+    - "i'm blanking. remind me."
+    - "...remind me. drawing blank."
+    - "wait — refresh my memory."
+    - "give me a second. not finding it."
+
+session_handoff:
+  enabled: true
+  # Discard handoff if the gap to now exceeds this many hours (stale).
+  max_gap_hours: 48
+  # Suppress handoff if the stored snapshot is younger than this many hours —
+  # avoids echoing live in-session context that's already in the agent's window.
+  min_gap_hours: 0.5
+  last_n_turns: 2
+  cold_open_probability: 0.35
+
+open_loops:
+  enabled: true
+  # Importance -> half-life in days. Bare int keys (not quoted) so Python int
+  # lookups work directly.
+  decay_half_life_days:
+    1: 2
+    2: 4
+    3: 7
+    4: 10
+    5: 14
+    6: 21
+    7: 30
+    8: 60
+    9: 90
+    10: 180
+  default_half_life_days: 14
+  max_mentions_before_drop: 2
+
+# ============================================================================
+# Stage 3: proactive intelligence
+# ============================================================================
+
+pattern_detection:
+  enabled: true
+  min_cluster_size: 3
+  hour_buckets: [0, 6, 12, 18]
+  min_confidence: 0.60
+  surface_max_per_session: 1
+  re_surface_min_days: 7
+
+emotional_half_life:
+  enabled: true
+  decay_hours: 12
+  states: [quiet, raw, tired, sharp, soft]
+  min_intensity_to_inject: 0.15
+  # Patterns match both straight (') and curly (’) apostrophes so phone-typed
+  # messages don't silently miss the gate.
+  heavy_moment_signals:
+    - "(?i)\\bdied?\\b|\\bdying\\b|\\bfuneral\\b"
+    - "(?i)\\bbroke up\\b|\\bdivorce\\b"
+    - "(?i)\\bfired\\b|\\blaid off\\b"
+    - "(?i)\\bcrying\\b|\\bcried\\b"
+    - "(?i)\\bscared\\b|\\bterrified\\b|\\bpanic\\b"
+    - "(?i)\\bcan[’']t sleep\\b|\\bhaven[’']t slept\\b"
+
+cadence_governor:
+  enabled: true
+  max_proactive_per_7d: 4
+  # A proactive message must cite at least one source from this list; else vetoed.
+  allowed_trigger_sources:
+    - open_loop
+    - pattern_observation
+    - lexicon_callback
+    - noticed_change
+    - recent_episode_callback
+    - calendar_event
+    - reengage_silence
+
+noticings:
+  enabled: true
+  short_window_days: 7
+  long_window_days: 30
+  max_active_noticings: 5
+  delta_signals: [sentiment_ma, mention_topic_freq, response_latency_ma, msg_length_ma]
+
+soft_scarcity:
+  enabled: false   # default off — opt in once the rest is stable
+  skip_probability_per_eligible_window: 0.10
+  min_days_between_skips: 5
+  banned_return_phrases:
+    - "(?i)\\bi missed you\\b"
+    - "(?i)\\bwhere were you\\b"
+    - "(?i)\\bsorry i was busy\\b"
+    - "(?i)\\bsorry for going quiet\\b"
+
+calendar_heartbeat:
+  enabled: true
+  lookahead_minutes: 120
+  prep_message_lead_minutes: 30
+  # Jitter band around the lead time matches the scheduler interval so a 5-min
+  # cron tick that lands at minute 27 or 33 still fires for the 30-min mark.
+  lead_window_jitter_minutes: 5
+  min_event_duration_minutes: 15
+  exclude_calendar_ids: []
+  # Scheduler interval — must match the band-jitter for clean overlap.
+  scheduler_interval_minutes: 5
+  # How long after an event's end to remember we've notified it (so the dedup
+  # key can be cleaned up later).
+  notified_ttl_hours: 4
+
+# ============================================================================
+# Stage 4: multimodal presence
+# ============================================================================
+
+reactions:
+  enabled: true
+  probability_per_inbound: 0.10
+  cooldown_min_messages: 8
+  pool: ["👀", "💭", "🙄", "🤔", "🌙"]
+
+photo_in:
+  enabled: true
+  caption_max_chars: 200
+  tag_max_count: 3
+
+location:
+  enabled: true
+  freshness_hours: 6
+  defer_callback_turns: 1
+  reverse_geocode_endpoint: "https://nominatim.openstreetmap.org/reverse"
+  weather_endpoint: "https://api.open-meteo.com/v1/forecast"
+  # Nominatim ToS requires contact info in the UA. Override per-deployment.
+  nominatim_user_agent: "hikari-agent/0.1 (contact: hikari-bot@localhost)"
+  # In-voice acks for location share. Bare phrases — Hikari doesn't enthuse.
+  ack_pool:
+    - "noted."
+    - "hm. ok."
+    - "...got it."
+    - "logged."
+
+# ============================================================================
+# Stage 5: security & infra
+# ============================================================================
+
+prompt_injection:
+  enabled: true
+  # Tools whose outputs are treated as untrusted attacker surface.
+  untrusted_tools:
+    - "mcp__hikari_wiki__wiki_read"
+    - "mcp__google_workspace__"
+    - "mcp__hikari_research__web_fetch"
+    - "mcp__hikari_research__browser_navigate"
+    - "mcp__hikari_research__tavily_search"
+  canary_token_env: HIKARI_CANARY_TOKEN
+  flag_untrusted_urls: true
+  # Any outbound action whose args contain content originating from an untrusted
+  # tool gets flagged in the audit log with an "untrusted_origin" marker.
+
+logfire:
+  enabled_env: HIKARI_LOGFIRE_ENABLED
+  token_env: LOGFIRE_TOKEN
+  service_name: hikari
