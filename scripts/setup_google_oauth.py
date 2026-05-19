@@ -55,7 +55,13 @@ def main() -> int:
     # access_type=offline + prompt=consent ensures we get a refresh_token
     # even on re-auth (otherwise the second time around you only get an
     # access token).
+    # Bind explicitly to 127.0.0.1 (not "localhost") so the redirect URI
+    # Google receives is http://127.0.0.1:<port>/ — avoids the macOS dual-stack
+    # case where "localhost" resolves to ::1 (IPv6) but Python's HTTPServer
+    # only listens on IPv4.
     creds = flow.run_local_server(
+        host="127.0.0.1",
+        bind_addr="127.0.0.1",
         port=0,
         access_type="offline",
         prompt="consent",
