@@ -84,6 +84,17 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    if bool(cfg.get("morning_brief.enabled", True)):
+        from .morning_brief import maybe_send_morning_brief
+        mb_hour = int(cfg.get("morning_brief.hour", 6))
+        mb_minute = int(cfg.get("morning_brief.minute", 0))
+        scheduler.add_job(
+            lambda: maybe_send_morning_brief(send_text),
+            CronTrigger(hour=mb_hour, minute=mb_minute),
+            id="morning_brief",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
     # Phase 8: monthly memory prune. Episodes older than the configured
     # retention window get dropped (their embeddings + FTS rows too). Runs
     # at 04:00 on the 1st of each month. Backup launchd (03:00 daily) has

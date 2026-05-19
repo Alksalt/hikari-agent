@@ -146,6 +146,7 @@ def test_scheduler_builds(monkeypatch):
     assert ids == {
         "heartbeat", "reengage", "consolidation",
         "daily_reflection", "calendar_heartbeat", "memory_prune",
+        "morning_brief",
     }
 
 
