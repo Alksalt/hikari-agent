@@ -671,3 +671,8 @@ logfire:
   enabled_env: HIKARI_LOGFIRE_ENABLED
   token_env: LOGFIRE_TOKEN
   service_name: hikari
+
+scheduler:
+  # IANA timezone for cron jobs (daily_reflection, morning_brief, etc.).
+  # CronTrigger(hour=N) fires at N o'clock in THIS zone.
+  timezone: "Europe/Oslo"

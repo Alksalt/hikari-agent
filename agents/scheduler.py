@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import zoneinfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,7 +23,13 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
     )
     from .reflection import maybe_run_session_consolidation, run_daily_reflection
 
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    tz_name = cfg.get("scheduler.timezone", "UTC")
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("scheduler: invalid timezone %r, falling back to UTC", tz_name)
+        tz = zoneinfo.ZoneInfo("UTC")
+    scheduler = AsyncIOScheduler(timezone=tz)
 
     # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours
     scheduler.add_job(
