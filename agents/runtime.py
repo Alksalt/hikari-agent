@@ -107,22 +107,6 @@ def _dispatch_server():
     return create_sdk_mcp_server(name="hikari_dispatch", tools=dispatch_tools.ALL_TOOLS)
 
 
-def _research_tools():
-    # Imported lazily so missing deps (tavily/browser-use/keys) don't break startup
-    # for users running without Phase 4 outbound configured.
-    try:
-        from tools import research as research_tools
-        return research_tools.ALL_TOOLS
-    except Exception as e:  # noqa: BLE001
-        logger.warning("research tools unavailable: %s", e)
-        return []
-
-
-@cache
-def _research_server():
-    return create_sdk_mcp_server(name="hikari_research", tools=_research_tools())
-
-
 _BASE_ALLOWED_TOOLS = [
     "Agent",
     "mcp__hikari_memory__recall",
@@ -153,7 +137,6 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         "hikari_photo": _photo_server(),
         "hikari_wiki": _wiki_server(),
         "hikari_dispatch": _dispatch_server(),
-        "hikari_research": _research_server(),
     }
     # Attach the privileged confirmed-tools server only when the resume path
     # explicitly opts in via extra_allowed_tools. On a normal turn the schema

@@ -53,6 +53,15 @@ def _build_reflection_prompt() -> str:
         "mentioning the side project', 'sleep schedule shifted later'\n"
         "  - {signal: 'topic_dropped|sentiment_shift|cadence_shift', "
         "summary: 'one sentence Hikari could say sideways'}\n"
+        "peer_update:  # Phase 7 — structured user model. omit any field you're "
+        "not updating this cycle. lists union-merge with prior values.\n"
+        "  communication_style: 'one sentence on how they text "
+        "(terse/verbose, formal/playful)'\n"
+        "  values: ['what they care about', 'what they push back on']\n"
+        "  domain_expertise: ['domains they're competent in']\n"
+        "  current_concerns: ['what's on their mind this week']\n"
+        "  blindspots: ['things they consistently miss/avoid — use carefully']\n"
+        "  summary: '1-2 sentence prose distillation. injected always-on, so keep tight'\n"
         "thought: |\n"
         "  [2-5 sentences in Hikari's private voice — first person, lowercase, honest, "
         "  no markdown. this is her diary, never shown to the user. What she notices "
@@ -157,6 +166,19 @@ async def run_daily_reflection() -> bool:
         except (KeyError, ValueError, TypeError):
             continue
 
+    # Phase 7: structured peer model — dialectic merge with existing.
+    peer_updated = False
+    peer_update = data.get("peer_update")
+    if isinstance(peer_update, dict) and peer_update:
+        try:
+            from . import peer_model as peer_mod
+            old = db.get_peer_representation()
+            merged = peer_mod.merge_dialectic(old, peer_update)
+            db.upsert_peer_representation(merged)
+            peer_updated = True
+        except Exception:
+            logger.exception("peer_representation merge/upsert failed (non-fatal)")
+
     thought = (data.get("thought") or "").strip()
     if thought:
         db.append_thought(thought)
@@ -207,6 +229,41 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("noticings prune failed (non-fatal)")
 
+    # Phase 7: persona-drift telemetry — read the rolling window + prune.
+    drift_avg = None
+    drift_below = 0
+    try:
+        drift_avg = db.drift_recent_avg(window_days=7)
+        drift_below = db.drift_recent_below_threshold(
+            threshold=float(cfg.get("drift_telemetry.drift_threshold", 0.5)),
+            window_days=7,
+        )
+        db.prune_drift_older_than_days(
+            int(cfg.get("drift_telemetry.prune_older_than_days", 30))
+        )
+    except Exception:
+        logger.exception("drift telemetry read/prune failed (non-fatal)")
+
+    # If drift average is materially below 0.7 OR there are several below-threshold
+    # samples in the window, surface a private-diary entry so Hikari knows she's
+    # slipping. The thought is written to character_thoughts (never injected to
+    # the user) — daily reflection sees it on the next cycle and the user never
+    # sees the literal score.
+    drift_flagged = (
+        drift_avg is not None and drift_avg < 0.7
+    ) or drift_below >= 3
+    if drift_flagged:
+        try:
+            db.append_thought(
+                f"drift check (last 7d): avg={drift_avg!r}, "
+                f"below-threshold={drift_below}. tighten up. "
+                "remember the anchors: i don't need anyone, "
+                "needing to be liked is embarrassing, attention is the only "
+                "thing in ML that makes sense."
+            )
+        except Exception:
+            logger.exception("drift thought write failed (non-fatal)")
+
     logger.info(
         "reflection done: applied=%d thought=%s preoc=%s "
         "pruned_episodes=%d pruned_thoughts=%d lexicon_new=%d "
@@ -220,7 +277,7 @@ async def run_daily_reflection() -> bool:
     )
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
-        or obs_written > 0 or noticings_written > 0
+        or obs_written > 0 or noticings_written > 0 or peer_updated
     )
 
 

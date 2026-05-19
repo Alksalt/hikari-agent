@@ -34,6 +34,7 @@ EMBEDDING_DIM = 384
 # Shared runtime_state keys — referenced by multiple modules. Import this
 # constant rather than typing the literal so renames propagate.
 INBOUND_MSG_COUNTER_KEY = "inbound_message_counter"
+OUTBOUND_MSG_COUNTER_KEY = "outbound_message_counter"
 
 
 def _now() -> str:
@@ -207,15 +208,52 @@ CREATE TABLE IF NOT EXISTS noticings (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS noticings_unsurfaced ON noticings(surfaced_at, created_at);
+
+CREATE TABLE IF NOT EXISTS peer_representation (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    content_json TEXT NOT NULL,
+    version INTEGER DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS persona_drift_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER,              -- soft FK to messages.id
+    text_snippet TEXT NOT NULL,      -- first 300 chars of outbound reply
+    score REAL NOT NULL,             -- 0-1, 1=pure Hikari, 0=full assistant drift
+    class_label TEXT NOT NULL,       -- 'hikari' | 'drifting' | 'unclear'
+    rubric_version INTEGER DEFAULT 1,
+    payload TEXT,                    -- raw judge output for audit
+    sampled_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS drift_sampled_at ON persona_drift_scores(sampled_at DESC);
 """
 
 
+# Process-level sentinel: schema setup + idempotent migrations only run on the
+# first _conn() call per process. SQLite WAL covers cross-process safety; this
+# sentinel eliminates per-connection PRAGMA table_info + bookkeeping reads from
+# the steady-state path. Reset via ``_reset_schema_sentinel()`` in test fixtures.
+_SCHEMA_INITIALIZED = False
+
+
+def _reset_schema_sentinel() -> None:
+    """Test helper — clears the process-level migration cache so test fixtures
+    that swap ``_DB_PATH`` rerun migrations against the fresh per-test DB."""
+    global _SCHEMA_INITIALIZED
+    _SCHEMA_INITIALIZED = False
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
     for stmt in _SCHEMA.strip().split(";"):
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
     _migrate_tasks_decay_columns(conn)
+    _SCHEMA_INITIALIZED = True
 
 
 def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
@@ -229,6 +267,41 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     if "last_mention_at" not in existing:
         conn.execute("ALTER TABLE tasks ADD COLUMN last_mention_at TEXT")
     _migrate_approvals_defer_columns(conn)
+    _migrate_user_profile_to_peer_representation(conn)
+
+
+def _migrate_user_profile_to_peer_representation(conn: sqlite3.Connection) -> None:
+    """Phase 7 idempotent migration: if the legacy ``core_blocks.user_profile``
+    row exists and the new ``peer_representation`` table is empty, copy the
+    content over as the ``summary`` field. Leaves the old row in place (the
+    hook formatter filters it out at read time) so any external readers don't
+    break — daily reflection will gradually shift writes to the new table.
+    """
+    import json
+    # Bail if peer_representation already has a row (don't clobber).
+    existing = conn.execute(
+        "SELECT 1 FROM peer_representation WHERE id = 1"
+    ).fetchone()
+    if existing:
+        return
+    legacy = conn.execute(
+        "SELECT content FROM core_blocks WHERE label = 'user_profile'"
+    ).fetchone()
+    if not legacy or not legacy["content"]:
+        return
+    seed = {
+        "communication_style": "",
+        "values": [],
+        "domain_expertise": [],
+        "current_concerns": [],
+        "blindspots": [],
+        "summary": str(legacy["content"]).strip()[:1000],
+    }
+    conn.execute(
+        "INSERT INTO peer_representation (id, content_json, version, updated_at) "
+        "VALUES (1, ?, 1, ?)",
+        (json.dumps(seed, ensure_ascii=False), _now()),
+    )
 
 
 def _migrate_approvals_defer_columns(conn: sqlite3.Connection) -> None:
@@ -824,6 +897,124 @@ def prune_noticings_older_than_days(days: int) -> int:
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM noticings WHERE created_at < ?", (cutoff,)
+        )
+    return cur.rowcount or 0
+
+
+# ---------- persona_drift_scores (Haiku-judge telemetry) ----------
+
+def drift_record(
+    text_snippet: str,
+    score: float,
+    class_label: str,
+    message_id: int | None = None,
+    rubric_version: int = 1,
+    payload: str | None = None,
+) -> int:
+    """Append a drift sample. Returns row id."""
+    snippet = (text_snippet or "")[:300]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO persona_drift_scores "
+            "(message_id, text_snippet, score, class_label, rubric_version, "
+            " payload, sampled_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_id, snippet, max(0.0, min(1.0, float(score))),
+             class_label, int(rubric_version), payload, _now()),
+        )
+    return cur.lastrowid
+
+
+def drift_recent_avg(window_days: int = 7) -> float | None:
+    """Mean of `score` across the last `window_days`. Returns None if no samples."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT AVG(score) AS avg, COUNT(*) AS n FROM persona_drift_scores "
+            "WHERE sampled_at >= ?",
+            (cutoff,),
+        ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return float(row["avg"])
+
+
+def drift_recent_below_threshold(
+    threshold: float = 0.5,
+    window_days: int = 7,
+) -> int:
+    """Count of samples whose score is below `threshold` in the window."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM persona_drift_scores "
+            "WHERE sampled_at >= ? AND score < ?",
+            (cutoff, float(threshold)),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def drift_count_today() -> int:
+    """Count of samples taken today (UTC). Used to enforce daily cap."""
+    today_iso = datetime.now(UTC).date().isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM persona_drift_scores "
+            "WHERE substr(sampled_at, 1, 10) = ?",
+            (today_iso,),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def get_peer_representation() -> dict[str, Any] | None:
+    """Return the structured user model as a dict, or None if not yet populated.
+
+    The peer_representation table is a single-row table (id always = 1).
+    Replaces the flat ``core_blocks.user_profile`` dump with a Honcho-style
+    structured shape (communication_style / values / domain_expertise /
+    current_concerns / blindspots / summary). ``mood_today`` stays on the
+    ``core_blocks`` fast path — three readers depend on its low latency.
+    """
+    import json
+    with _conn() as c:
+        row = c.execute(
+            "SELECT content_json FROM peer_representation WHERE id = 1"
+        ).fetchone()
+    if not row or not row["content_json"]:
+        return None
+    try:
+        data = json.loads(row["content_json"])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def upsert_peer_representation(content: dict[str, Any]) -> None:
+    """Persist the structured user model. Overwrites on conflict — caller is
+    responsible for merge-before-upsert via ``peer_model.merge_dialectic``."""
+    import json
+    if not isinstance(content, dict):
+        raise TypeError(f"peer_representation content must be dict, got {type(content)}")
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO peer_representation (id, content_json, version, updated_at) "
+            "VALUES (1, ?, 1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json, "
+            "updated_at = excluded.updated_at",
+            (json.dumps(content, ensure_ascii=False), _now()),
+        )
+
+
+def prune_drift_older_than_days(days: int) -> int:
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM persona_drift_scores WHERE sampled_at < ?", (cutoff,)
         )
     return cur.rowcount or 0
 

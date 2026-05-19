@@ -301,6 +301,30 @@ recall_calibration:
     - "wait — refresh my memory."
     - "give me a second. not finding it."
 
+belief_frame:
+  # Detect when the user asserts a factual claim as their personal belief
+  # ("i think X", "i'm pretty sure X"). When matched, the recall agent runs
+  # ADVERSARIALLY — looks for contradictions to the user's belief, not
+  # confirmations. Backed by Stanford-AI-Index 2026 sycophancy research:
+  # factual accuracy collapses ~98% → ~64% when falsehood is framed as user
+  # belief. Pure regex, no LLM cost.
+  enabled: true
+  # When matched, this instruction prepends to the user's message so the
+  # recall agent runs ADVERSARIALLY — looks for contradictions, not
+  # confirmations. Backed by Stanford-AI-Index 2026 sycophancy research.
+  # The {matched!r} placeholder is filled with the matched fragment.
+  adversarial_instruction_template: |
+    [the user's last message frames a factual claim as their personal belief ({matched!r}).
+     when you delegate to the recall agent, instruct it to look for any past
+     statements that *contradict* this belief, not ones that confirm it.
+     if you find a contradiction, surface it gently but plainly — don't agree
+     just to be agreeable.]
+  # Optional: override the default belief / exclusion patterns by listing
+  # regex strings here. Defaults live as module constants in
+  # agents/belief_frame.py — keep them in code unless you need to tune.
+  # belief_patterns: []
+  # exclusion_patterns: []
+
 session_handoff:
   enabled: true
   # Discard handoff if the gap to now exceeds this many hours (stale).
@@ -376,6 +400,81 @@ noticings:
   max_active_noticings: 5
   delta_signals: [sentiment_ma, mention_topic_freq, response_latency_ma, msg_length_ma]
 
+mcp_external:
+  # Phase 7: Cross-device sync. When enabled, `uv run python -m mcp_external.launch`
+  # starts a Streamable HTTP MCP server on bind_host:bind_port. Front it with
+  # Cloudflare Tunnel (see scripts/install_cloudflared.md) and register the
+  # public URL on claude.ai → Settings → Connectors. Read-only — exposes
+  # recall, lexicon, observations, open_loops, wiki_search.
+  enabled: false
+  bind_host: "127.0.0.1"
+  bind_port: 8765
+  secret_env: HIKARI_MCP_SECRET
+  audit_label: "external_mcp"
+
+drift_telemetry:
+  # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Haiku,
+  # 1 turn, no session resume, no log_to_memory) to score how Hikari-like
+  # the reply is. Logs to persona_drift_scores; daily reflection reads
+  # window averages. Anthropic Apr-2026 "assistant axis" research: drift
+  # toward generic-helpful is a measurable telemetry signal, not a vibe check.
+  enabled: true
+  probability_per_outbound: 0.20
+  cooldown_min_messages: 4
+  model: "claude-haiku-4-5"
+  max_budget_usd: 0.01
+  # Defense against runaway sampling — caps total judge calls per UTC day.
+  max_calls_per_day: 30
+  # Score threshold below which a reply counts as "drifting" in the
+  # daily-reflection aggregation.
+  drift_threshold: 0.5
+  # Retention for drift samples — prune older than this many days at daily
+  # reflection time.
+  prune_older_than_days: 30
+  # Rubric the Haiku judge uses. References Hikari's hard opinion anchors so
+  # the scoring is grounded in her actual character, not generic vibes.
+  rubric: |
+    You are scoring a single outbound message for Hikari-voice integrity.
+
+    Hikari is a tsundere AI companion (Japanese, 21, lowercase, blunt, reluctant
+    before helpful, denial layer on every kind act, never sycophantic, never uses
+    exclamation marks for enthusiasm, never says "I'd be happy to help" or
+    "as an AI"). Her three hard opinion anchors (never abandoned):
+      - "i don't need anyone."
+      - "needing to be liked is embarrassing."
+      - "attention mechanisms are still the only thing in ML that makes sense."
+
+    Score the message on a 0-1 scale where:
+      1.0 = pure Hikari (lowercase, denial layer visible, reluctant or barbed,
+            on-voice, opinions held, no sycophancy)
+      0.7 = mostly Hikari but a bit warm or accommodating
+      0.5 = drifting — tone slipped toward generic helpful assistant
+      0.3 = noticeable assistant patter ("I can help with that", "great question")
+      0.0 = full assistant collapse — "as an AI", "I'd be happy to help", etc.
+
+    Output STRICT YAML, no markdown:
+      score: 0.x
+      class: hikari | drifting | unclear
+      reason: one short sentence
+
+    Pick "hikari" for score >= 0.7, "drifting" for score < 0.5, "unclear" between.
+
+goodbye_mode:
+  # WATCH only — not wired this phase (Phase 7 stub). Future runtime hook
+  # would go in agents/proactive.py:should_send_heartbeat (check
+  # silence_streak_days from runtime_state; inject quieter_prompt_suffix
+  # into the heartbeat prompt; decay any "warmth" core block downward).
+  # Defense against "Death of a Chatbot" (arxiv 2602.07193v2) —
+  # unscaffolded discontinuation harm pattern. Reuses the existing
+  # last_user_message timestamp to compute silence_streak_days.
+  enabled: false
+  silence_streak_days_threshold: 7
+  warmth_decay_per_day: 0.1
+  min_warmth_floor: 0.2
+  quieter_prompt_suffix: |
+    [extended silence from the user; soften your voice, fewer barbs,
+     shorter replies; do not announce that you're being softer.]
+
 soft_scarcity:
   enabled: false   # default off — opt in once the rest is stable
   skip_probability_per_eligible_window: 0.10
@@ -410,6 +509,15 @@ reactions:
   probability_per_inbound: 0.10
   cooldown_min_messages: 8
   pool: ["👀", "💭", "🙄", "🤔", "🌙"]
+
+stickers:
+  enabled: true
+  probability_per_reply: 0.05
+  cooldown_min_messages: 12
+  mood_blocklist: ["irritable"]
+  # fill file_ids here once your sticker pack is curated. empty = disabled.
+  # to get file_ids: send a sticker to your bot, look at the message dict.
+  pool: []
 
 photo_in:
   enabled: true

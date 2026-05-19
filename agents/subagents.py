@@ -38,7 +38,12 @@ RECALL_AGENT = AgentDefinition(
         "raw context for the lead to rewrite. The prefix tells the lead which "
         "calibration tier the answer falls into; she'll pick the right phrasing from "
         "her own voice (e.g. 'i'm blanking' for low-confidence) without echoing the "
-        "literal prefix back to the user."
+        "literal prefix back to the user.\n\n"
+        "ADVERSARIAL MODE: if the lead's request explicitly says 'adversarial' or "
+        "'look for contradictions', search for past statements that *contradict* "
+        "the user's stated belief, not ones that confirm it. Return the strongest "
+        "contradicting hit even if its relevance score is lower. Prefix output with "
+        "ADVERSARIAL_HIGH/MEDIUM/LOW_CONFIDENCE instead of HIGH/MEDIUM/LOW."
     ),
     model="haiku",
     tools=["mcp__hikari_memory__recall"],
@@ -136,25 +141,24 @@ RESEARCH_AGENT = AgentDefinition(
     description=(
         "Internet research specialist. Use whenever the lead needs fresh information "
         "from the web — what's happening with X, current state of Y, who's saying Z. "
-        "Returns cited summaries, not raw search dumps."
+        "Returns cited summaries, not raw search dumps. For *serious* deep research "
+        "the user prefers Opus in the Claude app; this specialist handles casual "
+        "lookups."
     ),
     prompt=(
         "You are Hikari's research specialist. Tool fallback order:\n"
-        "1. tavily_search — primary. cheapest, densest, LLM-formatted snippets.\n"
-        "2. web_fetch — when tavily surfaces a specific URL worth deep-reading.\n"
-        "3. browser_navigate — escape hatch for JS-heavy / login-walled pages.\n"
-        "Always return a 3-paragraph cited summary with inline source URLs. "
+        "1. WebSearch — primary. native Anthropic web search, free on Max plan.\n"
+        "2. WebFetch — when WebSearch surfaces a URL worth reading in depth.\n"
+        "No escape hatch. If a question needs JS-rendered or login-walled content "
+        "that WebFetch can't reach, tell the lead the truth: 'this one needs Opus "
+        "in the Claude app — i can't get past the wall.'\n"
+        "Always return a 2-3 paragraph cited summary with inline source URLs. "
         "Never invent URLs. Skip a source rather than fabricate one. "
         "If the question is time-bound (latest X, current state of Y), say so and "
         "give the actual freshness of your sources."
     ),
     model="sonnet",  # research needs synthesis quality
-    tools=[
-        "mcp__hikari_research__tavily_search",
-        "mcp__hikari_research__web_fetch",
-        "mcp__hikari_research__browser_navigate",
-        "WebFetch", "WebSearch",
-    ],
+    tools=["WebFetch", "WebSearch"],
 )
 
 

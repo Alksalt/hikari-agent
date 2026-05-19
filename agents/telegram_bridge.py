@@ -32,8 +32,11 @@ from tools import voice as voice_tool
 from tools.photos import OUTBOX as PHOTO_OUTBOX
 
 from . import affect as affect_mod
+from . import belief_frame as belief_mod
 from . import config as cfg
+from . import drift_judge as drift_mod
 from . import reactions as reactions_mod
+from . import stickers as stickers_mod
 from .background_listener import (
     listener_loop,
     recover_deferred_approvals,
@@ -134,6 +137,27 @@ async def _send_with_choreography(bot, message, reply_text: str) -> None:
 
     await message.reply_text(text_to_send)
 
+    # Outbound-counter bump + sticker gate. Bump first so the value passed in
+    # reflects this just-sent reply; the sticker module reads the same shared
+    # counter via storage.db.OUTBOUND_MSG_COUNTER_KEY.
+    try:
+        stickers_mod._bump_outbound_counter()
+        outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
+        await stickers_mod.maybe_send_sticker(bot, chat_id, outbound_counter)
+    except Exception:
+        logger.exception("stickers: maybe_send_sticker failed (non-fatal)")
+        outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
+
+    # Phase 7: drift judge — fire-and-forget Haiku sampler. Runs in a separate
+    # ClaudeSDKClient (no session resume, no _RUN_LOCK) so user-send latency
+    # stays zero. Sampled probabilistically + daily-capped in config.
+    try:
+        asyncio.create_task(
+            drift_mod.maybe_judge_and_log(text_to_send, outbound_counter)
+        )
+    except Exception:
+        logger.exception("drift_judge: maybe_judge_and_log scheduling failed")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -175,6 +199,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("affect scan failed (non-fatal)")
 
+    # Belief-frame guard — if the user is asserting a factual claim as their
+    # belief ("i think X", "i'm pretty sure X"), prepend an adversarial
+    # instruction so the recall subagent looks for contradictions instead of
+    # confirmations. Mitigates Stanford-AI-Index 2026 sycophancy-under-belief.
+    user_text = message.text
+    try:
+        bm_hit, bm_fragment = belief_mod.is_belief_assertion(user_text)
+    except Exception:
+        logger.exception("belief_frame scan failed (non-fatal)")
+        bm_hit, bm_fragment = False, None
+    if bm_hit and bm_fragment:
+        user_text = (
+            belief_mod.adversarial_prompt_suffix(bm_fragment) + "\n\n" + user_text
+        )
+        db.append_thought(
+            f"belief-frame detected: {bm_fragment!r}. recall adversarial mode primed."
+        )
+
     # Probabilistic reaction — fires occasionally as a non-verbal nod.
     try:
         await reactions_mod.maybe_react(context.bot, chat.id, message.message_id)
@@ -189,7 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
-        reply = await respond(message.text)
+        reply = await respond(user_text)
     except Exception:
         logger.exception("agent failed for: %r", message.text[:80])
         await message.reply_text("(brain hit a wall. try again.)")

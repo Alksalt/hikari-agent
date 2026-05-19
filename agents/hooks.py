@@ -25,7 +25,18 @@ logger = logging.getLogger(__name__)
 
 
 def _format_core_blocks() -> str:
+    """Dump the fast-path core_blocks (mood_today + preoccupation + jokes etc).
+
+    Phase 7: the legacy ``user_profile`` block is filtered out — its content
+    has been migrated into the new ``peer_representation`` table (see
+    ``_format_peer_representation``). Filtering here is defensive: even if
+    a legacy ``user_profile`` row lingers, it doesn't double-inject.
+    """
     blocks = db.all_core_blocks()
+    if not blocks:
+        return ""
+    excluded_labels = {"user_profile"}
+    blocks = [b for b in blocks if b["label"] not in excluded_labels]
     if not blocks:
         return ""
     lines = ["# memory: core (always-on)"]
@@ -34,6 +45,21 @@ def _format_core_blocks() -> str:
         lines.append(b["content"].strip())
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def _format_peer_representation() -> str:
+    """Phase 7: structured user model. Replaces the flat ``user_profile``
+    block with communication_style / values / domain_expertise /
+    current_concerns / blindspots / summary."""
+    try:
+        from agents import peer_model
+        model = db.get_peer_representation()
+    except Exception:
+        logger.exception("peer_representation read failed")
+        return ""
+    if not model:
+        return ""
+    return peer_model.format_for_injection(model)
 
 
 def _format_open_tasks() -> str:
@@ -191,6 +217,12 @@ async def inject_memory(
         block = _format_core_blocks()
         if block:
             parts.append(block)
+        # Phase 7: structured peer model goes right after the fast-path
+        # core_blocks (mood, preoccupation). It's the "who they are" frame
+        # Hikari needs before everything else.
+        peer = _format_peer_representation()
+        if peer:
+            parts.append(peer)
         # Affect goes right after core_blocks so the "you're still in [state]"
         # framing has primacy over the other blocks. Hooks aren't strictly
         # ordered by Claude but earlier blocks read first.

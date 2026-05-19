@@ -23,12 +23,6 @@ dependencies = [
     "lxml>=5.0",
 ]
 
-[project.optional-dependencies]
-browser = [
-    "browser-use>=0.2",
-    "langchain-anthropic>=0.3",
-]
-
 [dependency-groups]
 dev = [
     "pytest>=9.0",
