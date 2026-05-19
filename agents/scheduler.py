@@ -31,9 +31,14 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         tz = zoneinfo.ZoneInfo("UTC")
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours
+    # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours.
+    # APScheduler's iscoroutinefunction() doesn't recognize a lambda wrapping an async fn,
+    # so we use an `async def` wrapper for every async job — otherwise the executor runs the
+    # lambda in a thread pool, gets back an unawaited coroutine, Python warns and the work
+    # never actually happens.
+    async def _heartbeat_job(): return await maybe_send_heartbeat(send_text)
     scheduler.add_job(
-        lambda: maybe_send_heartbeat(send_text),
+        _heartbeat_job,
         IntervalTrigger(minutes=30),
         id="heartbeat",
         coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -48,8 +53,15 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         calendar_interval = int(
             cfg.get("calendar_heartbeat.scheduler_interval_minutes", 5)
         )
+        # APScheduler dispatches sync vs async via inspect.iscoroutinefunction.
+        # A lambda wrapping an async fn is not detected as async -> the
+        # executor calls it sync, gets back an un-awaited coroutine,
+        # Python logs "coroutine ... was never awaited". Wrap with an
+        # `async def` so the executor awaits it properly.
+        async def _calendar_job():
+            return await maybe_send_calendar_heartbeat(send_text)
         scheduler.add_job(
-            lambda: maybe_send_calendar_heartbeat(send_text),
+            _calendar_job,
             IntervalTrigger(minutes=calendar_interval),
             id="calendar_heartbeat",
             coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -61,8 +73,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         )
 
     # Re-engagement nudge: every 15 min, fires only when she had last word + user silent 2-6h
+    async def _reengage_job(): return await maybe_send_reengagement(send_text)
     scheduler.add_job(
-        lambda: maybe_send_reengagement(send_text),
+        _reengage_job,
         IntervalTrigger(minutes=15),
         id="reengage",
         coalesce=True, max_instances=1, misfire_grace_time=300,
@@ -78,8 +91,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
     from .proactive import fire_due_reminders
     reminder_poll = int(cfg.get("reminders.poll_interval_sec", 60))
+    async def _fire_reminders_job(): return await fire_due_reminders(send_text)
     scheduler.add_job(
-        lambda: fire_due_reminders(send_text),
+        _fire_reminders_job,
         IntervalTrigger(seconds=reminder_poll),
         id="reminders_fire",
         coalesce=True, max_instances=1, misfire_grace_time=120,
@@ -113,8 +127,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         from .morning_brief import maybe_send_morning_brief
         mb_hour = int(cfg.get("morning_brief.hour", 6))
         mb_minute = int(cfg.get("morning_brief.minute", 0))
+        async def _morning_brief_job(): return await maybe_send_morning_brief(send_text)
         scheduler.add_job(
-            lambda: maybe_send_morning_brief(send_text),
+            _morning_brief_job,
             CronTrigger(hour=mb_hour, minute=mb_minute),
             id="morning_brief",
             coalesce=True, max_instances=1, misfire_grace_time=3600,

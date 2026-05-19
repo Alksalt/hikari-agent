@@ -566,12 +566,29 @@ async def sync_pending_gcal_reminders() -> int:
             continue
         try:
             data = yaml.safe_load(_strip_fences(raw)) or {}
-            event_id = str(data.get("event_id") or "").strip()
         except yaml.YAMLError:
-            logger.warning("gcal sync: invalid YAML for reminder #%s", row["id"])
+            logger.warning("gcal sync: invalid YAML for reminder #%s; raw=%r",
+                           row["id"], (raw or "")[:300])
             continue
+        # Subagent may return plain prose instead of YAML if the tool failed
+        # or if the model added commentary. Tolerate non-dict shapes — just
+        # try to extract an event_id substring as a fallback.
+        if isinstance(data, dict):
+            event_id = str(data.get("event_id") or "").strip()
+        else:
+            # Heuristic: scan the raw text for an event_id-shaped token.
+            import re as _re
+            m = _re.search(r"event[_-]?id['\":\s]*([A-Za-z0-9_-]{10,})", raw or "")
+            event_id = m.group(1) if m else ""
+            if not event_id:
+                logger.warning(
+                    "gcal sync: subagent returned non-dict YAML for reminder #%s; "
+                    "raw=%r", row["id"], (raw or "")[:300],
+                )
+                continue
         if not event_id:
-            logger.warning("gcal sync: empty event_id for reminder #%s", row["id"])
+            logger.warning("gcal sync: empty event_id for reminder #%s; raw=%r",
+                           row["id"], (raw or "")[:300])
             continue
         db.reminder_update_gcal_event(row["id"], event_id)
         synced += 1
