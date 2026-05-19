@@ -99,6 +99,13 @@ def _codex_server():
 
 
 @cache
+def _scratch_server():
+    """Phase 11: per-session scratch memory shared by recall + wiki subagents."""
+    from tools import scratch
+    return create_sdk_mcp_server(name="hikari_scratch", tools=scratch.ALL_TOOLS)
+
+
+@cache
 def _utility_server():
     """Phase 10: combined MCP server hosting weather, reminders, translation,
     calc, currency, arxiv, places, ytmusic. Each feature contributes tools to
@@ -166,6 +173,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__linear__*",
     "mcp__github__*",
     "mcp__playwright__*",
+    # Phase 11: per-session scratch memory for subagents.
+    "mcp__hikari_scratch__scratch_put",
+    "mcp__hikari_scratch__scratch_get",
 ]
 
 
@@ -183,6 +193,7 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         "hikari_dispatch": _dispatch_server(),
         "hikari_codex": _codex_server(),
         "hikari_utility": _utility_server(),
+        "hikari_scratch": _scratch_server(),
     }
     # Phase 8: attach the privileged dispatch-confirmed server only when the
     # resume path explicitly opts in via extra_allowed_tools. On a normal turn

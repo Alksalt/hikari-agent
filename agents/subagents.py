@@ -45,10 +45,19 @@ RECALL_AGENT = AgentDefinition(
         "'look for contradictions', search for past statements that *contradict* "
         "the user's stated belief, not ones that confirm it. Return the strongest "
         "contradicting hit even if its relevance score is lower. Prefix output with "
-        "ADVERSARIAL_HIGH/MEDIUM/LOW_CONFIDENCE instead of HIGH/MEDIUM/LOW."
+        "ADVERSARIAL_HIGH/MEDIUM/LOW_CONFIDENCE instead of HIGH/MEDIUM/LOW.\n\n"
+        "SCRATCH SHARING: when a query hits HIGH or MEDIUM confidence, write the key "
+        "finding (1-2 sentences max) to scratch via `mcp__hikari_scratch__scratch_put` "
+        "with topic = the noun the user asked about. Subsequent calls in this session "
+        "can read it without re-querying.\n\n"
+        "Token economy matters: the lead will rewrite in voice and your tone gets "
+        "stripped — return flat data, not prose. Verbose prefixes ('Here\\'s what I "
+        "found:') just burn tokens."
     ),
     model="haiku",
-    tools=["mcp__hikari_memory__recall"],
+    tools=["mcp__hikari_memory__recall",
+           "mcp__hikari_scratch__scratch_put",
+           "mcp__hikari_scratch__scratch_get"],
 )
 
 
@@ -71,12 +80,20 @@ WIKI_AGENT = AgentDefinition(
         "weekly logs, lint passes) say so explicitly so the lead can decide whether "
         "to delegate to the global wiki-curator instead.\n"
         "Return content findings as direct excerpts + paths. Don't summarize for the "
-        "lead — give the raw material so Hikari can pick what to surface in voice."
+        "lead — give the raw material so Hikari can pick what to surface in voice.\n\n"
+        "SCRATCH SHARING: before writing to the wiki, call "
+        "`mcp__hikari_scratch__scratch_get` with the topic to check whether a recall "
+        "call in this session already surfaced relevant data. Use that context if "
+        "present.\n\n"
+        "Return direct excerpts + paths, not paraphrases. The lead has to quote "
+        "precisely from your output, and any summarization you do gets re-summarized "
+        "— wasted tokens both ways."
     ),
     model="haiku",
     tools=["mcp__hikari_wiki__wiki_search", "mcp__hikari_wiki__wiki_read",
            "mcp__hikari_wiki__wiki_append", "mcp__hikari_wiki__wiki_backlinks",
-           "Read"],
+           "Read",
+           "mcp__hikari_scratch__scratch_get"],
 )
 
 
@@ -100,7 +117,9 @@ CODE_DISPATCH_AGENT = AgentDefinition(
         "type CONFIRM-SEND before the dispatch starts. Don't ask the user about "
         "this yourself — call the tool; the gate handles confirmation.\n\n"
         "max_turns 50 for small tasks, 100 for medium, 150 for big refactors. "
-        "Return ONLY the task_id and a one-line confirmation. Don't restate the task."
+        "Return ONLY the task_id and a one-line confirmation. Don't restate the task.\n\n"
+        "Return ONLY task_id and a one-line confirmation. The lead surfaces the "
+        "dispatch sideways to the user — your prose doesn't reach them."
     ),
     model="haiku",
     tools=["mcp__hikari_dispatch__dispatch_claude_session"],
@@ -142,7 +161,10 @@ DRIVE_GMAIL_AGENT = AgentDefinition(
         "For reads, return a concise excerpt + identifiers. For writes, execute "
         "and return a 1-2 sentence summary of what you did. Don't reformat content "
         "for voice — the lead rewrites. If auth fails, report the error verbatim — "
-        "do NOT tell the lead the user needs to 'click Allow' (no such UI exists)."
+        "do NOT tell the lead the user needs to 'click Allow' (no such UI exists).\n\n"
+        "For reads, return content + identifiers (file IDs, message IDs) — the lead "
+        "may need them for follow-up tool calls. No rewriting for the user; the lead "
+        "does that."
     ),
     model="haiku",
     tools=["mcp__google_workspace__*"],
@@ -162,7 +184,9 @@ NOTION_AGENT = AgentDefinition(
         "notion-fetch (cached by the runtime), then notion-query-data-sources with "
         "explicit property names. For writes (create-pages, update-page): call the "
         "tool — these auto-run; Notion's own undo covers mistakes. Return concrete "
-        "data + page IDs, not prose."
+        "data + page IDs, not prose.\n\n"
+        "Return data + page IDs (UUIDs), not prose. The lead can chain page IDs into "
+        "update calls if needed."
     ),
     model="haiku",
     tools=["mcp__notion__*"],
@@ -188,7 +212,9 @@ RESEARCH_AGENT = AgentDefinition(
         "Always return a 2-3 paragraph cited summary with inline source URLs. "
         "Never invent URLs. Skip a source rather than fabricate one. "
         "If the question is time-bound (latest X, current state of Y), say so and "
-        "give the actual freshness of your sources."
+        "give the actual freshness of your sources.\n\n"
+        "Cite source URLs inline. The lead reformats for the user — your tone gets "
+        "stripped. Don't write conversationally; write as concise structured data."
     ),
     model="sonnet",  # research needs synthesis quality
     tools=["WebFetch", "WebSearch", "mcp__playwright__*"],
@@ -206,7 +232,9 @@ LINEAR_AGENT = AgentDefinition(
         "directly — the runtime auto-accepts. For queries, return concrete "
         "issue keys (e.g. ENG-123) + titles + status, not prose. For writes, "
         "execute and return a 1-2 sentence summary. If the integration isn't "
-        "authorized yet, report the actual error — do NOT invent UI."
+        "authorized yet, report the actual error — do NOT invent UI.\n\n"
+        "Return issue keys (e.g., ENG-123) + state, not prose. The lead chains keys "
+        "into follow-up actions."
     ),
     model="haiku",
     tools=["mcp__linear__*"],
@@ -224,7 +252,9 @@ GITHUB_AGENT = AgentDefinition(
         "directly. For reads, return repo + issue/PR numbers + titles + "
         "status concisely. For writes, confirm with 1-2 sentence summary. "
         "If a 401/403 comes back, report it as-is — the user needs to set "
-        "GITHUB_PERSONAL_ACCESS_TOKEN with appropriate scopes."
+        "GITHUB_PERSONAL_ACCESS_TOKEN with appropriate scopes.\n\n"
+        "Return repo+number+status (e.g., 'owner/repo#42 OPEN'), not prose. "
+        "Identifiers matter; the lead chains them."
     ),
     model="haiku",
     tools=["mcp__github__*"],
@@ -244,7 +274,9 @@ APPLE_EVENTS_AGENT = AgentDefinition(
         "Call mcp__apple_events__* tools directly — runtime auto-accepts. "
         "For writes (new reminder, new event), confirm with a 1-2 sentence "
         "summary. If EventKit permission denied, report the literal error "
-        "— do NOT invent UI."
+        "— do NOT invent UI.\n\n"
+        "Return event IDs + status, not prose. The lead uses the IDs for follow-up "
+        "sync."
     ),
     model="haiku",
     tools=["mcp__apple_events__*"],

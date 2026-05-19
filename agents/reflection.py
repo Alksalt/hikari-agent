@@ -86,6 +86,14 @@ def _build_reflection_prompt() -> str:
 
 async def run_daily_reflection() -> bool:
     """Returns True if reflection ran and applied at least one update."""
+    # Phase 11: purge stale scratch entries first (non-blocking — reflection
+    # continues even if cleanup fails).
+    try:
+        removed = db.scratch_cleanup_old(hours=24)
+        logger.info("scratch_cleanup_old: removed %d stale entries", removed)
+    except Exception:
+        logger.exception("scratch_cleanup_old failed (non-blocking)")
+
     if not db.recent_episodes(limit=1):
         logger.info("no episodes yet — skipping reflection")
         return False

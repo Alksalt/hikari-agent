@@ -329,6 +329,50 @@ CREATE TABLE IF NOT EXISTS weekly_consolidations_archive (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week ON weekly_consolidations_archive(week_ending);
+
+-- Phase 11: per-session scratch memory shared by subagents (recall + wiki etc.).
+-- Hindsight pattern (May 2026). 24h TTL enforced by scratch_cleanup_old (daily
+-- reflection). 100-row cap per session enforced by scratch_put.
+-- Session-scoped: entries from one session never bleed into another.
+CREATE TABLE IF NOT EXISTS session_scratch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_scratch_session_topic
+    ON session_scratch(session_id, topic);
+
+-- T7.2: per-photo geolocation history (from EXIF GPS reverse-geocoded via
+-- Nominatim). Populated by the bridge when a user uploads a photo as a
+-- document (Telegram strips EXIF from compressed photos but preserves it
+-- on document uploads). Used by proactive.detect_recurring_location_pattern
+-- to spot repeat visits.
+CREATE TABLE IF NOT EXISTS photo_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    label TEXT,
+    taken_at TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_photo_locations_received ON photo_locations(received_at);
+
+-- T8.2: voice_critic Haiku verdicts on outbound drafts (Silicon Mirror
+-- Generator-Critic pattern, arxiv 2604.00478). One row per outbound message.
+-- final_text reflects what was actually shipped (after possible rewrite).
+CREATE TABLE IF NOT EXISTS voice_critic_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    reason TEXT,
+    rewritten BOOLEAN NOT NULL DEFAULT 0,
+    final_text TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_voice_critic_log_created
+    ON voice_critic_log(created_at DESC);
 """
 
 
@@ -2125,3 +2169,138 @@ def reminders_pending_apple_sync(limit: int = 10) -> list[dict[str, Any]]:
             "ORDER BY created_at ASC LIMIT ?",
             (limit,),
         ).fetchall()]
+
+
+# ---------- session scratch (Phase 11 — shared subagent memory) ----------
+
+def scratch_put(session_id: str, topic: str, payload: "dict | list | str") -> int:
+    """Store a payload keyed by (session_id, topic). Payload JSON-serialized.
+
+    Enforces ~100-row cap per session: drops oldest rows if over.
+    Returns the new row's id.
+    """
+    import json
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO session_scratch (session_id, topic, payload_json) "
+            "VALUES (?, ?, ?)",
+            (session_id, topic, json.dumps(payload, default=str)),
+        )
+        row_id = cur.lastrowid
+        # Trim — keep last 100 per session (by id order = insertion order)
+        conn.execute(
+            "DELETE FROM session_scratch WHERE session_id = ? AND id NOT IN ("
+            "  SELECT id FROM session_scratch WHERE session_id = ? "
+            "  ORDER BY id DESC LIMIT 100"
+            ")",
+            (session_id, session_id),
+        )
+        return row_id
+
+
+def scratch_get(session_id: str, topic: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Fetch most recent scratch entries for (session_id, topic), newest first."""
+    import json
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, topic, payload_json, created_at FROM session_scratch "
+            "WHERE session_id = ? AND topic = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (session_id, topic, limit),
+        ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload_json"])
+        except Exception:
+            payload = r["payload_json"]
+        out.append({
+            "id": r["id"],
+            "topic": r["topic"],
+            "payload": payload,
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+def scratch_cleanup_old(hours: int = 24) -> int:
+    """Delete scratch entries older than N hours. Called by daily reflection."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM session_scratch "
+            f"WHERE created_at < datetime('now', '-{int(hours)} hours')"
+        )
+        return cur.rowcount
+
+
+# ---------- T7.2: photo locations (EXIF GPS) ----------
+
+def photo_location_insert(
+    lat: float, lon: float,
+    label: str | None = None,
+    taken_at: str | None = None,
+) -> int:
+    """Persist one EXIF-derived photo location. Returns the new row id.
+
+    ``taken_at`` is the camera's EXIF DateTimeOriginal in whatever string form
+    the caller extracted (we don't enforce ISO — Pillow returns its native
+    format). ``label`` is whatever the reverse-geocoder produced (display_name
+    or a synthesized address).
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO photo_locations (lat, lon, label, taken_at) "
+            "VALUES (?, ?, ?, ?)",
+            (float(lat), float(lon), label, taken_at),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
+    """Return most-recent photo locations, newest first."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, lat, lon, label, taken_at, received_at "
+            "FROM photo_locations ORDER BY received_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- T8.2: voice_critic log (drift telemetry for the Haiku critic) ----
+
+def voice_critic_log_insert(
+    draft: str,
+    verdict: str,
+    reason: str | None = None,
+    rewritten: bool = False,
+    final_text: str | None = None,
+) -> int:
+    """Persist one voice-critic verdict + the eventual shipped text.
+
+    ``draft`` is the lead's original outbound text. ``verdict`` is "PASS",
+    "REWRITE", or "ERROR" (last when the Haiku call itself fails — we log
+    the failure rather than silently skipping the critic). ``rewritten`` is
+    True only when the lead actually produced a second draft after a REWRITE
+    verdict. ``final_text`` is what shipped.
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO voice_critic_log "
+            "(draft, verdict, reason, rewritten, final_text) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (draft, verdict, reason, 1 if rewritten else 0, final_text),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def voice_critic_log_recent(limit: int = 50) -> list[dict[str, Any]]:
+    """Recent voice-critic verdicts (newest first). Used by daily reflection
+    + ad-hoc inspection."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, draft, verdict, reason, rewritten, final_text, created_at "
+            "FROM voice_critic_log ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
