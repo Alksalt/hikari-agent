@@ -5,7 +5,7 @@ Single-user. Runs on Max subscription's $200/mo Agent SDK quota (no API key bill
 
 Phased plan: `/Users/alt/.claude/plans/memoized-fluttering-meerkat.md`.
 
-## Status: Phases 2–8 complete
+## Status: Phases 1–10 complete
 
 - **Agent loop:** Sonnet 4.6 primary, Haiku 4.5 fallback (`fallback_model`), session resume via SQLite.
 - **Memory:** SQLite with `core_blocks`, bi-temporal `facts` (`valid_to` / `superseded_by`), `episodes`, `tasks`, `entities`, `character_thoughts`, `runtime_state`, FTS5 BM25. Park et al. retrieval scoring (recency × importance × relevance). `sqlite-vec` deferred (schema has `embedding BLOB` hooks ready).
@@ -16,7 +16,7 @@ Phased plan: `/Users/alt/.claude/plans/memoized-fluttering-meerkat.md`.
 - **Photo gen:** OpenRouter Flux.2-klein via `@tool`; bridge drains `data/photo_outbox/` after each turn.
 - **Migration:** `scripts/migrate_from_current.py` ports the old markdown layout to SQLite.
 
-Google Workspace MCP (Phase 7) is wired but stubbed — uncomment the server in `.mcp.json` once you've configured `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`.
+Google Workspace MCP (Phase 7) requires OAuth user credentials: set `GOOGLE_WORKSPACE_CLIENT_ID`, `GOOGLE_WORKSPACE_CLIENT_SECRET`, and `GOOGLE_WORKSPACE_REFRESH_TOKEN` in `.env`, then uncomment the server in `.mcp.json`.
 
 ## Setup
 

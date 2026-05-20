@@ -145,12 +145,21 @@ def test_scheduler_builds(monkeypatch):
 
     sched = build_scheduler(noop)
     ids = {j.id for j in sched.get_jobs()}
-    assert ids == {
+    # Phase 11: reminders_apple_sync is added on macOS only.
+    import sys
+    expected = {
         "heartbeat", "reengage", "consolidation",
         "daily_reflection", "calendar_heartbeat", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
         "morning_brief",
+        # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
+        "weekly_consolidation",
+        # Phase 11: SPASM persona drift probes (every 4h, default on).
+        "persona_probes",
     }
+    if sys.platform == "darwin":
+        expected.add("reminders_apple_sync")
+    assert ids == expected
 
 
 def test_proactive_should_send_logic(tmp_path, monkeypatch):
@@ -213,13 +222,15 @@ def test_runtime_uses_accept_edits(monkeypatch):
 
 
 def test_runtime_registers_all_subagents(monkeypatch):
-    """All 6 specialist subagents registered:
-    recall, wiki, code_dispatch, drive_gmail, notion, research."""
+    """All specialist subagents registered:
+    recall, wiki, code_dispatch, drive_gmail, notion, research, linear,
+    github, apple_events, voice_critic (T8.2 — Silicon Mirror critic)."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     from agents import runtime
     importlib.reload(runtime)
     opts = runtime._build_options(resume=None)
-    expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research"}
+    expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research",
+                "linear", "github", "apple_events", "voice_critic"}
     assert set(opts.agents.keys()) == expected
 
 

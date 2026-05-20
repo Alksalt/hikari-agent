@@ -139,6 +139,9 @@ def test_handoff_stale_is_discarded():
 
 
 def test_handoff_format_includes_turns():
+    # SPASM Egocentric Context Projection (arxiv 2604.09212) rewrites
+    # USER:/ASSISTANT: into [partner]:/[self]: so the model reads the handoff
+    # as first-person memory. Contract verified here is post-projection.
     snapshot = {
         "ts": "2026-05-19T12:00:00+00:00",
         "turns": [
@@ -147,8 +150,8 @@ def test_handoff_format_includes_turns():
         ],
     }
     out = handoff.format_for_injection(snapshot)
-    assert "USER: you up?" in out
-    assert "ASSISTANT: barely." in out
+    assert "[partner]: you up?" in out
+    assert "[self]: barely." in out
 
 
 # ---------- hooks injection wiring ----------

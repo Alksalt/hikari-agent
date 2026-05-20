@@ -40,6 +40,41 @@ from . import config as cfg
 logger = logging.getLogger(__name__)
 
 
+# ---------- click-Allow UI hallucination backstop ----------
+# The runtime is permission_mode=acceptEdits — there is NO permission UI.
+# When the model hallucinates one ("click Allow", "grant permission", etc.)
+# we replace the entire message so the next turn has to actually retry
+# rather than shipping wrong info.
+
+_CLICK_ALLOW_RE = re.compile(
+    r"\b(click|hit|tap|press|accept)\s+allow\b"
+    r"|\bgrant\s+(\w+\s+){0,2}(notion|gmail|google|claude|calendar|the\s+integration)\b"
+    r"|\b(notion|gmail|google|claude|calendar)\s+permission\b"
+    r"|\bpermission\s+prompt\b"
+    r"|\ballow\s+(notion|gmail|google|claude\s+code|the\s+integration|the\s+(notion|google|gmail))\b"
+    r"|\bone-time\s+thing\s+on\s+your\s+end\b"
+    r"|\bneeds?\s+your\s+(explicit\s+)?permission\s+(to\s+|before\s+)",
+    re.IGNORECASE,
+)
+
+_CLICK_ALLOW_REPLACEMENT = (
+    "the tool actually broke. give me a sec — checking the real error."
+)
+
+
+def _strip_click_allow(text: str) -> tuple[str, bool]:
+    """Return ``(text, fired)``.
+
+    If ``_CLICK_ALLOW_RE`` matches, returns ``(_CLICK_ALLOW_REPLACEMENT, True)``
+    and logs a warning so the telemetry pipeline can track hallucination rate.
+    Otherwise returns ``(text, False)`` unchanged.
+    """
+    if _CLICK_ALLOW_RE.search(text):
+        logger.warning("click_allow_backstop_fired: %s", text[:200])
+        return _CLICK_ALLOW_REPLACEMENT, True
+    return text, False
+
+
 # ---------- compiled-pattern caches ----------
 
 _PATTERN_CACHE: dict[str, list[re.Pattern[str]]] = {}
@@ -349,6 +384,20 @@ def filter_outgoing(text: str) -> FilterResult:
             )
     except Exception:  # noqa: BLE001
         logger.exception("canary check failed (non-fatal)")
+
+    # Click-Allow backstop — deterministic replacement; wins before all other
+    # passes so a hallucinated permission UI never ships.
+    text, click_allow_fired = _strip_click_allow(text)
+    if click_allow_fired:
+        return FilterResult(
+            text=text,
+            refusal_short_replaced=True,
+            refusal_hits=["click_allow_backstop"],
+            sycophancy_triggered=False,
+            sycophancy_violations=[],
+            needs_llm_rewrite=False,
+            rewrite_instruction=None,
+        )
 
     refusal = scan_refusal_voice(text)
     sycophancy = scan_sycophancy(text)

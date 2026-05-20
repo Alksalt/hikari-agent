@@ -34,9 +34,26 @@ def _resolve_location() -> tuple[float, float, str | None] | None:
     if raw:
         try:
             state = json.loads(raw)
-            lat = float(state["lat"])
-            lon = float(state["lon"])
-            return lat, lon, state.get("label")
+            max_stale_hours = float(
+                cfg.get("morning_brief.max_stale_location_hours", 48)
+            )
+            shared_at_str = state.get("shared_at")
+            if shared_at_str:
+                shared_at = datetime.fromisoformat(shared_at_str)
+                if shared_at.tzinfo is None:
+                    shared_at = shared_at.replace(tzinfo=UTC)
+                age_hours = (datetime.now(UTC) - shared_at).total_seconds() / 3600.0
+                if age_hours > max_stale_hours:
+                    logger.info(
+                        "morning_brief: user_location_state is %.1fh old "
+                        "(max_stale=%sh) — falling through to HOME env",
+                        age_hours, max_stale_hours,
+                    )
+                    raw = None
+            if raw is not None:
+                lat = float(state["lat"])
+                lon = float(state["lon"])
+                return lat, lon, state.get("label")
         except (ValueError, KeyError, TypeError):
             pass
     lat_env = os.environ.get("HOME_LAT")

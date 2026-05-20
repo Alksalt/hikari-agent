@@ -99,11 +99,26 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=120,
     )
 
+    import sys
+    if sys.platform == "darwin":
+        from .proactive import sync_pending_apple_reminders
+        apple_interval = int(cfg.get("reminders.apple_sync_interval_sec", 300))
+        async def _apple_sync_job():
+            return await sync_pending_apple_reminders()
+        scheduler.add_job(
+            _apple_sync_job,
+            IntervalTrigger(seconds=apple_interval),
+            id="reminders_apple_sync",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+
     from .proactive import sync_pending_gcal_reminders
     gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
     if _calendar_creds_healthy():
+        async def _gcal_sync_job():
+            return await sync_pending_gcal_reminders()
         scheduler.add_job(
-            sync_pending_gcal_reminders,
+            _gcal_sync_job,
             IntervalTrigger(seconds=gcal_interval),
             id="reminders_gcal_sync",
             coalesce=True, max_instances=1, misfire_grace_time=600,
@@ -147,6 +162,44 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         id="memory_prune",
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
+
+    # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.
+    # Letta sleep-time pattern (Apr 2025) — synthesizes a 200-word weekly
+    # "what i noticed about him" summary into core_blocks['weekly_consolidation'],
+    # archives the prior week's snapshot. Scheduled at 04:30 to sit after the
+    # memory_prune (1st-of-month 04:00) so the two never compete for the DB
+    # on the rare overlap, and well clear of the 09:00 daily_reflection.
+    async def _weekly_consolidation_job():
+        from .reflection import run_weekly_consolidation
+        return await run_weekly_consolidation()
+    scheduler.add_job(
+        _weekly_consolidation_job,
+        CronTrigger(day_of_week="sun", hour=4, minute=30),
+        id="weekly_consolidation",
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+
+    # Phase 11: SPASM-style persona drift probes. Every 4h re-asks three
+    # fixed probe questions (values / emotion_coping / motivation) and logs
+    # cosine distance from the stored baseline. Independent of the per-turn
+    # Haiku drift judge — those catch turn-level slips, these catch slow
+    # worldview shifts. Default ON; toggle via persona.drift_probes_enabled.
+    if bool(cfg.get("persona.drift_probes_enabled", True)):
+        probe_interval = int(cfg.get("persona.drift_probes_interval_hours", 4))
+        async def _persona_probe_job():
+            from .drift_judge import run_persona_probes
+            try:
+                scores = await run_persona_probes()
+                if scores:
+                    logger.info("persona_probes: scores=%s", scores)
+            except Exception:
+                logger.exception("persona_probes: run failed (non-fatal)")
+        scheduler.add_job(
+            _persona_probe_job,
+            IntervalTrigger(hours=probe_interval),
+            id="persona_probes",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
 
     return scheduler
 

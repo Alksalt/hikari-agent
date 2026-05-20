@@ -1,4 +1,4 @@
 [mcp_servers.google_workspace]
 args = ["google-workspace-mcp"]
 command = "uvx"
-env_vars = ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+env_vars = ["GOOGLE_WORKSPACE_CLIENT_ID", "GOOGLE_WORKSPACE_CLIENT_SECRET", "GOOGLE_WORKSPACE_REFRESH_TOKEN"]

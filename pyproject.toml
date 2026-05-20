@@ -53,6 +53,9 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: tests that hit live models — skipped by default, run via pytest -m slow",
+]
 
 [project.scripts]
 hikari-agent = "agents.telegram_bridge:main"

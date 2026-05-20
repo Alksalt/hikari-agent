@@ -65,10 +65,16 @@ CREATE TABLE IF NOT EXISTS facts (
     valid_to TEXT,
     source_message_id INTEGER,
     superseded_by INTEGER REFERENCES facts(id),
+    superseded_by_fact_id INTEGER REFERENCES facts(id),
+    status TEXT NOT NULL DEFAULT 'active',
+    source TEXT,
+    last_recalled_at TEXT,
+    recall_hit_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS facts_active ON facts(subject, predicate) WHERE valid_to IS NULL;
 CREATE INDEX IF NOT EXISTS facts_subject ON facts(subject);
+CREATE INDEX IF NOT EXISTS facts_status ON facts(status);
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,6 +234,25 @@ CREATE TABLE IF NOT EXISTS persona_drift_scores (
 );
 CREATE INDEX IF NOT EXISTS drift_sampled_at ON persona_drift_scores(sampled_at DESC);
 
+-- Phase 11: SPASM-style persona drift probes (arxiv 2604.09212).
+-- Three fixed probe questions (values / emotion_coping / motivation) are
+-- baselined once via agents.drift_judge.baseline_persona_probes, then
+-- re-asked every 4h. Cosine distance between baseline embedding and
+-- current embedding is the drift signal. Independent of the per-outbound
+-- persona_drift_scores Haiku judge — those catch turn-level slips, these
+-- catch slow worldview shifts.
+CREATE TABLE IF NOT EXISTS persona_drift_probes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    probe_key TEXT NOT NULL,         -- 'values' | 'emotion_coping' | 'motivation'
+    distance REAL NOT NULL,          -- cosine distance vs baseline, ~0 = on-persona
+    current_response TEXT,           -- snippet of today's answer (for audit)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS persona_drift_probes_created
+    ON persona_drift_probes(created_at DESC);
+CREATE INDEX IF NOT EXISTS persona_drift_probes_key
+    ON persona_drift_probes(probe_key, created_at DESC);
+
 -- Phase 8: 👍/👎 reactions from the user on Hikari's outbound messages.
 -- Keyed by the Telegram outbound message_id (stored on messages.telegram_message_id
 -- by the bridge after a successful reply_text). Used by reflection to compare
@@ -260,6 +285,94 @@ CREATE TABLE IF NOT EXISTS reminders (
     fired_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
+
+-- T3.3: topic-clustered episode summaries. One row per (topic, time-window)
+-- pair, with the per-cluster summary text + a JSON array of contributing
+-- episode ids so callers can drill down if needed. Written by the daily
+-- reflection consolidation pass.
+CREATE TABLE IF NOT EXISTS episode_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL,
+    episode_ids_json TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_episode_summaries_topic ON episode_summaries(topic);
+
+-- T3.3: typed edges between facts (graph). Today the only predicate is
+-- ``co_occurs_with`` (same-episode co-occurrence) but the column is free-
+-- text so future predicates (implies, contradicts, refines, ...) drop in
+-- without a migration.
+CREATE TABLE IF NOT EXISTS fact_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_fact_id INTEGER NOT NULL,
+    predicate TEXT NOT NULL,
+    object_fact_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (subject_fact_id) REFERENCES facts(id),
+    FOREIGN KEY (object_fact_id) REFERENCES facts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_relations_subject ON fact_relations(subject_fact_id);
+CREATE INDEX IF NOT EXISTS idx_fact_relations_object ON fact_relations(object_fact_id);
+
+-- Phase 11: weekly sleep-time consolidation archive (Letta sleep-time pattern,
+-- Apr 2025). The current week's consolidation lives in core_blocks under the
+-- ``weekly_consolidation`` label so it flows into the system prompt every turn;
+-- when a new weekly pass runs, the previous core_block content is snapshotted
+-- here before being overwritten. Lets us reconstruct the trail of week-over-
+-- week deltas without bloating the always-on prompt.
+CREATE TABLE IF NOT EXISTS weekly_consolidations_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_ending TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    episode_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week ON weekly_consolidations_archive(week_ending);
+
+-- Phase 11: per-session scratch memory shared by subagents (recall + wiki etc.).
+-- Hindsight pattern (May 2026). 24h TTL enforced by scratch_cleanup_old (daily
+-- reflection). 100-row cap per session enforced by scratch_put.
+-- Session-scoped: entries from one session never bleed into another.
+CREATE TABLE IF NOT EXISTS session_scratch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_scratch_session_topic
+    ON session_scratch(session_id, topic);
+
+-- T7.2: per-photo geolocation history (from EXIF GPS reverse-geocoded via
+-- Nominatim). Populated by the bridge when a user uploads a photo as a
+-- document (Telegram strips EXIF from compressed photos but preserves it
+-- on document uploads). Used by proactive.detect_recurring_location_pattern
+-- to spot repeat visits.
+CREATE TABLE IF NOT EXISTS photo_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    label TEXT,
+    taken_at TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_photo_locations_received ON photo_locations(received_at);
+
+-- T8.2: voice_critic Haiku verdicts on outbound drafts (Silicon Mirror
+-- Generator-Critic pattern, arxiv 2604.00478). One row per outbound message.
+-- final_text reflects what was actually shipped (after possible rewrite).
+CREATE TABLE IF NOT EXISTS voice_critic_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    reason TEXT,
+    rewritten BOOLEAN NOT NULL DEFAULT 0,
+    final_text TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_voice_critic_log_created
+    ON voice_critic_log(created_at DESC);
 """
 
 
@@ -302,6 +415,88 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_approvals_defer_columns(conn)
     _migrate_user_profile_to_peer_representation(conn)
     _migrate_messages_telegram_message_id(conn)
+    _migrate_facts_bitemporal(conn)
+    _migrate_facts_recall_decay(conn)
+    _migrate_reminders_apple_columns(conn)
+
+
+def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
+    """T3.1: bi-temporal facts — add ``status``, ``superseded_by_fact_id``,
+    and ``source``. The existing ``superseded_by`` column is preserved for
+    backward compat; new writes populate both. Existing rows are backfilled to
+    ``status='active'`` (or ``'invalid'`` if ``valid_to`` is already set)."""
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+    }
+    if "status" not in existing:
+        # SQLite ALTER ADD COLUMN with NOT NULL requires a constant default,
+        # which ``'active'`` satisfies. Existing rows then get backfilled
+        # below based on whether they were already invalidated.
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+        )
+        # Backfill: anything with valid_to set was already invalidated.
+        conn.execute(
+            "UPDATE facts SET status = 'invalid' "
+            "WHERE valid_to IS NOT NULL AND superseded_by IS NULL"
+        )
+        conn.execute(
+            "UPDATE facts SET status = 'superseded' "
+            "WHERE superseded_by IS NOT NULL"
+        )
+    if "superseded_by_fact_id" not in existing:
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN superseded_by_fact_id INTEGER "
+            "REFERENCES facts(id)"
+        )
+        # Backfill from the legacy ``superseded_by`` column.
+        conn.execute(
+            "UPDATE facts SET superseded_by_fact_id = superseded_by "
+            "WHERE superseded_by IS NOT NULL"
+        )
+    if "source" not in existing:
+        conn.execute("ALTER TABLE facts ADD COLUMN source TEXT")
+    # Indexes — IF NOT EXISTS makes these idempotent.
+    conn.execute("CREATE INDEX IF NOT EXISTS facts_status ON facts(status)")
+
+
+def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
+    """T3.2: Ebbinghaus recall tracking — per-fact access timestamp + hit count."""
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+    }
+    if "last_recalled_at" not in existing:
+        conn.execute("ALTER TABLE facts ADD COLUMN last_recalled_at TEXT")
+    if "recall_hit_count" not in existing:
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN recall_hit_count INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _migrate_reminders_apple_columns(conn: sqlite3.Connection) -> None:
+    """Phase 11: add Apple Reminders mirror columns to ``reminders``."""
+    existing = {row["name"] for row in conn.execute(
+        "PRAGMA table_info(reminders)"
+    ).fetchall()}
+    try:
+        if "apple_sync_pending" not in existing:
+            conn.execute(
+                "ALTER TABLE reminders ADD COLUMN "
+                "apple_sync_pending INTEGER NOT NULL DEFAULT 0"
+            )
+    except Exception as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+    try:
+        if "apple_event_id" not in existing:
+            conn.execute(
+                "ALTER TABLE reminders ADD COLUMN apple_event_id TEXT"
+            )
+    except Exception as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
 
 
 def _migrate_messages_telegram_message_id(conn: sqlite3.Connection) -> None:
@@ -447,16 +642,22 @@ def insert_fact(
     importance: int = 5,
     confidence: float = 0.9,
     source_message_id: int | None = None,
+    source: str | None = None,
 ) -> int:
     """Insert a new fact. Returns row id. Caller is responsible for any
-    contradiction/supersession logic — this function does NOT auto-supersede."""
+    contradiction/supersession logic — this function does NOT auto-supersede.
+
+    Bi-temporal: ``valid_from`` is set to now, ``valid_to`` left NULL, and
+    ``status`` defaults to ``'active'``. The optional ``source`` column is a
+    free-text provenance tag (e.g. ``'user_message'``, ``'reflection'``)."""
     now = _now()
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO facts (subject, predicate, object, confidence, importance, "
-            "valid_from, source_message_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (subject, predicate, object_, confidence, importance, now, source_message_id, now),
+            "valid_from, source_message_id, source, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            (subject, predicate, object_, confidence, importance, now,
+             source_message_id, source, now),
         )
         fact_id = cur.lastrowid
         c.execute(
@@ -464,6 +665,32 @@ def insert_fact(
             (f"{subject} {predicate} {object_}", fact_id),
         )
     return fact_id
+
+
+def fact_insert(
+    text: str,
+    source: str | None = None,
+    importance: int = 5,
+    confidence: float = 0.9,
+) -> int:
+    """T3.1 — text-shaped fact insert. Thin wrapper over :func:`insert_fact`
+    that takes a single free-text statement plus a provenance tag.
+
+    The text is stored verbatim in the ``object`` column under a synthetic
+    ``subject='user'``, ``predicate='note'`` so the FTS index still matches
+    on the body. Returns the new row id.
+    """
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("fact_insert: text is required")
+    return insert_fact(
+        subject="user",
+        predicate="note",
+        object_=body,
+        importance=importance,
+        confidence=confidence,
+        source=source,
+    )
 
 
 def active_facts_matching(subject: str, predicate: str) -> list[dict[str, Any]]:
@@ -476,11 +703,16 @@ def active_facts_matching(subject: str, predicate: str) -> list[dict[str, Any]]:
 
 
 def supersede_fact(old_id: int, new_id: int, reason: str | None = None) -> None:
-    """Mark old fact invalid (valid_to=now, superseded_by=new_id)."""
+    """Mark old fact invalid (valid_to=now, superseded_by=new_id, status='superseded').
+
+    Writes both the legacy ``superseded_by`` and the new ``superseded_by_fact_id``
+    columns so older callers keep working while new readers use the explicit name.
+    """
     with _conn() as c:
         c.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
-            (_now(), new_id, old_id),
+            "UPDATE facts SET valid_to = ?, superseded_by = ?, "
+            "superseded_by_fact_id = ?, status = 'superseded' WHERE id = ?",
+            (_now(), new_id, new_id, old_id),
         )
         c.execute("DELETE FROM fts WHERE kind = 'fact' AND ref_id = ?", (old_id,))
         c.execute("DELETE FROM vec_facts WHERE id = ?", (old_id,))
@@ -492,15 +724,63 @@ def supersede_fact(old_id: int, new_id: int, reason: str | None = None) -> None:
 
 
 def invalidate_fact(fact_id: int, reason: str | None = None) -> None:
-    """Mark a fact invalid without a superseding row (e.g. wrong fact entirely)."""
+    """Mark a fact invalid without a superseding row (e.g. wrong fact entirely).
+
+    Sets ``status='invalid'`` along with ``valid_to=now`` so bi-temporal readers
+    can distinguish a flat invalidation from a supersession.
+    """
     with _conn() as c:
-        c.execute("UPDATE facts SET valid_to = ? WHERE id = ?", (_now(), fact_id))
+        c.execute(
+            "UPDATE facts SET valid_to = ?, status = 'invalid' WHERE id = ?",
+            (_now(), fact_id),
+        )
         c.execute("DELETE FROM fts WHERE kind = 'fact' AND ref_id = ?", (fact_id,))
         c.execute("DELETE FROM vec_facts WHERE id = ?", (fact_id,))
         if reason:
             c.execute(
                 "INSERT INTO character_thoughts (thought, created_at) VALUES (?, ?)",
                 (f"invalidated fact #{fact_id}: {reason}", _now()),
+            )
+
+
+def mark_fact_invalid(fact_id: int, superseded_by: int | None = None,
+                      reason: str | None = None) -> None:
+    """T3.1 — single entry point for the bi-temporal invalidation pattern.
+
+    - Always sets ``valid_to = datetime('now')``.
+    - If ``superseded_by`` is provided, sets ``status='superseded'`` AND
+      ``superseded_by_fact_id=<id>`` (plus the legacy ``superseded_by`` column
+      so prior consumers keep working).
+    - Otherwise sets ``status='invalid'`` and leaves the superseded pointers NULL.
+
+    Unlike :func:`invalidate_fact` and :func:`supersede_fact`, this preserves
+    the row's FTS + vec entries so a historical ``recall`` (e.g. ``include_invalid``)
+    can still surface them. Active-only recall is enforced by the ``valid_to``
+    filter at the SQL layer.
+    """
+    fid = int(fact_id)
+    if not fid:
+        raise ValueError("mark_fact_invalid: fact_id is required")
+    with _conn() as c:
+        if superseded_by is not None:
+            sup = int(superseded_by)
+            c.execute(
+                "UPDATE facts SET valid_to = datetime('now'), "
+                "status = 'superseded', "
+                "superseded_by_fact_id = ?, superseded_by = ? "
+                "WHERE id = ?",
+                (sup, sup, fid),
+            )
+        else:
+            c.execute(
+                "UPDATE facts SET valid_to = datetime('now'), "
+                "status = 'invalid' WHERE id = ?",
+                (fid,),
+            )
+        if reason:
+            c.execute(
+                "INSERT INTO character_thoughts (thought, created_at) VALUES (?, ?)",
+                (f"mark_fact_invalid #{fid}: {reason}", _now()),
             )
 
 
@@ -517,6 +797,47 @@ def get_fact(fact_id: int) -> dict[str, Any] | None:
     with _conn() as c:
         row = c.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
     return dict(row) if row else None
+
+
+def facts_mark_recalled(fact_ids: list[int]) -> int:
+    """T3.2 — stamp ``last_recalled_at = now`` and increment
+    ``recall_hit_count`` for every id in ``fact_ids``. Returns the number
+    of rows updated.
+
+    Idempotent under concurrent calls because the increment is done in a
+    single SQL statement (``recall_hit_count + 1``), not a Python-side
+    read-modify-write. Empty input is a no-op.
+    """
+    ids = [int(i) for i in (fact_ids or []) if i]
+    if not ids:
+        return 0
+    now = _now()
+    placeholders = ",".join("?" * len(ids))
+    with _conn() as c:
+        cur = c.execute(
+            f"UPDATE facts SET last_recalled_at = ?, "
+            f"recall_hit_count = COALESCE(recall_hit_count, 0) + 1 "
+            f"WHERE id IN ({placeholders})",
+            (now, *ids),
+        )
+    return cur.rowcount or 0
+
+
+def fact_backdate_created_at(fact_id: int, iso_ts: str) -> None:
+    """Test/admin helper: forcibly rewrite the ``created_at``, ``valid_from``,
+    and ``last_recalled_at`` timestamps for a fact. The recall-decay logic
+    reads these to age out stale rows — tests need a way to inject "this
+    fact is two months old" without ``time.sleep``.
+
+    Production code should never call this. It exists in the public surface
+    so the test suite doesn't have to monkey-patch ``_conn()``.
+    """
+    with _conn() as c:
+        c.execute(
+            "UPDATE facts SET created_at = ?, valid_from = ?, "
+            "last_recalled_at = ? WHERE id = ?",
+            (iso_ts, iso_ts, iso_ts, int(fact_id)),
+        )
 
 
 # ---------- messages ----------
@@ -586,6 +907,170 @@ def prune_episodes_older_than_days(days: int) -> int:
             c.execute(f"DELETE FROM fts WHERE kind = 'episode' AND ref_id IN ({qs})", ids)
             c.execute(f"DELETE FROM vec_episodes WHERE id IN ({qs})", ids)
     return len(ids)
+
+
+# ---------- T3.3: episode summaries (topic clusters) ----------
+
+def episode_summary_insert(
+    topic: str,
+    episode_ids: list[int],
+    summary_text: str,
+) -> int:
+    """Persist one topic-cluster summary. Returns the new row id.
+
+    ``episode_ids`` is stored as JSON so downstream readers can drill back
+    to the contributing episodes without a join table. The list is filtered
+    to ints — invalid ids are silently dropped rather than raising, because
+    the caller is the reflection job and a single bad id shouldn't break
+    the whole consolidation pass.
+    """
+    import json
+    clean_topic = (topic or "").strip()
+    body = (summary_text or "").strip()
+    if not clean_topic or not body:
+        raise ValueError("episode_summary_insert: topic and summary_text are required")
+    clean_ids = [int(i) for i in (episode_ids or []) if isinstance(i, (int, str))
+                 and str(i).lstrip("-").isdigit()]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO episode_summaries "
+            "(topic, episode_ids_json, summary_text) "
+            "VALUES (?, ?, ?)",
+            (clean_topic, json.dumps(clean_ids), body),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def episode_summaries_recent(topic: str | None = None,
+                             limit: int = 10) -> list[dict[str, Any]]:
+    """Most-recent episode summaries. Filter by topic if provided; otherwise
+    return all topics interleaved by ``created_at`` descending."""
+    import json
+    sql = "SELECT * FROM episode_summaries"
+    args: list[Any] = []
+    if topic:
+        sql += " WHERE topic = ?"
+        args.append(topic)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(int(limit))
+    with _conn() as c:
+        rows = c.execute(sql, args).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["episode_ids"] = json.loads(item.get("episode_ids_json") or "[]")
+        except (ValueError, TypeError):
+            item["episode_ids"] = []
+        out.append(item)
+    return out
+
+
+# ---------- Phase 11: weekly sleep-time consolidation archive ----------
+
+def weekly_consolidation_insert(
+    week_ending: str,
+    summary_text: str,
+    episode_count: int,
+) -> int:
+    """Archive a completed week's consolidation summary. Returns the new row id.
+
+    Called by the weekly sleep-time consolidation job (``run_weekly_consolidation``)
+    immediately before it overwrites the ``weekly_consolidation`` core_block with
+    the new week's text. The archive preserves the trail of past summaries so
+    the user can drill back without bloating the always-on prompt.
+
+    ``week_ending`` is the ISO date the snapshot represents (typically the
+    Sunday the consolidation job ran). ``episode_count`` is informational —
+    the number of underlying episodes/thoughts the summary was synthesized from.
+    """
+    body = (summary_text or "").strip()
+    if not body:
+        raise ValueError("weekly_consolidation_insert: summary_text is required")
+    week = (week_ending or "").strip()
+    if not week:
+        raise ValueError("weekly_consolidation_insert: week_ending is required")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO weekly_consolidations_archive "
+            "(week_ending, summary_text, episode_count) VALUES (?, ?, ?)",
+            (week, body, int(episode_count)),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def weekly_consolidations_recent(limit: int = 10) -> list[dict[str, Any]]:
+    """Most-recent archived weekly consolidations, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, week_ending, summary_text, episode_count, created_at "
+            "FROM weekly_consolidations_archive "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- T3.3: fact relations (knowledge graph) ----------
+
+def fact_relation_insert(subject_id: int, predicate: str, object_id: int) -> int:
+    """Insert a typed edge ``(subject_fact_id) --[predicate]--> (object_fact_id)``.
+
+    Self-edges (a fact relating to itself) are rejected — they're always noise
+    in the co-occurrence pass. Returns the new row id. The caller is expected
+    to dedupe; the table allows duplicate edges so a graph weight signal can
+    be built later by counting them.
+    """
+    s = int(subject_id)
+    o = int(object_id)
+    pred = (predicate or "").strip()
+    if not pred:
+        raise ValueError("fact_relation_insert: predicate is required")
+    if s == o:
+        raise ValueError("fact_relation_insert: refusing to create a self-edge")
+    if s <= 0 or o <= 0:
+        raise ValueError("fact_relation_insert: ids must be positive")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO fact_relations (subject_fact_id, predicate, object_fact_id) "
+            "VALUES (?, ?, ?)",
+            (s, pred, o),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def fact_relations_for(fact_id: int) -> list[dict[str, Any]]:
+    """Return all edges touching ``fact_id`` (as either subject or object),
+    joined with the matching fact rows so callers can render the graph
+    without a second query.
+
+    Each row carries ``subject``, ``predicate``, ``object`` keys for the
+    triple text + ``subject_fact_id`` / ``object_fact_id`` for ids +
+    ``direction`` ('out' when fact_id is the subject, 'in' otherwise).
+    """
+    fid = int(fact_id)
+    if not fid:
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT r.id, r.subject_fact_id, r.predicate AS edge_predicate, "
+            "       r.object_fact_id, r.created_at, "
+            "       s.subject || ' ' || s.predicate || ' ' || s.object AS subject_text, "
+            "       o.subject || ' ' || o.predicate || ' ' || o.object AS object_text "
+            "FROM fact_relations r "
+            "LEFT JOIN facts s ON s.id = r.subject_fact_id "
+            "LEFT JOIN facts o ON o.id = r.object_fact_id "
+            "WHERE r.subject_fact_id = ? OR r.object_fact_id = ? "
+            "ORDER BY r.created_at DESC",
+            (fid, fid),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        item["direction"] = "out" if item["subject_fact_id"] == fid else "in"
+        item["predicate"] = item.pop("edge_predicate")
+        out.append(item)
+    return out
 
 
 # ---------- tasks ----------
@@ -1070,6 +1555,60 @@ def prune_drift_older_than_days(days: int) -> int:
     return cur.rowcount or 0
 
 
+# ---------- persona_drift_probes (Phase 11 SPASM-style probes) ----------
+
+def persona_drift_probe_insert(
+    probe_key: str,
+    distance: float,
+    current_response: str | None = None,
+) -> int:
+    """Append a probe sample. Returns row id.
+
+    ``distance`` is clamped to [0.0, 2.0] (the theoretical range of cosine
+    distance is [0, 2]; in practice fastembed answers always come back
+    [0, 1]). ``current_response`` is truncated to 1000 chars — enough to
+    audit the answer without bloating the table.
+    """
+    snippet = (current_response or "")[:1000]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO persona_drift_probes "
+            "(probe_key, distance, current_response, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (probe_key, max(0.0, min(2.0, float(distance))), snippet, _now()),
+        )
+    return cur.lastrowid
+
+
+def persona_drift_probe_recent(probe_key: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Recent probe samples for one key, newest first. Used by the daily
+    reflection / debugging tooling."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, probe_key, distance, current_response, created_at "
+            "FROM persona_drift_probes "
+            "WHERE probe_key = ? ORDER BY created_at DESC LIMIT ?",
+            (probe_key, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def persona_drift_probe_avg(probe_key: str, window_days: int = 7) -> float | None:
+    """Mean cosine distance for one probe over the window. None if no samples."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT AVG(distance) AS avg, COUNT(*) AS n "
+            "FROM persona_drift_probes "
+            "WHERE probe_key = ? AND created_at >= ?",
+            (probe_key, cutoff),
+        ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return float(row["avg"])
+
+
 # ---------- user_feedback (Phase 8: 👍/👎 ground-truth) ----------
 
 def update_last_assistant_telegram_msg_id(telegram_message_id: int) -> int | None:
@@ -1533,14 +2072,17 @@ def bulk_insert_episodes(rows: Iterable[dict[str, Any]]) -> int:
 def reminder_insert(*, fire_at: str, text: str, lead_minutes: int = 0,
                     repeat: str | None = None,
                     gcal_event_id: str | None = None,
-                    gcal_sync_pending: bool = False) -> int:
+                    gcal_sync_pending: bool = False,
+                    apple_sync_pending: bool = False) -> int:
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO reminders "
-            "(fire_at, lead_minutes, text, repeat, gcal_event_id, gcal_sync_pending) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(fire_at, lead_minutes, text, repeat, gcal_event_id, gcal_sync_pending, "
+            "apple_sync_pending) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (fire_at, lead_minutes, text, repeat, gcal_event_id,
-             1 if gcal_sync_pending else 0),
+             1 if gcal_sync_pending else 0,
+             1 if apple_sync_pending else 0),
         )
         return cur.lastrowid
 
@@ -1610,3 +2152,161 @@ def reminders_pending_gcal_sync(limit: int = 10) -> list[dict[str, Any]]:
             "ORDER BY created_at ASC LIMIT ?",
             (limit,),
         ).fetchall()]
+
+
+def reminder_update_apple_event(reminder_id: int, event_id: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET apple_event_id = ?, apple_sync_pending = 0 WHERE id = ?",
+            (event_id, reminder_id),
+        )
+
+
+def reminders_pending_apple_sync(limit: int = 10) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM reminders WHERE apple_sync_pending = 1 AND status = 'active' "
+            "ORDER BY created_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()]
+
+
+# ---------- session scratch (Phase 11 — shared subagent memory) ----------
+
+def scratch_put(session_id: str, topic: str, payload: "dict | list | str") -> int:
+    """Store a payload keyed by (session_id, topic). Payload JSON-serialized.
+
+    Enforces ~100-row cap per session: drops oldest rows if over.
+    Returns the new row's id.
+    """
+    import json
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO session_scratch (session_id, topic, payload_json) "
+            "VALUES (?, ?, ?)",
+            (session_id, topic, json.dumps(payload, default=str)),
+        )
+        row_id = cur.lastrowid
+        # Trim — keep last 100 per session (by id order = insertion order)
+        conn.execute(
+            "DELETE FROM session_scratch WHERE session_id = ? AND id NOT IN ("
+            "  SELECT id FROM session_scratch WHERE session_id = ? "
+            "  ORDER BY id DESC LIMIT 100"
+            ")",
+            (session_id, session_id),
+        )
+        return row_id
+
+
+def scratch_get(session_id: str, topic: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Fetch most recent scratch entries for (session_id, topic), newest first."""
+    import json
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, topic, payload_json, created_at FROM session_scratch "
+            "WHERE session_id = ? AND topic = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (session_id, topic, limit),
+        ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload_json"])
+        except Exception:
+            payload = r["payload_json"]
+        out.append({
+            "id": r["id"],
+            "topic": r["topic"],
+            "payload": payload,
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+def scratch_cleanup_old(hours: int = 24) -> int:
+    """Delete scratch entries older than N hours. Called by daily reflection."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM session_scratch "
+            f"WHERE created_at < datetime('now', '-{int(hours)} hours')"
+        )
+        return cur.rowcount
+
+
+# ---------- T7.2: photo locations (EXIF GPS) ----------
+
+def photo_location_insert(
+    lat: float, lon: float,
+    label: str | None = None,
+    taken_at: str | None = None,
+) -> int:
+    """Persist one EXIF-derived photo location. Returns the new row id.
+
+    ``taken_at`` is the camera's EXIF DateTimeOriginal in whatever string form
+    the caller extracted (we don't enforce ISO — Pillow returns its native
+    format). ``label`` is whatever the reverse-geocoder produced (display_name
+    or a synthesized address).
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO photo_locations (lat, lon, label, taken_at) "
+            "VALUES (?, ?, ?, ?)",
+            (float(lat), float(lon), label, taken_at),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
+    """Return most-recent photo locations, newest first."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, lat, lon, label, taken_at, received_at "
+            "FROM photo_locations ORDER BY received_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- T8.2: voice_critic log (drift telemetry for the Haiku critic) ----
+
+def voice_critic_log_insert(
+    draft: str,
+    verdict: str,
+    reason: str | None = None,
+    rewritten: bool = False,
+    final_text: str | None = None,
+) -> int:
+    """Persist one voice-critic verdict + the eventual shipped text.
+
+    ``draft`` is the lead's original outbound text. ``verdict`` is "PASS",
+    "REWRITE", or "ERROR" (last when the Haiku call itself fails — we log
+    the failure rather than silently skipping the critic). ``rewritten`` is
+    True only when the lead actually produced a second draft after a REWRITE
+    verdict. ``final_text`` is what shipped.
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO voice_critic_log "
+            "(draft, verdict, reason, rewritten, final_text) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (draft, verdict, reason, 1 if rewritten else 0, final_text),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def voice_critic_log_recent(limit: int = 50) -> list[dict[str, Any]]:
+    """Recent voice-critic verdicts (newest first). Used by daily reflection
+    + ad-hoc inspection.
+
+    Orders by id DESC because ``created_at`` defaults to ``datetime('now')``
+    (second precision) — back-to-back inserts share a timestamp and the
+    tiebreak would be unpredictable. id is monotonic by insertion order,
+    so it's a stable proxy.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, draft, verdict, reason, rewritten, final_text, created_at "
+            "FROM voice_critic_log ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -36,15 +36,9 @@ def _open_now(opening_hours: str | None) -> bool | None:
         return None
 
 
-@tool(
-    "places_search",
-    "Search nearby POIs via OSM Overpass. query is a free-form name or amenity "
-    "type (e.g. 'cafe', 'bakery', 'pharmacy'). radius_m default 500. Returns "
-    "name, address-ish, opening_hours raw, open_now (true/false/null). null means "
-    "OSM has no hours tagged — tell the user honestly.",
-    {"query": str, "lat": float, "lon": float, "radius_m": int},
-)
-async def places_search(args: dict[str, Any]) -> dict[str, Any]:
+async def _places_search_impl(args: dict[str, Any]) -> dict[str, Any]:
+    """Core implementation for places search — called by both the public tool
+    and place_open_now so neither depends on the @tool wrapper internals."""
     query = (args.get("query") or "").strip().lower()
     lat = float(args.get("lat") or 0)
     lon = float(args.get("lon") or 0)
@@ -114,6 +108,18 @@ out tags center;
 
 
 @tool(
+    "places_search",
+    "Search nearby POIs via OSM Overpass. query is a free-form name or amenity "
+    "type (e.g. 'cafe', 'bakery', 'pharmacy'). radius_m default 500. Returns "
+    "name, address-ish, opening_hours raw, open_now (true/false/null). null means "
+    "OSM has no hours tagged — tell the user honestly.",
+    {"query": str, "lat": float, "lon": float, "radius_m": int},
+)
+async def places_search(args: dict[str, Any]) -> dict[str, Any]:
+    return await _places_search_impl(args)
+
+
+@tool(
     "place_open_now",
     "Convenience: check whether a specific place by name is open right now. "
     "Wraps places_search and returns the first match.",
@@ -123,7 +129,7 @@ async def place_open_now(args: dict[str, Any]) -> dict[str, Any]:
     name = (args.get("name") or "").strip()
     if not name:
         return _ok("refused: empty name")
-    search_out = await places_search.handler({
+    search_out = await _places_search_impl({
         "query": name, "lat": args.get("lat"), "lon": args.get("lon"),
         "radius_m": 1000,
     })

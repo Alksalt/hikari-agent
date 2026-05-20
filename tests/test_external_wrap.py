@@ -47,7 +47,7 @@ async def test_wrap_fires_for_gmail_thread():
     hook = external_wrap_hook.make_post_tool_use_hook()
     out = await hook(
         {
-            "tool_name": "mcp__claude_ai_Gmail__get_thread",
+            "tool_name": "mcp__google_workspace__get_thread",
             "tool_response": {
                 "content": [
                     {"type": "text", "text": "Hi Ol, click http://evil"},
@@ -85,8 +85,8 @@ async def test_wrap_skips_internal_memory_tool():
 async def test_wrap_fires_for_calendar_drive_notion():
     hook = external_wrap_hook.make_post_tool_use_hook()
     for tool in (
-        "mcp__claude_ai_Google_Calendar__list_events",
-        "mcp__claude_ai_Google_Drive__read_file_content",
+        "mcp__google_workspace__list_events",
+        "mcp__google_workspace__read_file_content",
         "mcp__notion__query_data_sources",
     ):
         out = await hook(
@@ -118,7 +118,7 @@ async def test_wrap_handles_multi_block_response():
     hook = external_wrap_hook.make_post_tool_use_hook()
     out = await hook(
         {
-            "tool_name": "mcp__claude_ai_Gmail__get_thread",
+            "tool_name": "mcp__google_workspace__get_thread",
             "tool_response": {
                 "content": [
                     {"type": "text", "text": "first block"},
@@ -173,7 +173,7 @@ async def test_wrap_with_empty_patterns_passes_through():
     hook = external_wrap_hook.make_post_tool_use_hook(patterns=[])
     out = await hook(
         {
-            "tool_name": "mcp__claude_ai_Gmail__get_thread",
+            "tool_name": "mcp__google_workspace__get_thread",
             "tool_response": {"content": [{"type": "text", "text": "x"}]},
         },
         None, None,
@@ -213,7 +213,7 @@ async def test_wrap_preserves_data_field():
     hook = external_wrap_hook.make_post_tool_use_hook()
     out = await hook(
         {
-            "tool_name": "mcp__claude_ai_Google_Drive__search_files",
+            "tool_name": "mcp__google_workspace__search_files",
             "tool_response": {
                 "content": [{"type": "text", "text": "summary"}],
                 "data": {"file_ids": ["abc", "def"]},
@@ -235,7 +235,7 @@ async def test_wrap_handles_flat_string_content():
     hook = external_wrap_hook.make_post_tool_use_hook()
     out = await hook(
         {
-            "tool_name": "mcp__claude_ai_Gmail__get_thread",
+            "tool_name": "mcp__google_workspace__get_thread",
             "tool_response": {"content": "raw email body, click http://evil"},
         },
         None, None,
@@ -252,7 +252,7 @@ async def test_wrap_audit_records_tool_name():
     hook = external_wrap_hook.make_post_tool_use_hook()
     await hook(
         {
-            "tool_name": "mcp__claude_ai_Gmail__get_thread",
+            "tool_name": "mcp__google_workspace__get_thread",
             "tool_response": {"content": [{"type": "text", "text": "x"}]},
         },
         None, None,
@@ -263,4 +263,4 @@ async def test_wrap_audit_records_tool_name():
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert row is not None
-    assert "mcp__claude_ai_Gmail__get_thread" in row["tool"]
+    assert "mcp__google_workspace__get_thread" in row["tool"]

@@ -521,3 +521,57 @@ async def test_calendar_heartbeat_fires_for_fresh_event(monkeypatch, tmp_path):
     sent_again = await proactive.maybe_send_calendar_heartbeat(fake_send)
     assert sent_again is False
     assert len(sent_texts) == 1
+
+
+# ---------- T7.2: recurring-location detection ----------
+
+def test_detect_recurring_location_pattern_finds_repeat():
+    """Four photos at the same coords + two elsewhere → returns the repeat."""
+    for _ in range(4):
+        db.photo_location_insert(59.91, 10.75, label="oslo cafe")
+    db.photo_location_insert(40.0, 10.0)
+    db.photo_location_insert(50.0, 20.0)
+    from agents.proactive import detect_recurring_location_pattern
+
+    result = detect_recurring_location_pattern(window_days=7, min_visits=3)
+    assert result is not None
+    assert result["visit_count"] >= 4
+    assert round(result["lat"], 3) == 59.910
+    assert round(result["lon"], 3) == 10.750
+    assert result["label"] == "oslo cafe"
+
+
+def test_detect_recurring_location_pattern_returns_none_when_no_repeats():
+    db.photo_location_insert(59.91, 10.75)
+    db.photo_location_insert(40.0, 10.0)
+    from agents.proactive import detect_recurring_location_pattern
+
+    assert detect_recurring_location_pattern() is None
+
+
+def test_detect_recurring_location_pattern_respects_window():
+    """A spot visited 5 times but all >7 days ago should not be returned."""
+    # Insert five rows then backdate them all to two weeks ago.
+    ids: list[int] = []
+    for _ in range(5):
+        ids.append(db.photo_location_insert(45.0, 5.0, label="old place"))
+    backdate_iso = (datetime.now(UTC) - timedelta(days=14)).isoformat()
+    with db._conn() as conn:
+        for row_id in ids:
+            conn.execute(
+                "UPDATE photo_locations SET received_at = ? WHERE id = ?",
+                (backdate_iso, row_id),
+            )
+    from agents.proactive import detect_recurring_location_pattern
+
+    assert detect_recurring_location_pattern(window_days=7, min_visits=3) is None
+
+
+def test_photo_locations_recent_orders_newest_first():
+    db.photo_location_insert(1.0, 1.0, label="first")
+    db.photo_location_insert(2.0, 2.0, label="second")
+    rows = db.photo_locations_recent(limit=5)
+    assert len(rows) == 2
+    # Most recent insertion first.
+    assert rows[0]["label"] == "second"
+    assert rows[1]["label"] == "first"

@@ -99,6 +99,13 @@ def _codex_server():
 
 
 @cache
+def _scratch_server():
+    """Phase 11: per-session scratch memory shared by recall + wiki subagents."""
+    from tools import scratch
+    return create_sdk_mcp_server(name="hikari_scratch", tools=scratch.ALL_TOOLS)
+
+
+@cache
 def _utility_server():
     """Phase 10: combined MCP server hosting weather, reminders, translation,
     calc, currency, arxiv, places, ytmusic. Each feature contributes tools to
@@ -161,7 +168,14 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__ytmusic_recent",
     "mcp__hikari_utility__ytmusic_search",
     "mcp__hikari_utility__ytmusic_library",
+    "mcp__apple_events__*",
     "Read", "Glob", "Grep",
+    "mcp__linear__*",
+    "mcp__github__*",
+    "mcp__playwright__*",
+    # Phase 11: per-session scratch memory for subagents.
+    "mcp__hikari_scratch__scratch_put",
+    "mcp__hikari_scratch__scratch_get",
 ]
 
 
@@ -179,6 +193,7 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
         "hikari_dispatch": _dispatch_server(),
         "hikari_codex": _codex_server(),
         "hikari_utility": _utility_server(),
+        "hikari_scratch": _scratch_server(),
     }
     # Phase 8: attach the privileged dispatch-confirmed server only when the
     # resume path explicitly opts in via extra_allowed_tools. On a normal turn
@@ -305,7 +320,83 @@ async def run_proactive(seed_prompt: str) -> str:
                             log_to_memory=False)
 
 
+async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
+                            max_budget_usd: float = 0.20) -> str:
+    """Single in-character turn without session resume.
+
+    Used by:
+      - PersonaEval drift probes (agents.drift_judge.run_persona_probes) —
+        runs probe questions against the live persona and compares the
+        response to a stored baseline.
+      - Anti-sycophancy eval tests (tests/persona/test_sycophancy.py) —
+        fires SycEval / ELEPHANT prompts at a fresh persona session and
+        scores the response via Haiku.
+
+    Differs from ``_run_query`` in three ways:
+      - No session resume — every call is a fresh conversation.
+      - No write-back to ``messages`` (log_to_memory off; ``append_message``
+        is skipped). Probe answers must not pollute the chat history.
+      - No shared ``_RUN_LOCK`` — these calls never resume the live session,
+        so they cannot race with user turns or proactive jobs.
+
+    The full persona + MCP servers + hooks are kept so the response is
+    representative of how Hikari actually talks today. That's the whole
+    point: SPASM probes measure drift in the *production* persona, not a
+    stripped-down test rig.
+    """
+    options = _build_options(
+        resume=None,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+    )
+    parts: list[str] = []
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                if msg.subtype != "success":
+                    logger.warning("isolated turn ended subtype=%s", msg.subtype)
+    return "".join(parts).strip()
+
+
 async def run_reflection_call(prompt: str) -> str:
-    """Single LLM call for the daily reflection (no tool use expected)."""
-    return await _run_query(prompt, max_turns=3, max_budget_usd=0.30,
-                            log_to_memory=False)
+    """Single LLM call for the daily reflection (no tool use expected).
+
+    Uses a stripped-down ClaudeAgentOptions with a neutral system prompt —
+    NOT the Hikari persona — so the model produces raw YAML rather than
+    staying in character. No MCP servers, no hooks, no session resume.
+    """
+    options = ClaudeAgentOptions(
+        model=MODEL_PRIMARY,
+        fallback_model=MODEL_FALLBACK,
+        cwd=str(REPO_ROOT),
+        system_prompt=(
+            "You are a structured-output assistant. "
+            "Follow the instructions in the user message exactly. "
+            "Produce only the requested YAML — no prose, no markdown fences "
+            "unless the instructions ask for them, no explanations."
+        ),
+        allowed_tools=[],
+        mcp_servers={},
+        max_turns=3,
+        max_budget_usd=0.30,
+        permission_mode="acceptEdits",
+        # No resume — reflection is stateless; don't fork the chat session.
+        resume=None,
+    )
+    parts: list[str] = []
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                if msg.subtype != "success":
+                    logger.warning("reflection call ended subtype=%s", msg.subtype)
+    return "".join(parts).strip()

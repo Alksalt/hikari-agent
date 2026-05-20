@@ -154,6 +154,11 @@ memory:
   # this get dropped entirely (their embeddings + FTS rows too). Daily
   # backup launchd (03:00) mirrors hikari.db to iCloud before this fires.
   episodes_retention_days: 180
+  # T3.2: Ebbinghaus forgetting curve over fact recall. tau is the half-life
+  # in seconds (default 7 days). Each successful recall multiplies tau by
+  # 1.5^hit_count so frequently-touched facts decay slower — rehearsal
+  # effect. Lower values = harsher forgetting; 0 disables the decay.
+  recall_decay_tau_seconds: 604800
 
 codex:
   # Phase 8: directory containing the codex/ review reports. Relative paths
@@ -163,6 +168,23 @@ codex:
 # ============================================================================
 # Stage 1: persona hardening — refusal filter, politeness gate, sycophancy guard
 # ============================================================================
+
+persona:
+  # SPASM Egocentric Context Projection (arxiv 2604.09212, ACL 2026):
+  # rewrite role labels in conversation history so the model reads it
+  # as first-person memory instead of third-person dialog log.
+  # Documented Cohen's d=-0.75 drop on emotion drift over 18 turns.
+  # Applied at: session_handoff format + session consolidation transcript.
+  egocentric_projection: true
+
+  # Phase 11: SPASM-style persona drift probes
+  # (arxiv 2604.09212 + arxiv 2508.10014 PersonaEval). Every N hours, fire
+  # three fixed probe questions (values / emotion_coping / motivation)
+  # against the live persona and measure cosine distance from a stored
+  # baseline. Independent of the per-turn Haiku drift judge — those catch
+  # turn-level voice slips, probes catch slow worldview shifts.
+  drift_probes_enabled: true
+  drift_probes_interval_hours: 4
 
 refusal_filter:
   # Patterns that signal Claude's default assistant/safety voice leaked through.
@@ -282,6 +304,14 @@ post_filter:
     exclamation marks for enthusiasm. NO 'as an AI', 'I'd be happy to',
     'great question', 'I cannot'. Output the rewritten reply only — no
     preamble, no quotes, no markdown.{mood_clause}]
+
+# T8.2: Silicon Mirror Generator-Critic — Haiku critic between lead draft
+# and send. PASS ships, REWRITE re-prompts lead once. Adds one Haiku call
+# per outbound (~300ms p50). Toggle off if latency becomes a problem.
+voice_critic:
+  enabled: true
+  model: "claude-haiku-4-5"
+  max_budget_usd: 0.01
 
 # ============================================================================
 # Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay
@@ -641,9 +671,6 @@ prompt_injection:
   untrusted_tools:
     - "mcp__hikari_wiki__wiki_read"
     - "mcp__google_workspace__"
-    - "mcp__claude_ai_Gmail__"
-    - "mcp__claude_ai_Google_Calendar__"
-    - "mcp__claude_ai_Google_Drive__"
     - "mcp__notion__"
     - "WebFetch"
     - "WebSearch"
@@ -654,6 +681,10 @@ prompt_injection:
     - "mcp__hikari_utility__places_"
     - "mcp__hikari_utility__ytmusic_"
     - "mcp__hikari_utility__currency_convert"
+    - "mcp__linear__"
+    - "mcp__github__"
+    - "mcp__playwright__"
+    - "mcp__apple_events__"
   # Phase 8: regex patterns for the generic PostToolUse wrap hook
   # (agents/external_wrap_hook.py). When any of these match the qualified
   # tool name, the tool's text output is automatically wrapped via
@@ -663,9 +694,6 @@ prompt_injection:
   wrap_patterns:
     - "^mcp__hikari_wiki__wiki_read$"
     - "^mcp__google_workspace__"
-    - "^mcp__claude_ai_Gmail__"
-    - "^mcp__claude_ai_Google_Calendar__"
-    - "^mcp__claude_ai_Google_Drive__"
     - "^mcp__notion__"
     - "^WebFetch$"
     - "^WebSearch$"
@@ -679,6 +707,10 @@ prompt_injection:
     - "^mcp__hikari_utility__ytmusic_search$"
     - "^mcp__hikari_utility__ytmusic_library$"
     - "^mcp__hikari_utility__currency_convert$"
+    - "^mcp__linear__"
+    - "^mcp__github__"
+    - "^mcp__playwright__"
+    - "^mcp__apple_events__"
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted
@@ -719,6 +751,8 @@ reminders:
   # GCal sync poll interval in seconds (separate job — avoids blocking
   # reminder_create on a slow LLM round-trip).
   gcal_sync_interval_sec: 300
+  # Apple Reminders sync poll interval in seconds (macOS only).
+  apple_sync_interval_sec: 300
   # Default lead time when caller doesn't specify (used when a reminder is
   # tied to an event start time).
   default_lead_minutes: 60

@@ -86,6 +86,14 @@ def _build_reflection_prompt() -> str:
 
 async def run_daily_reflection() -> bool:
     """Returns True if reflection ran and applied at least one update."""
+    # Phase 11: purge stale scratch entries first (non-blocking — reflection
+    # continues even if cleanup fails).
+    try:
+        removed = db.scratch_cleanup_old(hours=24)
+        logger.info("scratch_cleanup_old: removed %d stale entries", removed)
+    except Exception:
+        logger.exception("scratch_cleanup_old failed (non-blocking)")
+
     if not db.recent_episodes(limit=1):
         logger.info("no episodes yet — skipping reflection")
         return False
@@ -265,16 +273,30 @@ async def run_daily_reflection() -> bool:
         except Exception:
             logger.exception("drift thought write failed (non-fatal)")
 
+    # T3.3: consolidation pass — topic-cluster episode summaries +
+    # co-occurrence edges between new facts + near-dup fact dedup. Wrapped
+    # in try/except so consolidation failure can't roll back the rest of
+    # the reflection (lexicon, peer model, etc. are already committed).
+    consolidation_stats = {
+        "topics": 0, "summaries": 0, "edges": 0, "deduped": 0,
+    }
+    try:
+        consolidation_stats = await _consolidate_yesterday()
+    except Exception:
+        logger.exception("consolidation pass failed (non-fatal)")
+
     logger.info(
         "reflection done: applied=%d thought=%s preoc=%s "
         "pruned_episodes=%d pruned_thoughts=%d lexicon_new=%d "
         "lexicon_decayed=%d lexicon_pruned=%d "
         "tasks_decayed=%d tasks_over_mentioned=%d "
-        "observations=%d noticings=%d",
+        "observations=%d noticings=%d "
+        "consolidation=%s",
         applied, bool(thought), bool(preoc), pruned, pruned_thoughts, promoted,
         lex_decayed, lex_pruned,
         decayed[0], decayed[1],
         obs_written, noticings_written,
+        consolidation_stats,
     )
 
     # Phase 8: morning dispatch. Write a small markdown summary to the wiki
@@ -292,6 +314,7 @@ async def run_daily_reflection() -> bool:
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
+        or consolidation_stats.get("summaries", 0) > 0
     )
 
 
@@ -494,6 +517,12 @@ async def maybe_run_session_consolidation() -> None:
         return
 
     transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in msgs[-20:])
+    # SPASM Egocentric Context Projection (arxiv 2604.09212): rewrite role
+    # labels so the consolidation prompt reads the transcript as first-person
+    # memory instead of a third-person dialog log. Cohen's d=-0.75 on emotion
+    # drift; safe to apply because we're summarizing, not citing labels back.
+    from . import ecp
+    transcript = ecp.maybe_project(transcript)
     prompt = (
         "Summarize this Hikari conversation in 2-4 sentences. Capture: what was "
         "discussed, emotional tone, anything notable. Output ONLY the summary text.\n\n"
@@ -600,3 +629,457 @@ async def reflection_after_task(task_id: str) -> None:
 
     logger.info("reflection_after_task %s: %d facts, %d loops, thought=%s",
                 task_id[:8], written, len(data.get("open_loops") or []), bool(thought))
+
+
+# ---------- T3.3: daily consolidation ----------
+
+# Cosine threshold for near-dup fact dedup. BGE-small returns L2-normalized
+# embeddings, so cos = 1 - (L2_dist ** 2) / 2 and cos >= 0.92 ⇔ L2 <= ~0.4.
+# Tighter than 0.92 over-merges; looser keeps too many paraphrases.
+NEAR_DUP_COSINE_THRESHOLD = 0.92
+
+
+def _episodes_in_window(window_hours: int = 24) -> list[dict]:
+    """Return episode rows created in the last ``window_hours`` (UTC)."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT * FROM episodes WHERE created_at >= ? ORDER BY created_at",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _facts_in_window(window_hours: int = 24) -> list[dict]:
+    """Active facts created in the last ``window_hours``."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT * FROM facts "
+            "WHERE created_at >= ? AND valid_to IS NULL "
+            "ORDER BY created_at",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _build_topic_tag_prompt(episodes: list[dict]) -> str:
+    """Ask the LLM to assign one short topic tag per episode."""
+    lines = [
+        "Tag each episode below with ONE lowercase topic from this set: "
+        "work, code, feelings, logistics, social, learning, other. "
+        "Output ONLY a valid YAML mapping of episode id -> tag, nothing else.\n",
+    ]
+    for ep in episodes:
+        snippet = (ep.get("summary") or "").strip().replace("\n", " ")[:300]
+        lines.append(f"- id {ep['id']}: {snippet}")
+    lines.append(
+        "\nExample output:\n"
+        "1: work\n"
+        "2: feelings\n"
+        "3: code"
+    )
+    return "\n".join(lines)
+
+
+async def _tag_topics(episodes: list[dict]) -> dict[int, str]:
+    """LLM topic assignment. Returns ``{episode_id: tag}``. Empty dict on
+    LLM/YAML failure — caller treats it as "all episodes -> other"."""
+    if not episodes:
+        return {}
+    prompt = _build_topic_tag_prompt(episodes)
+    try:
+        raw = await run_reflection_call(prompt)
+    except Exception:
+        logger.exception("consolidation: topic-tag LLM call failed")
+        return {}
+    try:
+        data = yaml.safe_load(_strip_fences(raw)) or {}
+    except yaml.YAMLError:
+        logger.warning("consolidation: topic-tag returned invalid YAML; got %r",
+                       raw[:200])
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[int, str] = {}
+    valid_topics = {"work", "code", "feelings", "logistics", "social",
+                    "learning", "other"}
+    for k, v in data.items():
+        try:
+            ep_id = int(k)
+        except (TypeError, ValueError):
+            continue
+        tag = str(v or "").strip().lower()
+        if tag not in valid_topics:
+            tag = "other"
+        out[ep_id] = tag
+    return out
+
+
+def _build_topic_summary_prompt(topic: str, episodes: list[dict]) -> str:
+    """Ask the LLM to write one 100-word topic summary."""
+    body = "\n\n".join(
+        f"### episode {e['id']} ({e.get('date', '?')})\n{e.get('summary') or ''}"
+        for e in episodes
+    )
+    return (
+        f"Write a single ~100-word summary of the user's day in the area '{topic}'. "
+        "Stay neutral and factual (this is for an internal memory log, not a chat "
+        "reply). Output ONLY the summary prose — no headers, no bullets, no YAML.\n\n"
+        f"{body}"
+    )
+
+
+async def _summarize_topic(topic: str, episodes: list[dict]) -> str:
+    """LLM topic summary. Empty string on failure — caller skips that topic."""
+    if not episodes:
+        return ""
+    prompt = _build_topic_summary_prompt(topic, episodes)
+    try:
+        raw = await run_reflection_call(prompt)
+    except Exception:
+        logger.exception("consolidation: topic-summary LLM call failed (%s)", topic)
+        return ""
+    body = _strip_fences(raw).strip()
+    # Cap to ~150 words just in case the LLM ignored instructions.
+    return " ".join(body.split()[:200])
+
+
+def _write_cooccurrence_edges(facts: list[dict]) -> int:
+    """Write ``co_occurs_with`` edges for every unordered pair of facts in
+    the window. Cap the pair count so a runaway reflection day can't blow
+    up the relation table.
+    """
+    if len(facts) < 2:
+        return 0
+    # O(n²) — for daily facts n stays modest. Cap defensively.
+    MAX_PAIRS = 500
+    written = 0
+    n = len(facts)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if written >= MAX_PAIRS:
+                logger.warning(
+                    "consolidation: hit MAX_PAIRS cap (%d) — skipping rest "
+                    "of %d facts", MAX_PAIRS, n,
+                )
+                return written
+            try:
+                db.fact_relation_insert(
+                    subject_id=int(facts[i]["id"]),
+                    predicate="co_occurs_with",
+                    object_id=int(facts[j]["id"]),
+                )
+                written += 1
+            except (ValueError, TypeError):
+                continue
+    return written
+
+
+def _dedup_near_duplicates(new_facts: list[dict]) -> int:
+    """For each new fact, find its nearest neighbor in ``vec_facts``. If
+    cosine similarity ≥ NEAR_DUP_COSINE_THRESHOLD AND the neighbor is an
+    older active fact, mark the older one ``superseded_by`` the new one.
+
+    Returns the count of facts deduped. Best-effort — embedding failures
+    skip the row silently.
+    """
+    deduped = 0
+    for new in new_facts:
+        new_id = int(new["id"])
+        # Read the new fact's stored embedding directly (it was written at
+        # insert time). If it's missing — model failed to load — skip.
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT vec FROM vec_facts WHERE id = ?", (new_id,)
+            ).fetchone()
+        if not row or not row["vec"]:
+            continue
+        # Use the existing KNN — give it back the same vector. We need a
+        # python list, so unpack via numpy (sqlite_vec returns bytes).
+        import struct
+        try:
+            raw_vec = bytes(row["vec"])
+            dim = len(raw_vec) // 4
+            q_vec = list(struct.unpack(f"{dim}f", raw_vec))
+        except (TypeError, struct.error):
+            continue
+        hits = db.vec_search("vec_facts", q_vec, k=5)
+        for h in hits:
+            cand_id = int(h["id"])
+            if cand_id == new_id:
+                continue
+            cand = db.get_fact(cand_id)
+            if not cand or cand.get("valid_to"):
+                continue
+            # Don't supersede something newer than us (sanity check).
+            try:
+                cand_ts = datetime.fromisoformat(
+                    str(cand["created_at"]).replace("Z", "+00:00")
+                )
+                new_ts = datetime.fromisoformat(
+                    str(new["created_at"]).replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                continue
+            if cand_ts >= new_ts:
+                continue
+            # L2 -> cosine for unit-normalized vectors:
+            #   cos = 1 - (L2² / 2)
+            l2 = float(h["distance"])
+            cos_sim = 1.0 - (l2 * l2) / 2.0
+            if cos_sim >= NEAR_DUP_COSINE_THRESHOLD:
+                try:
+                    db.mark_fact_invalid(
+                        cand_id, superseded_by=new_id,
+                        reason=(
+                            f"consolidation: near-dup of #{new_id} "
+                            f"(cos={cos_sim:.3f})"
+                        ),
+                    )
+                    deduped += 1
+                    break  # one supersession per new fact is enough
+                except Exception:
+                    logger.exception(
+                        "consolidation: mark_fact_invalid failed for #%d", cand_id
+                    )
+    return deduped
+
+
+async def _consolidate_yesterday() -> dict[str, int]:
+    """Daily consolidation — wraps the four sub-steps with their own
+    try/except so a failure in one (e.g. LLM unavailable for topic tagging)
+    doesn't block the others.
+
+    Returns a stats dict ``{topics, summaries, edges, deduped}``.
+    """
+    stats = {"topics": 0, "summaries": 0, "edges": 0, "deduped": 0}
+
+    # Episodes from the last 24h.
+    episodes = _episodes_in_window(window_hours=24)
+    if episodes:
+        topic_tags: dict[int, str] = {}
+        try:
+            topic_tags = await _tag_topics(episodes)
+        except Exception:
+            logger.exception("consolidation: _tag_topics raised")
+            topic_tags = {}
+
+        # Group episodes by topic — anything missing a tag falls into 'other'.
+        by_topic: dict[str, list[dict]] = {}
+        for ep in episodes:
+            tag = topic_tags.get(int(ep["id"]), "other")
+            by_topic.setdefault(tag, []).append(ep)
+        stats["topics"] = len(by_topic)
+
+        for topic, eps in by_topic.items():
+            try:
+                summary = await _summarize_topic(topic, eps)
+            except Exception:
+                logger.exception("consolidation: summarize failed (%s)", topic)
+                continue
+            if not summary:
+                continue
+            try:
+                db.episode_summary_insert(
+                    topic=topic,
+                    episode_ids=[int(e["id"]) for e in eps],
+                    summary_text=summary,
+                )
+                stats["summaries"] += 1
+            except Exception:
+                logger.exception("consolidation: episode_summary_insert failed")
+
+    # Co-occurrence edges across new facts in the same window.
+    new_facts = _facts_in_window(window_hours=24)
+    if new_facts:
+        try:
+            stats["edges"] = _write_cooccurrence_edges(new_facts)
+        except Exception:
+            logger.exception("consolidation: _write_cooccurrence_edges failed")
+
+        # Near-dup dedup against existing active facts.
+        try:
+            stats["deduped"] = _dedup_near_duplicates(new_facts)
+        except Exception:
+            logger.exception("consolidation: _dedup_near_duplicates failed")
+
+    return stats
+
+
+# ---------- Phase 11: weekly sleep-time consolidation ----------
+
+# Letta sleep-time pattern (Apr 2025): live agent serves user, sleep agent
+# consolidates memory during downtime. Up to 18% accuracy gain reported,
+# 5× less test-time compute. We borrow only the consolidation half — Hikari
+# already serves online; the sleep agent runs once per week, synthesizes a
+# 200-word "what i noticed about him this week" doc, and parks it in
+# core_blocks so it flows into every system-prompt build for the next week.
+WEEKLY_WINDOW_DAYS = 7
+WEEKLY_SUMMARY_WORD_CAP = 220  # ~200 target + small overrun tolerance
+
+
+def _read_week_window() -> dict[str, list[dict]]:
+    """Read the last WEEKLY_WINDOW_DAYS from each source table the weekly
+    consolidation cares about. Returns ``{thoughts, episodes, observations,
+    noticings}``. Empty lists for tables with no activity in the window.
+
+    Kept as a single helper so the test suite can monkeypatch one function
+    instead of four.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=WEEKLY_WINDOW_DAYS)).isoformat()
+    out: dict[str, list[dict]] = {
+        "thoughts": [], "episodes": [], "observations": [], "noticings": [],
+    }
+    try:
+        with db._conn() as c:
+            out["thoughts"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, thought, created_at FROM character_thoughts "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["episodes"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, date, summary, created_at FROM episodes "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["observations"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, kind, summary, created_at FROM observations "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            out["noticings"] = [
+                dict(r) for r in c.execute(
+                    "SELECT id, signal, summary, created_at FROM noticings "
+                    "WHERE created_at >= ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+            ]
+    except Exception:
+        logger.exception("weekly_consolidation: window read failed")
+    return out
+
+
+def _build_weekly_consolidation_prompt(window: dict[str, list[dict]]) -> str:
+    """Compose the neutral structured-prompt the reflection LLM sees. Keep
+    the call cheap — feed snippets, not full bodies."""
+    def _fmt(rows: list[dict], label: str, body_key: str, limit: int = 40) -> str:
+        if not rows:
+            return f"## {label}\n(none in the last 7 days)"
+        lines = [f"## {label}"]
+        for r in rows[:limit]:
+            snippet = str(r.get(body_key) or "").strip().replace("\n", " ")
+            if len(snippet) > 220:
+                snippet = snippet[:220] + "…"
+            created = str(r.get("created_at") or "?")[:10]
+            lines.append(f"- [{created}] {snippet}")
+        if len(rows) > limit:
+            lines.append(f"(+{len(rows) - limit} more truncated)")
+        return "\n".join(lines)
+
+    return (
+        "Write a single ~200-word summary of what Hikari has noticed about "
+        "this person across the last 7 days. First person from Hikari's view, "
+        "dry tone, lowercase, no markdown, no bullets, no headers. This is "
+        "going into her long-term context — it should read like an internal "
+        "memo, not a chat reply. Focus on patterns, not events. Mention what "
+        "she's tracking, what shifted, what she's not saying out loud. Output "
+        "ONLY the prose — no preamble, no sign-off.\n\n"
+        f"{_fmt(window['thoughts'], 'private thoughts (her diary)', 'thought')}\n\n"
+        f"{_fmt(window['episodes'], 'session episodes', 'summary')}\n\n"
+        f"{_fmt(window['observations'], 'observations (patterns)', 'summary')}\n\n"
+        f"{_fmt(window['noticings'], 'noticings (week-over-week shifts)', 'summary')}"
+    )
+
+
+async def run_weekly_consolidation() -> bool:
+    """Sleep-time consolidation pass — runs weekly (Sunday 04:30 local).
+
+    Reads the last 7 days of character_thoughts + episodes + observations +
+    noticings, synthesizes a single ~200-word "what i've noticed about him
+    this week" document via a cheap structured-prompt LLM call, stores it
+    as ``core_blocks['weekly_consolidation']``. The previous week's content
+    is archived to ``weekly_consolidations_archive`` before being overwritten.
+
+    Returns True on success (block written), False if the week is empty or
+    the LLM/storage step failed. Wrapped in try/except so a failure here
+    cannot affect a daily reflection that may be in flight.
+
+    Letta sleep-time pattern (Apr 2025): live agent serves user, sleep agent
+    consolidates memory during downtime. Up to 18% accuracy gain reported,
+    5× less test-time compute. We use only the consolidation half — the live
+    agent (Hikari) is always-on.
+
+    The new core_block is read by ``agents.hooks._format_core_blocks`` (which
+    injects every core_block except the legacy ``user_profile``) so no
+    further wiring is required for the model to see it.
+    """
+    try:
+        window = _read_week_window()
+
+        total_rows = sum(len(v) for v in window.values())
+        if total_rows == 0:
+            logger.info(
+                "weekly_consolidation: empty week (no thoughts/episodes/"
+                "observations/noticings in last %dd) — skipping",
+                WEEKLY_WINDOW_DAYS,
+            )
+            return False
+
+        prompt = _build_weekly_consolidation_prompt(window)
+        try:
+            raw = await run_reflection_call(prompt)
+        except Exception:
+            logger.exception("weekly_consolidation: LLM call failed")
+            return False
+        summary = _strip_fences(raw).strip()
+        if not summary:
+            logger.warning("weekly_consolidation: LLM returned empty body")
+            return False
+        # Cap if the model ignored the word ceiling.
+        summary = " ".join(summary.split()[:WEEKLY_SUMMARY_WORD_CAP])
+
+        # Archive the previous week's block before overwriting.
+        try:
+            existing = db.get_core_block("weekly_consolidation")
+            if existing:
+                # week_ending = today's ISO date when the new pass runs.
+                # episode_count is informational — count of episodes in the
+                # *previous* week is unknown after the fact, so we record
+                # the current window's episode count as a rough proxy.
+                db.weekly_consolidation_insert(
+                    week_ending=date.today().isoformat(),
+                    summary_text=existing,
+                    episode_count=len(window["episodes"]),
+                )
+        except Exception:
+            logger.exception(
+                "weekly_consolidation: archive of previous block failed "
+                "(non-fatal — proceeding with overwrite)"
+            )
+
+        try:
+            db.upsert_core_block("weekly_consolidation", summary)
+        except Exception:
+            logger.exception("weekly_consolidation: upsert_core_block failed")
+            return False
+
+        logger.info(
+            "weekly_consolidation: wrote %d-char summary from "
+            "thoughts=%d episodes=%d observations=%d noticings=%d",
+            len(summary),
+            len(window["thoughts"]),
+            len(window["episodes"]),
+            len(window["observations"]),
+            len(window["noticings"]),
+        )
+        return True
+    except Exception:
+        logger.exception("weekly_consolidation: top-level failure (non-fatal)")
+        return False
