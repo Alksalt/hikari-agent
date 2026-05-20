@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC
 from datetime import date as _date
 from datetime import datetime, timedelta
 from typing import Any
@@ -579,3 +580,114 @@ async def _compose(prompt: str) -> str | None:
         )
         return None
     return text
+
+
+# ---------- orchestrator + pending-reply state ----------
+
+PENDING_KEY = "daily_checkin_pending"
+
+
+def _now_local() -> datetime:
+    """Override target for tests."""
+    return datetime.now(_resolve_local_tz())
+
+
+def _pending_window_minutes() -> int:
+    return int(cfg.get("daily_checkin.pending_reply_window_minutes", 30))
+
+
+def _is_pending_active(now_utc: datetime) -> bool:
+    raw = db.runtime_get(PENDING_KEY)
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    age = (now_utc - ts).total_seconds() / 60
+    if age > _pending_window_minutes():
+        db.runtime_set(PENDING_KEY, None)
+        return False
+    return True
+
+
+async def _safe_send(send_text, text: str) -> bool:
+    """Wrap send_text in try/except; return ok-bool. Accepts callbacks that
+    return either bool, None (legacy), or (text, msg_id, ok) tuples."""
+    try:
+        result = await send_text(text)
+    except Exception:
+        logger.exception("daily_checkin: send_text raised")
+        return False
+    if result is None:
+        return True
+    if isinstance(result, tuple) and len(result) == 3:
+        return bool(result[2])
+    return bool(result)
+
+
+async def maybe_run_daily_checkin(send_text) -> bool:
+    """Scheduler job entry. Returns True if the check-in question was sent."""
+    now_local = _now_local()
+    if not should_fire_now(now_local):
+        return False
+    from agents import cadence
+    allowed, reason = cadence.can_send_proactive("daily_checkin")
+    if not allowed:
+        logger.info("daily_checkin: cadence governor vetoed: %s", reason)
+        return False
+    text = await compose_checkin_question()
+    if not text:
+        logger.info("daily_checkin: composer returned no question; skipping fire")
+        return False
+    ok = await _safe_send(send_text, text)
+    if not ok:
+        logger.warning("daily_checkin: send_text reported failure; not marking fired")
+        return False
+    # Mark fired + start pending-reply window. Choreography helper persisted
+    # the assistant row with source='daily_checkin' already.
+    mark_fired_today(now_local)
+    clear_expired_overrides(now_local)
+    db.runtime_set(PENDING_KEY, datetime.now(UTC).isoformat())
+    cadence.record_proactive_sent()  # bookkeeping; cap-exempt
+    logger.info("daily_checkin: question sent (pending reply window open)")
+    return True
+
+
+async def consume_pending_reply(text: str, send_text) -> bool:
+    """If a check-in is pending and ``text`` answers it, run the topic
+    fetches/sends and clear the pending state. Returns True iff the message
+    was consumed (caller should NOT route it to the normal agent path).
+
+    Window-expired pending state is swept on read.
+    """
+    now_utc = datetime.now(UTC)
+    if not _is_pending_active(now_utc):
+        return False
+    intent = parse_intent(text)
+    if intent is None:
+        return False  # ambiguous — let normal chat handle it; pending stays
+    db.runtime_set(PENDING_KEY, None)
+    if not intent["email"] and not intent["calendar"]:
+        return True  # silent ack — no chatter on "no"
+    if intent["email"]:
+        try:
+            data = await fetch_email_buckets()
+            text_out = await compose_email_message(data)
+        except Exception:
+            logger.exception("daily_checkin: email branch failed")
+            text_out = None
+        if text_out:
+            await _safe_send(send_text, text_out)
+    if intent["calendar"]:
+        try:
+            events = await fetch_calendar_events()
+            text_out = await compose_calendar_message(events)
+        except Exception:
+            logger.exception("daily_checkin: calendar branch failed")
+            text_out = None
+        if text_out:
+            await _safe_send(send_text, text_out)
+    return True
