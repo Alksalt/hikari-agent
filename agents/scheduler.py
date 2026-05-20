@@ -13,6 +13,8 @@ from . import config as cfg
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MISFIRE_GRACE_SEC = cfg.get("scheduler.default_misfire_grace_sec") or 300
+
 
 def build_scheduler(send_text) -> AsyncIOScheduler:
     """Wire up the background jobs. send_text is `async def send_text(s: str)`."""
@@ -41,7 +43,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         _heartbeat_job,
         IntervalTrigger(minutes=30),
         id="heartbeat",
-        coalesce=True, max_instances=1, misfire_grace_time=300,
+        coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
     )
 
     # Calendar-aware heartbeat: polls calendar via the drive_gmail subagent and
@@ -64,7 +66,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             _calendar_job,
             IntervalTrigger(minutes=calendar_interval),
             id="calendar_heartbeat",
-            coalesce=True, max_instances=1, misfire_grace_time=300,
+            coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
         )
     else:
         logger.info(
@@ -78,7 +80,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         _reengage_job,
         IntervalTrigger(minutes=15),
         id="reengage",
-        coalesce=True, max_instances=1, misfire_grace_time=300,
+        coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
     )
 
     # Session consolidation: every 15 min
@@ -86,7 +88,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         maybe_run_session_consolidation,
         IntervalTrigger(minutes=15),
         id="consolidation",
-        coalesce=True, max_instances=1, misfire_grace_time=300,
+        coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
     )
 
     from .proactive import fire_due_reminders
@@ -172,7 +174,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             _daily_checkin_job,
             IntervalTrigger(minutes=poll),
             id="daily_checkin",
-            coalesce=True, max_instances=1, misfire_grace_time=300,
+            coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
         )
 
     # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.

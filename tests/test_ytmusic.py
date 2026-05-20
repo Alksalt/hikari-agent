@@ -38,7 +38,8 @@ class _FakeYTMusic:
 async def test_ytmusic_recent_returns_history(monkeypatch):
     monkeypatch.setenv("YTMUSIC_BROWSER_JSON_PATH", "/dev/null")
     from tools import ytmusic
-    monkeypatch.setattr(ytmusic, "_client", lambda: _FakeYTMusic())
+    from tools.ytmusic import _shared
+    monkeypatch.setattr(_shared, "_client", lambda: _FakeYTMusic())
     out = await ytmusic.ytmusic_recent.handler({"limit": 5})
     tracks = out["data"]["tracks"]
     assert len(tracks) == 2
@@ -49,7 +50,8 @@ async def test_ytmusic_recent_returns_history(monkeypatch):
 async def test_ytmusic_search_calls_through(monkeypatch):
     monkeypatch.setenv("YTMUSIC_BROWSER_JSON_PATH", "/dev/null")
     from tools import ytmusic
-    monkeypatch.setattr(ytmusic, "_client", lambda: _FakeYTMusic())
+    from tools.ytmusic import _shared
+    monkeypatch.setattr(_shared, "_client", lambda: _FakeYTMusic())
     out = await ytmusic.ytmusic_search.handler({"query": "lofi", "filter": "songs"})
     assert len(out["data"]["results"]) >= 1
     assert "lofi" in out["data"]["results"][0]["title"]
@@ -59,8 +61,9 @@ async def test_ytmusic_search_calls_through(monkeypatch):
 async def test_ytmusic_returns_graceful_msg_when_unauthed(monkeypatch):
     monkeypatch.delenv("YTMUSIC_BROWSER_JSON_PATH", raising=False)
     from tools import ytmusic
+    from tools.ytmusic import _shared
     def _raise(): raise FileNotFoundError("no cookie blob")
-    monkeypatch.setattr(ytmusic, "_client", _raise)
+    monkeypatch.setattr(_shared, "_client", _raise)
     out = await ytmusic.ytmusic_recent.handler({"limit": 5})
     text = out["content"][0]["text"].lower()
     assert "yt music" in text or "auth" in text or "configured" in text

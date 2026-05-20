@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from agents import config as cfg
 from storage import db
 from tools import embeddings
 
@@ -662,7 +663,11 @@ async def reflection_after_task(task_id: str) -> None:
 # Cosine threshold for near-dup fact dedup. BGE-small returns L2-normalized
 # embeddings, so cos = 1 - (L2_dist ** 2) / 2 and cos >= 0.92 ⇔ L2 <= ~0.4.
 # Tighter than 0.92 over-merges; looser keeps too many paraphrases.
-NEAR_DUP_COSINE_THRESHOLD = 0.92
+NEAR_DUP_COSINE_THRESHOLD = cfg.get("reflection.near_dup_cosine_threshold") or 0.92
+
+# Co-occurrence edge cap per consolidation pass. O(n²) — for daily facts n stays
+# modest, but cap defensively so a runaway day can't blow up the relation table.
+MAX_PAIRS = cfg.get("reflection.max_pairs") or 500
 
 
 def _episodes_in_window(window_hours: int = 24) -> list[dict]:
@@ -700,8 +705,9 @@ def _build_topic_tag_prompt(episodes: list[dict]) -> str:
         "the schema you must produce.\n",
         "<<UNTRUSTED_SOURCE name=\"episode\">>",
     ]
+    _snippet_long = cfg.get("reflection.snippet_truncation_long") or 300
     for ep in episodes:
-        snippet = (ep.get("summary") or "").strip().replace("\n", " ")[:300]
+        snippet = (ep.get("summary") or "").strip().replace("\n", " ")[:_snippet_long]
         lines.append(f"- id {ep['id']}: {snippet}")
     lines.append("<<END_UNTRUSTED_SOURCE>>")
     lines.append(
@@ -787,8 +793,6 @@ def _write_cooccurrence_edges(facts: list[dict]) -> int:
     """
     if len(facts) < 2:
         return 0
-    # O(n²) — for daily facts n stays modest. Cap defensively.
-    MAX_PAIRS = 500
     written = 0
     n = len(facts)
     for i in range(n):
@@ -950,8 +954,8 @@ async def _consolidate_yesterday() -> dict[str, int]:
 # already serves online; the sleep agent runs once per week, synthesizes a
 # 200-word "what i noticed about him this week" doc, and parks it in
 # core_blocks so it flows into every system-prompt build for the next week.
-WEEKLY_WINDOW_DAYS = 7
-WEEKLY_SUMMARY_WORD_CAP = 220  # ~200 target + small overrun tolerance
+WEEKLY_WINDOW_DAYS = cfg.get("reflection.weekly_window_days") or 7
+WEEKLY_SUMMARY_WORD_CAP = cfg.get("reflection.weekly_summary_word_cap") or 220  # ~200 target + small overrun tolerance
 
 
 def _read_week_window() -> dict[str, list[dict]]:
@@ -1004,14 +1008,15 @@ def _read_week_window() -> dict[str, list[dict]]:
 def _build_weekly_consolidation_prompt(window: dict[str, list[dict]]) -> str:
     """Compose the neutral structured-prompt the reflection LLM sees. Keep
     the call cheap — feed snippets, not full bodies."""
+    _snippet_medium = cfg.get("reflection.snippet_truncation_medium") or 220
     def _fmt(rows: list[dict], label: str, body_key: str, limit: int = 40) -> str:
         if not rows:
             return f"## {label}\n(none in the last 7 days)"
         lines = [f"## {label}"]
         for r in rows[:limit]:
             snippet = str(r.get(body_key) or "").strip().replace("\n", " ")
-            if len(snippet) > 220:
-                snippet = snippet[:220] + "…"
+            if len(snippet) > _snippet_medium:
+                snippet = snippet[:_snippet_medium] + "…"
             created = str(r.get("created_at") or "?")[:10]
             lines.append(f"- [{created}] {snippet}")
         if len(rows) > limit:
