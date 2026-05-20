@@ -63,6 +63,8 @@ Polish:
 
 ## P1 - Random Ignore Can Eat Real Intent
 
+RESOLVED: 2026-05-20 — `should_ignore`, `_ignore`, and the `ignore:` config block deleted entirely. The bridge now always routes to the LLM. Action lines remain available as voice devices in Hikari's character layer.
+
 Finding: `should_ignore` can bypass the agent entirely, including for potentially important messages.
 
 Evidence:

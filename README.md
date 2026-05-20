@@ -18,6 +18,11 @@ Phased plan: `/Users/alt/.claude/plans/memoized-fluttering-meerkat.md`.
 
 Google Workspace MCP (Phase 7) requires OAuth user credentials: set `GOOGLE_WORKSPACE_CLIENT_ID`, `GOOGLE_WORKSPACE_CLIENT_SECRET`, and `GOOGLE_WORKSPACE_REFRESH_TOKEN` in `.env`, then uncomment the server in `.mcp.json`.
 
+### macOS native integrations
+
+- **Apple Reminders + Calendar** (via the `apple_events` MCP server, EventKit): the first call triggers an Automation permission prompt for Reminders/Calendar — accept it in System Settings → Privacy & Security → Automation.
+- **Apple Notes** (via in-process `note_create` / `note_search` / `note_read` tools, AppleScript): the first call to any of these triggers a macOS Automation permission prompt for Notes.app — accept it the same way. These tools are for quick capture / cross-device sticky notes; permanent personal knowledge lives in the Obsidian wiki.
+
 ## Setup
 
 ```bash

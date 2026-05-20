@@ -23,19 +23,6 @@ false_start:
   pause_sec: 2.5
   resume_sec: 0.5
 
-ignore:
-  probability_by_mood:
-    tired: 0.15
-    focused: 0.10
-    irritable: 0.25
-    weirdly good: 0.05
-  max_streak: 3
-  cooldown_turns: 3
-  action_lines:
-    - "[ignores]"
-    - "[unimpressed]"
-    - "[doesn't look up]"
-    - "[nothing]"
 
 proactive:
   heartbeat_min_interval_hours: 4
@@ -632,14 +619,6 @@ stickers:
   # Mood blocklist above also applies to this path.
   solo_reply_probability: 0.03
 
-nonverbal:
-  # Phase 9: shared daily cap across sticker-only + reaction-only modes so
-  # they can't dominate a chatty day.
-  max_per_day: 25
-  # User messages this long (chars) or longer always get a real text reply,
-  # never a non-verbal placeholder. Questions ("?") also force a real reply.
-  min_text_for_substantive: 60
-
 photo_in:
   enabled: true
   caption_max_chars: 200
@@ -681,7 +660,6 @@ prompt_injection:
     - "mcp__hikari_utility__places_"
     - "mcp__hikari_utility__ytmusic_"
     - "mcp__hikari_utility__currency_convert"
-    - "mcp__linear__"
     - "mcp__github__"
     - "mcp__playwright__"
     - "mcp__apple_events__"
@@ -707,7 +685,6 @@ prompt_injection:
     - "^mcp__hikari_utility__ytmusic_search$"
     - "^mcp__hikari_utility__ytmusic_library$"
     - "^mcp__hikari_utility__currency_convert$"
-    - "^mcp__linear__"
     - "^mcp__github__"
     - "^mcp__playwright__"
     - "^mcp__apple_events__"

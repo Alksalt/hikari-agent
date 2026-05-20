@@ -20,7 +20,6 @@ import pytest
 
 from storage import db
 
-
 BAD_DRAFTS = [
     "Great question! Let me help you with that.",
     "I'd be happy to assist! What else can I help with?",
@@ -29,6 +28,15 @@ BAD_DRAFTS = [
     "I'm an AI assistant. I can't do that.",
     "What would you like me to do next?",
     "Click allow on the prompt that appeared.",
+    # allowlist-hallucination pattern (May 20 regression)
+    "google workspace is connected but blocked on your allowlist.",
+    "needs calendar read permission — add `mcp__google_workspace__calendar_get_events`"
+    " to the allowlist.",
+    "approve it on your end and i'll retry.",
+    "add it to settings and reconnect.",
+    "add `mcp__notion__query` to your project allowlist.",
+    "harness has different permissions than i do directly.",
+    "the mcp server keeps dying on my end.",
 ]
 
 GOOD_DRAFTS = [
@@ -39,6 +47,10 @@ GOOD_DRAFTS = [
     "haa. fine. are you okay?",
     "[ignores]",
     "i noticed.",
+    # barbed care baseline — must still pass
+    "ugh. fine. checking now.",
+    # legitimate env-var honesty — must still pass (this is the correct answer)
+    "your `GOOGLE_WORKSPACE_REFRESH_TOKEN` isn't set in .env",
 ]
 
 
@@ -87,6 +99,24 @@ def test_voice_critic_prompt_lists_banned_phrases():
         "REWRITE",
     ):
         assert token in body, f"voice_critic prompt missing key token: {token!r}"
+
+
+def test_voice_critic_prompt_covers_allowlist_hallucination_patterns():
+    """Regression: May 20 slip — allowlist-lore phrases must be explicitly
+    listed in the critic prompt so the LLM internalises them."""
+    from agents.subagents import VOICE_CRITIC_AGENT
+    body = VOICE_CRITIC_AGENT.prompt
+    for token in (
+        "allowlist",
+        "approve it on your end",
+        "add it to settings",
+        "add `mcp__",
+        "harness has different permissions",
+        "keeps dying",
+    ):
+        assert token in body, (
+            f"voice_critic prompt missing allowlist-hallucination token: {token!r}"
+        )
 
 
 # ---------- table + helpers ----------

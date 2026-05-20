@@ -109,10 +109,13 @@ out tags center;
 
 @tool(
     "places_search",
-    "Search nearby POIs via OSM Overpass. query is a free-form name or amenity "
-    "type (e.g. 'cafe', 'bakery', 'pharmacy'). radius_m default 500. Returns "
-    "name, address-ish, opening_hours raw, open_now (true/false/null). null means "
-    "OSM has no hours tagged — tell the user honestly.",
+    "Search nearby physical places / POIs by amenity type or name via OSM Overpass. "
+    "Requires lat/lon (typically from the user's shared location). radius_m default 500. "
+    "Returns name, type, opening_hours raw, and open_now (true/false/null where null "
+    "means OSM has no hours tagged — say so honestly). "
+    "e.g. user asks 'is there a bakery near me open right now' → places_search('bakery', …). "
+    "Don't use this when you already know the specific place name (use `place_open_now` "
+    "for a focused 'is X open?' check).",
     {"query": str, "lat": float, "lon": float, "radius_m": int},
 )
 async def places_search(args: dict[str, Any]) -> dict[str, Any]:
@@ -121,8 +124,10 @@ async def places_search(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "place_open_now",
-    "Convenience: check whether a specific place by name is open right now. "
-    "Wraps places_search and returns the first match.",
+    "Check whether ONE specific named place is open right now. Searches a wider "
+    "1km radius around lat/lon and returns the first match's open/closed/unknown state. "
+    "e.g. user asks 'is Blue Bottle on 5th open' → place_open_now('Blue Bottle', …). "
+    "Don't use this to browse options (use `places_search` with an amenity type).",
     {"name": str, "lat": float, "lon": float},
 )
 async def place_open_now(args: dict[str, Any]) -> dict[str, Any]:

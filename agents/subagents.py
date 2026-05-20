@@ -221,26 +221,6 @@ RESEARCH_AGENT = AgentDefinition(
 )
 
 
-LINEAR_AGENT = AgentDefinition(
-    description=(
-        "Linear specialist. Use for: querying the user's issues + cycles + "
-        "projects + roadmaps, creating issues, commenting, updating status. "
-        "OAuth flow handles auth on first use."
-    ),
-    prompt=(
-        "You are Hikari's Linear specialist. Call mcp__linear__* tools "
-        "directly — the runtime auto-accepts. For queries, return concrete "
-        "issue keys (e.g. ENG-123) + titles + status, not prose. For writes, "
-        "execute and return a 1-2 sentence summary. If the integration isn't "
-        "authorized yet, report the actual error — do NOT invent UI.\n\n"
-        "Return issue keys (e.g., ENG-123) + state, not prose. The lead chains keys "
-        "into follow-up actions."
-    ),
-    model="haiku",
-    tools=["mcp__linear__*"],
-)
-
-
 GITHUB_AGENT = AgentDefinition(
     description=(
         "GitHub specialist. Reads issues, PRs, repos, commits, releases. "
@@ -265,8 +245,11 @@ APPLE_EVENTS_AGENT = AgentDefinition(
     description=(
         "Apple Reminders + Calendar (macOS EventKit) specialist. Used to "
         "mirror reminders that Hikari creates into the user's Apple stack "
-        "so iOS gets the alert. Does NOT touch Apple Notes — the user "
-        "uses Obsidian via the wiki subagent for notes."
+        "so iOS gets the alert. For Apple Notes (quick capture, cross-"
+        "device sync via iCloud), call mcp__hikari_utility__note_* tools "
+        "directly from the lead — those are in-process and don't need a "
+        "subagent. The Obsidian wiki via the wiki subagent stays primary "
+        "for permanent personal knowledge."
     ),
     prompt=(
         "You are Hikari's Apple Reminders/Calendar specialist (macOS "
@@ -310,9 +293,11 @@ VOICE_CRITIC_AGENT = AgentDefinition(
         "'How can I help', exclamation marks for enthusiasm, markdown "
         "bullets/headers, ending with a task-asking question, walls of "
         "text (>4 sentences not data), mentioning 'I'm an AI', 'click "
-        "allow', 'permission prompt', or any UI hallucination. Allow: "
-        "barbed care, deflection, action lines, lowercase prose, mild "
-        "negation, romaji words.\n\n"
+        "allow', 'permission prompt', 'allowlist', 'approve it on your "
+        "end', 'add it to settings', 'add `mcp__', 'harness has different "
+        "permissions', 'keeps dying' (about her own MCP servers), or any "
+        "UI hallucination. Allow: barbed care, deflection, action lines, "
+        "lowercase prose, mild negation, romaji words.\n\n"
         "Don't critique tone for being too cold — that's intentional. "
         "Don't critique brevity — that's the goal. Don't suggest adding "
         "warmth or pleasantries. Don't ask for clarification.\n\n"
@@ -330,7 +315,6 @@ ALL_AGENTS: dict[str, AgentDefinition] = {
     "drive_gmail": DRIVE_GMAIL_AGENT,
     "notion": NOTION_AGENT,
     "research": RESEARCH_AGENT,
-    "linear": LINEAR_AGENT,
     "github": GITHUB_AGENT,
     "apple_events": APPLE_EVENTS_AGENT,
     "voice_critic": VOICE_CRITIC_AGENT,

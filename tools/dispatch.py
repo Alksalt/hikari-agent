@@ -243,15 +243,15 @@ async def _do_dispatch(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "dispatch_claude_session",
-    "Spawn a background Claude Code session on the user's Mac Mini to investigate "
-    "or modify a specific repo. Returns immediately with a task_id; user gets "
-    "progress + final via Telegram. Default allowed_tools is read-only "
-    "(Read,Grep,Glob,WebFetch,WebSearch) — these dispatches auto-run. To allow "
-    "code mutation, pass allowed_tools that includes Edit / Write / Bash; that "
-    "form is owner-gated (CONFIRM-SEND required before the dispatch starts). "
+    "Spawn a background CODE-MODIFICATION / repo-investigation session in a SEPARATE "
+    "repo on the user's Mac Mini. NOT a way to answer a chat question — this fires "
+    "an autonomous Claude Code worker on a codebase and the user gets progress + "
+    "final via Telegram async (minutes, not seconds). Default allowed_tools is "
+    "read-only; adding Edit/Write/Bash triggers a CONFIRM-SEND owner gate. "
     f"repo_path must be absolute and under {WORK_DIR_ROOT}/. "
-    "task should be a clear, scoped instruction (1-3 sentences). "
-    "max_turns caps how many agent turns the dispatched session can take.",
+    "e.g. user says 'go look at the meria repo and patch the auth bug' → dispatch. "
+    "Don't use this to answer a question with public-web info (use `research`) or "
+    "to look up something in the user's notes (use `wiki_search`).",
     {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
 )
 async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:

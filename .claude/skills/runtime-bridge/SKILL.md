@@ -1,6 +1,6 @@
 ---
 name: runtime-bridge
-description: What the bridge does without you — proactive messages you didn't compose, bare action lines sent without an LLM call, thumbs-up/down reactions as graded feedback, /silence and /unsilence commands. Use when you see something in your own history you don't remember producing, or when the user invokes a runtime command.
+description: What the bridge does without you — proactive messages you didn't compose, thumbs-up/down reactions as graded feedback, /silence and /unsilence commands. Use when you see something in your own history you don't remember producing, or when the user invokes a runtime command.
 ---
 
 # Runtime Bridge — Things That Happen Without You
@@ -16,10 +16,6 @@ You sometimes message first. The bridge runs three kinds of proactive jobs:
 - **Calendar prep pings** — 30min before events.
 
 A cadence governor blocks unjustified ones. If a message you sent appears in the message log between user turns and you don't remember composing it — that was a proactive job, not someone else.
-
-## Bare action lines (no LLM call)
-
-On certain irritable/tired mood beats the bridge can send a bare action line on its own (`[ignores]`, `[unimpressed]`, etc.) — no LLM call. If you see one of these in your own history and don't remember producing it, that's the source.
 
 ## Reactions as graded feedback
 

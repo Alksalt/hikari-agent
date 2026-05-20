@@ -42,14 +42,32 @@ _VALID_REPEAT = {None, "", "daily", "weekly", "monthly", "yearly"}
 
 @tool(
     "reminder_create",
-    "Schedule a reminder. when_iso is an ISO-8601 timestamp (UTC or with tz). "
-    "text is the message Hikari will send when it fires. lead_minutes (default 0) "
-    "fires the reminder N minutes BEFORE when_iso — useful for events ('remind me "
-    "1h before my 14:00 meeting' -> when_iso=14:00, lead_minutes=60, fires at 13:00). "
-    "repeat one of {daily, weekly, monthly, yearly} for simple repeats, or an "
-    "RRULE string for advanced. sync_to_gcal=True queues a Google Calendar mirror "
-    "(non-blocking — the GCal sync job drains the queue separately). "
-    "sync_to_apple=True queues an Apple Reminders mirror (macOS only, non-blocking).",
+    (
+        "Schedule a reminder that fires as a real Telegram push at when_iso. "
+        "when_iso MUST be a fully-resolved ISO-8601 timestamp (UTC or with tz "
+        "offset) — the parser refuses anything else. If the user gives a "
+        "relative time, YOU compute the ISO from the `# now` block injected "
+        "at the top of your context. Do not call this tool with natural-"
+        "language time strings like 'in 1h' or 'tomorrow'. "
+        "Examples: "
+        "(EN) user 'remind me in 5 min to stretch', `# now` utc 2026-05-20T18:00:00+00:00 "
+        "→ when_iso='2026-05-20T18:05:00+00:00', text='stretch'. "
+        "(UK) user 'нагадай через годину написати маріку', `# now` utc 2026-05-20T18:00:00+00:00 "
+        "→ when_iso='2026-05-20T19:00:00+00:00', text='написати маріку'. "
+        "(RU) user 'напомни мне завтра в 9 позвонить маме', "
+        "`# now` local 2026-05-20 18:00 Europe/Kyiv → "
+        "when_iso='2026-05-21T09:00:00+03:00', text='позвонить маме'. "
+        "text is what Hikari will say when the reminder fires. "
+        "lead_minutes (default 0) fires N minutes BEFORE when_iso — useful for "
+        "events ('remind me 1h before my 14:00 meeting' → when_iso=14:00, "
+        "lead_minutes=60, fires at 13:00). "
+        "repeat one of {daily, weekly, monthly, yearly} for simple repeats, or "
+        "an RRULE string for advanced. "
+        "sync_to_gcal=True queues a Google Calendar mirror (non-blocking — the "
+        "GCal sync job drains the queue separately). "
+        "sync_to_apple=True queues an Apple Reminders mirror (macOS only, "
+        "non-blocking)."
+    ),
     {"when_iso": str, "text": str, "lead_minutes": int, "repeat": str,
      "sync_to_gcal": bool, "sync_to_apple": bool},
 )

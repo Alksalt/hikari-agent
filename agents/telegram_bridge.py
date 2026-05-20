@@ -1,7 +1,7 @@
 """Telegram bridge. Receives messages, locks to OWNER_TELEGRAM_ID, dispatches to
 the agent runtime, drains the photo outbox after each turn, starts background jobs.
 
-UX choreography (typing delay, false-start, ignore mechanic) lives in bridge_ux.py.
+UX choreography (typing delay, false-start) lives in bridge_ux.py.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from . import affect as affect_mod
 from . import belief_frame as belief_mod
 from . import config as cfg
 from . import drift_judge as drift_mod
-from . import nonverbal as nonverbal_mod
+from . import post_filter
 from . import reactions as reactions_mod
 from . import stickers as stickers_mod
 from . import voice_critic as voice_critic_mod
@@ -51,11 +51,9 @@ from .bridge_ux import (
     false_start_pause_sec,
     false_start_resume_sec,
     should_false_start,
-    should_ignore,
 )
 from .log_scrub import install_root_filter
 from .politeness_gate import is_rude, random_refusal
-from . import post_filter
 from .post_filter import filter_outgoing
 from .runtime import REPO_ROOT, owner_id, respond
 from .scheduler import build_scheduler
@@ -103,7 +101,7 @@ class TypingHeartbeat:
     def elapsed(self) -> float:
         return max(0.0, time.monotonic() - self._started_at) if self._started_at else 0.0
 
-    async def __aenter__(self) -> "TypingHeartbeat":
+    async def __aenter__(self) -> TypingHeartbeat:
         self._started_at = time.monotonic()
         # Fire one ChatAction.TYPING immediately so the user sees it within
         # ~100ms of sending — no waiting for the agent to start.
@@ -138,7 +136,7 @@ class TypingHeartbeat:
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=refresh)
                     return  # stop was set during the wait
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 try:
                     await self._bot.send_chat_action(
@@ -369,36 +367,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("reactions: maybe_react failed (non-fatal)")
 
-    # Ignore mechanic — roll first, before any agent work
-    mood = _mood()
-    ignore, action_line = should_ignore(mood)
-    if ignore and action_line:
-        await message.reply_text(action_line)
-        return
-
-    # Phase 9: non-verbal reply modes (sticker-only / reaction-only) roll
-    # BEFORE respond() AND BEFORE belief-frame priming so we save both the
-    # LLM cost and avoid stamping a wasted-priming thought when we short-
-    # circuit (review-F5). Heuristics inside ``nonverbal.maybe_nonverbal_reply``
-    # skip on questions / common substantive openers / long messages / daily
-    # cap so substantive turns always reach the real reply path.
-    nonverbal_kind = nonverbal_mod.maybe_nonverbal_reply(message.text, mood)
-    if nonverbal_kind == "sticker":
-        await nonverbal_mod.send_sticker_only(context.bot, chat.id)
-        return
-    if nonverbal_kind == "reaction":
-        await nonverbal_mod.send_reaction_only(
-            context.bot, chat.id, message.message_id,
-        )
-        return
-
     # Belief-frame guard — if the user is asserting a factual claim as their
     # belief ("i think X", "i'm pretty sure X"), prepend an adversarial
     # instruction so the recall subagent looks for contradictions instead of
     # confirmations. Mitigates Stanford-AI-Index 2026 sycophancy-under-belief.
-    # Moved AFTER the non-verbal gate (Phase 9 review-F5): when a non-verbal
-    # reply short-circuits the turn, this priming is never used, so don't
-    # bother stamping a misleading character_thoughts entry.
     user_text = message.text
     try:
         bm_hit, bm_fragment = belief_mod.is_belief_assertion(user_text)

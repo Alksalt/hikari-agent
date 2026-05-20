@@ -1,15 +1,13 @@
-"""Bridge-layer UX choreography — typing delays, false-start, ignore mechanic.
+"""Bridge-layer UX choreography — typing delays, false-start.
 
 These are Telegram-specific patterns that make Hikari feel like a person texting,
 not an instant-reply bot. They live in the bridge (not the agent) so they can
 manipulate Telegram's typing indicator and pacing directly.
 
-All thresholds / probabilities / action-line pools live in ``config/engagement.yaml``
-under ``typing``, ``false_start``, ``ignore``. No hardcoded values here.
+All thresholds / probabilities live in ``config/engagement.yaml``
+under ``typing``, ``false_start``. No hardcoded values here.
 
 State lives in storage.db.runtime_state so it persists across bot restarts:
-  - ignore_streak (int)
-  - ignore_cooldown (int — remaining turns of cooldown after a max-streak break)
   - false_start_used_date (YYYY-MM-DD)
 """
 
@@ -29,10 +27,6 @@ def _typing() -> dict:
 
 def _false_start() -> dict:
     return cfg.section("false_start")
-
-
-def _ignore() -> dict:
-    return cfg.section("ignore")
 
 
 # Re-exported for telegram_bridge's choreography wrapper.
@@ -66,29 +60,3 @@ def should_false_start(text: str) -> bool:
     return True
 
 
-def should_ignore(mood: str) -> tuple[bool, str | None]:
-    """Returns (ignore, action_line_to_send). When ignore=True, the bridge sends
-    only the action_line and does NOT call the agent."""
-    ig = _ignore()
-    cooldown = db.runtime_get_int("ignore_cooldown", 0)
-    if cooldown > 0:
-        db.runtime_set("ignore_cooldown", cooldown - 1)
-        return False, None
-
-    max_streak = int(ig.get("max_streak", 3))
-    cooldown_turns = int(ig.get("cooldown_turns", 3))
-    streak = db.runtime_get_int("ignore_streak", 0)
-    if streak >= max_streak:
-        db.runtime_set("ignore_streak", 0)
-        db.runtime_set("ignore_cooldown", cooldown_turns)
-        return False, None
-
-    probs = ig.get("probability_by_mood") or {}
-    prob = float(probs.get(mood, 0.10))
-    if random.random() > prob:
-        db.runtime_set("ignore_streak", 0)
-        return False, None
-
-    db.runtime_set("ignore_streak", streak + 1)
-    lines = ig.get("action_lines") or ["[ignores]"]
-    return True, random.choice(lines)

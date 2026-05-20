@@ -157,6 +157,9 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__reminder_list",
     "mcp__hikari_utility__reminder_cancel",
     "mcp__hikari_utility__reminder_snooze",
+    "mcp__hikari_utility__note_create",
+    "mcp__hikari_utility__note_search",
+    "mcp__hikari_utility__note_read",
     "mcp__hikari_utility__weather_fetch",
     "mcp__hikari_utility__translate",
     "mcp__hikari_utility__calc",
@@ -170,7 +173,6 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__ytmusic_library",
     "mcp__apple_events__*",
     "Read", "Glob", "Grep",
-    "mcp__linear__*",
     "mcp__github__*",
     "mcp__playwright__*",
     # Phase 11: per-session scratch memory for subagents.
@@ -179,7 +181,7 @@ _BASE_ALLOWED_TOOLS = [
 ]
 
 
-def _build_options(*, resume: str | None, max_turns: int = 15,
+def _build_options(*, resume: str | None, max_turns: int = 3,
                    max_budget_usd: float = 0.50,
                    extra_allowed_tools: list[str] | None = None
                    ) -> ClaudeAgentOptions:
@@ -231,7 +233,7 @@ def _build_options(*, resume: str | None, max_turns: int = 15,
     )
 
 
-async def _run_query(prompt: str, *, max_turns: int = 15,
+async def _run_query(prompt: str, *, max_turns: int = 3,
                      max_budget_usd: float = 0.50,
                      log_to_memory: bool = True,
                      extra_allowed_tools: list[str] | None = None) -> str:
@@ -305,7 +307,7 @@ async def respond(user_text: str) -> str:
     """Main chat entry point — called per Telegram message."""
     db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
-    reply = await _run_query(user_text, max_turns=15, max_budget_usd=0.50)
+    reply = await _run_query(user_text, max_turns=3, max_budget_usd=0.50)
     # Snapshot last turns for next-session cold-open ("where were we").
     try:
         handoff_mod.write_handoff()

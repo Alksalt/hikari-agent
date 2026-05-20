@@ -24,13 +24,12 @@ def _ok(text: str, data: Any = None) -> dict[str, Any]:
 
 @tool(
     "recall",
-    "Search Hikari's memory (facts + episodes) for things relevant to the given query. "
-    "Returns top-N hits ranked by recency, importance, and BM25 relevance, plus a "
-    "confidence score in [0, 1] derived from the top hit's relevance. If confidence is "
-    "below the calibration threshold (see config.recall_calibration), say so to the lead "
-    "rather than padding with low-quality matches. "
-    "Use this whenever the user references past events, asks 'remember when', or you "
-    "need context to give a real answer instead of a generic one.",
+    "Search Hikari's PRIVATE memory of past chats and stored facts about the user "
+    "(things they told her, their preferences, prior episodes). Returns ranked hits "
+    "with a confidence score; below-threshold means 'don't fabricate, admit blanking'. "
+    "e.g. user says 'remember when I told you about my sister' → call recall. "
+    "Don't use this for the user's own notes (use wiki_search) or for public-web / "
+    "current-events lookups (use the `research` subagent).",
     {"query": str, "limit": int},
 )
 async def recall(args: dict[str, Any]) -> dict[str, Any]:
@@ -91,12 +90,12 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "remember",
-    "Store a new atomic fact (subject + predicate + object) about the user or the world. "
-    "Importance is 1-10 (1=trivial, 10=defining). Confidence is 0-1. "
-    "If an active fact already exists for the same (subject, predicate), "
-    "you must decide whether to: 'supersede' (new replaces old), "
-    "'coexist' (both remain valid — e.g. multiple jobs), or 'merge' "
-    "(new info refines old; caller updates the old fact). Default: supersede.",
+    "Store one atomic fact (subject + predicate + object) into Hikari's PRIVATE memory "
+    "about the user — preferences, biographical details, things they just told her. "
+    "Importance 1-10, confidence 0-1, on_conflict: supersede|coexist|merge. "
+    "e.g. user says 'I just got a dog named Mochi' → remember(user, has_pet, 'dog named Mochi'). "
+    "Don't use this for a fact-correction with a known prior id (use `mark_fact_invalid`) "
+    "or for a follow-up loop without a clock (use `task_create`).",
     {
         "subject": str, "predicate": str, "object": str,
         "importance": int, "confidence": float,
@@ -143,10 +142,12 @@ async def remember(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "mark_fact_invalid",
-    "Mark an existing fact as invalid (e.g. user said it was wrong). Pass "
-    "superseded_by=<new fact id> if there's a replacement — otherwise the row "
-    "is just flagged invalid. Use 'remember' with on_conflict='supersede' "
-    "instead if you want one call to do both insert + supersede.",
+    "Invalidate a stored fact by its numeric id (returned earlier by `recall`). "
+    "Pass superseded_by=<new fact id> if there's a replacement, otherwise the row "
+    "is just flagged invalid. e.g. user says 'I never said I hate cilantro, that was sarcastic' "
+    "and recall returned fact #42 → mark_fact_invalid(42). "
+    "Don't use this when you're inserting a new replacing fact in the same step — "
+    "use `remember` with on_conflict='supersede' instead (one call, not two).",
     {"fact_id": int, "reason": str, "superseded_by": int},
 )
 async def mark_fact_invalid(args: dict[str, Any]) -> dict[str, Any]:
@@ -170,9 +171,12 @@ async def mark_fact_invalid(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "update_core_block",
-    "Update a labeled always-injected memory block (e.g. 'user_profile', "
-    "'mood_today', 'preoccupation'). These are written to system context "
-    "on every turn — keep them concise.",
+    "Overwrite a labeled always-on memory block injected on every turn (e.g. "
+    "'user_profile', 'mood_today', 'preoccupation'). Used sparingly — these are "
+    "load-bearing system context. e.g. user explicitly redefines a stable trait: "
+    "'actually my pronouns are they/them now' → update_core_block('user_profile', …). "
+    "Don't use this for one-off facts (use `remember`) or for transient open loops "
+    "(use `task_create`).",
     {"label": str, "content": str},
 )
 async def update_core_block(args: dict[str, Any]) -> dict[str, Any]:
@@ -186,8 +190,12 @@ async def update_core_block(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "task_create",
-    "Create a new open loop / task / thing-to-follow-up-on. Open tasks are always "
-    "injected into context so Hikari remembers what she owes the user.",
+    "Track a FUZZY open loop with NO real clock — something to follow up on "
+    "'later' or 'next time we talk'. Open tasks are injected into context so Hikari "
+    "remembers what she owes. e.g. user says 'don't let me forget to ask my mom "
+    "about the recipe sometime' → task_create. "
+    "Don't use this for time-bound reminders ('in 30 min', 'tomorrow at 9') — use "
+    "`reminder_create` so a real push fires. Don't use this for a fact (use `remember`).",
     {"subject": str, "description": str, "due_at": str},
 )
 async def task_create(args: dict[str, Any]) -> dict[str, Any]:
@@ -202,7 +210,10 @@ async def task_create(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "task_update",
-    "Update a task's status. Valid statuses: pending, in_progress, completed, dropped.",
+    "Update an existing open-loop task by id. Valid statuses: pending, in_progress, "
+    "completed, dropped. e.g. user just answered a follow-up you tracked earlier → "
+    "task_update(id, 'completed'). Don't use this to create new tasks (use `task_create`) "
+    "or to invalidate a fact (use `mark_fact_invalid`).",
     {"task_id": int, "status": str},
 )
 async def task_update(args: dict[str, Any]) -> dict[str, Any]:

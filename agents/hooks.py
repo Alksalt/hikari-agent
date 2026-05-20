@@ -11,9 +11,11 @@ recall-agent's prompt formatter can reuse them.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from storage import db
 from tools import location as location_mod
@@ -21,8 +23,58 @@ from tools import location as location_mod
 from . import affect as affect_mod
 from . import config as cfg
 from . import handoff as handoff_mod
+from . import tool_inventory as tool_inventory_mod
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_local_tz_name() -> str:
+    """Pick the local tz the model should reason about.
+
+    Priority: explicit ``HOME_TZ`` env > ``scheduler.timezone`` config >
+    Europe/Oslo as a last resort (matches the existing scheduler default).
+    Location-coord-derived tz is intentionally NOT used here — adding a
+    coords->tz lookup would mean a new dependency, and ``HOME_TZ`` covers
+    the single-user case.
+    """
+    env_tz = (os.environ.get("HOME_TZ") or "").strip()
+    if env_tz:
+        return env_tz
+    cfg_tz = cfg.get("scheduler.timezone")
+    if cfg_tz:
+        return str(cfg_tz)
+    return "Europe/Oslo"
+
+
+def _format_now() -> str:
+    """Inject ``# now`` so the model can compute ISO timestamps for
+    ``reminder_create`` from relative phrases ("in 1h", "через годину").
+
+    Always present. Format mirrors the other ``# memory: …`` blocks but
+    uses the shorter ``# now`` header — this block is small and
+    high-priority enough to deserve a distinct top-level name.
+    """
+    now_utc = datetime.now(UTC)
+    tz_name = _resolve_local_tz_name()
+    try:
+        local = now_utc.astimezone(ZoneInfo(tz_name))
+        local_line = f"local: {local.strftime('%Y-%m-%d %H:%M')} {tz_name}"
+    except ZoneInfoNotFoundError:
+        logger.warning("inject_memory: unknown tz %r — falling back to UTC", tz_name)
+        local_line = f"local: (unknown tz {tz_name!r}, using UTC)"
+    return (
+        "# now\n"
+        f"utc: {now_utc.isoformat(timespec='seconds')}\n"
+        f"{local_line}"
+    )
+
+
+def _format_tools_available() -> str:
+    try:
+        return tool_inventory_mod.format_for_injection()
+    except Exception:
+        logger.exception("tool_inventory format failed")
+        return ""
 
 
 def _format_core_blocks() -> str:
@@ -215,6 +267,11 @@ async def inject_memory(
         user_prompt = str(input_data.get("prompt") or input_data.get("user_prompt") or "")
     parts: list[str] = []
     try:
+        # `# now` goes first so the model has a clock for reminder_create
+        # and any other time-relative reasoning.
+        now_block = _format_now()
+        if now_block:
+            parts.append(now_block)
         block = _format_core_blocks()
         if block:
             parts.append(block)
@@ -248,6 +305,12 @@ async def inject_memory(
         ho = _format_session_handoff()
         if ho:
             parts.append(ho)
+        # Live tool surface — kept at the bottom so it doesn't crowd
+        # higher-priority blocks, but always present so Hikari stops
+        # confabulating her capabilities.
+        tools_block = _format_tools_available()
+        if tools_block:
+            parts.append(tools_block)
         # Retrieval moved to the recall subagent — Hikari calls it on demand.
         _ = user_prompt
     except Exception:
