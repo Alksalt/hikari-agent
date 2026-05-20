@@ -10,6 +10,7 @@ See ``docs/superpowers/specs/2026-05-20-daily-inbox-calendar-routine-design.md``
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date as _date
@@ -19,6 +20,7 @@ from typing import Any
 import yaml
 
 from agents import config as cfg
+from agents.runtime import looks_like_sdk_error, run_internal_control
 from storage import db
 
 logger = logging.getLogger(__name__)
@@ -267,3 +269,199 @@ def describe_current_schedule() -> str:
     if skip:
         parts.append(f"skipping {', '.join(str(d) for d in skip)}")
     return "; ".join(parts)
+
+
+# ---------- email + calendar fetches ----------
+
+def _empty_email_result() -> dict[str, Any]:
+    """Factory so each error-path return owns its own nested dicts.
+    A module-level constant would let callers mutate the shared state."""
+    return {
+        "unread_personal": [],
+        "calendar_invites": [],
+        "deletable": {"count": 0, "top_senders": [], "sample_ids": []},
+    }
+
+
+async def fetch_email_buckets() -> dict[str, Any]:
+    """Delegate to the drive_gmail subagent and return three buckets.
+
+    On ANY failure (auth error, malformed YAML, exception) returns the
+    canonical empty shape. Never raises.
+    """
+    prompt = (
+        "[daily check-in email fetch only — do NOT reply to the user. "
+        "delegate to the drive_gmail specialist. perform three Gmail "
+        "queries via mcp__google_workspace__query_gmail_emails:\n"
+        "  1. is:unread is:inbox -category:promotions -category:updates -has:invite "
+        "(unread personal mail, last 24h)\n"
+        "  2. (has:invite OR from:noreply@google.com) is:unread "
+        "(unread calendar invites)\n"
+        "  3. (category:promotions OR category:updates) newer_than:7d "
+        "(deletable promo/update pile)\n\n"
+        "return ONLY a strict YAML document in this exact shape:\n"
+        "unread_personal:\n"
+        "  - {id: '', from: '', subject: '', snippet: ''}\n"
+        "calendar_invites:\n"
+        "  - {id: '', from: '', subject: ''}\n"
+        "deletable:\n"
+        "  count: 0\n"
+        "  top_senders: []\n"
+        "  sample_ids: []\n\n"
+        "for top_senders, return up to 3 most-frequent sender domains in the "
+        "deletable bucket. for sample_ids, return ALL message IDs in the "
+        "deletable bucket (will be capped client-side). do not wrap in markdown "
+        "fences, do not add commentary.]"
+    )
+    try:
+        raw = await run_internal_control(prompt, max_turns=5,
+                                          max_budget_usd=0.05)
+    except Exception:
+        logger.exception("daily_checkin email fetch failed")
+        return _empty_email_result()
+    if not raw or looks_like_sdk_error(raw):
+        if raw:
+            logger.warning("daily_checkin email fetch: SDK error string in result: %r",
+                           raw[:120])
+        return _empty_email_result()
+    try:
+        data = yaml.safe_load(_strip_yaml_fences(raw)) or {}
+    except yaml.YAMLError:
+        logger.warning("daily_checkin email fetch: malformed YAML; got %r", raw[:120])
+        return _empty_email_result()
+    if not isinstance(data, dict):
+        return _empty_email_result()
+
+    out: dict[str, Any] = _empty_email_result()
+    out["unread_personal"] = _coerce_message_list(data.get("unread_personal"))
+    out["calendar_invites"] = _coerce_message_list(data.get("calendar_invites"))
+    deletable = data.get("deletable") or {}
+    if isinstance(deletable, dict):
+        count = int(deletable.get("count") or 0)
+        senders = [str(s) for s in (deletable.get("top_senders") or []) if s]
+        sample_ids = [str(m) for m in (deletable.get("sample_ids") or []) if m]
+        max_ids = int(cfg.get("daily_checkin.max_delete_ids", 200))
+        out["deletable"] = {
+            "count": count,
+            "top_senders": senders[: int(cfg.get(
+                "daily_checkin.deletable_top_senders_cap", 3))],
+            "sample_ids": sample_ids[:max_ids],
+        }
+    return out
+
+
+async def fetch_calendar_events() -> list[dict[str, Any]]:
+    """Delegate to drive_gmail for today's calendar events.
+
+    Mutates ``runtime_state.calendar_last_known_event_ids`` to enable
+    new-since-yesterday detection on the next call.
+    """
+    from datetime import datetime as _dt
+    from datetime import time as _time
+
+    tz = _resolve_local_tz()
+    now_local = _dt.now(tz)
+    end_local = _dt.combine(now_local.date(), _time(23, 59, 59), tzinfo=tz)
+    time_min = now_local.isoformat()
+    time_max = end_local.isoformat()
+    prompt = (
+        "[daily check-in calendar fetch only — do NOT reply to the user. "
+        "delegate to the drive_gmail specialist: call "
+        "mcp__google_workspace__calendar_get_events with "
+        f"time_min='{time_min}' and time_max='{time_max}', "
+        "calendar_id='primary'.\n"
+        "return ONLY a strict YAML document in this exact shape:\n"
+        "events:\n"
+        "  - {id: '', title: '', start_iso: '', end_iso: '', location: '', "
+        "attendees_count: 0}\n"
+        "if there are no events return events: [] . do not wrap in markdown "
+        "fences, do not add commentary.]"
+    )
+    try:
+        raw = await run_internal_control(prompt, max_turns=5,
+                                          max_budget_usd=0.05)
+    except Exception:
+        logger.exception("daily_checkin calendar fetch failed")
+        return []
+    if not raw or looks_like_sdk_error(raw):
+        return []
+    try:
+        data = yaml.safe_load(_strip_yaml_fences(raw)) or {}
+    except yaml.YAMLError:
+        logger.warning("daily_checkin calendar fetch: malformed YAML; got %r",
+                       raw[:120])
+        return []
+    raw_events = data.get("events") or []
+    if not isinstance(raw_events, list):
+        return []
+
+    prev_ids = set()
+    prev_raw = db.runtime_get("calendar_last_known_event_ids") or ""
+    if prev_raw:
+        try:
+            loaded = json.loads(prev_raw)
+            if isinstance(loaded, list):
+                prev_ids = set(str(i) for i in loaded)
+        except (ValueError, TypeError):
+            pass
+
+    out: list[dict[str, Any]] = []
+    for ev in raw_events:
+        if not isinstance(ev, dict):
+            continue
+        eid = str(ev.get("id") or "").strip()
+        out.append({
+            "id": eid,
+            "title": str(ev.get("title") or "").strip(),
+            "start_iso": str(ev.get("start_iso") or "").strip(),
+            "end_iso": str(ev.get("end_iso") or "").strip(),
+            "location": str(ev.get("location") or "").strip(),
+            "attendees_count": int(ev.get("attendees_count") or 0),
+            "is_new_since_yesterday": eid not in prev_ids,
+        })
+
+    # Persist unconditionally — a successful zero-event day resets the known
+    # set, so the next day everything is correctly flagged is_new. Error
+    # paths return early above and DO NOT overwrite the prior set.
+    new_ids = sorted({e["id"] for e in out if e["id"]})
+    db.runtime_set("calendar_last_known_event_ids", json.dumps(new_ids))
+    return out
+
+
+# ---------- internal helpers ----------
+
+def _strip_yaml_fences(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = "\n".join(raw.splitlines()[1:])
+    if raw.endswith("```"):
+        raw = "\n".join(raw.splitlines()[:-1])
+    return raw.strip()
+
+
+def _coerce_message_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    cap = int(cfg.get("daily_checkin.personal_subject_cap", 5))
+    out: list[dict[str, Any]] = []
+    for item in value[:cap]:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "id": str(item.get("id") or "").strip(),
+            "from": str(item.get("from") or "").strip(),
+            "subject": str(item.get("subject") or "").strip(),
+            "snippet": str(item.get("snippet") or "").strip(),
+        })
+    return out
+
+
+def _resolve_local_tz():
+    """Resolve the user's local TZ via HOME_TZ env, falling back to UTC."""
+    import os
+    import zoneinfo
+    name = os.environ.get("HOME_TZ", "UTC")
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return zoneinfo.ZoneInfo("UTC")
