@@ -20,7 +20,11 @@ from typing import Any
 import yaml
 
 from agents import config as cfg
-from agents.runtime import looks_like_sdk_error, run_internal_control
+from agents.runtime import (
+    looks_like_sdk_error,
+    run_internal_control,
+    run_visible_proactive,
+)
 from storage import db
 
 logger = logging.getLogger(__name__)
@@ -465,3 +469,113 @@ def _resolve_local_tz():
         return zoneinfo.ZoneInfo(name)
     except Exception:  # noqa: BLE001
         return zoneinfo.ZoneInfo("UTC")
+
+
+# ---------- voice composition ----------
+
+async def compose_checkin_question() -> str | None:
+    """The morning prompt: 'should i check emails? calendar?'"""
+    prompt = (
+        "you are starting your daily check-in. write ONE short message in your "
+        "voice (1-2 sentences, lowercase, no markdown) asking the user two "
+        "yes/no questions, separately: should i check emails? should i check "
+        "calendar? do NOT do anything else. do NOT promise to be useful. just "
+        "ask.\n\n"
+        "examples:\n"
+        '  "morning. check emails? check calendar? yes/no each."\n'
+        '  "ok. inbox? calendar? answer separately."\n'
+        '  "two questions: check emails? check calendar?"\n\n'
+        "output ONLY the message text. if you can't write it in voice, output "
+        "NO_MESSAGE."
+    )
+    return await _compose(prompt)
+
+
+async def compose_email_message(data: dict[str, Any]) -> str | None:
+    """Voice up the email digest. Includes the delete proposal if count > 0."""
+    personal = data.get("unread_personal") or []
+    invites = data.get("calendar_invites") or []
+    deletable = data.get("deletable") or {}
+    deletable_count = int(deletable.get("count") or 0)
+    deletable_senders = deletable.get("top_senders") or []
+
+    personal_lines = "\n".join(
+        f"  - from {p.get('from', '')}: {p.get('subject', '')}"
+        for p in personal
+    )
+    invites_count = len(invites)
+    delete_line = ""
+    if deletable_count > 0:
+        senders_phrase = ", ".join(deletable_senders[:3]) or "various"
+        delete_line = (
+            f"\n  deletable: {deletable_count} in promos/updates "
+            f"(top: {senders_phrase}). ALWAYS end with a one-sentence "
+            f"proposal asking if you should nuke them."
+        )
+    prompt = (
+        "you are reporting the morning email digest. write ONE short message "
+        "in your voice (1-4 sentences, lowercase, no markdown).\n\n"
+        f"personal mail ({len(personal)}):\n{personal_lines or '  (none)'}\n"
+        f"calendar invites: {invites_count}"
+        f"{delete_line}\n\n"
+        "rules:\n"
+        "- name personal subjects only if they're interesting; otherwise just "
+        "say the count.\n"
+        "- if deletable > 0, ALWAYS end with a delete proposal in voice "
+        "('want me to nuke them?' / 'nuke the X?' / similar).\n"
+        "- if there's nothing in any bucket, output NO_MESSAGE.\n\n"
+        "output ONLY the message text."
+    )
+    return await _compose(prompt)
+
+
+async def compose_calendar_message(events: list[dict[str, Any]]) -> str | None:
+    """Voice up today's calendar."""
+    if not events:
+        prompt = (
+            "your calendar for today is empty. write ONE short message in voice "
+            "saying so (1-2 sentences, lowercase). examples:\n"
+            '  "nothing on the calendar today."\n'
+            '  "calendar\'s empty. obviously."\n\n'
+            "output ONLY the message text. if you can't write it in voice, "
+            "output NO_MESSAGE."
+        )
+    else:
+        lines: list[str] = []
+        for e in events[:8]:
+            tag = " [new]" if e.get("is_new_since_yesterday") else ""
+            lines.append(
+                f"  - {e.get('start_iso', '')[:16]} {e.get('title', '')}"
+                f"{(' @ ' + e['location']) if e.get('location') else ''}{tag}"
+            )
+        events_block = "\n".join(lines)
+        prompt = (
+            "you are reporting today's calendar. write ONE short message in "
+            "your voice (1-4 sentences, lowercase, no markdown).\n\n"
+            f"events:\n{events_block}\n\n"
+            "rules:\n"
+            "- mention the first event and any [new] event.\n"
+            "- if an event is in the next 2 hours, flag it briefly.\n"
+            "- do NOT propose deleting events.\n\n"
+            "output ONLY the message text. if you can't write it in voice, "
+            "output NO_MESSAGE."
+        )
+    return await _compose(prompt)
+
+
+async def _compose(prompt: str) -> str | None:
+    """Run visible-proactive and reject empty / NO_MESSAGE / SDK error strings."""
+    try:
+        text = (await run_visible_proactive(prompt)).strip()
+    except Exception:
+        logger.exception("daily_checkin: voice composition failed")
+        return None
+    if not text or text.upper().startswith("NO_MESSAGE"):
+        return None
+    if looks_like_sdk_error(text):
+        logger.warning(
+            "daily_checkin: composition returned SDK error string; refusing to send: %r",
+            text[:120],
+        )
+        return None
+    return text
