@@ -86,9 +86,16 @@ def can_send_proactive(source: str | None) -> tuple[bool, str]:
     """Decide whether a candidate proactive may go out.
 
     Returns ``(allowed, reason)``. ``reason`` is a one-line explanation for logs.
+
+    User-scheduled sources (declared in cadence_governor.cap_exempt_sources)
+    bypass the 7d cap entirely. They still require an enabled governor and a
+    declared source name, but they don't count against the heartbeat budget.
     """
     if not _governor_enabled():
         return True, "governor_disabled"
+    exempt = set(cfg.get("cadence_governor.cap_exempt_sources") or [])
+    if source in exempt:
+        return True, f"{source}_exempt"
     if proactive_count_last_7d() >= _max_per_7d():
         return False, f"cap_reached ({_max_per_7d()}/7d)"
     allowed = _allowed_sources()

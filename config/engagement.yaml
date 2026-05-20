@@ -34,6 +34,16 @@ proactive:
   reengage_min_hours: 2
   reengage_max_hours: 6
 
+daily_checkin:
+  enabled: true
+  default_time: "07:00"          # HH:MM 24h, local clock
+  poll_interval_minutes: 5
+  pending_reply_window_minutes: 30
+  max_delete_ids: 200
+  personal_subject_cap: 5
+  deletable_top_senders_cap: 3
+  voice_max_budget_usd: 0.04     # per-topic composition cap
+
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
   # phrase. Tier-1 (y/yes/ok/go) is gone — too loose a match for irreversible
@@ -479,6 +489,12 @@ cadence_governor:
     - recent_episode_callback
     - calendar_event
     - reengage_silence
+    - daily_checkin
+  # Sources that bypass the 7d cap. Use for user-scheduled routines that
+  # aren't spontaneous "Hikari decided to ping" proactives — those still go
+  # through the cap.
+  cap_exempt_sources:
+    - daily_checkin
 
 noticings:
   enabled: true

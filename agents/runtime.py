@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from functools import cache
 from pathlib import Path
 
@@ -41,6 +42,26 @@ from .subagents import ALL_AGENTS
 
 REPO_ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
+
+
+_SDK_ERROR_PATTERNS = [
+    re.compile(r"^\s*failed to authenticate\b", re.IGNORECASE),
+    re.compile(r"^\s*api error:\s*\d{3}\b", re.IGNORECASE),
+    re.compile(r"^\s*\d{3}:\s*", re.IGNORECASE),
+]
+
+
+def looks_like_sdk_error(text: str) -> bool:
+    """True if ``text`` looks like an SDK / Anthropic API error string that
+    leaked into an AssistantMessage's TextBlock instead of being raised.
+
+    Observed example 2026-05-20: ``Failed to authenticate. API Error: 401
+    The socket connection was closed unexpectedly...`` shipped as a heartbeat
+    body. Callers should treat a match as a failure and skip the send.
+    """
+    if not text:
+        return False
+    return any(p.search(text) for p in _SDK_ERROR_PATTERNS)
 
 MODEL_PRIMARY = os.environ.get("HIKARI_MODEL", "claude-sonnet-4-6")
 MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK", "claude-haiku-4-5")
