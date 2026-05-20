@@ -163,6 +163,18 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    if bool(cfg.get("daily_checkin.enabled", True)):
+        from .daily_checkin import maybe_run_daily_checkin
+        poll = int(cfg.get("daily_checkin.poll_interval_minutes", 5))
+        async def _daily_checkin_job():
+            return await maybe_run_daily_checkin(send_text)
+        scheduler.add_job(
+            _daily_checkin_job,
+            IntervalTrigger(minutes=poll),
+            id="daily_checkin",
+            coalesce=True, max_instances=1, misfire_grace_time=300,
+        )
+
     # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.
     # Letta sleep-time pattern (Apr 2025) — synthesizes a 200-word weekly
     # "what i noticed about him" summary into core_blocks['weekly_consolidation'],
