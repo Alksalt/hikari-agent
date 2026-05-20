@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 MODEL_PRIMARY = os.environ.get("HIKARI_MODEL", "claude-sonnet-4-6")
 MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK", "claude-haiku-4-5")
 
+# Per-turn budget for chat-path SDK calls. Used by _build_options /
+# _run_query / respond defaults AND substituted into the persona prompt
+# via _persona().format(max_turns=...). Keep this constant and the
+# `{max_turns}` placeholder in CLAUDE.md in lockstep.
+DEFAULT_MAX_TURNS = 4
+
 # Phase 6: serialize concurrent _run_query calls. User messages, proactive
 # heartbeats, the calendar cron, and defer-resume all share the same
 # ``session_id`` for SDK resume. Two SDK subprocesses resuming the same session
@@ -65,7 +71,11 @@ def owner_id() -> int:
 
 @cache
 def _persona() -> str:
-    return (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    # Substitute the live turn budget into the persona so the prose stays
+    # in lockstep with DEFAULT_MAX_TURNS. .replace() is safer than .format()
+    # since CLAUDE.md is hand-edited and a stray `{` would crash startup.
+    return text.replace("{max_turns}", str(DEFAULT_MAX_TURNS))
 
 
 @cache
@@ -181,7 +191,14 @@ _BASE_ALLOWED_TOOLS = [
 ]
 
 
-def _build_options(*, resume: str | None, max_turns: int = 3,
+def allowed_tool_names() -> list[str]:
+    """Returns a copy of the per-turn tool allowlist. Public accessor for
+    ``agents/tool_inventory.py`` so it doesn't reach into the private
+    constant directly."""
+    return list(_BASE_ALLOWED_TOOLS)
+
+
+def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
                    max_budget_usd: float = 0.50,
                    extra_allowed_tools: list[str] | None = None
                    ) -> ClaudeAgentOptions:
@@ -233,7 +250,7 @@ def _build_options(*, resume: str | None, max_turns: int = 3,
     )
 
 
-async def _run_query(prompt: str, *, max_turns: int = 3,
+async def _run_query(prompt: str, *, max_turns: int = DEFAULT_MAX_TURNS,
                      max_budget_usd: float = 0.50,
                      log_to_memory: bool = True,
                      extra_allowed_tools: list[str] | None = None) -> str:
@@ -307,7 +324,7 @@ async def respond(user_text: str) -> str:
     """Main chat entry point — called per Telegram message."""
     db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
-    reply = await _run_query(user_text, max_turns=3, max_budget_usd=0.50)
+    reply = await _run_query(user_text, max_turns=DEFAULT_MAX_TURNS, max_budget_usd=0.50)
     # Snapshot last turns for next-session cold-open ("where were we").
     try:
         handoff_mod.write_handoff()

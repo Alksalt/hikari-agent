@@ -14,12 +14,14 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +52,6 @@ def _reject_dunder_attrs(expr: str) -> str | None:
         if isinstance(node, ast.Attribute) and _DUNDER_RE.match(node.attr):
             return "attribute chain rejected"
     return None
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 def _run_asteval(expr: str, timeout_sec: float) -> tuple[Any, str | None]:

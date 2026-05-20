@@ -35,7 +35,7 @@ def _in_process_groups() -> dict[str, list[str]]:
     from . import runtime as runtime_mod
 
     groups: dict[str, list[str]] = {}
-    for raw in runtime_mod._BASE_ALLOWED_TOOLS:
+    for raw in runtime_mod.allowed_tool_names():
         if not raw.startswith("mcp__hikari_"):
             continue
         if raw.endswith("*"):

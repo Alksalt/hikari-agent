@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents import config as cfg
 from storage import db
+from tools._response import ok as _ok
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -70,13 +71,6 @@ def _confirm_hint() -> str:
 
 # Backwards-compat alias for any legacy caller.
 _tier_2_hint = _confirm_hint
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 async def _safe_send(chat_id: int, text: str) -> None:

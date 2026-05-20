@@ -74,7 +74,15 @@ def _format_tools_available() -> str:
         return tool_inventory_mod.format_for_injection()
     except Exception:
         logger.exception("tool_inventory format failed")
-        return ""
+        # The dynamic enumeration broke, but we still want the
+        # no-allowlist footer present — that's the single line that
+        # prevented the May 20 "blocked by allowlist" hallucination.
+        # Silently dropping the whole block re-opens that surface.
+        return (
+            "# tools available\n"
+            "(inventory render failed — see logs. note: there is no "
+            "claude-code allowlist applying here — permission_mode=acceptEdits.)"
+        )
 
 
 def _format_core_blocks() -> str:

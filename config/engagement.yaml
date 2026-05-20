@@ -663,6 +663,8 @@ prompt_injection:
     - "mcp__github__"
     - "mcp__playwright__"
     - "mcp__apple_events__"
+    - "mcp__hikari_utility__note_search"
+    - "mcp__hikari_utility__note_read"
   # Phase 8: regex patterns for the generic PostToolUse wrap hook
   # (agents/external_wrap_hook.py). When any of these match the qualified
   # tool name, the tool's text output is automatically wrapped via
@@ -688,6 +690,8 @@ prompt_injection:
     - "^mcp__github__"
     - "^mcp__playwright__"
     - "^mcp__apple_events__"
+    - "^mcp__hikari_utility__note_search$"
+    - "^mcp__hikari_utility__note_read$"
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted

@@ -90,6 +90,24 @@ def test_as_quoted_plain_string_unchanged_inside_quotes():
     assert _as_quoted("plain text") == '"plain text"'
 
 
+def test_as_quoted_handles_japanese_text():
+    """User is Japanese — Unicode in note titles is the common case."""
+    from tools.apple_notes import _as_quoted
+    result = _as_quoted("買い物リスト")
+    # Result should embed the original unicode verbatim, wrapped in quotes.
+    assert "買い物リスト" in result
+    assert result.startswith('"')
+    assert result.endswith('"')
+
+
+def test_as_quoted_handles_multiline_body():
+    from tools.apple_notes import _as_quoted
+    result = _as_quoted("line one\nline two\nline three")
+    # AppleScript embeds newlines literally — our quoter shouldn't strip them.
+    assert "line one" in result
+    assert "line three" in result
+
+
 # --- note_create happy path ------------------------------------------------
 
 @pytest.mark.asyncio
@@ -242,12 +260,25 @@ async def test_non_macos_skips_subprocess(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_timeout_returns_clean_error(monkeypatch):
-    """If osascript hangs past the timeout we return a clean refusal."""
+    """If osascript hangs past the timeout we return a clean refusal.
+
+    Deterministic version: instead of racing wall-clock delays (flaky on
+    slow CI), patch ``asyncio.wait_for`` to raise ``TimeoutError``
+    immediately. The mock subprocess is still wired up so ``kill()`` +
+    cleanup paths execute. Behavior we assert is unchanged — the tool
+    catches the timeout and returns a clean refusal string.
+    """
     from tools import apple_notes
-    # Override the timeout to something tiny so the test runs fast.
-    monkeypatch.setattr(apple_notes, "_OSASCRIPT_TIMEOUT_SEC", 0.05)
-    # delay > timeout — communicate() will sleep past the wait_for cap.
-    _install_subprocess_mock(monkeypatch, delay=0.5)
+    _install_subprocess_mock(monkeypatch)
+
+    async def _raise_timeout(coro, *args: Any, **kwargs: Any) -> None:
+        # The real ``asyncio.wait_for`` consumes the coroutine; close ours
+        # so we don't emit a "coroutine was never awaited" RuntimeWarning.
+        if hasattr(coro, "close"):
+            coro.close()
+        raise TimeoutError("simulated osascript hang")
+
+    monkeypatch.setattr(apple_notes.asyncio, "wait_for", _raise_timeout)
 
     out = await apple_notes.note_create.handler({"title": "x", "body": "y"})
     text = out["content"][0]["text"].lower()

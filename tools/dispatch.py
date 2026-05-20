@@ -38,6 +38,7 @@ from claude_agent_sdk import (
 )
 
 from storage import db
+from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +77,6 @@ def _owner_chat_id() -> int:
     if _OWNER_CHAT_ID is None:
         raise RuntimeError("dispatch.set_owner_chat_id() not called; bridge not started?")
     return _OWNER_CHAT_ID
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 def _validate_repo(repo_path: str) -> Path | None:

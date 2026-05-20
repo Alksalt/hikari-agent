@@ -13,13 +13,7 @@ from claude_agent_sdk import tool
 
 from storage import db, retrieval
 from tools import embeddings
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
+from tools._response import ok as _ok
 
 
 @tool(

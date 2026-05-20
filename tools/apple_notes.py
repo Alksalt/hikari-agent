@@ -32,6 +32,8 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._response import ok as _ok
+
 logger = logging.getLogger(__name__)
 
 # Each osascript invocation is capped at this many seconds. Notes.app
@@ -42,13 +44,6 @@ _OSASCRIPT_TIMEOUT_SEC = 10.0
 
 # How many search hits to return by default if the caller omits ``limit``.
 _DEFAULT_SEARCH_LIMIT = 10
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 def _as_quoted(s: str) -> str:
@@ -156,29 +151,31 @@ async def note_create(args: dict[str, Any]) -> dict[str, Any]:
 
     title_q = _as_quoted(title)
     body_q = _as_quoted(body_html)
+    # The inner "make new note ..." statement is identical regardless of
+    # folder. The only difference is whether it's wrapped in a
+    # ``tell folder {folder_q}`` block. Build the inner once, then wrap
+    # conditionally so the two branches can't drift.
+    make_stmt = (
+        f'set theNote to make new note with properties '
+        f'{{name:{title_q}, body:{body_q}}}'
+    )
     if folder:
         folder_q = _as_quoted(folder)
-        script = (
-            f'tell application "Notes"\n'
-            f'  tell account "iCloud"\n'
+        inner = (
             f'    tell folder {folder_q}\n'
-            f'      set theNote to make new note with properties '
-            f'{{name:{title_q}, body:{body_q}}}\n'
-            f'    end tell\n'
-            f'  end tell\n'
-            f'  return id of theNote\n'
-            f'end tell'
+            f'      {make_stmt}\n'
+            f'    end tell'
         )
     else:
-        script = (
-            f'tell application "Notes"\n'
-            f'  tell account "iCloud"\n'
-            f'    set theNote to make new note with properties '
-            f'{{name:{title_q}, body:{body_q}}}\n'
-            f'  end tell\n'
-            f'  return id of theNote\n'
-            f'end tell'
-        )
+        inner = f'    {make_stmt}'
+    script = (
+        f'tell application "Notes"\n'
+        f'  tell account "iCloud"\n'
+        f'{inner}\n'
+        f'  end tell\n'
+        f'  return id of theNote\n'
+        f'end tell'
+    )
 
     try:
         rc, stdout, stderr = await _run_osascript(script)
@@ -190,7 +187,8 @@ async def note_create(args: dict[str, Any]) -> dict[str, Any]:
             f"(notes.app may be waiting on a permission prompt)"
         )
     if rc != 0 or stderr.strip():
-        return _ok(f"apple notes error: {stderr.strip() or f'exit {rc}'}")
+        logger.warning("apple_notes osascript stderr: %s", stderr.strip()[:500])
+        return _ok("apple notes error (see logs)")
     note_id = stdout.strip()
     if not note_id:
         return _ok("apple notes returned no id (create may have failed silently)")
@@ -250,7 +248,8 @@ async def note_search(args: dict[str, Any]) -> dict[str, Any]:
             f"apple notes search timed out after {_OSASCRIPT_TIMEOUT_SEC:.0f}s"
         )
     if rc != 0 or stderr.strip():
-        return _ok(f"apple notes error: {stderr.strip() or f'exit {rc}'}")
+        logger.warning("apple_notes osascript stderr: %s", stderr.strip()[:500])
+        return _ok("apple notes error (see logs)")
 
     hits: list[dict[str, str]] = []
     for line in stdout.splitlines():
@@ -320,7 +319,8 @@ async def note_read(args: dict[str, Any]) -> dict[str, Any]:
             f"apple notes read timed out after {_OSASCRIPT_TIMEOUT_SEC:.0f}s"
         )
     if rc != 0 or stderr.strip():
-        return _ok(f"apple notes error: {stderr.strip() or f'exit {rc}'}")
+        logger.warning("apple_notes osascript stderr: %s", stderr.strip()[:500])
+        return _ok("apple notes error (see logs)")
 
     raw = stdout.strip("\n")
     if not raw:

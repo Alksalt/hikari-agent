@@ -16,15 +16,9 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 def _parse_iso(s: str) -> datetime | None:

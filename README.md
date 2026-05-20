@@ -70,8 +70,10 @@ hikari-agent/
 │   ├── hooks.py               # UserPromptSubmit memory injection, PostToolUseFailure log
 │   ├── proactive.py           # heartbeat: condition check + LLM message gen
 │   ├── reflection.py          # daily reflection + session consolidation
-│   └── scheduler.py           # APScheduler job wiring
+│   ├── scheduler.py           # APScheduler job wiring
+│   └── tool_inventory.py      # per-turn tool/subagent inventory block (anti-hallucination)
 ├── tools/
+│   ├── apple_notes.py         # @tool note_create/search/read (AppleScript, macOS-only)
 │   ├── memory.py              # @tool recall, remember, task_*, ...
 │   └── photos.py              # @tool generate_photo (OpenRouter Flux)
 ├── storage/
@@ -87,7 +89,7 @@ hikari-agent/
 ## Verify
 
 ```bash
-uv run pytest -q   # 15 smoke + integration tests, all in-memory (no live API)
+uv run pytest -q   # 60+ smoke + integration + persona-drift tests, all in-memory (no live API). Persona regression tests under tests/persona/ — run with uv run pytest tests/persona/ -q.
 uv run ruff check .
 ```
 

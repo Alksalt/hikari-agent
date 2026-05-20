@@ -235,3 +235,61 @@ def test_build_scheduler_includes_calendar_when_healthy(monkeypatch):
     sched = sched_mod.build_scheduler(send_text)
     ids = {j.id for j in sched.get_jobs()}
     assert "calendar_heartbeat" in ids
+
+
+# ---------- plain-text reaches respond() ----------
+
+@pytest.mark.asyncio
+async def test_plain_text_reaches_respond(monkeypatch):
+    """Post-nonverbal-deletion invariant: every plain text user-turn that
+    isn't politeness-refused or approval-resolved must reach respond().
+    Pins that no probability gate creeps back in."""
+    import datetime
+
+    from telegram import Chat, Message, Update, User
+
+    from agents import telegram_bridge
+
+    # Build a minimal Update carrying a plain text message from the owner.
+    owner = 12345
+    user = User(id=owner, first_name="test", is_bot=False)
+    chat = Chat(id=owner, type="private")
+    message = Message(
+        message_id=1,
+        date=datetime.datetime.now(),
+        chat=chat,
+        from_user=user,
+        text="what's the weather like",
+    )
+    update = Update(update_id=1, message=message)
+
+    # Bot stub — TypingHeartbeat calls send_chat_action; _send_with_choreography
+    # calls reply_text (patched below so it doesn't run).
+    bot = SimpleNamespace(send_chat_action=AsyncMock())
+    ctx = SimpleNamespace(bot=bot)
+
+    respond_mock = AsyncMock(return_value="cloudy, probably")
+
+    # Patch respond so we can assert it was awaited without running the SDK.
+    monkeypatch.setattr(telegram_bridge, "respond", respond_mock)
+    # Short-circuit the choreography (reply_text, stickers, drift) — not under test.
+    monkeypatch.setattr(telegram_bridge, "_send_with_choreography", AsyncMock())
+    # Approval resolver must return False (no pending approval).
+    monkeypatch.setattr(
+        telegram_bridge.approval_tools, "resolve_pending_approval",
+        AsyncMock(return_value=False),
+    )
+    # Reactions fire-and-forget — stub out.
+    monkeypatch.setattr(
+        telegram_bridge.reactions_mod, "maybe_react", AsyncMock(return_value=None),
+    )
+    # Affect scan is sync — stub to no-op.
+    monkeypatch.setattr(telegram_bridge.affect_mod, "scan_inbound", lambda _: None)
+
+    await telegram_bridge.handle_message(update, ctx)
+
+    respond_mock.assert_awaited_once()
+    # The argument passed to respond must be the original message text
+    # (or belief-frame-augmented, but must contain it).
+    called_with = respond_mock.call_args[0][0]
+    assert "weather" in called_with

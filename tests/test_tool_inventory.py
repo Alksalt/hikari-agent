@@ -78,3 +78,23 @@ def test_in_process_groups_present(known_group):
     server groups must always render."""
     block = tool_inventory.format_for_injection()
     assert f"- {known_group}:" in block
+
+
+def test_missing_mcp_json_block_still_renders(monkeypatch, tmp_path):
+    """If .mcp.json is absent, the block must still render in-process tools
+    and the no-allowlist footer. The May 20 hallucination fix depends on
+    that footer being present unconditionally."""
+    monkeypatch.setattr(tool_inventory, "MCP_JSON_PATH", tmp_path / "does-not-exist.json")
+    block = tool_inventory.format_for_injection()
+    assert block.startswith("# tools available")
+    assert "in-process" in block
+    assert "allowlist" in block.lower()  # the no-allowlist footer is the load-bearing line
+
+
+def test_empty_string_env_var_is_unconfigured(monkeypatch):
+    """A `.env` line like `NOTION_TOKEN=` makes os.environ.get return "".
+    That must report as unconfigured, not 'configured (empty string)'."""
+    monkeypatch.setenv("NOTION_TOKEN", "")
+    block = tool_inventory.format_for_injection()
+    assert "notion: unconfigured" in block
+    assert "NOTION_TOKEN" in block

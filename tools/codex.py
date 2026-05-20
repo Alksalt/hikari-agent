@@ -17,19 +17,13 @@ from claude_agent_sdk import tool
 
 from agents import config as cfg
 from agents.injection_guard import wrap_untrusted
+from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
 # Hard limits — prevent runaway scans or oversized reads.
 _MAX_LIMIT = 50
 _MAX_READ_BYTES = 200_000
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 def _reports_dir() -> Path:

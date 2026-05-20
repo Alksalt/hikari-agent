@@ -25,6 +25,7 @@ from obsidiantools.api import Vault
 from ruamel.yaml import YAML
 
 from storage import db
+from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +80,6 @@ def _resolve_note(path_or_name: str) -> Path | None:
     for md_path in VAULT_ROOT.rglob(f"{stem}.md"):
         return md_path
     return None
-
-
-def _ok(text: str, data: Any = None) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if data is not None:
-        body["data"] = data
-    return body
 
 
 @tool(
