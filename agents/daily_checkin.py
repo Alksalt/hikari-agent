@@ -11,6 +11,8 @@ See ``docs/superpowers/specs/2026-05-20-daily-inbox-calendar-routine-design.md``
 from __future__ import annotations
 
 import logging
+import re
+from datetime import date as _date
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -125,3 +127,143 @@ def clear_expired_overrides(now_local: datetime) -> None:
     if changed:
         db.upsert_core_block("daily_checkin_schedule",
                              yaml.safe_dump(schedule, sort_keys=True))
+
+
+# ---------- intent parser ----------
+
+_AFFIRMATIVE_RE = re.compile(
+    r"^\s*(y|yes|yeah|yep|ok|okay|sure|fine|go|do it|both|yes both|both yes)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_NEGATIVE_RE = re.compile(
+    r"^\s*(n|no|nope|nah|skip|skip it|leave (it|them)|not now)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_EMAIL_ONLY_RE = re.compile(
+    r"^\s*(just|only)\s+(email|emails|inbox)\s*[.!]?\s*$"
+    r"|^\s*(email|emails|inbox)\s+only\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_CALENDAR_ONLY_RE = re.compile(
+    r"^\s*(just|only)\s+(calendar|cal)\s*[.!]?\s*$"
+    r"|^\s*(calendar|cal)\s+only\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_intent(text: str) -> dict[str, bool] | None:
+    """Map a short user reply to ``{email: bool, calendar: bool}``.
+
+    Returns ``None`` if the reply is ambiguous — caller may then either
+    drop the pending state or call the LLM fallback parser.
+    """
+    if not text:
+        return None
+    if _EMAIL_ONLY_RE.match(text):
+        return {"email": True, "calendar": False}
+    if _CALENDAR_ONLY_RE.match(text):
+        return {"email": False, "calendar": True}
+    if _AFFIRMATIVE_RE.match(text):
+        return {"email": True, "calendar": True}
+    if _NEGATIVE_RE.match(text):
+        return {"email": False, "calendar": False}
+    return None
+
+
+# ---------- schedule edit parser ----------
+
+_OVERRIDE_RE = re.compile(
+    r"\bcheck\s*in\s+at\s+(\d{1,2}):(\d{2})\s+(today|tomorrow|tmrw)\b",
+    re.IGNORECASE,
+)
+_DEFAULT_RE = re.compile(
+    r"\b(?:from now on\s+)?(?:set\s+(?:morning|daily)\s+check\s+to|"
+    r"check\s+in\s+at)\s+(\d{1,2}):(\d{2})\b(?!\s+(?:today|tomorrow|tmrw))",
+    re.IGNORECASE,
+)
+_SKIP_RE = re.compile(
+    r"\bskip\s+(?:the\s+)?(?:morning|daily)\s+check\s+(today|tomorrow|tmrw)\b",
+    re.IGNORECASE,
+)
+_QUERY_RE = re.compile(
+    r"\bwhat\s+time\s+is\s+my\s+(?:morning\s+|daily\s+)?check[-\s]?in\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_relative_date(token: str, today: _date) -> str:
+    token = token.lower()
+    if token in ("tomorrow", "tmrw"):
+        return (today + timedelta(days=1)).isoformat()
+    return today.isoformat()
+
+
+def parse_schedule_edit(text: str, *, today: _date) -> dict[str, Any] | None:
+    """Detect schedule-change commands. Returns a dict like::
+
+        {"kind": "override", "date": "YYYY-MM-DD", "time": "HH:MM"}
+        {"kind": "default",  "time": "HH:MM"}
+        {"kind": "skip",     "date": "YYYY-MM-DD"}
+        {"kind": "query"}
+
+    Returns ``None`` if no pattern matches."""
+    if not text:
+        return None
+    m = _OVERRIDE_RE.search(text)
+    if m:
+        hh, mm, when = m.group(1), m.group(2), m.group(3)
+        return {
+            "kind": "override",
+            "date": _resolve_relative_date(when, today),
+            "time": f"{int(hh):02d}:{mm}",
+        }
+    m = _SKIP_RE.search(text)
+    if m:
+        when = m.group(1)
+        return {"kind": "skip", "date": _resolve_relative_date(when, today)}
+    m = _DEFAULT_RE.search(text)
+    if m:
+        hh, mm = m.group(1), m.group(2)
+        return {"kind": "default", "time": f"{int(hh):02d}:{mm}"}
+    if _QUERY_RE.search(text):
+        return {"kind": "query"}
+    return None
+
+
+def apply_schedule_edit(edit: dict[str, Any]) -> None:
+    """Mutate ``core_blocks.daily_checkin_schedule`` per the parsed edit."""
+    schedule = _load_schedule()
+    kind = edit.get("kind")
+    if kind == "override":
+        schedule["override_date"] = edit["date"]
+        schedule["override_time"] = edit["time"]
+    elif kind == "default":
+        schedule["default_time"] = edit["time"]
+    elif kind == "skip":
+        skip = schedule.get("skip_dates") or []
+        if not isinstance(skip, list):
+            skip = []
+        date_iso = edit["date"]
+        if date_iso not in [str(d) for d in skip]:
+            skip.append(date_iso)
+        schedule["skip_dates"] = sorted(set(str(d) for d in skip))
+    elif kind == "query":
+        return  # read-only; caller composes the answer
+    else:
+        raise ValueError(f"unknown schedule edit kind: {kind!r}")
+    db.upsert_core_block("daily_checkin_schedule",
+                         yaml.safe_dump(schedule, sort_keys=True))
+
+
+def describe_current_schedule() -> str:
+    """Human-readable summary for the 'what time is my check-in' query."""
+    schedule = _load_schedule()
+    default_time = (schedule.get("default_time")
+                    or cfg.get("daily_checkin.default_time", "07:00"))
+    parts = [f"default {default_time}"]
+    if schedule.get("override_date") and schedule.get("override_time"):
+        parts.append(f"override {schedule['override_date']} at {schedule['override_time']}")
+    skip = schedule.get("skip_dates") or []
+    if skip:
+        parts.append(f"skipping {', '.join(str(d) for d in skip)}")
+    return "; ".join(parts)
