@@ -74,7 +74,9 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS facts_active ON facts(subject, predicate) WHERE valid_to IS NULL;
 CREATE INDEX IF NOT EXISTS facts_subject ON facts(subject);
-CREATE INDEX IF NOT EXISTS facts_status ON facts(status);
+-- facts_status index lives in _migrate_facts_bitemporal — created after the
+-- `status` column is ALTER-added, so prod DBs predating bi-temporal migration
+-- don't blow up on the schema bootstrap pass.
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
