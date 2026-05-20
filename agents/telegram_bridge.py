@@ -36,6 +36,7 @@ from tools.photos import OUTBOX as PHOTO_OUTBOX
 from . import affect as affect_mod
 from . import belief_frame as belief_mod
 from . import config as cfg
+from . import daily_checkin as daily_checkin_mod
 from . import drift_judge as drift_mod
 from . import handoff as handoff_mod
 from . import post_filter
@@ -301,6 +302,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if user.id != owner_id():
         logger.warning("denied non-owner user_id=%s", user.id)
+        return
+
+    # daily_checkin pre-router — schedule edits + check-in replies short-circuit
+    # like resolve_pending_approval does. Runs BEFORE approvals because a
+    # check-in reply ("yes") could overlap with a pending CONFIRM-SEND window;
+    # the check-in reply is shorter-lived (30 min) and more specific.
+    try:
+        from datetime import date as _date
+
+        async def _daily_send(s: str) -> bool:
+            try:
+                await _send_text_with_choreography(
+                    context.bot, chat.id, s, source="daily_checkin",
+                )
+                return True
+            except Exception:
+                logger.exception("daily_checkin send failed")
+                return False
+
+        consumed, ack = await daily_checkin_mod.handle_message(
+            message.text, today=_date.today(), send_text=_daily_send,
+        )
+    except Exception:
+        logger.exception("daily_checkin: handle_message failed (non-fatal)")
+        consumed, ack = False, None
+    if consumed:
+        if ack:
+            # Schedule-edit acks go through the same choreography helper so
+            # they show up as proper assistant rows tagged daily_checkin.
+            await _send_text_with_choreography(
+                context.bot, chat.id, ack, source="daily_checkin",
+            )
         return
 
     # Approval pre-check: if there's a pending approval, see if this message resolves it.
@@ -1252,11 +1285,17 @@ def _lookup_assistant_text_by_telegram_msg_id(telegram_msg_id: int) -> str | Non
 
 
 async def _send_text_with_choreography(
-    bot, chat_id: int, text_to_send_in: str, *, elapsed_real: float = 0.0,
+    bot, chat_id: int, text_to_send_in: str, *,
+    elapsed_real: float = 0.0,
+    source: str = "chat",
 ) -> None:
     """Phase 9 — same choreography as ``_send_with_choreography`` but without
     threading the reply to a specific message. Used by reaction-triggered
-    turns (no user text to reply to)."""
+    turns (no user text to reply to).
+
+    ``source`` is caller-configurable (default ``"chat"``) so other entry
+    points (e.g. ``daily_checkin``) can tag the persisted assistant rows with
+    their own provenance label."""
     mood = _mood()
     filtered = filter_outgoing(text_to_send_in)
     text_to_send = filtered.text
@@ -1299,8 +1338,9 @@ async def _send_text_with_choreography(
         return
 
     # Phase 13 (Stream C): persist the FINAL sent text post-send. Reaction
-    # turns are still real visible assistant outbound — source='chat' so
-    # reflection/handoff treat them like normal replies.
+    # turns are still real visible assistant outbound — default source='chat'
+    # so reflection/handoff treat them like normal replies; callers can
+    # override (daily_checkin uses 'daily_checkin').
     try:
         tg_msg_id = (
             int(sent.message_id)
@@ -1309,10 +1349,10 @@ async def _send_text_with_choreography(
         )
         if tg_msg_id:
             db.append_message_with_telegram_id(
-                "assistant", text_to_send, tg_msg_id, source="chat",
+                "assistant", text_to_send, tg_msg_id, source=source,
             )
         else:
-            db.append_message("assistant", text_to_send, source="chat")
+            db.append_message("assistant", text_to_send, source=source)
     except Exception:
         logger.exception(
             "reaction-turn: append_message_with_telegram_id failed (non-fatal)"

@@ -691,3 +691,45 @@ async def consume_pending_reply(text: str, send_text) -> bool:
         if text_out:
             await _safe_send(send_text, text_out)
     return True
+
+
+# ---------- bridge integration ----------
+
+async def handle_message(
+    text: str,
+    *,
+    today: _date,
+    send_text,
+) -> tuple[bool, str | None]:
+    """Pre-router for inbound user text. Called by the Telegram bridge
+    BEFORE the existing approval pre-check.
+
+    Returns ``(consumed, ack)``:
+      - ``consumed=True, ack=None``: message handled, sends already happened.
+      - ``consumed=True, ack="..."``: message handled, caller should reply
+        with ``ack`` (used for schedule-edit acknowledgements).
+      - ``consumed=False, ack=None``: not a daily-checkin message; caller
+        continues normal routing.
+
+    Order of checks:
+      1. Schedule edit (always wins — these are rare and well-shaped).
+      2. Pending check-in reply (only if a pending reply window is open).
+    """
+    edit = parse_schedule_edit(text, today=today)
+    if edit is not None:
+        if edit["kind"] == "query":
+            return True, "check-in: " + describe_current_schedule()
+        apply_schedule_edit(edit)
+        if edit["kind"] == "override":
+            return True, f"ok. check-in moved to {edit['date']} at {edit['time']}."
+        if edit["kind"] == "default":
+            return True, f"ok. default check-in is {edit['time']} now."
+        if edit["kind"] == "skip":
+            return True, f"ok. skipping check-in on {edit['date']}."
+    # Pending reply?
+    if send_text is None:
+        # During schedule-edit-only invocation we don't need send_text. But for
+        # the reply path we do. Caller should always pass send_text.
+        return False, None
+    consumed = await consume_pending_reply(text, send_text)
+    return (consumed, None)
