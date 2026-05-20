@@ -504,7 +504,7 @@ noticings:
   delta_signals: [sentiment_ma, mention_topic_freq, response_latency_ma, msg_length_ma]
 
 mcp_external:
-  # Phase 7: Cross-device sync. When enabled, `uv run python -m mcp_external.launch`
+  # Phase 7 / 14: Cross-device sync. When enabled, `uv run python -m mcp_external.launch`
   # starts a Streamable HTTP MCP server on bind_host:bind_port. Front it with
   # Cloudflare Tunnel (see scripts/install_cloudflared.md) and register the
   # public URL on claude.ai → Settings → Connectors. Read-only — exposes
@@ -516,6 +516,29 @@ mcp_external:
   audit_label: "external_mcp"
   recall_default_limit: 8         # `hikari_recall` tool default
   lexicon_default_limit: 5        # `hikari_lexicon_top` tool default
+  # Public origin for OAuth metadata pointers (RFC 8414 / 9728). Must be the
+  # exact URL claude.ai's broker resolves — typically your Cloudflare Tunnel
+  # hostname. If left unset, falls back to the request's scheme+host (which
+  # works behind a same-origin proxy but not when claude.ai's broker is the
+  # only thing talking to us via a different hostname).
+  public_base_url: ""
+  # Set true when the server runs behind a TLS-terminating proxy (Cloudflare
+  # Tunnel terminates TLS at the edge and forwards HTTP to 127.0.0.1, so the
+  # inbound scheme is always ``http`` even though the public URL is HTTPS).
+  # Flips the /authorize state cookie to ``Secure`` regardless of inbound.
+  # Default false — conservative; flip to true for production (the
+  # install_cloudflared.md doc tells you to).
+  behind_tls_proxy: false
+  oauth:
+    # Phase 14: OAuth 2.1 + PKCE + DCR for claude.ai Custom Connectors.
+    access_token_ttl_seconds: 3600          # 1h — short, refreshable
+    refresh_token_ttl_seconds: 2592000      # 30d
+    auth_code_ttl_seconds: 600              # 10m — single-use anyway
+    scopes_supported: ["mcp"]
+    # /authorize passphrase rate-limit (per-IP sliding window). Defaults are
+    # conservative — failed-attempt floods get a 429 + Retry-After.
+    passphrase_max_attempts: 5
+    passphrase_window_seconds: 300
 
 drift_telemetry:
   # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Haiku,
@@ -710,6 +733,7 @@ prompt_injection:
     - "^mcp__hikari_wiki__wiki_search$"
     - "^mcp__hikari_utility__note_create$"
     - "^mcp__hikari_utility__read_attachment$"
+    - "^mcp__duckdb__"
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted
@@ -831,3 +855,12 @@ retrieval:
 
 telegram:
   http_timeout_sec: 10.0          # httpx client timeout in agents/telegram_bridge.py
+
+evening_diary:
+  enabled: true
+  hour: 22                        # local hour for the daily diary composition
+  minute: 0
+
+drift_canary:
+  enabled: true
+  alert_threshold: "drift"        # 'hold' | 'partial' | 'drift' — alert when verdict >= threshold

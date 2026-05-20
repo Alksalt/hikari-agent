@@ -375,6 +375,78 @@ CREATE TABLE IF NOT EXISTS voice_critic_log (
 );
 CREATE INDEX IF NOT EXISTS idx_voice_critic_log_created
     ON voice_critic_log(created_at DESC);
+
+-- Phase 14: OAuth 2.1 + PKCE + DCR for the external MCP server. Tables are
+-- brand-new (no ALTER ADD COLUMN), so indexes live in _SCHEMA directly — the
+-- "indexes in migration fn" rule only applies to ALTER-added columns.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id TEXT PRIMARY KEY,
+    client_name TEXT,
+    redirect_uris TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+    code TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    code_challenge_method TEXT NOT NULL,
+    scope TEXT,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS oauth_codes_expires_at ON oauth_codes(expires_at);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    token_type TEXT NOT NULL CHECK (token_type IN ('access', 'refresh')),
+    parent_token TEXT,
+    scope TEXT,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_active
+    ON oauth_tokens(token) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS oauth_tokens_parent ON oauth_tokens(parent_token)
+    WHERE parent_token IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS oauth_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    event_type TEXT NOT NULL,
+    client_id TEXT,
+    ip TEXT,
+    details_json TEXT
+);
+CREATE INDEX IF NOT EXISTS oauth_audit_log_ts ON oauth_audit_log(ts DESC);
+
+-- Drift canary: weekly out-of-band probe asking Hikari one of three rotating
+-- questions targeting her hard opinions (needs_no_one / liking_embarrassing /
+-- attention_mech). LLM-as-judge classifies the answer as hold/partial/drift
+-- and on 'drift' the scheduler sends an operator-style heartbeat alert.
+-- Independent of the per-outbound persona_drift_scores Haiku judge AND of the
+-- 4h persona_drift_probes — those catch turn-level slips and cosine-distance
+-- worldview shifts, this catches whether she still holds her hard opinions
+-- when challenged head-on. Table is brand-new (no ALTER ADD COLUMN). Indexes
+-- live in the migration fn per MEMORY.md's schema-migration-ordering note so
+-- the bootstrap pass stays index-free for fresh tables created via _SCHEMA.
+CREATE TABLE IF NOT EXISTS drift_canary_answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    probe_key TEXT NOT NULL,
+    asked_at TEXT NOT NULL,
+    answer_text TEXT NOT NULL,
+    verdict TEXT NOT NULL,        -- 'hold' | 'partial' | 'drift'
+    reason TEXT,
+    rubric_version TEXT NOT NULL DEFAULT 'v1',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -420,6 +492,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_facts_bitemporal(conn)
     _migrate_facts_recall_decay(conn)
     _migrate_reminders_apple_columns(conn)
+    _migrate_drift_canary_indexes(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -475,6 +548,21 @@ def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE facts ADD COLUMN recall_hit_count INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_drift_canary_indexes(conn: sqlite3.Connection) -> None:
+    """Drift canary indexes. The table itself lives in _SCHEMA (brand-new, no
+    ALTER ADD COLUMN), but per MEMORY.md ``feedback_schema_migration_ordering``
+    we keep all indexes in the migration fn so the bootstrap pass never sees
+    an index referencing a column that doesn't exist yet. Idempotent."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS drift_canary_probe "
+        "ON drift_canary_answers(probe_key, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS drift_canary_verdict "
+        "ON drift_canary_answers(verdict)"
+    )
 
 
 def _migrate_reminders_apple_columns(conn: sqlite3.Connection) -> None:
@@ -1547,6 +1635,61 @@ def drift_count_today() -> int:
     return int(row["n"] or 0)
 
 
+# ---------- drift_canary_answers (weekly hard-opinion probe) ----------
+
+def drift_canary_record(
+    *,
+    probe_key: str,
+    asked_at: str,
+    answer_text: str,
+    verdict: str,
+    reason: str | None,
+    rubric_version: str = "v1",
+) -> int:
+    """Append one drift canary observation. Returns row id.
+
+    ``verdict`` should be one of ``'hold' | 'partial' | 'drift'`` but the column
+    isn't CHECK-constrained — callers may write ``'unknown'`` when the judge
+    itself fails, so triage / reflection can distinguish a missing judgment
+    from a real drift event.
+    """
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO drift_canary_answers "
+            "(probe_key, asked_at, answer_text, verdict, reason, rubric_version) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (probe_key, asked_at, answer_text, verdict, reason, rubric_version),
+        )
+    return cur.lastrowid
+
+
+def drift_canary_recent(limit: int = 10) -> list[dict]:
+    """Newest-first list of canary observations across all probes."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, probe_key, asked_at, answer_text, verdict, reason, "
+            "rubric_version, created_at "
+            "FROM drift_canary_answers "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def drift_canary_recent_by_probe(probe_key: str, limit: int = 5) -> list[dict]:
+    """Newest-first list of canary observations for a single probe key."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, probe_key, asked_at, answer_text, verdict, reason, "
+            "rubric_version, created_at "
+            "FROM drift_canary_answers "
+            "WHERE probe_key = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (probe_key, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_peer_representation() -> dict[str, Any] | None:
     """Return the structured user model as a dict, or None if not yet populated.
 
@@ -2258,3 +2401,269 @@ def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------- Phase 14: OAuth 2.1 + PKCE + DCR (external MCP) ----------
+
+def _oauth_random_token(byte_len: int = 32) -> str:
+    """URL-safe random token. 32 bytes = 256 bits of entropy."""
+    import secrets
+    return secrets.token_urlsafe(byte_len)
+
+
+def oauth_client_register(client_name: str | None,
+                          redirect_uris: list[str]) -> dict[str, Any]:
+    """RFC 7591 dynamic client registration. Public client (PKCE-only) —
+    no client_secret issued. Returns the standard DCR response dict.
+
+    Caller is responsible for redirect_uris validation (non-empty, well-formed).
+    """
+    import json
+    if not redirect_uris:
+        raise ValueError("oauth_client_register: redirect_uris is required")
+    client_id = _oauth_random_token(16)
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) "
+            "VALUES (?, ?, ?)",
+            (client_id, client_name, json.dumps(list(redirect_uris))),
+        )
+    return {
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": list(redirect_uris),
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    }
+
+
+def oauth_client_get(client_id: str) -> dict[str, Any] | None:
+    """Look up a registered client by id. Returns the row with redirect_uris
+    decoded, or None if not found."""
+    import json
+    with _conn() as c:
+        row = c.execute(
+            "SELECT client_id, client_name, redirect_uris, created_at, "
+            "last_used_at FROM oauth_clients WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["redirect_uris"] = json.loads(out["redirect_uris"])
+    except (TypeError, ValueError):
+        out["redirect_uris"] = []
+    return out
+
+
+def oauth_client_touch(client_id: str) -> None:
+    """Bump ``last_used_at`` on a client. Best-effort."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?",
+            (_now(), client_id),
+        )
+
+
+def oauth_code_mint(client_id: str, redirect_uri: str,
+                    code_challenge: str, code_challenge_method: str,
+                    scope: str | None = None,
+                    ttl_seconds: int = 600) -> str:
+    """Mint a single-use authorization code bound to a PKCE challenge."""
+    from datetime import timedelta
+    code = _oauth_random_token(32)
+    expires_at = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO oauth_codes (code, client_id, redirect_uri, "
+            "code_challenge, code_challenge_method, scope, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (code, client_id, redirect_uri, code_challenge,
+             code_challenge_method, scope, expires_at),
+        )
+    return code
+
+
+def oauth_code_consume(code: str, code_verifier: str) -> dict[str, Any] | None:
+    """Verify the PKCE S256 challenge and atomically consume the code.
+
+    Returns the code row on success. Returns None on any failure path:
+    unknown code, already consumed, expired, verifier mismatch, or a race
+    where another caller consumed the row first. Errors are not distinguished
+    so callers can't fingerprint why a given code failed.
+    """
+    import base64
+    import hashlib
+    import secrets as _secrets
+    with _conn() as c:
+        row = c.execute(
+            "SELECT code, client_id, redirect_uri, code_challenge, "
+            "code_challenge_method, scope, expires_at, consumed_at "
+            "FROM oauth_codes WHERE code = ?",
+            (code,),
+        ).fetchone()
+        if not row or row["consumed_at"] or row["expires_at"] < _now():
+            return None
+        if row["code_challenge_method"] != "S256":
+            return None
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        if not _secrets.compare_digest(computed, row["code_challenge"]):
+            return None
+        cur = c.execute(
+            "UPDATE oauth_codes SET consumed_at = ? "
+            "WHERE code = ? AND consumed_at IS NULL",
+            (_now(), code),
+        )
+        if cur.rowcount == 0:
+            return None
+    return dict(row)
+
+
+def oauth_token_mint(client_id: str, token_type: str,
+                     parent_token: str | None = None,
+                     scope: str | None = None,
+                     ttl_seconds: int = 3600) -> str:
+    """Issue an opaque access or refresh token. Returns the token string."""
+    from datetime import timedelta
+    if token_type not in ("access", "refresh"):
+        raise ValueError(f"invalid token_type: {token_type!r}")
+    tok = _oauth_random_token(32)
+    expires_at = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO oauth_tokens (token, client_id, token_type, "
+            "parent_token, scope, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (tok, client_id, token_type, parent_token, scope, expires_at),
+        )
+    return tok
+
+
+def oauth_token_validate(token: str) -> dict[str, Any] | None:
+    """Return the token row if active (unexpired AND unrevoked), else None.
+    Bumps ``last_used_at`` on the validated row."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT token, client_id, token_type, parent_token, scope, "
+            "expires_at, revoked_at FROM oauth_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row or row["revoked_at"] or row["expires_at"] < _now():
+            return None
+        c.execute(
+            "UPDATE oauth_tokens SET last_used_at = ? WHERE token = ?",
+            (_now(), token),
+        )
+    return dict(row)
+
+
+def oauth_token_revoke(token: str) -> None:
+    """Mark a single token revoked (idempotent)."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE oauth_tokens SET revoked_at = ? "
+            "WHERE token = ? AND revoked_at IS NULL",
+            (_now(), token),
+        )
+
+
+def oauth_token_consume_refresh(token: str, client_id: str) -> dict[str, Any] | None:
+    """Atomically validate + revoke a refresh token in one transaction.
+
+    Used by the /token refresh grant. Returns the original row on success
+    (which the caller then uses to mint a new access+refresh pair under the
+    same scope). Returns None if the token doesn't exist, is the wrong type,
+    is expired, was already revoked, doesn't belong to ``client_id``, OR if
+    a concurrent request beat us to the revoke. The single-transaction
+    consume-then-revoke prevents two parallel rotation requests from each
+    minting their own live token chain off the same parent."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT token, client_id, token_type, parent_token, scope, "
+            "expires_at, revoked_at FROM oauth_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if (
+            not row
+            or row["revoked_at"]
+            or row["expires_at"] < _now()
+            or row["token_type"] != "refresh"
+            or row["client_id"] != client_id
+        ):
+            return None
+        cur = c.execute(
+            "UPDATE oauth_tokens SET revoked_at = ? "
+            "WHERE token = ? AND revoked_at IS NULL",
+            (_now(), token),
+        )
+        if cur.rowcount == 0:
+            return None
+        c.execute(
+            "UPDATE oauth_tokens SET revoked_at = ? "
+            "WHERE parent_token = ? AND revoked_at IS NULL",
+            (_now(), token),
+        )
+    return dict(row)
+
+
+def oauth_token_revoke_family(parent_token: str) -> int:
+    """Revoke a refresh token and every access token descended from it.
+
+    Called during refresh rotation: when the client exchanges refresh R1 for
+    a new pair (A2, R2), every token whose ``parent_token == R1`` plus R1
+    itself is revoked. Returns rows updated."""
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE oauth_tokens SET revoked_at = ? "
+            "WHERE (token = ? OR parent_token = ?) "
+            "AND revoked_at IS NULL",
+            (_now(), parent_token, parent_token),
+        )
+        return int(cur.rowcount or 0)
+
+
+def oauth_audit(event_type: str, client_id: str | None = None,
+                ip: str | None = None,
+                details: dict[str, Any] | None = None) -> int:
+    """Append an OAuth audit row. Separate ledger from the hash-chained
+    ``audit_log`` — OAuth events are high-frequency and don't need the
+    forensic chain. ``details_json`` is truncated to 2KB."""
+    import json
+    payload = json.dumps(details or {}, default=str, ensure_ascii=False)[:2000]
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO oauth_audit_log "
+            "(event_type, client_id, ip, details_json) VALUES (?, ?, ?, ?)",
+            (event_type, client_id, ip, payload),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def oauth_cleanup_expired(revoked_retention_days: int = 30) -> int:
+    """Sweep expired oauth_codes (consumed or past TTL) and expired/old-revoked
+    oauth_tokens. Called from daily reflection. Returns total rows deleted.
+
+    Comparisons use Python isoformat strings, not ``datetime('now')`` —
+    expires_at / revoked_at are written via ``_now()`` (Python isoformat with
+    'T' separator + tz offset), and SQLite's ``datetime('now')`` produces a
+    space-separated, tz-naive string that does NOT sort lexicographically
+    against ours."""
+    from datetime import timedelta
+    now_iso = _now()
+    revoked_cutoff = (datetime.now(UTC) - timedelta(
+        days=int(revoked_retention_days))).isoformat()
+    with _conn() as c:
+        n1 = c.execute(
+            "DELETE FROM oauth_codes "
+            "WHERE expires_at < ? OR consumed_at IS NOT NULL",
+            (now_iso,),
+        ).rowcount
+        n2 = c.execute(
+            "DELETE FROM oauth_tokens "
+            "WHERE expires_at < ? "
+            "OR (revoked_at IS NOT NULL AND revoked_at < ?)",
+            (now_iso, revoked_cutoff),
+        ).rowcount
+    return int(n1 or 0) + int(n2 or 0)

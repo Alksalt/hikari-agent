@@ -271,6 +271,40 @@ async def _send_with_choreography(
     except Exception:
         logger.exception("postsend.mark_pending_surfaced failed (non-fatal)")
 
+    # image_gen-down fallback: if generate_photo failed within the last 60s,
+    # force-send a sticker so the user gets visual content instead of an empty
+    # "tool failed" beat. Enforces a 60s window so a stale flag from an
+    # earlier turn can't surprise-fire on a later unrelated heartbeat /
+    # reaction-turn. Runs BEFORE the probabilistic sticker gate.
+    try:
+        img_gen_fail_ts = db.runtime_get("image_gen_last_failure_ts")
+        if img_gen_fail_ts:
+            import datetime as _dt
+            fresh = False
+            try:
+                ts = _dt.datetime.fromisoformat(str(img_gen_fail_ts))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_dt.UTC)
+                age = (_dt.datetime.now(_dt.UTC) - ts).total_seconds()
+                fresh = 0 <= age <= 60
+            except (ValueError, TypeError):
+                logger.warning(
+                    "image_gen_down fallback: bad ts %r; clearing", img_gen_fail_ts,
+                )
+            # Always consume so a stale or malformed value can't poison future turns.
+            db.runtime_set("image_gen_last_failure_ts", None)
+            if fresh:
+                try:
+                    await stickers_mod.force_send_sticker(bot, chat_id)
+                except Exception:
+                    logger.exception(
+                        "stickers: force_send_sticker failed (non-fatal)",
+                    )
+    except Exception:
+        logger.exception(
+            "image_gen_down fallback: runtime_state read failed (non-fatal)",
+        )
+
     # Outbound-counter bump + sticker gate. Bump first so the value passed in
     # reflects this just-sent reply; the sticker module reads the same shared
     # counter via storage.db.OUTBOUND_MSG_COUNTER_KEY.
@@ -468,6 +502,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "call mcp__hikari_memory__remember with a tight fact "
             "(subject='photo', predicate='showed', object='<thing>')."
         )
+        # Photo fan-out router: classify the image first so the LLM picks the
+        # right downstream tool (reminder_create / receipt_add / arxiv_search /
+        # link_save / nothing). Non-fatal — if classification fails the photo
+        # turn proceeds with the bare prompt above.
+        try:
+            from tools.photos.classify import (
+                build_router_block,
+                classify_photo_intent,
+            )
+            classification = await classify_photo_intent(abs_path)
+            prompt = prompt + build_router_block(classification)
+        except Exception:
+            logger.exception("photo router: classify failed (non-fatal)")
         # Record a compact event row for the user's photo so reflection/handoff
         # sees "[photo: ...]" not the synthetic instruction text. run_user_turn
         # resumes the live session for conversational context ("the one from

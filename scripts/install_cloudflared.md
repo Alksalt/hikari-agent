@@ -15,28 +15,47 @@ get her *real* memory back, not generic Claude.
   Desktop AND Claude iPhone automatically.
 - **Cloudflare Tunnel** publishes a stable HTTPS URL without opening ports
   on your Mac Mini, terminating TLS at Cloudflare's edge.
-- Bearer token + TLS = good enough auth for a personal one-user bot.
-  (OAuth 2.1 / PKCE is a future PR.)
+- Two auth paths run side-by-side:
+  - **Bearer service token** (`HIKARI_MCP_SECRET`) — used by Claude Code's
+    `claude mcp add` and Claude Desktop's local config (where you can paste
+    a static token).
+  - **OAuth 2.1 + PKCE + Dynamic Client Registration** — required by
+    claude.ai's web Custom Connector flow (iPhone, web UI). The broker
+    auto-discovers via `/.well-known/oauth-protected-resource`, registers a
+    client via `POST /register`, redirects you to `/authorize` where you
+    enter the owner passphrase, then exchanges the code at `/token`.
 
 ## Setup (one-time, ~30 min)
 
-### 1. Generate a bearer secret
+### 1. Generate the auth secrets
 
 ```bash
+# Bearer service-token (for Claude Code / Claude Desktop local config):
 openssl rand -hex 32
+
+# Owner passphrase (gates the OAuth /authorize consent form, claude.ai flow):
+openssl rand -base64 24
 ```
 
-Copy the output into `.env` as `HIKARI_MCP_SECRET=...`.
+Copy them into `.env` as `HIKARI_MCP_SECRET=...` and
+`HIKARI_OAUTH_OWNER_PASSPHRASE=...`. You need at least one of the two for the
+server to start. Need both if you want both auth paths working.
 
 ### 2. Enable the server in config
 
-In `config/engagement.yaml`, flip:
+In `config/engagement.yaml`, flip + set `public_base_url` to your tunnel
+hostname (from step 4 below — pre-fill it now to avoid a server restart
+later). When this is empty, OAuth discovery responses embed the inbound
+hostname (`127.0.0.1:8765`) which claude.ai's broker cannot reach, and the
+OAuth add-connector flow breaks silently with no diagnostic from our side.
 
 ```yaml
 mcp_external:
   enabled: true   # was false
   bind_host: "127.0.0.1"
   bind_port: 8765
+  public_base_url: "https://hikari.your-domain.com"   # required for OAuth flow
+  behind_tls_proxy: true   # Cloudflare terminates TLS; mark cookies Secure
 ```
 
 ### 3. Install + auth Cloudflare Tunnel
@@ -102,20 +121,44 @@ curl -H "Authorization: Bearer $HIKARI_MCP_SECRET" \
 # (should not return 401; MCP returns JSON-RPC.)
 ```
 
-### 8. Register the connector on claude.ai
+### 8. Register the connector on claude.ai (OAuth path)
 
-- Open https://claude.ai/settings/integrations (or whichever path Anthropic
-  uses in May 2026).
+(`mcp_external.public_base_url` was set in step 2; the metadata responses
+already point at the right hostname.) On claude.ai:
+
+- Open https://claude.ai/settings/integrations.
 - "Add Custom Connector" → "Remote MCP".
-- URL: `https://hikari.your-domain.com/mcp`
-- Auth: Bearer token. Paste the value of `HIKARI_MCP_SECRET`.
-- Click connect.
-
-The 5 tools (`hikari_recall`, `hikari_lexicon_top`, `hikari_observations`,
-`hikari_open_loops`, `hikari_wiki_search`) should appear in the tool list.
+- URL: `https://hikari.your-domain.com` (root, NOT `/mcp` — the broker hits
+  `/.well-known/oauth-protected-resource` for auto-discovery).
+- The broker walks through OAuth automatically:
+  1. Discovers `authorization_endpoint` + `token_endpoint`.
+  2. POSTs `/register` for a fresh `client_id`.
+  3. Redirects your browser to `/authorize?...`.
+  4. The hikari passphrase page renders — paste
+     `HIKARI_OAUTH_OWNER_PASSPHRASE`.
+  5. Server 302s back with `code=...`; the broker exchanges it at `/token`.
+- The 5 tools (`hikari_recall`, `hikari_lexicon_top`, `hikari_observations`,
+  `hikari_open_loops`, `hikari_wiki_search`) should appear once consented.
 
 Once added on claude.ai, Claude Desktop and Claude iPhone pick up the
 connector automatically (sync within minutes).
+
+### 8b. Alternative: Claude Code / Desktop local config (bearer path)
+
+For local-config-driven clients that accept a static token, skip the OAuth
+dance and use the bearer path:
+
+```bash
+# Claude Code:
+claude mcp add hikari https://hikari.your-domain.com \
+  --transport http \
+  --header "Authorization: Bearer $HIKARI_MCP_SECRET"
+```
+
+Or paste the same `Authorization: Bearer ...` header in Claude Desktop's
+local config file. Both paths talk to the same five tools and the same
+audit ledger (different `approved_by` attribution — `oauth:<client_id>` for
+OAuth, `external_mcp` for bearer).
 
 ## Making both services restart-resilient (LaunchAgent)
 

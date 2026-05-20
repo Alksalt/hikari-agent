@@ -95,6 +95,33 @@ def pick_sticker_file_id() -> str | None:
     return random.choice(pool)
 
 
+async def force_send_sticker(bot: Bot, chat_id: int) -> str | None:
+    """Send a random sticker from the pool, ignoring probability/cooldown/mood.
+
+    Used by the image_gen-down fallback path: when ``generate_photo`` fails,
+    the bridge force-sends a sticker so the user gets a visual reply instead
+    of the abdication line. The forced send deliberately does NOT touch
+    ``stickers_last_at_counter`` so it doesn't reset the regular cooldown
+    that gates the probabilistic ``maybe_send_sticker`` path.
+
+    Returns the file_id sent, or None if the pool is empty (logged warning)
+    or the Telegram send raised. Never raises.
+    """
+    pool = _pool()
+    if not pool:
+        logger.warning("force_send_sticker: pool is empty — cannot fall back")
+        return None
+    file_id = random.choice(pool)
+    try:
+        await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+    except Exception:
+        logger.exception("force_send_sticker: send failed (non-fatal)")
+        return None
+    # NOTE: deliberately do NOT call _record_sticker — a forced send must not
+    # reset the regular probability-gate cooldown.
+    return file_id
+
+
 async def maybe_send_sticker(bot: Bot, chat_id: int, outbound_counter: int) -> str | None:
     """Roll the sticker gate; on success, send the sticker. Returns the file_id
     sent (or None if vetoed). Never raises — Telegram API errors are logged.

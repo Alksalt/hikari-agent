@@ -13,6 +13,7 @@ which routes through her existing approval + audit machinery).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -33,6 +34,33 @@ _SECRET_ENV_DEFAULT = "HIKARI_MCP_SECRET"
 _AUDIT_LABEL_DEFAULT = "external_mcp"
 
 
+# Per-request auth attribution. Populated by ``AuthMiddleware`` in
+# ``launch.py`` and read by ``_derive_approved_by()`` when audit rows are
+# written. ContextVars propagate cleanly through async/await, which is what
+# we need for FastMCP tool calls that don't have direct ASGI scope access.
+_auth_context: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "hikari_external_auth", default=None
+)
+
+
+def set_auth_context(info: dict | None) -> contextvars.Token:
+    """Called by AuthMiddleware to record auth attribution for this request.
+
+    Returns the ContextVar token so the caller can ``reset_auth_context`` in
+    a ``finally`` block to avoid contaminating subsequent requests served by
+    the same async task.
+    """
+    return _auth_context.set(info)
+
+
+def reset_auth_context(token: contextvars.Token) -> None:
+    """Restore the contextvar to its prior state. Call from ``finally``."""
+    try:
+        _auth_context.reset(token)
+    except (ValueError, LookupError):  # pragma: no cover — defensive
+        _auth_context.set(None)
+
+
 def _secret_env_name() -> str:
     return str(cfg.get("mcp_external.secret_env", _SECRET_ENV_DEFAULT))
 
@@ -41,14 +69,42 @@ def _audit_label() -> str:
     return str(cfg.get("mcp_external.audit_label", _AUDIT_LABEL_DEFAULT))
 
 
-def _audit(tool: str, args: dict[str, Any], result_summary: str) -> None:
-    """Append an audit row for an external call. Best-effort."""
+def _derive_approved_by() -> str:
+    """Resolve the ``approved_by`` label for the current request.
+
+    OAuth-authenticated calls attribute to ``oauth:<client_id>`` so the audit
+    log distinguishes individual OAuth clients from the legacy service-token
+    path (which keeps the old ``external_mcp`` label).
+    """
+    info = _auth_context.get()
+    if not info:
+        # No middleware context — direct in-process call (tests, scripts).
+        return _audit_label()
+    if info.get("auth_method") == "oauth":
+        client_id = info.get("oauth_client_id") or "unknown"
+        return f"oauth:{client_id}"
+    # Bearer / service-token path keeps the historical label.
+    return _audit_label()
+
+
+def _audit(
+    tool: str,
+    args: dict[str, Any],
+    result_summary: str,
+    *,
+    approved_by: str | None = None,
+) -> None:
+    """Append an audit row for an external call. Best-effort.
+
+    ``approved_by`` defaults to ``_derive_approved_by()`` so OAuth-attributed
+    calls land with the right principal; tests / direct callers may override.
+    """
     try:
         db.audit_append(
             tool=f"{_audit_label()}:{tool}",
             args_json_redacted=json.dumps(args, default=str)[:500],
             result_summary=result_summary[:500],
-            approved_by="external_mcp",
+            approved_by=approved_by or _derive_approved_by(),
         )
     except Exception:
         logger.exception("external mcp: audit_append failed")

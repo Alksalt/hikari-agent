@@ -19,6 +19,25 @@ _PATTERNS = [
     (re.compile(r"\b[0-9]{9,11}:[A-Za-z0-9_-]{30,}"), "[REDACTED-TG-BOT-TOKEN]"),
     # Anthropic OAuth tokens
     (re.compile(r"\b[a-zA-Z0-9_-]{32,}\.[a-zA-Z0-9_-]{32,}\.[a-zA-Z0-9_-]{16,}"), "[REDACTED-JWT]"),
+    # OAuth 2.1 secrets — emitted by mcp_external/. All are token_urlsafe(32) or
+    # longer, which is 43+ char base64url alphabet. Capture the value following
+    # the key name in JSON / urlencoded / log formats, redact only the value.
+    (re.compile(
+        r"(client_secret['\"\s:=]+)[A-Za-z0-9_-]{32,}"
+    ), r"\1[REDACTED-OAUTH-CLIENT-SECRET]"),
+    (re.compile(
+        r"(access_token['\"\s:=]+)[A-Za-z0-9_-]{32,}"
+    ), r"\1[REDACTED-OAUTH-ACCESS-TOKEN]"),
+    (re.compile(
+        r"(refresh_token['\"\s:=]+)[A-Za-z0-9_-]{32,}"
+    ), r"\1[REDACTED-OAUTH-REFRESH-TOKEN]"),
+    (re.compile(
+        r"(code_verifier['\"\s:=]+)[A-Za-z0-9_-]{32,}"
+    ), r"\1[REDACTED-OAUTH-CODE-VERIFIER]"),
+    # Auth code in URL query string after redirect (anchor on ?code= or &code=):
+    (re.compile(
+        r"([?&]code=)[A-Za-z0-9_-]{32,}"
+    ), r"\1[REDACTED-OAUTH-CODE]"),
 ]
 
 

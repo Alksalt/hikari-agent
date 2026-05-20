@@ -177,6 +177,35 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
         )
 
+    # Daily evening diary: 22:00 local. Composes a private diary entry from
+    # the day's receipts, fired reminders, today's episodes, and active facts
+    # into data/diary/YYYY-MM-DD.md + an episode summary. Letta-style
+    # diary-writing to reduce persona drift.
+    if bool(cfg.get("evening_diary.enabled", True)):
+        from .evening_diary import run_evening_diary
+        ed_hour = int(cfg.get("evening_diary.hour", 22))
+        ed_minute = int(cfg.get("evening_diary.minute", 0))
+        async def _evening_diary_job(): return await run_evening_diary()
+        scheduler.add_job(
+            _evening_diary_job,
+            CronTrigger(hour=ed_hour, minute=ed_minute),
+            id="evening_diary",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
+    # Drift canary: weekly Sunday 20:00 local. Probes one of three hard
+    # opinions, LLM-as-judge classifies the answer, alerts via send_text on
+    # 'drift' verdict. Single-user Nautilus Compass.
+    if bool(cfg.get("drift_canary.enabled", True)):
+        from .drift_canary import run_drift_canary
+        async def _drift_canary_job(): return await run_drift_canary(send_text)
+        scheduler.add_job(
+            _drift_canary_job,
+            CronTrigger(day_of_week="sun", hour=20, minute=0),
+            id="drift_canary",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
     # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.
     # Letta sleep-time pattern (Apr 2025) — synthesizes a 200-word weekly
     # "what i noticed about him" summary into core_blocks['weekly_consolidation'],

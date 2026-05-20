@@ -156,6 +156,9 @@ def test_scheduler_builds(monkeypatch):
         "weekly_consolidation",
         # daily_checkin: 5-min poll for the morning check-in window.
         "daily_checkin",
+        # 2026-05-20 five-feature batch:
+        "evening_diary",     # daily 22:00 — composes data/diary/YYYY-MM-DD.md
+        "drift_canary",      # weekly Sunday 20:00 — three hard-opinion probes
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")
