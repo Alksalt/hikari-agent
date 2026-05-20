@@ -164,6 +164,7 @@ async def reminder_snooze(args: dict[str, Any]) -> dict[str, Any]:
         return _ok(f"refused: reminder #{rid} has malformed fire_at")
     new_when = when + timedelta(minutes=by_minutes)
     db.reminder_update_fire_at(rid, new_when.isoformat())
+    db.reminder_requeue_sync(rid)
     return _ok(f"reminder #{rid} snoozed to {new_when.isoformat()}")
 
 

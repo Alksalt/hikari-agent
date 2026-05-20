@@ -130,13 +130,26 @@ async def maybe_send_morning_brief(send_text) -> bool:
     if not text or text.upper().startswith("NO_MESSAGE"):
         return False
     try:
-        await send_text(text)
+        result = await send_text(text)
     except Exception:
         logger.exception("morning_brief: send_text failed")
         return False
-    # Phase 13 (Stream C): record the visible morning brief post-send.
+    # Reuse the proactive helper to keep one canonical unpacker (handles
+    # both the production 3-tuple and the legacy None-returning fakes).
+    from agents.proactive import _unpack_send_result
+    final, tg_id, ok = _unpack_send_result(result, text)
+    if not ok:
+        logger.warning("morning_brief: send_text reported failure; not persisting")
+        return False
+    # Phase 13.1 (Stream G — codex P0 fix): persist the FINAL filtered text +
+    # Telegram message_id post-send.
     try:
-        db.append_message("assistant", text, source="proactive")
+        if tg_id is not None:
+            db.append_message_with_telegram_id(
+                "assistant", final, tg_id, source="proactive",
+            )
+        else:
+            db.append_message("assistant", final, source="proactive")
     except Exception:
         logger.exception(
             "morning_brief: append_message post-send failed (non-fatal)",

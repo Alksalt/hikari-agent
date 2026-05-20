@@ -2165,6 +2165,29 @@ def reminder_update_fire_at(reminder_id: int, new_fire_at: str) -> None:
         )
 
 
+def reminder_requeue_sync(reminder_id: int) -> None:
+    """Re-flag both calendar sync columns so the next sync job updates the
+    external event to the new fire time.  Only re-queues a flag when the
+    existing event_id is non-null — a row that was never synced stays with
+    its original pending state; a row that was successfully synced gets its
+    flag flipped back to 1 so the sync job pushes the update.
+
+    Idempotent: safe to call multiple times on the same row.
+    """
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET "
+            "gcal_sync_pending = CASE"
+            " WHEN gcal_event_id IS NOT NULL THEN 1"
+            " ELSE gcal_sync_pending END, "
+            "apple_sync_pending = CASE"
+            " WHEN apple_event_id IS NOT NULL THEN 1"
+            " ELSE apple_sync_pending END "
+            "WHERE id = ?",
+            (reminder_id,),
+        )
+
+
 def reminders_pending_gcal_sync(limit: int = 10) -> list[dict[str, Any]]:
     with _conn() as conn:
         return [dict(r) for r in conn.execute(
@@ -2232,26 +2255,6 @@ def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT id, lat, lon, label, taken_at, received_at "
             "FROM photo_locations ORDER BY received_at DESC LIMIT ?",
-            (int(limit),),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-# ---------- T8.2: voice_critic log (drift telemetry for the Haiku critic) ----
-
-def voice_critic_log_recent(limit: int = 50) -> list[dict[str, Any]]:
-    """Recent voice-critic verdicts (newest first). Used by daily reflection
-    + ad-hoc inspection.
-
-    Orders by id DESC because ``created_at`` defaults to ``datetime('now')``
-    (second precision) — back-to-back inserts share a timestamp and the
-    tiebreak would be unpredictable. id is monotonic by insertion order,
-    so it's a stable proxy.
-    """
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT id, draft, verdict, reason, rewritten, final_text, created_at "
-            "FROM voice_critic_log ORDER BY id DESC LIMIT ?",
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]

@@ -194,7 +194,8 @@ def allowed_tool_names() -> list[str]:
 
 def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
                    max_budget_usd: float = 0.50,
-                   extra_allowed_tools: list[str] | None = None
+                   extra_allowed_tools: list[str] | None = None,
+                   inject_memory_enabled: bool = True,
                    ) -> ClaudeAgentOptions:
     allowed = list(_BASE_ALLOWED_TOOLS)
     if extra_allowed_tools:
@@ -214,6 +215,23 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     needed = _confirmed_tool_names()
     if extra_allowed_tools and any(t in needed for t in extra_allowed_tools):
         mcp_servers["hikari_dispatch_confirmed"] = _dispatch_confirmed_server()
+    hooks_dict: dict = {
+        "PostToolUseFailure": [HookMatcher(hooks=[log_tool_failure])],
+        # Phase 6: intercept gated tools (e.g. dispatch with write) with
+        # native SDK defer, replacing the bespoke OOB callback pattern.
+        # See agents/hooks.py:defer_gated_tools.
+        "PreToolUse": [HookMatcher(hooks=[defer_gated_tools])],
+        # Phase 8: wrap untrusted external tool outputs (Gmail / Calendar
+        # / Drive / Notion / Web*) via wrap_untrusted before the model
+        # sees them. Generic boundary, one hook, config-driven patterns.
+        "PostToolUse": [HookMatcher(hooks=[make_post_tool_use_hook()])],
+    }
+    # Phase 13.1 (Stream K): skip inject_memory for stateless internal-control
+    # calls — they don't need persona memory context, and running it wastes
+    # tokens + risks a race where the hook overwrites pending_surfaced_*
+    # runtime_state keys that the concurrent user turn was about to commit.
+    if inject_memory_enabled:
+        hooks_dict["UserPromptSubmit"] = [HookMatcher(hooks=[inject_memory])]
     return ClaudeAgentOptions(
         model=MODEL_PRIMARY,
         fallback_model=MODEL_FALLBACK,
@@ -224,18 +242,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         agents=ALL_AGENTS,
         mcp_servers=mcp_servers,
         allowed_tools=allowed,
-        hooks={
-            "UserPromptSubmit": [HookMatcher(hooks=[inject_memory])],
-            "PostToolUseFailure": [HookMatcher(hooks=[log_tool_failure])],
-            # Phase 6: intercept gated tools (e.g. dispatch with write) with
-            # native SDK defer, replacing the bespoke OOB callback pattern.
-            # See agents/hooks.py:defer_gated_tools.
-            "PreToolUse": [HookMatcher(hooks=[defer_gated_tools])],
-            # Phase 8: wrap untrusted external tool outputs (Gmail / Calendar
-            # / Drive / Notion / Web*) via wrap_untrusted before the model
-            # sees them. Generic boundary, one hook, config-driven patterns.
-            "PostToolUse": [HookMatcher(hooks=[make_post_tool_use_hook()])],
-        },
+        hooks=hooks_dict,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
         resume=resume,
@@ -252,6 +259,7 @@ async def _invoke_sdk(
     max_budget_usd: float = 0.50,
     extra_allowed_tools: list[str] | None = None,
     retry_on_process_error: bool = True,
+    inject_memory_enabled: bool = True,
 ) -> str:
     """Phase 13 (Stream C) — single private SDK invocation helper.
 
@@ -279,6 +287,7 @@ async def _invoke_sdk(
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             extra_allowed_tools=extra_allowed_tools,
+            inject_memory_enabled=inject_memory_enabled,
         )
         parts = []
         try:
@@ -372,9 +381,8 @@ async def run_internal_control(
 ) -> str:
     """Stateless internal control prompt.
 
-    Used by: voice critic rewrite, approval defer-resume, Apple/GCal sync,
-    reminder body composition, proactive content scoring, calendar fetch
-    step.
+    Used by: approval resume, Apple sync, GCal sync, calendar fetch,
+    reminder body composition.
 
     Hard contract: ``resume=None``, no ``session_id`` writeback, no
     ``messages`` append, no handoff write. Returns text only. The live
@@ -393,6 +401,7 @@ async def run_internal_control(
         max_budget_usd=max_budget_usd,
         extra_allowed_tools=extra_allowed_tools,
         retry_on_process_error=False,
+        inject_memory_enabled=False,
     )
 
 

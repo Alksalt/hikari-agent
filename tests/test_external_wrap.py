@@ -66,7 +66,9 @@ async def test_wrap_fires_for_gmail_thread():
 
 
 @pytest.mark.asyncio
-async def test_wrap_skips_internal_memory_tool():
+async def test_wrap_fires_for_recall():
+    """I-3: recall output must be wrapped — facts can carry stale injected
+    content summarised from untrusted email/web bodies months ago."""
     hook = external_wrap_hook.make_post_tool_use_hook()
     out = await hook(
         {
@@ -77,8 +79,31 @@ async def test_wrap_skips_internal_memory_tool():
         },
         None, None,
     )
-    assert out == {}
-    assert _audit_count_for("wrap_external:") == 0
+    assert "hookSpecificOutput" in out, "recall output must be wrapped"
+    wrapped_text = out["hookSpecificOutput"]["updatedToolOutput"]["content"][0]["text"]
+    assert "<<<HIKARI_UNTRUSTED_BEGIN>>>" in wrapped_text
+    assert "raw memory body" in wrapped_text
+    assert _audit_count_for("wrap_external:") == 1
+
+
+@pytest.mark.asyncio
+async def test_wrap_fires_for_codex_report():
+    """I-3: read_codex_report must be wrapped — it's already wrapped internally
+    in tools/codex.py but the config is the structural source of truth."""
+    hook = external_wrap_hook.make_post_tool_use_hook()
+    out = await hook(
+        {
+            "tool_name": "mcp__hikari_codex__read_codex_report",
+            "tool_response": {
+                "content": [{"type": "text", "text": "codex report body"}],
+            },
+        },
+        None, None,
+    )
+    assert "hookSpecificOutput" in out, "read_codex_report output must be wrapped"
+    wrapped_text = out["hookSpecificOutput"]["updatedToolOutput"]["content"][0]["text"]
+    assert "<<<HIKARI_UNTRUSTED_BEGIN>>>" in wrapped_text
+    assert "codex report body" in wrapped_text
 
 
 @pytest.mark.asyncio
@@ -284,6 +309,20 @@ def _matches_any_pattern(tool_name: str) -> bool:
         except re.error:
             pass
     return False
+
+
+def test_recall_in_wrap_patterns():
+    """I-3: recall output must be declared in wrap_patterns (stale injection risk)."""
+    assert _matches_any_pattern("mcp__hikari_memory__recall"), (
+        "mcp__hikari_memory__recall must be in wrap_patterns"
+    )
+
+
+def test_codex_report_in_wrap_patterns():
+    """I-3: read_codex_report must be declared in wrap_patterns (structural source of truth)."""
+    assert _matches_any_pattern("mcp__hikari_codex__read_codex_report"), (
+        "mcp__hikari_codex__read_codex_report must be in wrap_patterns"
+    )
 
 
 def test_apple_notes_search_in_wrap_patterns():

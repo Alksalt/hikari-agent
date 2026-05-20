@@ -34,7 +34,8 @@ def _stub_invoke_sdk(monkeypatch, return_text: str = "OK"):
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, extra_allowed_tools=None,
-                               retry_on_process_error=True):
+                               retry_on_process_error=True,
+                               inject_memory_enabled=True):
         # Mimic: log_session_id=False for internal control → no DB write.
         # We deliberately do NOT call db.set_session_id here to simulate the
         # contract that internal control never writes session_id.
@@ -92,7 +93,8 @@ async def test_internal_control_does_not_mutate_session_id(monkeypatch):
     # guarded by log_session_id=False. Verify the guard holds.
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, extra_allowed_tools=None,
-                               retry_on_process_error=True):
+                               retry_on_process_error=True,
+                               inject_memory_enabled=True):
         # Sanity: internal control is called with log_session_id=False.
         assert log_session_id is False, (
             f"run_internal_control called _invoke_sdk with log_session_id={log_session_id!r}; "

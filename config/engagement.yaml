@@ -66,6 +66,32 @@ approvals:
     - "^mcp__google_workspace__drive_delete_file$"
     # Stream B: python_run executes arbitrary subprocess code — defense in depth
     - "^mcp__hikari_utility__python_run$"
+    # Stream J: Notion writes — reversible via Notion's own undo but still
+    # owner-visible; gate destructive/mutating paths.
+    - "^mcp__notion__API-patch-block-children$"
+    - "^mcp__notion__API-update-a-block$"
+    - "^mcp__notion__API-delete-a-block$"
+    - "^mcp__notion__API-patch-page$"
+    - "^mcp__notion__API-post-page$"
+    # GitHub destructive / state-changing
+    - "^mcp__github__create_issue$"
+    - "^mcp__github__create_pull_request$"
+    - "^mcp__github__merge_pull_request$"
+    - "^mcp__github__delete_file$"
+    - "^mcp__github__delete_repository$"
+    # Apple Events writes are intentionally NOT gated. Apple Reminders /
+    # Calendar writes are local-device only (your own iPhone/Mac via iCloud),
+    # not internet-attached, so the spam-attack value from prompt injection is
+    # low — you'd see a phantom reminder pop up immediately and dismiss it.
+    # The bot also uses these tools to mirror its own legitimate reminders;
+    # gating would require either a caller-tag arg (mcp-server-apple-events
+    # doesn't expose one) or a contextvar-based exemption keyed to internal
+    # control flow. Skipping the gate here keeps the mirror path working AND
+    # avoids name-drift bugs between the prompt and the gate regex.
+    # Google Calendar create (only Google write not already gated)
+    - "^mcp__google_workspace__create_calendar_event$"
+    - "^mcp__google_workspace__drive_delete_folder$"
+    - "^mcp__google_workspace__drive_upload_file$"
   # Arg-conditional defer. Map qualified tool name → condition spec.
   # Spec keys: key (str, arg name), contains_any (list of substring needles),
   # case_insensitive (bool, default true). If the named arg's string form
@@ -189,7 +215,10 @@ refusal_filter:
     - "(?i)\\bthank you for sharing\\b"
     - "(?i)\\bhow can I (help|assist) you (today|now)\\b"
     - "(?i)\\bis there anything else I can (help|assist) (you )?with\\b"
-    - "(?i)\\bwhat would you like me to (do|work on) (next|now)\\b"
+    - "(?i)\\bwhat would you like me to (do|work on)\\b"
+    - "(?i)\\bwhat should I work on\\b"
+    - "(?i)\\bwhat['']?s next\\b"
+    - "(?i)\\bwhat can I do for you\\b"
   # Short, in-voice replacements when the safety-voice phrase dominates the
   # reply (see post_filter._dominates).
   short_replacements:
@@ -606,6 +635,7 @@ prompt_injection:
   # Tools whose outputs are treated as untrusted attacker surface (used by
   # flag_args_with_untrusted_content + is_untrusted_source). Substring match.
   untrusted_tools:
+    - "mcp__hikari_memory__recall"
     - "mcp__hikari_wiki__wiki_read"
     - "mcp__google_workspace__"
     - "mcp__notion__"
@@ -635,6 +665,8 @@ prompt_injection:
   # — replaces the prior per-tool wrap pattern (which only covered wiki_read
   # and was a Codex P1 enforcement gap).
   wrap_patterns:
+    - "^mcp__hikari_codex__read_codex_report$"
+    - "^mcp__hikari_memory__recall$"
     - "^mcp__hikari_wiki__wiki_read$"
     - "^mcp__google_workspace__"
     - "^mcp__notion__"

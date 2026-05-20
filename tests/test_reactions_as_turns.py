@@ -103,7 +103,7 @@ async def test_other_emoji_triggers_turn_without_feedback(monkeypatch):
         assert "🌙" in prompt
         assert "previous message text" in prompt
         return "ugh. fine. hello."
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(bot, chat_id, text, *, elapsed_real=0.0):
@@ -138,7 +138,7 @@ async def test_feedback_emojis_also_reply_when_configured(monkeypatch, tmp_path)
 
     async def fake_respond(prompt):
         return "hm. ok."
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(bot, chat_id, text, *, elapsed_real=0.0):
@@ -172,7 +172,7 @@ async def test_cooldown_blocks_back_to_back_turns(monkeypatch, tmp_path):
 
     async def fake_respond(prompt):
         return "reply"
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(bot, chat_id, text, *, elapsed_real=0.0):
@@ -206,7 +206,7 @@ async def test_daily_cap_blocks_after_threshold(monkeypatch, tmp_path):
 
     async def fake_respond(prompt):
         return "ok"
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(bot, chat_id, text, *, elapsed_real=0.0):
@@ -244,7 +244,7 @@ async def test_irritable_mood_skip_probability_one(monkeypatch, tmp_path):
 
     async def fake_respond(prompt):
         return "should not be called"
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(*a, **kw):
@@ -266,7 +266,7 @@ async def test_missing_prev_message_uses_fallback_prompt(monkeypatch):
     async def fake_respond(prompt):
         captured_prompts.append(prompt)
         return "ok"
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     async def fake_send(*a, **kw):
         return None
@@ -287,7 +287,7 @@ async def test_non_owner_reaction_rejected(monkeypatch):
 
     async def fake_respond(prompt):
         return "should not be called"
-    monkeypatch.setattr(telegram_bridge, "respond", fake_respond)
+    monkeypatch.setattr(telegram_bridge, "run_user_turn", fake_respond)
 
     sends = []
     async def fake_send(*a, **kw):

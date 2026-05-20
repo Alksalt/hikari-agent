@@ -353,7 +353,21 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
         approved_by="owner",
     )
     if reply:
-        await _safe_send(chat_id, reply[:1000])
+        # H-4 (Phase 13.1 fixup): the bridge's module-level
+        # ``_send_text_with_choreography`` already does filter → send → persist
+        # (with ``telegram_message_id`` stamped) → ``postsend.mark_pending_surfaced``.
+        # We feed it the same bot the rest of approvals uses via ``_bot()``.
+        try:
+            from agents.telegram_bridge import (  # noqa: PLC0415
+                _send_text_with_choreography,
+            )
+            await _send_text_with_choreography(_bot(), chat_id, reply[:1000])
+        except Exception:
+            logger.exception(
+                "resume_after_defer: bridge choreography failed; "
+                "falling back to _safe_send (no persist)"
+            )
+            await _safe_send(chat_id, reply[:1000])
     return True
 
 

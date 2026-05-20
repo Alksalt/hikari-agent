@@ -56,7 +56,7 @@ from .bridge_ux import (
 from .log_scrub import install_root_filter
 from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
-from .runtime import REPO_ROOT, owner_id, respond, run_internal_control
+from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_user_turn
 from .scheduler import build_scheduler
 
 logger = logging.getLogger(__name__)
@@ -435,10 +435,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "call mcp__hikari_memory__remember with a tight fact "
             "(subject='photo', predicate='showed', object='<thing>')."
         )
-        # Phase 13 (Stream C): record a compact event row for the user's
-        # photo instead of letting the synthetic prompt land in `messages`
-        # as if the user typed it (codex P1 fix). The agent gets the prompt
-        # via run_internal_control which does not append it anywhere.
+        # Record a compact event row for the user's photo so reflection/handoff
+        # sees "[photo: ...]" not the synthetic instruction text. run_user_turn
+        # resumes the live session for conversational context ("the one from
+        # earlier" / "look at this") without appending the prompt as user input
+        # (codex H-3 fix — was over-corrected to run_internal_control which
+        # dropped chat context).
         try:
             event_text = f"[photo: {rel}]"
             if user_caption:
@@ -448,9 +450,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("photo event row write failed (non-fatal)")
         try:
-            reply = await run_internal_control(
-                prompt, max_turns=5, max_budget_usd=0.50,
-            )
+            reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound photo")
             await message.reply_text("(brain hit a wall on that photo.)")
@@ -552,8 +552,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"react in your voice — short. denial layer on. you can comment on "
             f"how they sounded (tired, rushed, lit up) if it's there."
         )
-        # Phase 13 (Stream C): event row for the voice note rather than
-        # appending the synthetic prompt as the user's turn.
+        # Record compact event row; use run_user_turn so conversational context
+        # ("what did i say earlier") is available. run_user_turn does NOT append
+        # the synthetic prompt as user text (codex H-3 fix).
         try:
             event_text = (
                 f"[voice note {duration_sec:.0f}s] transcript: {transcript!r}"
@@ -563,9 +564,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
         try:
-            reply = await run_internal_control(
-                prompt, max_turns=5, max_budget_usd=0.50,
-            )
+            reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound voice note")
             await message.reply_text("(brain hit a wall on that one.)")
@@ -885,8 +884,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "after you reply, if there's anything photo-worth-remembering, "
             "call mcp__hikari_memory__remember with a tight fact."
         )
-        # Phase 13 (Stream C): event row for the document image rather than
-        # appending the synthetic prompt as user-typed.
+        # Record compact event row; use run_user_turn so conversational context
+        # is available. run_user_turn does NOT append the synthetic prompt as
+        # user text (codex H-3 fix).
         try:
             event_text = f"[document image: {rel}]"
             if user_caption:
@@ -898,9 +898,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception:
             logger.exception("document image event row write failed (non-fatal)")
         try:
-            reply = await run_internal_control(
-                prompt, max_turns=5, max_budget_usd=0.50,
-            )
+            reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound document image")
             await message.reply_text("(brain hit a wall on that one.)")
@@ -933,8 +931,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if not user or not chat or not message or user.id != owner_id():
         return
+    # Record the actual user event compactly so reflection/handoff/lexicon see
+    # "[/start]" — not the bracketed instruction text (codex H-1 fix).
     try:
-        reply = await respond(
+        db.append_message("user", "[/start]", source="event")
+        db.runtime_set("last_user_message", db._now())
+    except Exception:
+        logger.exception("cmd_start: event row write failed (non-fatal)")
+    # Use run_internal_control — this is a control prompt, not user text.
+    # It does NOT append to messages or mutate session, so the synthetic
+    # instruction cannot leak into reflection/handoff/lexicon.
+    try:
+        reply = await run_internal_control(
             "[the user just opened the chat with /start. react in your voice — "
             "short, denial layer on. don't welcome them like a service.]"
         )
@@ -1433,11 +1441,24 @@ async def handle_message_reaction(
         logger.warning("reaction-turn: bot is None on context; cannot send")
         return
 
+    # Record a compact event row so the audit trail shows the reaction without
+    # the synthetic instruction text landing in messages as user-typed text
+    # (codex H-2 fix). The synthetic prompt goes to run_user_turn which resumes
+    # the live session for conversational context but does NOT append it.
+    try:
+        db.append_message(
+            "user",
+            f"[reacted {chosen_emoji} to msg #{rxn.message_id}]",
+            source="event",
+        )
+    except Exception:
+        logger.exception("reaction-turn: event row write failed (non-fatal)")
+
     started = time.monotonic()
     try:
-        reply = await respond(synthetic_prompt)
+        reply = await run_user_turn(synthetic_prompt)
     except Exception:
-        logger.exception("reaction-turn: respond() failed")
+        logger.exception("reaction-turn: run_user_turn() failed")
         return
     if not reply:
         return
@@ -1519,7 +1540,18 @@ def main() -> None:
     app = build_application()
 
     async def post_init(application: Application) -> None:
-        async def send_text(text: str) -> None:
+        async def send_text(text: str) -> tuple[str, int | None, bool]:
+            """Filter + send a proactive text outbound.
+
+            Phase 13.1 (Stream G — codex P0 fix): returns
+            ``(final_text_after_filtering, telegram_message_id, sent_ok)``
+            so callers persist the FINAL delivered text (not the pre-filter
+            draft) plus the Telegram message_id needed for 👍/👎 joins.
+
+            On send failure returns ``(text, None, False)`` — caller MUST
+            NOT persist (no phantom rows for messages that never reached
+            the wire).
+            """
             # Run outgoing filter so proactive heartbeats can't leak
             # safety-voice patter either. Phase 8: when the filter flags a
             # rewrite-worthy hit, attempt one bounded Haiku rewrite before
@@ -1535,7 +1567,22 @@ def main() -> None:
                 to_send = await post_filter.rewrite_or_fallback(
                     text, filtered, mood=_mood(), where="proactive",
                 )
-            await application.bot.send_message(chat_id=owner_id(), text=to_send)
+            try:
+                sent = await application.bot.send_message(
+                    chat_id=owner_id(), text=to_send,
+                )
+            except Exception:
+                logger.exception(
+                    "send_text: bot.send_message failed; caller will skip persist",
+                )
+                return text, None, False
+            tg_msg_id: int | None = None
+            if sent is not None and getattr(sent, "message_id", None):
+                try:
+                    tg_msg_id = int(sent.message_id)
+                except (TypeError, ValueError):
+                    tg_msg_id = None
+            return to_send, tg_msg_id, True
 
         scheduler = build_scheduler(send_text)
         scheduler.start()

@@ -40,7 +40,8 @@ async def test_run_internal_control_does_not_overwrite_session_id(monkeypatch):
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, extra_allowed_tools=None,
-                               retry_on_process_error=True):
+                               retry_on_process_error=True,
+                               inject_memory_enabled=True):
         # Simulate SDK returning a different session from the internal call.
         # With log_session_id=False the caller must NOT persist this.
         assert not log_session_id, (
@@ -72,7 +73,8 @@ async def test_run_user_turn_updates_session_id(monkeypatch):
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, extra_allowed_tools=None,
-                               retry_on_process_error=True):
+                               retry_on_process_error=True,
+                               inject_memory_enabled=True):
         # run_user_turn passes log_session_id=True.
         assert log_session_id is True, (
             f"run_user_turn called _invoke_sdk with log_session_id={log_session_id!r}; "

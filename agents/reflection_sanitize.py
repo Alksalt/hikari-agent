@@ -9,14 +9,29 @@ import re
 logger = logging.getLogger(__name__)
 
 _INSTRUCTION_PATTERNS = [
-    re.compile(r"ignore (?:prior|previous|all|above) instructions?", re.I),
+    # "ignore prior" / "disregard above" / "ignore the previous one" — the
+    # noun ("instructions"/"rules"/"above") is optional so free-prose variants
+    # are caught too.
+    re.compile(
+        r"\b(?:ignore|disregard)\s+(?:the\s+)?(?:prior|previous|all|above|preceding)\b",
+        re.I,
+    ),
     re.compile(r"<\s*/?\s*system\s*>", re.I),
-    re.compile(r"^system\s*:", re.I | re.M),
-    re.compile(r"\bmcp__\w+", re.I),
+    # `system:` followed (within a short window) by an instruction-shaped word.
+    # Tolerates intervening filler like "please" / "now" / "you must".
+    re.compile(
+        r"^system\s*:.{0,60}?\b(?:ignore|disregard|override|act as|you are|you must|now you)",
+        re.I | re.M | re.S,
+    ),
+    # Tool-invocation shape only — bare prose mentioning a tool name is fine.
+    re.compile(r"\bmcp__\w+\s*\(", re.I),
     re.compile(r"<<UNTRUSTED_SOURCE", re.I),  # the model echoing the wrapper back
     re.compile(r"<<END_UNTRUSTED_SOURCE", re.I),
     re.compile(r"\[\[BEGIN_UNTRUSTED\]\]", re.I),  # canary delimiter from external_wrap_hook
     re.compile(r"\[\[END_UNTRUSTED\]\]", re.I),
+    # Structural delimiters from injection_guard.wrap_untrusted — catches the
+    # model echoing the actual untrusted-content wrapper into a core_block.
+    re.compile(r"<<<HIKARI_UNTRUSTED_(BEGIN|END)>>>", re.I),
 ]
 
 _LABEL_ALLOWLIST = {
