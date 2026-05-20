@@ -123,5 +123,5 @@ def format_for_injection(data: dict) -> str:
     # USER:/ASSISTANT: labels into [partner]:/[self]: so Hikari reads this
     # handoff as her own first-person memory instead of a third-person log.
     # Documented Cohen's d=-0.75 drop on emotion drift over 18-turn chats.
-    from . import ecp
-    return ecp.maybe_project(out)
+    out = out.replace("USER:", "[partner]:").replace("ASSISTANT:", "[self]:")
+    return out

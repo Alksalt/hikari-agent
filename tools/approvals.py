@@ -306,22 +306,26 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
 
     # Lazy import to avoid circular (agents.runtime imports tools.approvals
     # indirectly via hooks).
-    from agents.runtime import _run_query
+    # Phase 13 (Stream C): approval resume is a stateless control prompt —
+    # never resume the live SDK session, never mutate session_id, never
+    # touch `messages`. The confirmed-tool allowlist still flows through.
+    from agents.runtime import run_internal_control
 
-    # CRITICAL ORDERING: do NOT mark the approval resolved until _run_query
+    # CRITICAL ORDERING: do NOT mark the approval resolved until the SDK
     # actually completes. If we marked early and execution failed, the row
     # would be unrecoverable (no longer 'pending' so restart-recovery skips it).
     reply: str | None = None
     try:
-        reply = await _run_query(
+        reply = await run_internal_control(
             prompt,
             max_turns=5,
             max_budget_usd=0.30,
-            log_to_memory=False,
             extra_allowed_tools=[confirmed_tool],
         )
     except Exception as e:
-        logger.exception("resume_after_defer: _run_query failed for aid=%s", aid)
+        logger.exception(
+            "resume_after_defer: run_internal_control failed for aid=%s", aid,
+        )
         await _safe_send(chat_id, f"approval ran but execution fell over: {e}")
         # Mark the row failed so restart-recovery doesn't loop forever on it,
         # but leave an audit trace explaining what happened.

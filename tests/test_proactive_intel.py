@@ -153,52 +153,6 @@ def test_cadence_governor_allows_justified_under_cap(monkeypatch, tmp_path):
     assert reason == "ok"
 
 
-# ---------- soft-scarcity ----------
-
-def test_scarcity_disabled_by_default():
-    # Default config has soft_scarcity.enabled: false.
-    assert not cadence.in_scarcity_skip_window()
-    assert not cadence.maybe_open_scarcity_skip()
-
-
-def test_scarcity_opens_window_when_enabled(monkeypatch, tmp_path):
-    cfg_text = (
-        "soft_scarcity:\n"
-        "  enabled: true\n"
-        "  skip_probability_per_eligible_window: 1.0\n"   # force-on for test
-        "  min_days_between_skips: 5\n"
-        "  skip_window_hours: 4\n"
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-    assert cadence.maybe_open_scarcity_skip()
-    assert cadence.in_scarcity_skip_window()
-    # Second call respects the existing window (no-op).
-    assert not cadence.maybe_open_scarcity_skip()
-
-
-def test_scarcity_min_days_between_skips(monkeypatch, tmp_path):
-    cfg_text = (
-        "soft_scarcity:\n"
-        "  enabled: true\n"
-        "  skip_probability_per_eligible_window: 1.0\n"
-        "  min_days_between_skips: 5\n"
-        "  skip_window_hours: 0.001\n"   # virtually-instant expiry
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-    assert cadence.maybe_open_scarcity_skip()  # first call opens
-    # Force window expiry by rewriting scarcity_skip_until to past.
-    db.runtime_set("scarcity_skip_until", (datetime.now(UTC) - timedelta(hours=1)).isoformat())
-    assert not cadence.in_scarcity_skip_window()
-    # But min_days_between_skips still applies (last_skip was just now).
-    assert not cadence.maybe_open_scarcity_skip()
-
-
 # ---------- observations ----------
 
 def test_observation_record_dedupes_by_signature():

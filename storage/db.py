@@ -503,7 +503,13 @@ def _migrate_reminders_apple_columns(conn: sqlite3.Connection) -> None:
 
 def _migrate_messages_telegram_message_id(conn: sqlite3.Connection) -> None:
     """Phase 8: add `telegram_message_id` to `messages` so we can join user
-    feedback (👍/👎 reactions on Hikari's outbound) back to the assistant row."""
+    feedback (👍/👎 reactions on Hikari's outbound) back to the assistant row.
+
+    Phase 13 (Stream C): also add `source` column so heuristics can
+    distinguish ``chat`` (user-driven turn), ``proactive`` (heartbeat /
+    reengage / calendar / reminder fire), and ``event`` (non-text user
+    events such as photos / voice notes) rows.
+    """
     existing = {row["name"] for row in conn.execute(
         "PRAGMA table_info(messages)"
     ).fetchall()}
@@ -515,6 +521,10 @@ def _migrate_messages_telegram_message_id(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS messages_telegram_id "
             "ON messages(telegram_message_id) "
             "WHERE telegram_message_id IS NOT NULL"
+        )
+    if "source" not in existing:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'"
         )
 
 
@@ -844,11 +854,42 @@ def fact_backdate_created_at(fact_id: int, iso_ts: str) -> None:
 
 # ---------- messages ----------
 
-def append_message(role: str, content: str) -> int:
+def append_message(role: str, content: str, source: str = "chat") -> int:
+    """Insert a row into ``messages``.
+
+    Phase 13 (Stream C): the optional ``source`` discriminates ``chat``
+    (real user turn / its assistant reply), ``proactive`` (heartbeat,
+    reengage, calendar heartbeat, reminder fire), and ``event`` (non-text
+    user input like photos / voice / document images). Defaults to
+    ``chat`` for back-compat with every pre-stream-C caller.
+    """
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)",
-            (role, content, _now()),
+            "INSERT INTO messages (role, content, ts, source) VALUES (?, ?, ?, ?)",
+            (role, content, _now(), source),
+        )
+    return cur.lastrowid
+
+
+def append_message_with_telegram_id(
+    role: str,
+    content: str,
+    telegram_message_id: int,
+    source: str = "chat",
+) -> int:
+    """Phase 13 (Stream C): append a message + stamp its Telegram outbound
+    message_id in one insert.
+
+    Used by ``_send_with_choreography`` after a successful Telegram send so
+    the row commits with the final delivered text (codex P0 fix) AND the
+    Telegram id needed for 👍/👎 feedback joins in the same transaction.
+    Replaces the legacy two-step ``append_message`` + ``update_last_assistant_telegram_msg_id``.
+    """
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO messages (role, content, ts, source, telegram_message_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (role, content, _now(), source, int(telegram_message_id)),
         )
     return cur.lastrowid
 
@@ -1559,29 +1600,6 @@ def prune_drift_older_than_days(days: int) -> int:
 
 # ---------- persona_drift_probes (Phase 11 SPASM-style probes) ----------
 
-def persona_drift_probe_insert(
-    probe_key: str,
-    distance: float,
-    current_response: str | None = None,
-) -> int:
-    """Append a probe sample. Returns row id.
-
-    ``distance`` is clamped to [0.0, 2.0] (the theoretical range of cosine
-    distance is [0, 2]; in practice fastembed answers always come back
-    [0, 1]). ``current_response`` is truncated to 1000 chars — enough to
-    audit the answer without bloating the table.
-    """
-    snippet = (current_response or "")[:1000]
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO persona_drift_probes "
-            "(probe_key, distance, current_response, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (probe_key, max(0.0, min(2.0, float(distance))), snippet, _now()),
-        )
-    return cur.lastrowid
-
-
 def persona_drift_probe_recent(probe_key: str, limit: int = 10) -> list[dict[str, Any]]:
     """Recent probe samples for one key, newest first. Used by the daily
     reflection / debugging tooling."""
@@ -2175,56 +2193,6 @@ def reminders_pending_apple_sync(limit: int = 10) -> list[dict[str, Any]]:
 
 # ---------- session scratch (Phase 11 — shared subagent memory) ----------
 
-def scratch_put(session_id: str, topic: str, payload: "dict | list | str") -> int:
-    """Store a payload keyed by (session_id, topic). Payload JSON-serialized.
-
-    Enforces ~100-row cap per session: drops oldest rows if over.
-    Returns the new row's id.
-    """
-    import json
-    with _conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO session_scratch (session_id, topic, payload_json) "
-            "VALUES (?, ?, ?)",
-            (session_id, topic, json.dumps(payload, default=str)),
-        )
-        row_id = cur.lastrowid
-        # Trim — keep last 100 per session (by id order = insertion order)
-        conn.execute(
-            "DELETE FROM session_scratch WHERE session_id = ? AND id NOT IN ("
-            "  SELECT id FROM session_scratch WHERE session_id = ? "
-            "  ORDER BY id DESC LIMIT 100"
-            ")",
-            (session_id, session_id),
-        )
-        return row_id
-
-
-def scratch_get(session_id: str, topic: str, limit: int = 5) -> list[dict[str, Any]]:
-    """Fetch most recent scratch entries for (session_id, topic), newest first."""
-    import json
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT id, topic, payload_json, created_at FROM session_scratch "
-            "WHERE session_id = ? AND topic = ? "
-            "ORDER BY id DESC LIMIT ?",
-            (session_id, topic, limit),
-        ).fetchall()
-    out = []
-    for r in rows:
-        try:
-            payload = json.loads(r["payload_json"])
-        except Exception:
-            payload = r["payload_json"]
-        out.append({
-            "id": r["id"],
-            "topic": r["topic"],
-            "payload": payload,
-            "created_at": r["created_at"],
-        })
-    return out
-
-
 def scratch_cleanup_old(hours: int = 24) -> int:
     """Delete scratch entries older than N hours. Called by daily reflection."""
     with _conn() as conn:
@@ -2270,31 +2238,6 @@ def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
 
 
 # ---------- T8.2: voice_critic log (drift telemetry for the Haiku critic) ----
-
-def voice_critic_log_insert(
-    draft: str,
-    verdict: str,
-    reason: str | None = None,
-    rewritten: bool = False,
-    final_text: str | None = None,
-) -> int:
-    """Persist one voice-critic verdict + the eventual shipped text.
-
-    ``draft`` is the lead's original outbound text. ``verdict`` is "PASS",
-    "REWRITE", or "ERROR" (last when the Haiku call itself fails — we log
-    the failure rather than silently skipping the critic). ``rewritten`` is
-    True only when the lead actually produced a second draft after a REWRITE
-    verdict. ``final_text`` is what shipped.
-    """
-    with _conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO voice_critic_log "
-            "(draft, verdict, reason, rewritten, final_text) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (draft, verdict, reason, 1 if rewritten else 0, final_text),
-        )
-        return int(cur.lastrowid or 0)
-
 
 def voice_critic_log_recent(limit: int = 50) -> list[dict[str, Any]]:
     """Recent voice-critic verdicts (newest first). Used by daily reflection

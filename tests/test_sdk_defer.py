@@ -129,8 +129,10 @@ async def test_defer_hook_skips_ungated_tool():
 
 @pytest.mark.asyncio
 async def test_resume_after_defer_invokes_run_query_with_extra_tool(monkeypatch):
-    """After 'y', _resume_after_defer kicks off a fresh _run_query passing
-    the post-approval sibling tool in extra_allowed_tools."""
+    """After 'y', _resume_after_defer kicks off run_internal_control passing
+    the post-approval sibling tool in extra_allowed_tools.
+    Stream C: _run_query was split into _invoke_sdk + 3 entrypoints;
+    approval resume now uses run_internal_control."""
     from tools import approvals as approval_tools
 
     # Stub the post-approval reply send.
@@ -140,18 +142,18 @@ async def test_resume_after_defer_invokes_run_query_with_extra_tool(monkeypatch)
         sent.append((chat_id, text))
     monkeypatch.setattr(approval_tools, "_safe_send", fake_safe_send)
 
-    # Stub _run_query to record what it was called with.
+    # Stub run_internal_control to record what it was called with.
     captured: dict = {}
 
-    async def fake_run_query(prompt, *, max_turns, max_budget_usd, log_to_memory,
-                             extra_allowed_tools=None):
+    async def fake_run_internal_control(prompt, *, max_turns, max_budget_usd,
+                                        extra_allowed_tools=None):
         captured["prompt"] = prompt
         captured["extra_allowed_tools"] = extra_allowed_tools
         captured["max_turns"] = max_turns
         return "done."
 
     import agents.runtime as runtime_mod
-    monkeypatch.setattr(runtime_mod, "_run_query", fake_run_query)
+    monkeypatch.setattr(runtime_mod, "run_internal_control", fake_run_internal_control)
 
     aid = db.approval_create_deferred(
         chat_id=12345,
@@ -203,12 +205,12 @@ async def test_resume_after_defer_aborts_without_confirmed_mapping(monkeypatch, 
 
     called = {"n": 0}
 
-    async def fake_run_query(*a, **k):
+    async def fake_run_internal_control(*a, **k):
         called["n"] += 1
         return "should not be called"
 
     import agents.runtime as runtime_mod
-    monkeypatch.setattr(runtime_mod, "_run_query", fake_run_query)
+    monkeypatch.setattr(runtime_mod, "run_internal_control", fake_run_internal_control)
 
     aid = db.approval_create_deferred(
         chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
@@ -217,7 +219,7 @@ async def test_resume_after_defer_aborts_without_confirmed_mapping(monkeypatch, 
     )
     pending = db.approval_pending_for(12345)
     await approval_tools._resume_after_defer(aid, pending)
-    assert called["n"] == 0  # _run_query never called
+    assert called["n"] == 0  # run_internal_control never called
     assert any("no confirmed-tool mapping" in t for _, t in sent)
 
 
@@ -310,13 +312,13 @@ async def test_resume_handles_braces_in_tool_input(monkeypatch):
 
     captured: dict = {}
 
-    async def fake_run_query(prompt, *, max_turns, max_budget_usd, log_to_memory,
-                             extra_allowed_tools=None):
+    async def fake_run_internal_control(prompt, *, max_turns, max_budget_usd,
+                                        extra_allowed_tools=None):
         captured["prompt"] = prompt
         return "ok"
 
     import agents.runtime as runtime_mod
-    monkeypatch.setattr(runtime_mod, "_run_query", fake_run_query)
+    monkeypatch.setattr(runtime_mod, "run_internal_control", fake_run_internal_control)
 
     aid = db.approval_create_deferred(
         chat_id=12345,
@@ -359,7 +361,7 @@ async def test_resume_failure_keeps_row_as_rejected_not_approved(monkeypatch):
         raise RuntimeError("simulated SDK failure")
 
     import agents.runtime as runtime_mod
-    monkeypatch.setattr(runtime_mod, "_run_query", boom)
+    monkeypatch.setattr(runtime_mod, "run_internal_control", boom)
 
     aid = db.approval_create_deferred(
         chat_id=12345,

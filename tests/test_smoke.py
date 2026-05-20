@@ -154,8 +154,6 @@ def test_scheduler_builds(monkeypatch):
         "morning_brief",
         # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
         "weekly_consolidation",
-        # Phase 11: SPASM persona drift probes (every 4h, default on).
-        "persona_probes",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")
@@ -223,14 +221,14 @@ def test_runtime_uses_accept_edits(monkeypatch):
 
 def test_runtime_registers_all_subagents(monkeypatch):
     """All specialist subagents registered:
-    recall, wiki, code_dispatch, drive_gmail, notion, research,
-    github, apple_events, voice_critic (T8.2 — Silicon Mirror critic)."""
+    recall, wiki, code_dispatch, drive_gmail, notion, research, github.
+    Stream D removed apple_events and voice_critic."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     from agents import runtime
     importlib.reload(runtime)
     opts = runtime._build_options(resume=None)
     expected = {"recall", "wiki", "code_dispatch", "drive_gmail", "notion", "research",
-                "github", "apple_events", "voice_critic"}
+                "github"}
     assert set(opts.agents.keys()) == expected
 
 
@@ -244,12 +242,19 @@ def test_runtime_has_agent_tool(monkeypatch):
 
 
 def test_runtime_hikari_allowlist_minimal(monkeypatch):
-    """Hikari's own allowlist no longer includes google_workspace — drive_gmail subagent owns it."""
+    """Stream A added mcp__google_workspace__* to the main allowlist.
+    Stream B removed Read, Glob, Grep (replaced by mcp__hikari_utility__read_attachment)."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     from agents import runtime
     importlib.reload(runtime)
     opts = runtime._build_options(resume=None)
-    assert not any("google_workspace" in t for t in opts.allowed_tools)
+    # Stream A: google_workspace tools are now in the allowlist.
+    assert any("google_workspace" in t for t in opts.allowed_tools)
+    # Stream B: Read, Glob, Grep removed; read_attachment replaces them.
+    assert "Read" not in opts.allowed_tools
+    assert "Glob" not in opts.allowed_tools
+    assert "Grep" not in opts.allowed_tools
+    assert "mcp__hikari_utility__read_attachment" in opts.allowed_tools
 
 
 def test_background_tasks_round_trip(tmp_path, monkeypatch):

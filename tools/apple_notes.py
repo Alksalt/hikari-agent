@@ -186,6 +186,39 @@ async def note_create(args: dict[str, Any]) -> dict[str, Any]:
             f"apple notes timed out after {_OSASCRIPT_TIMEOUT_SEC:.0f}s "
             f"(notes.app may be waiting on a permission prompt)"
         )
+    # If the iCloud account clause failed (e.g. "Can't get account"), retry
+    # once without it so the default Notes account is used instead.
+    _ACCOUNT_ERRORS = ("can't get account", "can’t get account")
+    if (rc != 0 or stderr.strip()) and any(
+        e in (stdout + stderr).lower() for e in _ACCOUNT_ERRORS
+    ):
+        logger.warning(
+            "apple_notes: 'account iCloud' clause failed — retrying with default account. "
+            "stderr: %s", stderr.strip()[:300]
+        )
+        # Rebuild the script without the `tell account "iCloud"` wrapper.
+        if folder:
+            folder_q = _as_quoted(folder)
+            inner_fallback = (
+                f'    tell folder {folder_q}\n'
+                f'      {make_stmt}\n'
+                f'    end tell'
+            )
+        else:
+            inner_fallback = f'    {make_stmt}'
+        script_fallback = (
+            f'tell application "Notes"\n'
+            f'{inner_fallback}\n'
+            f'  return id of theNote\n'
+            f'end tell'
+        )
+        try:
+            rc, stdout, stderr = await _run_osascript(script_fallback)
+        except TimeoutError:
+            return _ok(
+                f"apple notes timed out after {_OSASCRIPT_TIMEOUT_SEC:.0f}s "
+                f"(notes.app may be waiting on a permission prompt)"
+            )
     if rc != 0 or stderr.strip():
         logger.warning("apple_notes osascript stderr: %s", stderr.strip()[:500])
         return _ok("apple notes error (see logs)")

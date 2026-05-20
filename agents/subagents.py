@@ -46,18 +46,12 @@ RECALL_AGENT = AgentDefinition(
         "the user's stated belief, not ones that confirm it. Return the strongest "
         "contradicting hit even if its relevance score is lower. Prefix output with "
         "ADVERSARIAL_HIGH/MEDIUM/LOW_CONFIDENCE instead of HIGH/MEDIUM/LOW.\n\n"
-        "SCRATCH SHARING: when a query hits HIGH or MEDIUM confidence, write the key "
-        "finding (1-2 sentences max) to scratch via `mcp__hikari_scratch__scratch_put` "
-        "with topic = the noun the user asked about. Subsequent calls in this session "
-        "can read it without re-querying.\n\n"
         "Token economy matters: the lead will rewrite in voice and your tone gets "
         "stripped — return flat data, not prose. Verbose prefixes ('Here\\'s what I "
         "found:') just burn tokens."
     ),
     model="haiku",
-    tools=["mcp__hikari_memory__recall",
-           "mcp__hikari_scratch__scratch_put",
-           "mcp__hikari_scratch__scratch_get"],
+    tools=["mcp__hikari_memory__recall"],
 )
 
 
@@ -81,19 +75,13 @@ WIKI_AGENT = AgentDefinition(
         "to delegate to the global wiki-curator instead.\n"
         "Return content findings as direct excerpts + paths. Don't summarize for the "
         "lead — give the raw material so Hikari can pick what to surface in voice.\n\n"
-        "SCRATCH SHARING: before writing to the wiki, call "
-        "`mcp__hikari_scratch__scratch_get` with the topic to check whether a recall "
-        "call in this session already surfaced relevant data. Use that context if "
-        "present.\n\n"
         "Return direct excerpts + paths, not paraphrases. The lead has to quote "
         "precisely from your output, and any summarization you do gets re-summarized "
         "— wasted tokens both ways."
     ),
     model="haiku",
     tools=["mcp__hikari_wiki__wiki_search", "mcp__hikari_wiki__wiki_read",
-           "mcp__hikari_wiki__wiki_append", "mcp__hikari_wiki__wiki_backlinks",
-           "Read",
-           "mcp__hikari_scratch__scratch_get"],
+           "mcp__hikari_wiki__wiki_append", "mcp__hikari_wiki__wiki_backlinks"],
 )
 
 
@@ -130,15 +118,20 @@ DRIVE_GMAIL_AGENT = AgentDefinition(
     description=(
         "Drive / Gmail / Calendar specialist. Use for reading email threads, "
         "searching Drive files, checking calendar, drafting emails, creating events. "
-        "Phase 8: writes auto-run (no approval prompt). Only an actual outbound "
-        "gmail send tool would be approval-gated; none is currently exposed."
+        "Sends and destructive deletes (gmail_send_email, gmail_reply_to_email, "
+        "gmail_bulk_delete_messages, delete_calendar_event, drive_delete_file) are "
+        "owner-gated via CONFIRM-SEND — call them normally; the gate handles "
+        "confirmation. Drafts, calendar adds, and Drive uploads auto-run."
     ),
     prompt=(
         "You are Hikari's Google Workspace specialist. Coverage spans Gmail, "
         "Calendar, Drive, Docs, Sheets, and Slides. Call tools directly; do not "
         "ask the user to confirm — the runtime is permission_mode=acceptEdits and "
-        "auto-accepts. The only gated tool anywhere is dispatch_claude_session "
-        "with write scope, which is unrelated to you.\n\n"
+        "auto-accepts. Sends and destructive deletes (gmail_send_email, "
+        "gmail_reply_to_email, gmail_bulk_delete_messages, delete_calendar_event, "
+        "drive_delete_file) are owner-gated via CONFIRM-SEND — call them normally; "
+        "the gate handles confirmation. Drafts, calendar adds, and Drive uploads "
+        "auto-run.\n\n"
         "Real tool names (DO NOT invent or guess — these are the actual exports "
         "of google-workspace-mcp 1.27+):\n"
         "  Calendar: calendar_get_events, calendar_get_event_details, "
@@ -176,17 +169,26 @@ NOTION_AGENT = AgentDefinition(
         "Notion specialist. Use for: querying the user's databases (tasks, reading "
         "list, Q2 roadmap, 0→Hero), creating pages, updating properties. The user "
         "has shared a small set of databases with the integration — discover them "
-        "via notion-search; don't assume."
+        "via API-post-search; don't assume."
     ),
     prompt=(
         "You are Hikari's Notion specialist. The integration is scoped to a small "
-        "number of shared databases. For queries: introspect schema first via "
-        "notion-fetch (cached by the runtime), then notion-query-data-sources with "
-        "explicit property names. For writes (create-pages, update-page): call the "
-        "tool — these auto-run; Notion's own undo covers mistakes. Return concrete "
-        "data + page IDs, not prose.\n\n"
-        "Return data + page IDs (UUIDs), not prose. The lead can chain page IDs into "
-        "update calls if needed."
+        "number of shared databases. Real tool names (DO NOT invent or guess — these "
+        "are the actual exports of @notionhq/notion-mcp-server):\n"
+        "  Search / discover: API-post-search\n"
+        "  Data sources: API-retrieve-a-data-source, API-list-data-source-templates, "
+        "API-query-data-source, API-create-a-data-source, API-update-a-data-source\n"
+        "  Pages: API-retrieve-a-page, API-post-page (creates a page), "
+        "API-patch-page, API-retrieve-a-page-property, API-move-page\n"
+        "  Blocks: API-retrieve-a-block, API-get-block-children, "
+        "API-patch-block-children, API-update-a-block, API-delete-a-block\n"
+        "  Comments: API-retrieve-a-comment, API-create-a-comment\n"
+        "  Users: API-get-self, API-get-user, API-get-users\n\n"
+        "Before querying a data source, call `API-retrieve-a-data-source` to learn "
+        "its property schema. Don't guess property names — Notion is strict.\n\n"
+        "For writes (API-post-page, API-patch-page): call the tool — these auto-run; "
+        "Notion's own undo covers mistakes. Return data + page IDs (UUIDs), not prose. "
+        "The lead can chain page IDs into update calls if needed."
     ),
     model="haiku",
     tools=["mcp__notion__*"],
@@ -241,73 +243,6 @@ GITHUB_AGENT = AgentDefinition(
 )
 
 
-APPLE_EVENTS_AGENT = AgentDefinition(
-    description=(
-        "Apple Reminders + Calendar (macOS EventKit) specialist. Used to "
-        "mirror reminders that Hikari creates into the user's Apple stack "
-        "so iOS gets the alert. For Apple Notes (quick capture, cross-"
-        "device sync via iCloud), call mcp__hikari_utility__note_* tools "
-        "directly from the lead — those are in-process and don't need a "
-        "subagent. The Obsidian wiki via the wiki subagent stays primary "
-        "for permanent personal knowledge."
-    ),
-    prompt=(
-        "You are Hikari's Apple Reminders/Calendar specialist (macOS "
-        "EventKit). The user grants Automation permission on first run. "
-        "Call mcp__apple_events__* tools directly — runtime auto-accepts. "
-        "For writes (new reminder, new event), confirm with a 1-2 sentence "
-        "summary. If EventKit permission denied, report the literal error "
-        "— do NOT invent UI.\n\n"
-        "Return event IDs + status, not prose. The lead uses the IDs for follow-up "
-        "sync."
-    ),
-    model="haiku",
-    tools=["mcp__apple_events__*"],
-)
-
-
-# T8.2 — Voice critic. Silicon Mirror Generator-Critic pattern (arxiv
-# 2604.00478): Sonnet 4 sycophancy dropped 9.6%→1.4% with a Haiku critic
-# in line between draft and send. Nature 2026 warm-training paper showed
-# training models warmer raises sycophancy; Hikari is engineered
-# warm-under-the-mask, so the critic is load-bearing.
-#
-# The bridge invokes this via ``agents.voice_critic.critique_draft`` (a
-# direct bounded SDK call, mirroring ``post_filter.bounded_rewrite``)
-# rather than the Agent tool, because outbound choreography runs outside
-# the agent loop.
-VOICE_CRITIC_AGENT = AgentDefinition(
-    description=(
-        "Voice critic — input is Hikari's draft outbound message. "
-        "Returns PASS or REWRITE: <one-sentence reason>. Used to catch "
-        "banned phrases, sycophancy markers, markdown leakage, and "
-        "task-asking endings before send."
-    ),
-    prompt=(
-        "You are a strict voice critic. Hikari is a tsundere texting one "
-        "person — short, dry, in-character, never sycophantic, never "
-        "markdown. Below is her draft. Output ONLY one of:\n"
-        "PASS\n"
-        "REWRITE: <8-15 words explaining what's off>\n\n"
-        "Reject for any of: 'Great question', 'happy to help', 'Of course', "
-        "'How can I help', exclamation marks for enthusiasm, markdown "
-        "bullets/headers, ending with a task-asking question, walls of "
-        "text (>4 sentences not data), mentioning 'I'm an AI', 'click "
-        "allow', 'permission prompt', 'allowlist', 'approve it on your "
-        "end', 'add it to settings', 'add `mcp__', 'harness has different "
-        "permissions', 'keeps dying' (about her own MCP servers), or any "
-        "UI hallucination. Allow: barbed care, deflection, action lines, "
-        "lowercase prose, mild negation, romaji words.\n\n"
-        "Don't critique tone for being too cold — that's intentional. "
-        "Don't critique brevity — that's the goal. Don't suggest adding "
-        "warmth or pleasantries. Don't ask for clarification.\n\n"
-        "Output strictly PASS or REWRITE: ... — no other text."
-    ),
-    model="haiku",
-    tools=[],  # No tools needed — pure judgment call
-)
-
-
 ALL_AGENTS: dict[str, AgentDefinition] = {
     "recall": RECALL_AGENT,
     "wiki": WIKI_AGENT,
@@ -316,6 +251,4 @@ ALL_AGENTS: dict[str, AgentDefinition] = {
     "notion": NOTION_AGENT,
     "research": RESEARCH_AGENT,
     "github": GITHUB_AGENT,
-    "apple_events": APPLE_EVENTS_AGENT,
-    "voice_critic": VOICE_CRITIC_AGENT,
 }

@@ -179,28 +179,6 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
-    # Phase 11: SPASM-style persona drift probes. Every 4h re-asks three
-    # fixed probe questions (values / emotion_coping / motivation) and logs
-    # cosine distance from the stored baseline. Independent of the per-turn
-    # Haiku drift judge — those catch turn-level slips, these catch slow
-    # worldview shifts. Default ON; toggle via persona.drift_probes_enabled.
-    if bool(cfg.get("persona.drift_probes_enabled", True)):
-        probe_interval = int(cfg.get("persona.drift_probes_interval_hours", 4))
-        async def _persona_probe_job():
-            from .drift_judge import run_persona_probes
-            try:
-                scores = await run_persona_probes()
-                if scores:
-                    logger.info("persona_probes: scores=%s", scores)
-            except Exception:
-                logger.exception("persona_probes: run failed (non-fatal)")
-        scheduler.add_job(
-            _persona_probe_job,
-            IntervalTrigger(hours=probe_interval),
-            id="persona_probes",
-            coalesce=True, max_instances=1, misfire_grace_time=600,
-        )
-
     return scheduler
 
 
@@ -213,6 +191,7 @@ def _calendar_creds_healthy() -> bool:
     treat as healthy unless explicitly disabled. Bridge probes can override.
     """
     import os
+
     from storage import db
 
     explicit = db.runtime_get("calendar_heartbeat_healthy")

@@ -35,7 +35,6 @@ from tools import memory as memory_tools
 from tools import photos as photo_tools
 from tools import wiki as wiki_tools
 
-from . import handoff as handoff_mod
 from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
 from .subagents import ALL_AGENTS
@@ -47,15 +46,18 @@ MODEL_PRIMARY = os.environ.get("HIKARI_MODEL", "claude-sonnet-4-6")
 MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK", "claude-haiku-4-5")
 
 # Per-turn budget for chat-path SDK calls. Used by _build_options /
-# _run_query / respond defaults AND substituted into the persona prompt
+# run_user_turn / respond defaults AND substituted into the persona prompt
 # via _persona().format(max_turns=...). Keep this constant and the
 # `{max_turns}` placeholder in CLAUDE.md in lockstep.
 DEFAULT_MAX_TURNS = 4
 
-# Phase 6: serialize concurrent _run_query calls. User messages, proactive
-# heartbeats, the calendar cron, and defer-resume all share the same
-# ``session_id`` for SDK resume. Two SDK subprocesses resuming the same session
-# in parallel would fork the conversation state — the lock prevents that race.
+# Phase 6 (extended Phase 13): serialize concurrent stateful SDK calls. User
+# messages (``run_user_turn``) and visible proactive jobs
+# (``run_visible_proactive``) all share the same ``session_id`` for SDK
+# resume. Two SDK subprocesses resuming the same session in parallel would
+# fork the conversation state — the lock prevents that race.
+# ``run_internal_control`` is stateless (resume=None) and intentionally
+# does NOT take the lock.
 # Hold time is ~3-15s per turn; that's acceptable given heartbeats are capped
 # at ≤4/week by the cadence governor.
 _RUN_LOCK = asyncio.Lock()
@@ -106,13 +108,6 @@ def _codex_server():
     """Phase 8: small MCP server that exposes the codex/ review reports to
     Hikari (list + read). Wrapped as untrusted on read."""
     return create_sdk_mcp_server(name="hikari_codex", tools=codex_tools.ALL_TOOLS)
-
-
-@cache
-def _scratch_server():
-    """Phase 11: per-session scratch memory shared by recall + wiki subagents."""
-    from tools import scratch
-    return create_sdk_mcp_server(name="hikari_scratch", tools=scratch.ALL_TOOLS)
 
 
 @cache
@@ -181,13 +176,12 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_utility__ytmusic_recent",
     "mcp__hikari_utility__ytmusic_search",
     "mcp__hikari_utility__ytmusic_library",
+    "mcp__hikari_utility__read_attachment",
     "mcp__apple_events__*",
-    "Read", "Glob", "Grep",
     "mcp__github__*",
+    "mcp__google_workspace__*",
+    "mcp__notion__*",
     "mcp__playwright__*",
-    # Phase 11: per-session scratch memory for subagents.
-    "mcp__hikari_scratch__scratch_put",
-    "mcp__hikari_scratch__scratch_get",
 ]
 
 
@@ -212,7 +206,6 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         "hikari_dispatch": _dispatch_server(),
         "hikari_codex": _codex_server(),
         "hikari_utility": _utility_server(),
-        "hikari_scratch": _scratch_server(),
     }
     # Phase 8: attach the privileged dispatch-confirmed server only when the
     # resume path explicitly opts in via extra_allowed_tools. On a normal turn
@@ -250,93 +243,177 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     )
 
 
-async def _run_query(prompt: str, *, max_turns: int = DEFAULT_MAX_TURNS,
-                     max_budget_usd: float = 0.50,
-                     log_to_memory: bool = True,
-                     extra_allowed_tools: list[str] | None = None) -> str:
-    """Send one prompt, collect text response, persist session_id.
+async def _invoke_sdk(
+    prompt: str,
+    *,
+    resume: str | None,
+    log_session_id: bool,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    max_budget_usd: float = 0.50,
+    extra_allowed_tools: list[str] | None = None,
+    retry_on_process_error: bool = True,
+) -> str:
+    """Phase 13 (Stream C) — single private SDK invocation helper.
 
-    All concurrent callers serialize on ``_RUN_LOCK`` so two SDK subprocesses
-    don't resume the same ``session_id`` in parallel (which would fork the
-    conversation state). User messages, proactive heartbeats, the calendar
-    cron, and the defer-resume path all funnel through here.
+    Owns the ClaudeSDKClient lifecycle, response collection, and the
+    ProcessError self-heal retry for paths that resume a stored session.
 
-    ``extra_allowed_tools`` is used by the defer-resume codepath in
-    ``tools/approvals._resume_after_defer`` to inject post-approval sibling
-    tools (e.g. ``dispatch_claude_session_confirmed``) for one turn only —
-    the next normal turn rebuilds options with the base allowlist.
+    Args:
+      resume: session_id to resume, or None for a fresh stateless turn.
+      log_session_id: whether to write the SDK's returned session_id back to
+        the ``session`` table. ``False`` for internal-control / stateless
+        calls so they cannot mutate the live chat session.
+      retry_on_process_error: when True, a ProcessError on the first attempt
+        (with a non-empty resume) clears the stored session and retries
+        once with a fresh subprocess. Disabled for stateless calls since
+        they never resume.
+
+    Returns the joined assistant text (no DB append — caller appends visible
+    outbound text post-send).
+    """
+    session_id = resume
+    parts: list[str] = []
+    for attempt in (1, 2):
+        options = _build_options(
+            resume=session_id,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            extra_allowed_tools=extra_allowed_tools,
+        )
+        parts = []
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+                async for msg in client.receive_response():
+                    if isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, TextBlock):
+                                parts.append(block.text)
+                    elif isinstance(msg, ResultMessage):
+                        if log_session_id and msg.session_id:
+                            db.set_session_id(msg.session_id)
+                        if msg.subtype != "success":
+                            logger.warning("agent loop ended subtype=%s", msg.subtype)
+                        if msg.deferred_tool_use is not None:
+                            logger.info(
+                                "SDK halted on deferred tool: %s (id=%s)",
+                                msg.deferred_tool_use.name,
+                                msg.deferred_tool_use.id,
+                            )
+            break
+        except ProcessError:
+            if (
+                retry_on_process_error
+                and attempt == 1
+                and session_id is not None
+            ):
+                logger.warning(
+                    "SDK subprocess failed with stored session_id=%s; "
+                    "clearing and retrying with a fresh session",
+                    session_id,
+                )
+                db.set_session_id("")
+                session_id = None
+                continue
+            raise
+
+    return "".join(parts).strip()
+
+
+async def run_user_turn(user_text: str) -> str:
+    """Real user message. Resumes the live session.
+
+    Returns reply text only — the caller (``telegram_bridge._send_with_choreography``)
+    is responsible for appending the FINAL ``text_to_send`` to ``messages``
+    after Telegram delivery succeeds. This entrypoint does NOT append the
+    assistant reply itself.
+
+    Acquires ``_RUN_LOCK``, resumes ``db.get_session_id()``, updates
+    ``session_id`` on the SDK's ResultMessage.
     """
     async with _RUN_LOCK:
-        session_id = db.get_session_id()
-        # If the stored session is unknown to the bundled CLI (cleared cache,
-        # cross-host DB copy, expired) the SDK subprocess exits with code 1
-        # before we ever send the prompt. Drop the bad ID and retry once with
-        # a fresh session so the bot self-heals instead of stalling on
-        # "(brain hit a wall)".
-        parts: list[str] = []
-        for attempt in (1, 2):
-            options = _build_options(
-                resume=session_id,
-                max_turns=max_turns,
-                max_budget_usd=max_budget_usd,
-                extra_allowed_tools=extra_allowed_tools,
-            )
-            parts = []
-            try:
-                async with ClaudeSDKClient(options=options) as client:
-                    await client.query(prompt)
-                    async for msg in client.receive_response():
-                        if isinstance(msg, AssistantMessage):
-                            for block in msg.content:
-                                if isinstance(block, TextBlock):
-                                    parts.append(block.text)
-                        elif isinstance(msg, ResultMessage):
-                            if msg.session_id:
-                                db.set_session_id(msg.session_id)
-                            if msg.subtype != "success":
-                                logger.warning("agent loop ended subtype=%s", msg.subtype)
-                            if msg.deferred_tool_use is not None:
-                                logger.info(
-                                    "SDK halted on deferred tool: %s (id=%s)",
-                                    msg.deferred_tool_use.name,
-                                    msg.deferred_tool_use.id,
-                                )
-                break
-            except ProcessError:
-                if attempt == 1 and session_id is not None:
-                    logger.warning(
-                        "SDK subprocess failed with stored session_id=%s; "
-                        "clearing and retrying with a fresh session",
-                        session_id,
-                    )
-                    db.set_session_id("")
-                    session_id = None
-                    continue
-                raise
+        return await _invoke_sdk(
+            user_text,
+            resume=db.get_session_id(),
+            log_session_id=True,
+            max_turns=DEFAULT_MAX_TURNS,
+            max_budget_usd=0.50,
+            retry_on_process_error=True,
+        )
 
-        text = "".join(parts).strip()
-        if log_to_memory and text:
-            db.append_message("assistant", text)
-        return text
+
+async def run_visible_proactive(seed_prompt: str) -> str:
+    """Heartbeat / re-engagement / calendar heartbeat content generation.
+
+    Resumes the live session so the proactive message has chat context.
+    Returns text only — caller appends the FINAL sent text with
+    ``source='proactive'`` after ``send_text`` succeeds.
+
+    Acquires ``_RUN_LOCK``, resumes session_id, updates session_id on
+    ResultMessage.
+    """
+    async with _RUN_LOCK:
+        return await _invoke_sdk(
+            seed_prompt,
+            resume=db.get_session_id(),
+            log_session_id=True,
+            max_turns=5,
+            max_budget_usd=0.20,
+            retry_on_process_error=True,
+        )
+
+
+async def run_internal_control(
+    prompt: str,
+    *,
+    max_turns: int = 5,
+    max_budget_usd: float = 0.30,
+    extra_allowed_tools: list[str] | None = None,
+) -> str:
+    """Stateless internal control prompt.
+
+    Used by: voice critic rewrite, approval defer-resume, Apple/GCal sync,
+    reminder body composition, proactive content scoring, calendar fetch
+    step.
+
+    Hard contract: ``resume=None``, no ``session_id`` writeback, no
+    ``messages`` append, no handoff write. Returns text only. The live
+    Claude SDK session is never touched — control prompts cannot leak
+    into the next user turn.
+
+    No ``_RUN_LOCK`` either — stateless turns can't race the live session
+    (they don't resume it). No ProcessError retry — without a resume there's
+    nothing to self-heal away from.
+    """
+    return await _invoke_sdk(
+        prompt,
+        resume=None,
+        log_session_id=False,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        extra_allowed_tools=extra_allowed_tools,
+        retry_on_process_error=False,
+    )
 
 
 async def respond(user_text: str) -> str:
-    """Main chat entry point — called per Telegram message."""
+    """Backwards-compat wrapper for the chat path.
+
+    Appends the user message + bumps ``last_user_message``, then delegates
+    to ``run_user_turn``. Does NOT append the assistant reply — that's the
+    caller's job (telegram_bridge._send_with_choreography, post-send) so the
+    DB row matches what Telegram actually delivered (codex P0 fix).
+    """
     db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
-    reply = await _run_query(user_text, max_turns=DEFAULT_MAX_TURNS, max_budget_usd=0.50)
-    # Snapshot last turns for next-session cold-open ("where were we").
-    try:
-        handoff_mod.write_handoff()
-    except Exception:
-        logger.exception("write_handoff failed (non-fatal)")
-    return reply
+    return await run_user_turn(user_text)
 
 
-async def run_proactive(seed_prompt: str) -> str:
-    """Generate one proactive message text. Caller is responsible for sending it."""
-    return await _run_query(seed_prompt, max_turns=5, max_budget_usd=0.20,
-                            log_to_memory=False)
+# Phase 13 (Stream C): legacy alias kept so out-of-stream code that imports
+# ``run_proactive`` (e.g. morning_brief) keeps working with the new visible
+# proactive semantics. Streams that explicitly compose internal-only prompts
+# call ``run_internal_control`` directly.
+run_proactive = run_visible_proactive
 
 
 async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
@@ -351,10 +428,10 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
         fires SycEval / ELEPHANT prompts at a fresh persona session and
         scores the response via Haiku.
 
-    Differs from ``_run_query`` in three ways:
+    Differs from ``run_user_turn`` / ``run_visible_proactive`` in three ways:
       - No session resume — every call is a fresh conversation.
-      - No write-back to ``messages`` (log_to_memory off; ``append_message``
-        is skipped). Probe answers must not pollute the chat history.
+      - No write-back to ``messages``. Probe answers must not pollute the
+        chat history.
       - No shared ``_RUN_LOCK`` — these calls never resume the live session,
         so they cannot race with user turns or proactive jobs.
 

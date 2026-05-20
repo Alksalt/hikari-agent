@@ -56,17 +56,16 @@ async def test_translate_via_deepl_when_key_set(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_translate_falls_back_to_libretranslate_when_no_key(monkeypatch):
+    """Stream A: LibreTranslate fallback removed. When DEEPL_API_KEY is absent
+    and the default public libretranslate.com endpoint is configured,
+    the tool now returns an immediate refusal rather than burning a network
+    round-trip on a guaranteed 403."""
     monkeypatch.delenv("DEEPL_API_KEY", raising=False)
     from tools import translate
-    import httpx
-    client = _FakeAsyncClient()
-    client.responses["https://libretranslate.com"] = _FakeResponse(200, {
-        "translatedText": "Hei",
-    })
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client)
     out = await translate.translate.handler({"text": "Hello", "target": "no"})
-    assert out["data"]["translated_text"] == "Hei"
-    assert out["data"]["backend"] == "libretranslate"
+    text = out["content"][0]["text"]
+    assert "refused" in text
+    assert "translation backend not configured" in text
 
 
 @pytest.mark.asyncio

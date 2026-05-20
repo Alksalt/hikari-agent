@@ -56,40 +56,52 @@ uv run python scripts/migrate_from_current.py \
 hikari-agent/
 ├── pyproject.toml
 ├── .env.example
-├── .mcp.json                  # external MCP servers (Google Workspace stub)
+├── .mcp.json                  # external MCP servers (Google Workspace, Notion, GitHub, etc.)
 ├── CLAUDE.md                  # always-loaded persona
+├── AGENTS.md                  # delegation map, subagents, utility tools, runtime entrypoints
 ├── .claude/skills/
-│   ├── character-voice/{SKILL.md, STAGES.md, LORE.md}
+│   ├── character-voice/{SKILL.md, INTIMATE.md, LORE.md}
 │   ├── recall-memory/SKILL.md
 │   ├── generate-photo/SKILL.md
 │   ├── schedule-heartbeat/{SKILL.md, EXAMPLES.md}
 │   └── drive-search/SKILL.md
 ├── agents/
-│   ├── runtime.py             # ClaudeSDKClient, MCP wiring, hooks, model + fallback
-│   ├── telegram_bridge.py     # Telegram polling, OWNER lock, photo outbox drain
-│   ├── hooks.py               # UserPromptSubmit memory injection, PostToolUseFailure log
-│   ├── proactive.py           # heartbeat: condition check + LLM message gen
-│   ├── reflection.py          # daily reflection + session consolidation
+│   ├── runtime.py             # ClaudeSDKClient, 3-entrypoint split (run_user_turn /
+│   │                          #   run_visible_proactive / run_internal_control), MCP wiring
+│   ├── telegram_bridge.py     # Telegram polling, OWNER lock, _send_with_choreography (codex P0)
+│   ├── hooks.py               # UserPromptSubmit memory injection, PreToolUse defer gate,
+│   │                          #   PostToolUseFailure log, ExternalWrap untrusted-content hook
+│   ├── proactive.py           # heartbeat, re-engagement, calendar heartbeat, Apple/GCal sync
+│   ├── postsend.py            # observation/noticing surfaced-marking (post-send bookkeeping)
+│   ├── reflection.py          # daily reflection, session consolidation, weekly consolidation
+│   ├── reflection_sanitize.py # injection defense for reflection → core_blocks writes
 │   ├── scheduler.py           # APScheduler job wiring
+│   ├── subagents.py           # ALL_AGENTS: recall, wiki, code_dispatch, drive_gmail,
+│   │                          #   notion, research, github
 │   └── tool_inventory.py      # per-turn tool/subagent inventory block (anti-hallucination)
 ├── tools/
 │   ├── apple_notes.py         # @tool note_create/search/read (AppleScript, macOS-only)
-│   ├── memory.py              # @tool recall, remember, task_*, ...
+│   ├── attachments.py         # @tool read_attachment — scoped reader (Stream B)
+│   ├── approvals.py           # defer-gate: PreToolUse hook + CONFIRM-SEND resume path
+│   ├── memory.py              # @tool recall, remember, task_*, update_core_block, ...
 │   └── photos.py              # @tool generate_photo (OpenRouter Flux)
 ├── storage/
 │   ├── db.py                  # full schema + helpers
 │   └── retrieval.py           # Park et al. scoring
+├── config/
+│   └── engagement.yaml        # all tunables: typing, proactive, approvals, defer gates, ...
 ├── scripts/
 │   └── migrate_from_current.py
 ├── assets/
 │   └── APPEARANCE.md
-└── tests/test_smoke.py
+└── tests/                     # 561 collected; 543 pass, 18 skip, 0 fail
 ```
 
 ## Verify
 
 ```bash
-uv run pytest -q   # 60+ smoke + integration + persona-drift tests, all in-memory (no live API). Persona regression tests under tests/persona/ — run with uv run pytest tests/persona/ -q.
+uv run pytest -q   # 543+ passed, 18 skipped, 0 failed. All in-memory (no live API).
+                   # Persona regression tests: uv run pytest tests/persona/ -q
 uv run ruff check .
 ```
 

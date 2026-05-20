@@ -12,13 +12,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from agents import config as cfg
-from agents.runtime import run_proactive
+from agents.runtime import run_visible_proactive
 from storage import db
 from tools.weather import fetch_forecast
+
+# Phase 13 (Stream C): legacy alias so tests that monkeypatch
+# ``morning_brief.run_proactive`` keep working until Stream F updates them.
+run_proactive = run_visible_proactive  # noqa: F841
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +121,8 @@ async def maybe_send_morning_brief(send_text) -> bool:
         return False
     prompt = _build_prompt(forecast, label)
     try:
+        # Look up via module globals so tests can monkeypatch
+        # ``morning_brief.run_proactive``.
         text = (await run_proactive(prompt)).strip()
     except Exception:
         logger.exception("morning_brief: run_proactive failed")
@@ -128,6 +134,13 @@ async def maybe_send_morning_brief(send_text) -> bool:
     except Exception:
         logger.exception("morning_brief: send_text failed")
         return False
+    # Phase 13 (Stream C): record the visible morning brief post-send.
+    try:
+        db.append_message("assistant", text, source="proactive")
+    except Exception:
+        logger.exception(
+            "morning_brief: append_message post-send failed (non-fatal)",
+        )
     db.runtime_set("last_morning_brief_sent",
                    datetime.now(UTC).isoformat())
     logger.info("morning_brief: sent (sources=%s)",

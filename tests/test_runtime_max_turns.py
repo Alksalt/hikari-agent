@@ -22,8 +22,10 @@ def test_build_options_default_uses_constant():
 
 
 def test_run_query_default_uses_constant():
+    """Stream C split _run_query into _invoke_sdk + 3 entrypoints.
+    Pin that _invoke_sdk's max_turns default == DEFAULT_MAX_TURNS."""
     import inspect
-    sig = inspect.signature(runtime._run_query)
+    sig = inspect.signature(runtime._invoke_sdk)
     default = sig.parameters["max_turns"].default
     assert default == runtime.DEFAULT_MAX_TURNS
 

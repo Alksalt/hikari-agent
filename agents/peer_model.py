@@ -37,16 +37,6 @@ class PeerRepresentation(TypedDict, total=False):
     summary: str
 
 
-_EMPTY_MODEL: PeerRepresentation = {
-    "communication_style": "",
-    "values": [],
-    "domain_expertise": [],
-    "current_concerns": [],
-    "blindspots": [],
-    "summary": "",
-}
-
-
 def empty() -> PeerRepresentation:
     """Return an empty (but well-shaped) representation. Used at first-run."""
     return {

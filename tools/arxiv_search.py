@@ -1,6 +1,7 @@
 """Phase 10: arxiv search for ML/DL papers."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -41,7 +42,7 @@ async def arxiv_search(args: dict[str, Any]) -> dict[str, Any]:
             sort_order=arxiv.SortOrder.Descending,
         )
         papers = []
-        for r in search.results():
+        for r in await asyncio.to_thread(lambda: list(search.results())):
             try:
                 pub = r.published if isinstance(r.published, datetime) \
                     else datetime.fromisoformat(str(r.published))

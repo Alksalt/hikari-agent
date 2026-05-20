@@ -86,7 +86,7 @@ def _format_tools_available() -> str:
 
 
 def _format_core_blocks() -> str:
-    """Dump the fast-path core_blocks (mood_today + preoccupation + jokes etc).
+    """Dump the fast-path core_blocks (mood_today, preoccupation, weekly_consolidation).
 
     Phase 7: the legacy ``user_profile`` block is filtered out — its content
     has been migrated into the new ``peer_representation`` table (see
@@ -181,7 +181,20 @@ def _format_affect() -> str:
 
 
 def _format_observations() -> str:
-    """Pattern observations (e.g. 'you always go quiet around 11pm')."""
+    """Pattern observations (e.g. 'you always go quiet around 11pm').
+
+    Phase 13 (Stream C): no longer marks rows surfaced inline. The injected
+    IDs are stashed in ``runtime_state`` under
+    ``pending_surfaced_observation_ids`` and the bridge calls
+    ``agents.postsend.mark_pending_surfaced()`` only after Telegram
+    delivery + DB append succeed. Codex P2 fix: observations no longer
+    disappear after being offered to the model if the reply never lands.
+    """
+    import json as _json
+    # Always clear any stale pending IDs from a prior turn so this turn's
+    # set is authoritative — even when there's nothing fresh to inject, the
+    # previous turn's IDs should not bleed into the next post-send pass.
+    db.runtime_set("pending_surfaced_observation_ids", None)
     if not cfg.get("pattern_detection.enabled", True):
         return ""
     limit = int(cfg.get("pattern_detection.surface_max_per_session", 1))
@@ -199,18 +212,31 @@ def _format_observations() -> str:
     if not rows:
         return ""
     lines = ["# noticed patterns (you can raise these sideways, not as diagnoses)"]
+    ids: list[int] = []
     for r in rows:
         lines.append(f"- [{r['kind']}] {r['summary']}")
-        # Mark as surfaced immediately so the next turn doesn't re-inject.
         try:
-            db.observation_mark_surfaced(int(r["id"]))
-        except Exception:
-            logger.exception("observation mark_surfaced failed for id=%s", r.get("id"))
+            ids.append(int(r["id"]))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        db.runtime_set(
+            "pending_surfaced_observation_ids",
+            _json.dumps(ids),
+        )
     return "\n".join(lines)
 
 
 def _format_noticings() -> str:
-    """Week-over-week noticings (e.g. 'you stopped mentioning the side project')."""
+    """Week-over-week noticings (e.g. 'you stopped mentioning the side project').
+
+    Phase 13 (Stream C): same deferred-marking pattern as
+    ``_format_observations``. IDs are stashed under
+    ``pending_surfaced_noticing_ids`` and committed by ``postsend.mark_pending_surfaced``
+    after a successful send.
+    """
+    import json as _json
+    db.runtime_set("pending_surfaced_noticing_ids", None)
     if not cfg.get("noticings.enabled", True):
         return ""
     try:
@@ -221,12 +247,18 @@ def _format_noticings() -> str:
     if not rows:
         return ""
     lines = ["# noticed changes about them (surface obliquely, not as a checkup)"]
+    ids: list[int] = []
     for r in rows:
         lines.append(f"- {r['summary']}")
         try:
-            db.noticing_mark_surfaced(int(r["id"]))
-        except Exception:
-            logger.exception("noticing mark_surfaced failed for id=%s", r.get("id"))
+            ids.append(int(r["id"]))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        db.runtime_set(
+            "pending_surfaced_noticing_ids",
+            _json.dumps(ids),
+        )
     return "\n".join(lines)
 
 

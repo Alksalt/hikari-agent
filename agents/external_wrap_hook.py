@@ -82,6 +82,15 @@ def _wrap_tool_response(tool_name: str, tool_response: Any) -> Any:
     Other shapes (numbers, lists-of-non-blocks, custom dicts without "content")
     pass through unchanged. ``_audit_wrap`` is only called in
     ``wrap_post_tool_use`` when this function actually changed the value.
+
+    B-3 finding (Stream B): the ``data`` field in MCP tool return dicts is
+    PROGRAMMATIC-ONLY and is never exposed to the model. The SDK's
+    ``create_sdk_mcp_server`` call_tool handler (``__init__.py``) only reads
+    ``result["content"]`` when constructing the ``CallToolResult``; the
+    ``data`` key is silently ignored and never forwarded to the CLI subprocess
+    (confirmed in ``claude_agent_sdk/_internal/query.py`` lines 645-700).
+    Therefore ``data`` does not need to be wrapped — it is safe to preserve
+    it unchanged in PostToolUse hook responses.
     """
     # Common MCP envelope.
     if isinstance(tool_response, dict) and "content" in tool_response:

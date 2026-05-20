@@ -88,9 +88,9 @@ async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
         gcal_sync_pending=True,
     )
     from agents import proactive
-    async def fake_run_proactive(prompt, **kwargs):
+    async def fake_run_internal_control(prompt, **kwargs):
         return "event_id: 'abc123xyz'\n"
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
+    monkeypatch.setattr(proactive, "run_internal_control", fake_run_internal_control)
     n = await proactive.sync_pending_gcal_reminders()
     assert n == 1
     row = db.reminder_get(rid)
@@ -110,9 +110,9 @@ async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
     with _conn() as conn:
         conn.execute("UPDATE reminders SET apple_sync_pending=1 WHERE id=?", (rid,))
     from agents import proactive
-    async def fake_run_proactive(prompt, **kwargs):
+    async def fake_run_internal_control(prompt, **kwargs):
         return "event_id: 'ABC-EVENT-123'\n"
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
+    monkeypatch.setattr(proactive, "run_internal_control", fake_run_internal_control)
     # Patch sys.platform to darwin so the guard passes regardless of test host
     import sys
     monkeypatch.setattr(sys, "platform", "darwin")

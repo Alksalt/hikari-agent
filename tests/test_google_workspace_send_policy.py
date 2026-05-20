@@ -1,0 +1,90 @@
+"""Stream A gating policy regression: Gmail sends, bulk deletes, calendar event
+delete, and Drive file delete must all be in the defer_gated_tools list and
+must actually trigger the defer hook on a fake PreToolUse invocation.
+"""
+from __future__ import annotations
+
+import importlib
+import re
+from pathlib import Path
+
+import pytest
+
+from agents import config
+
+
+@pytest.fixture(autouse=True)
+def _reload_config(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
+    import storage.db as _db_mod
+    importlib.reload(_db_mod)
+    config.reload()
+    yield
+
+
+_GATED_TOOLS = [
+    "mcp__google_workspace__gmail_send_email",
+    "mcp__google_workspace__gmail_reply_to_email",
+    "mcp__google_workspace__gmail_bulk_delete_messages",
+    "mcp__google_workspace__delete_calendar_event",
+    "mcp__google_workspace__drive_delete_file",
+]
+
+
+def _is_matched_by_patterns(tool_name: str) -> bool:
+    """Replicate the exact matching logic from agents/hooks.py:_is_defer_gated."""
+    patterns = config.get("approvals.defer_gated_tools") or []
+    for pat in patterns:
+        try:
+            if re.fullmatch(str(pat), tool_name):
+                return True
+        except re.error:
+            pass
+    return False
+
+
+def test_defer_gated_tools_contains_required_patterns():
+    """config/engagement.yaml must list regex patterns that match every
+    Stream A gated tool."""
+    patterns = config.get("approvals.defer_gated_tools") or []
+    assert patterns, "approvals.defer_gated_tools is empty"
+
+    for tool_name in _GATED_TOOLS:
+        assert _is_matched_by_patterns(tool_name), (
+            f"{tool_name!r} is not matched by any pattern in "
+            f"approvals.defer_gated_tools: {patterns}"
+        )
+
+
+@pytest.mark.parametrize("tool_name", _GATED_TOOLS)
+@pytest.mark.asyncio
+async def test_defer_hook_fires_for_gated_workspace_tool(tool_name, monkeypatch):
+    """A fake PreToolUse event for each gated tool actually triggers defer."""
+    from agents import hooks
+    from tools import approvals as approval_tools
+
+    # Stub OOB telegram prompt so no real network call is made.
+    sent: list = []
+
+    async def fake_send_defer(chat_id, tier, summary):
+        sent.append((chat_id, tier, summary))
+
+    monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send_defer)
+
+    out = await hooks.defer_gated_tools(
+        {
+            "tool_name": tool_name,
+            "tool_use_id": f"tu_{tool_name[:20]}",
+            "tool_input": {"dummy": "value"},
+        },
+        None,
+        None,
+    )
+
+    assert out.get("hookSpecificOutput", {}).get("permissionDecision") == "defer", (
+        f"Expected defer for {tool_name!r} but got: {out}"
+    )
+    assert len(sent) == 1, (
+        f"Expected 1 OOB prompt for {tool_name!r} but sent {len(sent)}"
+    )

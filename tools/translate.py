@@ -105,6 +105,18 @@ async def translate(args: dict[str, Any]) -> dict[str, Any]:
             f"{', '.join(sorted(_SUPPORTED))}"
         )
 
+    # Short-circuit: if DEEPL_API_KEY is absent AND the configured LibreTranslate
+    # endpoint is still the default public libretranslate.com (which requires auth
+    # since late 2023 and returns 403), refuse immediately rather than burning a
+    # network round-trip on a guaranteed failure.
+    _lt_endpoint = str(cfg.get(
+        "translate.libretranslate_endpoint",
+        "https://libretranslate.com/translate",
+    ))
+    _public_lt = "libretranslate.com"
+    if not os.environ.get("DEEPL_API_KEY") and _public_lt in _lt_endpoint:
+        return _ok("refused: translation backend not configured (set DEEPL_API_KEY)")
+
     deepl_target = "ja" if target == "ja_romaji" else target
     result = await _deepl_translate(text, deepl_target)
     backend = "deepl"

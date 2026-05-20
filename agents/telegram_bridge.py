@@ -37,10 +37,11 @@ from . import affect as affect_mod
 from . import belief_frame as belief_mod
 from . import config as cfg
 from . import drift_judge as drift_mod
+from . import handoff as handoff_mod
 from . import post_filter
+from . import postsend as postsend_mod
 from . import reactions as reactions_mod
 from . import stickers as stickers_mod
-from . import voice_critic as voice_critic_mod
 from .background_listener import (
     listener_loop,
     recover_deferred_approvals,
@@ -55,7 +56,7 @@ from .bridge_ux import (
 from .log_scrub import install_root_filter
 from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
-from .runtime import REPO_ROOT, owner_id, respond
+from .runtime import REPO_ROOT, owner_id, respond, run_internal_control
 from .scheduler import build_scheduler
 
 logger = logging.getLogger(__name__)
@@ -172,91 +173,29 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
     return sent
 
 
-async def _run_voice_critic(reply_text: str) -> str:
-    """T8.2 — Silicon Mirror Generator-Critic gate on outbound drafts.
-
-    Runs the bounded Haiku critic (``voice_critic.critique_draft``) on
-    ``reply_text``. If PASS, returns the original. If REWRITE, re-prompts the
-    lead exactly once with the critic's reason prepended and returns the
-    second draft. ERROR / unparseable verdicts are treated as PASS so we
-    never drop a message on a critic malfunction.
-
-    Adds one Haiku call (~300ms p50) per outbound. Disable via
-    ``voice_critic.enabled`` in engagement.yaml if it becomes a latency
-    problem.
-
-    Logs every verdict to ``voice_critic_log`` for drift telemetry.
-    """
-    if not bool(cfg.get("voice_critic.enabled", True)):
-        return reply_text
-    verdict = await voice_critic_mod.critique_draft(reply_text)
-    if verdict.verdict == "PASS" or verdict.verdict == "ERROR":
-        try:
-            db.voice_critic_log_insert(
-                draft=reply_text,
-                verdict=verdict.verdict,
-                reason=verdict.reason,
-                rewritten=False,
-                final_text=reply_text,
-            )
-        except Exception:
-            logger.exception("voice_critic: log insert failed (non-fatal)")
-        return reply_text
-    # REWRITE — re-prompt the lead exactly once. No looping.
-    reason = verdict.reason or "rewrite — voice off"
-    rewrite_prompt = (
-        "[system: voice_critic flagged your previous draft. "
-        f"reason: {reason}. rewrite ONLY your last reply, in voice — same "
-        "intent, shorter if possible. output the rewrite directly, no "
-        "preamble.]"
-    )
-    try:
-        rewritten = await respond(rewrite_prompt)
-    except Exception:
-        logger.exception("voice_critic: rewrite respond() failed")
-        rewritten = ""
-    final = (rewritten or "").strip() or reply_text
-    try:
-        db.voice_critic_log_insert(
-            draft=reply_text,
-            verdict="REWRITE",
-            reason=reason,
-            rewritten=bool(rewritten),
-            final_text=final,
-        )
-    except Exception:
-        logger.exception("voice_critic: log insert failed (non-fatal)")
-    return final
-
-
 async def _send_with_choreography(
     bot, message, reply_text: str, elapsed_real: float = 0.0,
 ) -> None:
-    """Run outgoing filter, then type-indicator + delay, then send.
+    """Phase 13 (Stream C) — filter, send, THEN persist.
 
-    The post_filter pass catches Claude's default assistant patter and obvious
-    sycophancy collapses. Short safety-voice replies get swapped for an in-voice
-    short phrase. Longer drift triggers go through the Phase 8 bounded rewrite
-    path before falling back to a deterministic short reply.
+    New ordering (was: append-draft → filter → send → stamp-id):
+      1. post_filter + rewrite-or-fallback → final ``text_to_send``.
+      2. Telegram send (``message.reply_text``). On failure: log, do NOT
+         append to ``messages``. The next user turn will continue from a
+         consistent state (no phantom assistant row).
+      3. On success: append the FINAL ``text_to_send`` to ``messages`` with
+         ``telegram_message_id`` stamped in the same insert (one transaction).
+      4. Write ``session_handoff`` AFTER step 3 so the handoff snapshot
+         reflects the actually-delivered text (codex P0 fix).
+      5. ``postsend.mark_pending_surfaced`` commits observation/noticing
+         IDs the hook stashed for this turn.
+      6. Sticker gate + drift judge fire unchanged.
 
-    Phase 8: the typing indicator is now held alive by ``TypingHeartbeat`` from
-    the moment the user message arrives. ``elapsed_real`` is the time we've
-    already spent in the agent path; if it exceeds the synthesized typing
-    delay, the artificial delay is skipped so we don't stack real latency on
-    top of fake latency.
-
-    Phase 11 (T8.2): voice_critic runs BEFORE the deterministic filter. If
-    the critic returns REWRITE, the lead re-drafts once before the filter
-    sees anything. PASS / ERROR / unparseable all ship the original.
+    Codex P0 fix: SQLite ``messages`` now records the post-filter text the
+    user actually saw, not the pre-filter draft.
     """
     chat_id = message.chat_id
     mood = _mood()
-
-    # T8.2: Silicon Mirror critic. One bounded Haiku call.
-    try:
-        reply_text = await _run_voice_critic(reply_text)
-    except Exception:
-        logger.exception("voice_critic: gate crashed (non-fatal; shipping draft)")
 
     filtered = filter_outgoing(reply_text)
     text_to_send = filtered.text
@@ -287,17 +226,49 @@ async def _send_with_choreography(
     elif remaining > 0:
         await asyncio.sleep(remaining)
 
-    sent_msg = await message.reply_text(text_to_send)
-
-    # Phase 8: stamp the assistant row in `messages` with the Telegram
-    # outbound message_id so 👍/👎 reactions can be joined back to the reply.
     try:
-        if sent_msg is not None and getattr(sent_msg, "message_id", None):
-            db.update_last_assistant_telegram_msg_id(int(sent_msg.message_id))
+        sent_msg = await message.reply_text(text_to_send)
     except Exception:
         logger.exception(
-            "post_send: failed to stamp telegram_message_id (non-fatal)"
+            "telegram send failed; NOT appending assistant row "
+            "(text would be unsent)",
         )
+        return
+
+    # Step 3: persist the FINAL sent text + Telegram id in one insert.
+    try:
+        tg_msg_id = (
+            int(sent_msg.message_id)
+            if sent_msg is not None and getattr(sent_msg, "message_id", None)
+            else 0
+        )
+        if tg_msg_id:
+            db.append_message_with_telegram_id(
+                "assistant", text_to_send, tg_msg_id, source="chat",
+            )
+        else:
+            # Send returned no message_id (shouldn't happen with PTB but
+            # defend against it) — still persist the content so the
+            # next-turn handoff sees what was delivered.
+            db.append_message("assistant", text_to_send, source="chat")
+    except Exception:
+        logger.exception(
+            "post_send: append_message_with_telegram_id failed (non-fatal)",
+        )
+
+    # Step 4: write handoff snapshot AFTER the final assistant row is committed,
+    # so cold-open replay shows what the user actually saw.
+    try:
+        handoff_mod.write_handoff()
+    except Exception:
+        logger.exception("write_handoff failed (non-fatal)")
+
+    # Step 5: commit observation/noticing surfaced markers only now that the
+    # reply is in front of the user.
+    try:
+        postsend_mod.mark_pending_surfaced()
+    except Exception:
+        logger.exception("postsend.mark_pending_surfaced failed (non-fatal)")
 
     # Outbound-counter bump + sticker gate. Bump first so the value passed in
     # reflects this just-sent reply; the sticker module reads the same shared
@@ -455,16 +426,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 logger.exception("affect scan on caption failed (non-fatal)")
         prompt = (
             f"the user sent you a photo. it's saved at {rel}. "
-            f"use the Read tool to look at it before replying. "
+            "use the `mcp__hikari_utility__read_attachment` tool "
+            "with the path above to look at it before replying. "
             f"caption (if any): {user_caption!r}.\n\n"
-            f"react in your voice — short. not effusive. denial layer on. "
-            f"after you reply, if there's anything photo-worth-remembering "
-            f"(an object, a setting, a mood worth a future callback), "
-            f"call mcp__hikari_memory__remember with a tight fact "
-            f"(subject='photo', predicate='showed', object='<thing>')."
+            "react in your voice — short. not effusive. denial layer on. "
+            "after you reply, if there's anything photo-worth-remembering "
+            "(an object, a setting, a mood worth a future callback), "
+            "call mcp__hikari_memory__remember with a tight fact "
+            "(subject='photo', predicate='showed', object='<thing>')."
         )
+        # Phase 13 (Stream C): record a compact event row for the user's
+        # photo instead of letting the synthetic prompt land in `messages`
+        # as if the user typed it (codex P1 fix). The agent gets the prompt
+        # via run_internal_control which does not append it anywhere.
         try:
-            reply = await respond(prompt)
+            event_text = f"[photo: {rel}]"
+            if user_caption:
+                event_text += f" caption: {user_caption!r}"
+            db.append_message("user", event_text, source="event")
+            db.runtime_set("last_user_message", db._now())
+        except Exception:
+            logger.exception("photo event row write failed (non-fatal)")
+        try:
+            reply = await run_internal_control(
+                prompt, max_turns=5, max_budget_usd=0.50,
+            )
         except Exception:
             logger.exception("agent failed on inbound photo")
             await message.reply_text("(brain hit a wall on that photo.)")
@@ -566,8 +552,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"react in your voice — short. denial layer on. you can comment on "
             f"how they sounded (tired, rushed, lit up) if it's there."
         )
+        # Phase 13 (Stream C): event row for the voice note rather than
+        # appending the synthetic prompt as the user's turn.
         try:
-            reply = await respond(prompt)
+            event_text = (
+                f"[voice note {duration_sec:.0f}s] transcript: {transcript!r}"
+            )
+            db.append_message("user", event_text, source="event")
+            db.runtime_set("last_user_message", db._now())
+        except Exception:
+            logger.exception("voice event row write failed (non-fatal)")
+        try:
+            reply = await run_internal_control(
+                prompt, max_turns=5, max_budget_usd=0.50,
+            )
         except Exception:
             logger.exception("agent failed on inbound voice note")
             await message.reply_text("(brain hit a wall on that one.)")
@@ -878,15 +876,31 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         location_hint = f" exif location: {label!r}." if label else ""
         prompt = (
-            f"the user sent you an image (as a file/document, so exif preserved). "
-            f"it's saved at {rel}. use the Read tool to look at it before replying. "
+            "the user sent you an image (as a file/document, so exif preserved). "
+            f"it's saved at {rel}. "
+            "use the `mcp__hikari_utility__read_attachment` tool "
+            "with the path above to look at it before replying. "
             f"caption (if any): {user_caption!r}.{location_hint}\n\n"
-            f"react in your voice — short. not effusive. denial layer on. "
-            f"after you reply, if there's anything photo-worth-remembering, "
-            f"call mcp__hikari_memory__remember with a tight fact."
+            "react in your voice — short. not effusive. denial layer on. "
+            "after you reply, if there's anything photo-worth-remembering, "
+            "call mcp__hikari_memory__remember with a tight fact."
         )
+        # Phase 13 (Stream C): event row for the document image rather than
+        # appending the synthetic prompt as user-typed.
         try:
-            reply = await respond(prompt)
+            event_text = f"[document image: {rel}]"
+            if user_caption:
+                event_text += f" caption: {user_caption!r}"
+            if label:
+                event_text += f" exif_label: {label!r}"
+            db.append_message("user", event_text, source="event")
+            db.runtime_set("last_user_message", db._now())
+        except Exception:
+            logger.exception("document image event row write failed (non-fatal)")
+        try:
+            reply = await run_internal_control(
+                prompt, max_turns=5, max_budget_usd=0.50,
+            )
         except Exception:
             logger.exception("agent failed on inbound document image")
             await message.reply_text("(brain hit a wall on that one.)")
@@ -1271,15 +1285,38 @@ async def _send_text_with_choreography(
     try:
         sent = await bot.send_message(chat_id=chat_id, text=text_to_send)
     except Exception:
-        logger.exception("reaction-turn: send_message failed")
+        logger.exception(
+            "reaction-turn: send_message failed; NOT appending assistant row"
+        )
         return
 
+    # Phase 13 (Stream C): persist the FINAL sent text post-send. Reaction
+    # turns are still real visible assistant outbound — source='chat' so
+    # reflection/handoff treat them like normal replies.
     try:
-        if sent is not None and getattr(sent, "message_id", None):
-            db.update_last_assistant_telegram_msg_id(int(sent.message_id))
+        tg_msg_id = (
+            int(sent.message_id)
+            if sent is not None and getattr(sent, "message_id", None)
+            else 0
+        )
+        if tg_msg_id:
+            db.append_message_with_telegram_id(
+                "assistant", text_to_send, tg_msg_id, source="chat",
+            )
+        else:
+            db.append_message("assistant", text_to_send, source="chat")
     except Exception:
         logger.exception(
-            "reaction-turn: telegram_message_id stamp failed (non-fatal)"
+            "reaction-turn: append_message_with_telegram_id failed (non-fatal)"
+        )
+
+    # Reaction turns inject the same observation/noticing block via the hook,
+    # so commit the markers here too.
+    try:
+        postsend_mod.mark_pending_surfaced()
+    except Exception:
+        logger.exception(
+            "reaction-turn: postsend.mark_pending_surfaced failed (non-fatal)",
         )
 
     try:

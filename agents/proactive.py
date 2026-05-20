@@ -25,7 +25,13 @@ from storage import db
 
 from . import cadence
 from . import config as cfg
-from .runtime import run_proactive
+from .runtime import run_internal_control, run_visible_proactive
+
+# Phase 13 (Stream C): legacy alias so any test that monkeypatches
+# ``proactive.run_proactive`` keeps working until Stream F updates them.
+# New production code in this module calls ``run_visible_proactive`` /
+# ``run_internal_control`` directly so the intent is explicit.
+run_proactive = run_visible_proactive  # noqa: F841
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +84,6 @@ def should_send_heartbeat() -> bool:
     last_sent = _parse_dt(db.runtime_get("last_proactive_sent"))
     min_interval_hr = float(p.get("heartbeat_min_interval_hours", 4))
     if last_sent and (now - last_sent).total_seconds() < min_interval_hr * 3600:
-        return False
-    # Soft-scarcity beat — sometimes we deliberately go quiet for ~4h.
-    if cadence.in_scarcity_skip_window():
-        return False
-    # Probabilistic: open a new skip window occasionally on otherwise-eligible
-    # heartbeats. When opened, this same window becomes "in skip" → we return
-    # False on the next check.
-    if cadence.maybe_open_scarcity_skip():
         return False
     return True
 
@@ -209,6 +207,16 @@ async def maybe_send_heartbeat(send_text) -> bool:
     except Exception:
         logger.exception("send_text failed in heartbeat")
         return False
+    # Phase 13 (Stream C): record the user-visible proactive message in
+    # `messages` AFTER successful delivery — codex P1 fix. ``source='proactive'``
+    # lets heuristics (reengage, handoff) tell apart Hikari-initiated turns
+    # from real chat replies.
+    try:
+        db.append_message("assistant", text, source="proactive")
+    except Exception:
+        logger.exception(
+            "heartbeat: append_message post-send failed (non-fatal)",
+        )
     _record_sent(idx)
     cadence.record_proactive_sent()
     logger.info("heartbeat sent (source=%s)", source)
@@ -282,6 +290,13 @@ async def maybe_send_reengagement(send_text) -> bool:
     except Exception:
         logger.exception("send_text failed in reengage")
         return False
+    # Phase 13 (Stream C): persist the visible re-engagement nudge post-send.
+    try:
+        db.append_message("assistant", text, source="proactive")
+    except Exception:
+        logger.exception(
+            "reengage: append_message post-send failed (non-fatal)",
+        )
     if last_ts:
         db.runtime_set("reengage_sent_for_gap", last_ts.isoformat())
     db.runtime_set("last_proactive_sent", datetime.now(UTC).isoformat())
@@ -320,7 +335,9 @@ async def _fetch_upcoming_events(lookahead_minutes: int) -> list[dict]:
         "markdown fences, do not add commentary.]"
     )
     try:
-        raw = await run_proactive(prompt)
+        # Phase 13 (Stream C): calendar fetch is a stateless control prompt —
+        # nothing reaches the user, the live SDK session must not be touched.
+        raw = await run_internal_control(prompt, max_turns=5, max_budget_usd=0.20)
     except Exception:
         logger.exception("calendar fetch via subagent failed")
         return []
@@ -450,6 +467,8 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
     mood = _mood_from_core()
     prompt = _build_prompt(mood, seed)
     try:
+        # Phase 13 (Stream C): visible user-facing nudge — resumes live
+        # session for chat context.
         text = (await run_proactive(prompt)).strip()
     except Exception:
         logger.exception("calendar heartbeat generation failed")
@@ -461,6 +480,13 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
     except Exception:
         logger.exception("send_text failed in calendar heartbeat")
         return False
+    # Phase 13 (Stream C): persist the visible calendar heartbeat post-send.
+    try:
+        db.append_message("assistant", text, source="proactive")
+    except Exception:
+        logger.exception(
+            "calendar heartbeat: append_message post-send failed (non-fatal)",
+        )
 
     _mark_calendar_event_notified(signature)
     cadence.record_proactive_sent()
@@ -483,6 +509,7 @@ def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
     row that would re-fire on the very next poll and loop indefinitely.
     """
     from datetime import timedelta
+
     from dateutil.relativedelta import relativedelta
     from dateutil.rrule import rrulestr
     when = datetime.fromisoformat(fire_at_iso)
@@ -527,6 +554,15 @@ async def fire_due_reminders(send_text) -> int:
         except Exception:
             logger.exception("fire_due_reminders: send_text failed for #%s", row["id"])
             continue
+        # Phase 13 (Stream C): reminders are visible proactive events — record
+        # the delivered text so reflection / handoff see them.
+        try:
+            db.append_message("assistant", text, source="proactive")
+        except Exception:
+            logger.exception(
+                "fire_due_reminders: append_message post-send failed for #%s",
+                row["id"],
+            )
         db.reminder_mark_fired(row["id"])
         fired += 1
         nxt = _next_occurrence(row["fire_at"], row.get("repeat") or "")
@@ -567,7 +603,11 @@ async def sync_pending_apple_reminders() -> int:
             "return ONLY YAML: event_id: '<id>'  (no fences, no commentary).]"
         )
         try:
-            raw = await run_proactive(prompt)
+            # Phase 13 (Stream C): apple mirror is pure internal control —
+            # no user-visible output, must not leak into live SDK session.
+            raw = await run_internal_control(
+                prompt, max_turns=5, max_budget_usd=0.20,
+            )
         except Exception:
             logger.exception("apple sync: subagent failed for reminder #%s", row["id"])
             continue
@@ -631,7 +671,10 @@ async def sync_pending_gcal_reminders() -> int:
             "return ONLY YAML: event_id: '<id>'  (no fences, no commentary).]"
         )
         try:
-            raw = await run_proactive(prompt)
+            # Phase 13 (Stream C): gcal mirror is internal control as well.
+            raw = await run_internal_control(
+                prompt, max_turns=5, max_budget_usd=0.20,
+            )
         except Exception:
             logger.exception("gcal sync: subagent failed for reminder #%s", row["id"])
             continue
