@@ -27,7 +27,7 @@ from storage import db
 from . import cadence
 from . import config as cfg
 from .hooks import _resolve_local_tz_name
-from .runtime import run_internal_control, run_visible_proactive
+from .runtime import looks_like_sdk_error, run_internal_control, run_visible_proactive
 
 # Phase 13 (Stream C): legacy alias so any test that monkeypatches
 # ``proactive.run_proactive`` keeps working until Stream F updates them.
@@ -238,6 +238,13 @@ async def maybe_send_heartbeat(send_text) -> bool:
         return False
     if not text or text.upper().startswith("NO_MESSAGE"):
         return False
+    # 2026-05-20 401-leak guard: refuse to ship raw SDK / Anthropic-API
+    # error strings as a heartbeat body. Class of bug: a transient auth
+    # failure surfaced as an AssistantMessage TextBlock and was sent
+    # verbatim to Telegram. Drop and log instead.
+    if looks_like_sdk_error(text):
+        logger.warning("heartbeat: refused to send SDK-error-shaped text: %s", text[:200])
+        return False
     try:
         result = await send_text(text)
     except Exception:
@@ -330,6 +337,9 @@ async def maybe_send_reengagement(send_text) -> bool:
         logger.exception("reengage generation failed")
         return False
     if not text or text.upper().startswith("NO_MESSAGE"):
+        return False
+    if looks_like_sdk_error(text):
+        logger.warning("reengage: refused to send SDK-error-shaped text: %s", text[:200])
         return False
     try:
         result = await send_text(text)
@@ -536,6 +546,9 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
         logger.exception("calendar heartbeat generation failed")
         return False
     if not text or text.upper().startswith("NO_MESSAGE"):
+        return False
+    if looks_like_sdk_error(text):
+        logger.warning("calendar heartbeat: refused to send SDK-error-shaped text: %s", text[:200])
         return False
     try:
         result = await send_text(text)

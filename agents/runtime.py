@@ -170,6 +170,12 @@ def _confirmed_tool_names() -> set[str]:
 # live here because they don't go through the utility registry.
 _DEDICATED_AND_EXTERNAL_TOOLS = [
     "Agent",
+    # Claude SDK native tools used by the `research` subagent
+    # (agents/subagents/research.py). Without these in the parent
+    # allowlist the subagent can't invoke web tools at all — failure mode
+    # is silent at spawn time.
+    "WebFetch",
+    "WebSearch",
     "mcp__hikari_memory__recall",
     "mcp__hikari_memory__remember",
     "mcp__hikari_memory__mark_fact_invalid",
