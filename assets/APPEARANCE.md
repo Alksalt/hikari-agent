@@ -1,6 +1,6 @@
 # Hikari Tsukino — Appearance Prompt Base
 
-Used by `tools/photos.py`. Append scene/mood/outfit context to the end.
+Used by `tools/photos/`. Append scene/mood/outfit context to the end.
 
 ## base prompt
 

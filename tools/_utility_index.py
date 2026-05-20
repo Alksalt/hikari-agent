@@ -1,32 +1,26 @@
-"""Phase 10: aggregates all utility tools into a single ALL_TOOLS list for the
-``hikari_utility`` MCP server. Each feature appends its own tools here during
-Phase 1 parallel work; conflicts during merge are trivial concats.
+"""Aggregator for the ``hikari_utility`` MCP server.
 
-Order doesn't matter — the MCP server doesn't care."""
+Auto-discovers every feature under ``tools/`` (flat module ``tools/<name>.py``
+or package ``tools/<name>/__init__.py``) that exposes ``ALL_TOOLS``. Drop
+a new folder, restart — no edits here.
+
+See ``tools/_registry.py`` for the discovery rules and ``tools/README.md``
+for the feature-folder convention.
+"""
 
 from __future__ import annotations
 
-# Imports are appended by each Phase 1 worktree. Keep them sorted for
-# merge-friendliness.
-from tools.apple_notes import ALL_TOOLS as _APPLE_NOTES
-from tools.arxiv_search import ALL_TOOLS as _ARXIV
-from tools.attachments import ALL_TOOLS as _ATTACHMENTS
-from tools.calc import ALL_TOOLS as _CALC
-from tools.currency import ALL_TOOLS as _CURRENCY
-from tools.places import ALL_TOOLS as _PLACES
-from tools.reminders import ALL_TOOLS as _REMINDERS
-from tools.translate import ALL_TOOLS as _TRANSLATE
-from tools.weather import ALL_TOOLS as _WEATHER
-from tools.ytmusic import ALL_TOOLS as _YTMUSIC
+from tools._registry import discover_utility_tools
 
-ALL_TOOLS: list = []
-ALL_TOOLS.extend(_APPLE_NOTES)
-ALL_TOOLS.extend(_ATTACHMENTS)
-ALL_TOOLS.extend(_ARXIV)
-ALL_TOOLS.extend(_CALC)
-ALL_TOOLS.extend(_CURRENCY)
-ALL_TOOLS.extend(_PLACES)
-ALL_TOOLS.extend(_REMINDERS)
-ALL_TOOLS.extend(_TRANSLATE)
-ALL_TOOLS.extend(_WEATHER)
-ALL_TOOLS.extend(_YTMUSIC)
+
+def _all_tools() -> list:
+    return discover_utility_tools()
+
+
+# Property-like access via module attribute so callers can keep writing
+# ``from tools import _utility_index; _utility_index.ALL_TOOLS``. The
+# discovery is cached, so this stays cheap on repeated access.
+def __getattr__(name: str):
+    if name == "ALL_TOOLS":
+        return _all_tools()
+    raise AttributeError(f"module 'tools._utility_index' has no attribute {name!r}")

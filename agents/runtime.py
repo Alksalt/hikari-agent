@@ -29,6 +29,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
+from agents import config as cfg
 from storage import db
 from tools import codex as codex_tools
 from tools import dispatch as dispatch_tools
@@ -63,14 +64,14 @@ def looks_like_sdk_error(text: str) -> bool:
         return False
     return any(p.search(text) for p in _SDK_ERROR_PATTERNS)
 
-MODEL_PRIMARY = os.environ.get("HIKARI_MODEL", "claude-sonnet-4-6")
-MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK", "claude-haiku-4-5")
+MODEL_PRIMARY = os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
+MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK") or cfg.get("runtime.model_fallback") or "claude-haiku-4-5"
 
 # Per-turn budget for chat-path SDK calls. Used by _build_options /
 # run_user_turn / respond defaults AND substituted into the persona prompt
 # via _persona().format(max_turns=...). Keep this constant and the
 # `{max_turns}` placeholder in CLAUDE.md in lockstep.
-DEFAULT_MAX_TURNS = 4
+DEFAULT_MAX_TURNS = cfg.get("runtime.default_max_turns") or 4
 
 # Phase 6 (extended Phase 13): serialize concurrent stateful SDK calls. User
 # messages (``run_user_turn``) and visible proactive jobs
@@ -161,7 +162,13 @@ def _confirmed_tool_names() -> set[str]:
             for t in dispatch_tools.CONFIRMED_TOOLS}
 
 
-_BASE_ALLOWED_TOOLS = [
+# Tools allowlisted on every turn. The ``hikari_utility`` entries are
+# auto-derived from ``tools/_registry.discover_utility_tool_names()`` —
+# adding a feature folder under ``tools/<name>/`` with ``ALL_TOOLS`` is
+# enough; no edit here required. The dedicated-server entries
+# (memory/photo/wiki/dispatch/codex) and external MCP wildcards still
+# live here because they don't go through the utility registry.
+_DEDICATED_AND_EXTERNAL_TOOLS = [
     "Agent",
     "mcp__hikari_memory__recall",
     "mcp__hikari_memory__remember",
@@ -177,27 +184,6 @@ _BASE_ALLOWED_TOOLS = [
     "mcp__hikari_dispatch__dispatch_claude_session",
     "mcp__hikari_codex__list_codex_reports",
     "mcp__hikari_codex__read_codex_report",
-    # Phase 10 utility tools (appended per feature during Phase 1 parallel work).
-    # DO NOT remove this anchor comment — Phase 1 agents look for it.
-    "mcp__hikari_utility__reminder_create",
-    "mcp__hikari_utility__reminder_list",
-    "mcp__hikari_utility__reminder_cancel",
-    "mcp__hikari_utility__reminder_snooze",
-    "mcp__hikari_utility__note_create",
-    "mcp__hikari_utility__note_search",
-    "mcp__hikari_utility__note_read",
-    "mcp__hikari_utility__weather_fetch",
-    "mcp__hikari_utility__translate",
-    "mcp__hikari_utility__calc",
-    "mcp__hikari_utility__python_run",
-    "mcp__hikari_utility__currency_convert",
-    "mcp__hikari_utility__arxiv_search",
-    "mcp__hikari_utility__places_search",
-    "mcp__hikari_utility__place_open_now",
-    "mcp__hikari_utility__ytmusic_recent",
-    "mcp__hikari_utility__ytmusic_search",
-    "mcp__hikari_utility__ytmusic_library",
-    "mcp__hikari_utility__read_attachment",
     "mcp__apple_events__*",
     "mcp__github__*",
     "mcp__google_workspace__*",
@@ -206,11 +192,36 @@ _BASE_ALLOWED_TOOLS = [
 ]
 
 
+@cache
+def _base_allowed_tools() -> list[str]:
+    from tools._registry import discover_utility_tool_names
+    return list(_DEDICATED_AND_EXTERNAL_TOOLS) + discover_utility_tool_names()
+
+
+# Back-compat alias: tests and callers may still reference the constant
+# name. Resolves via the cached function on first access.
+class _AllowedToolsProxy:
+    def __iter__(self):
+        return iter(_base_allowed_tools())
+
+    def __contains__(self, item):
+        return item in _base_allowed_tools()
+
+    def __len__(self):
+        return len(_base_allowed_tools())
+
+    def __getitem__(self, i):
+        return _base_allowed_tools()[i]
+
+
+_BASE_ALLOWED_TOOLS = _AllowedToolsProxy()
+
+
 def allowed_tool_names() -> list[str]:
     """Returns a copy of the per-turn tool allowlist. Public accessor for
     ``agents/tool_inventory.py`` so it doesn't reach into the private
     constant directly."""
-    return list(_BASE_ALLOWED_TOOLS)
+    return list(_base_allowed_tools())
 
 
 def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
@@ -218,7 +229,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
                    extra_allowed_tools: list[str] | None = None,
                    inject_memory_enabled: bool = True,
                    ) -> ClaudeAgentOptions:
-    allowed = list(_BASE_ALLOWED_TOOLS)
+    allowed = list(_base_allowed_tools())
     if extra_allowed_tools:
         allowed.extend(extra_allowed_tools)
     mcp_servers = {

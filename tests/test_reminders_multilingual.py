@@ -18,8 +18,9 @@ def test_reminder_create_description_mentions_now_and_multilingual():
     and (b) carry at least one UK and one RU example."""
     desc = getattr(reminders.reminder_create, "description", None)
     if not desc:
-        # Fall back to source if the SDK hides .description.
-        src = Path(__file__).resolve().parent.parent / "tools" / "reminders.py"
+        # Fall back to source if the SDK hides .description. The decorator
+        # lives in tools/reminders/create.py after the per-tool folder split.
+        src = Path(__file__).resolve().parent.parent / "tools" / "reminders" / "create.py"
         desc = src.read_text(encoding="utf-8")
     assert "# now" in desc, "description must point at the `# now` block"
     assert "нагадай" in desc, "description must contain a UK example"

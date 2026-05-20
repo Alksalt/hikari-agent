@@ -74,7 +74,7 @@ chat. Patterns:
   `skip_dates`
 - `what time is my check-in?` → read the block and answer
 
-Uses `dateparser` (already a dependency via `tools/reminders.py`) for
+Uses `dateparser` (already a dependency via `tools/reminders/`) for
 relative-date resolution.
 
 ## Email fetch contract

@@ -21,7 +21,8 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_arxiv_search_mocked(monkeypatch):
-    from tools import arxiv_search
+    import arxiv
+    from tools.arxiv_search import arxiv_search
     from types import SimpleNamespace
     fake_papers = [
         SimpleNamespace(
@@ -36,7 +37,7 @@ async def test_arxiv_search_mocked(monkeypatch):
     class FakeSearch:
         def __init__(self, **kwargs): self.kwargs = kwargs
         def results(self): return iter(fake_papers)
-    monkeypatch.setattr(arxiv_search.arxiv, "Search", FakeSearch)
-    out = await arxiv_search.arxiv_search.handler({"query": "attention", "limit": 5})
+    monkeypatch.setattr(arxiv, "Search", FakeSearch)
+    out = await arxiv_search.handler({"query": "attention", "limit": 5})
     assert len(out["data"]["papers"]) == 1
     assert out["data"]["papers"][0]["title"].startswith("Attention")

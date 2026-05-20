@@ -514,6 +514,8 @@ mcp_external:
   bind_port: 8765
   secret_env: HIKARI_MCP_SECRET
   audit_label: "external_mcp"
+  recall_default_limit: 8         # `hikari_recall` tool default
+  lexicon_default_limit: 5        # `hikari_lexicon_top` tool default
 
 drift_telemetry:
   # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Haiku,
@@ -722,6 +724,7 @@ scheduler:
   # IANA timezone for cron jobs (daily_reflection, morning_brief, etc.).
   # CronTrigger(hour=N) fires at N o'clock in THIS zone.
   timezone: "Europe/Oslo"
+  default_misfire_grace_sec: 300  # grace window when an interval job is overdue
 
 # ============================================================================
 # Phase 10: utility features
@@ -786,3 +789,45 @@ ytmusic:
   # Browser cookie auth blob path (see scripts/setup_ytmusic.md).
   browser_json_path_env: "YTMUSIC_BROWSER_JSON_PATH"
   default_history_limit: 5
+
+# --- Phase 6 hardcoded-value migrations (2026-05-20) ---
+# Module-level constants moved out of code into here so behavior is tunable
+# without touching Python. Defaults preserve prior behavior exactly.
+
+link_shelf:
+  fetch_timeout_sec: 5.0          # HTTP timeout when fetching URL metadata
+  fetch_max_bytes: 200000         # byte cap on resp.content before decode
+  user_agent: "hikari-agent link-shelf/1.0 (+https://github.com/hikari-agent)"
+  search_default_limit: 10        # link_search default `limit`
+  list_default_limit: 20          # link_list default `limit`
+  valid_kinds: [later, useful, source, inspiration]
+
+runtime:
+  # Defaults previously hardcoded as module-level constants in agents/runtime.py.
+  # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
+  model_primary: "claude-sonnet-4-6"
+  model_fallback: "claude-haiku-4-5"
+  default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
+
+reflection:
+  near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity
+  max_pairs: 500                     # co-occurrence graph cap per pass
+  weekly_window_days: 7              # sleep-agent consolidation window
+  weekly_summary_word_cap: 220       # weekly synthesis target length
+  snippet_truncation_long: 300       # used for full message snippets
+  snippet_truncation_medium: 220     # used for fact/episode snippets
+  snippet_truncation_short: 200      # used for compact log entries
+
+retrieval:
+  # Park et al. retrieval weights — tune to shift the recency/importance/relevance balance.
+  w_recency: 1.0
+  w_importance: 1.0
+  w_relevance: 1.5
+  recency_decay_per_hour: 0.99
+  vec_k: 30                       # KNN candidate pool size (vec index)
+  bm25_k: 30                      # BM25 candidate pool size
+  hybrid_vec_weight: 0.6          # final blend: hybrid_vec_weight * vec + hybrid_bm25_weight * bm25
+  hybrid_bm25_weight: 0.4
+
+telegram:
+  http_timeout_sec: 10.0          # httpx client timeout in agents/telegram_bridge.py

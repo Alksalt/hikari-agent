@@ -41,13 +41,30 @@ class Hit:
     relevance: float
 
 
-W_RECENCY = 1.0
-W_IMPORTANCE = 1.0
-W_RELEVANCE = 1.5
-RECENCY_DECAY_PER_HOUR = 0.99
+# Module-level config read. The lazy import inside ``retrieve()`` predates
+# this and exists for a different reason (test fixtures that reload
+# ``storage.db`` before ``agents.config`` loads); the constants below tolerate
+# that case via a try/except fallback to the historical defaults.
+try:
+    from agents import config as cfg
 
-VEC_K = 30
-BM25_K = 30
+    W_RECENCY = cfg.get("retrieval.w_recency") or 1.0
+    W_IMPORTANCE = cfg.get("retrieval.w_importance") or 1.0
+    W_RELEVANCE = cfg.get("retrieval.w_relevance") or 1.5
+    RECENCY_DECAY_PER_HOUR = cfg.get("retrieval.recency_decay_per_hour") or 0.99
+    VEC_K = cfg.get("retrieval.vec_k") or 30
+    BM25_K = cfg.get("retrieval.bm25_k") or 30
+    HYBRID_VEC_WEIGHT = cfg.get("retrieval.hybrid_vec_weight") or 0.6
+    HYBRID_BM25_WEIGHT = cfg.get("retrieval.hybrid_bm25_weight") or 0.4
+except Exception:
+    W_RECENCY = 1.0
+    W_IMPORTANCE = 1.0
+    W_RELEVANCE = 1.5
+    RECENCY_DECAY_PER_HOUR = 0.99
+    VEC_K = 30
+    BM25_K = 30
+    HYBRID_VEC_WEIGHT = 0.6
+    HYBRID_BM25_WEIGHT = 0.4
 
 
 def _hours_since(iso: str) -> float:
@@ -236,7 +253,7 @@ def retrieve(query: str, limit: int = 8) -> list[Hit]:
         bn = bm25_norm.get(key)
         vn = vec_norm.get(key)
         if bn is not None and vn is not None:
-            relevance = 0.6 * vn + 0.4 * bn
+            relevance = HYBRID_VEC_WEIGHT * vn + HYBRID_BM25_WEIGHT * bn
         elif vn is not None:
             relevance = vn
         elif bn is not None:

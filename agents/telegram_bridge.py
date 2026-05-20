@@ -791,7 +791,7 @@ async def _reverse_geocode_label(lat: float, lon: float) -> str | None:
     it. Returns ``display_name`` or ``None`` on any failure."""
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=cfg.get("telegram.http_timeout_sec") or 10.0) as client:
             r = await client.get(
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": lat, "lon": lon, "format": "json", "zoom": 16},
