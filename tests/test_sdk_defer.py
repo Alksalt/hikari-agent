@@ -783,3 +783,209 @@ async def test_resume_after_defer_enqueues_on_failure(monkeypatch, tmp_path):
     await approval_tools._resume_after_defer(aid, pending)
     raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
     assert json.loads(raw or "[]") == ["toolu_resume_fail"]
+
+
+# ---------------------------------------------------------------------------
+# Task 6: probe_gmail_bulk_delete_scope_ok
+# ---------------------------------------------------------------------------
+
+
+async def test_probe_gmail_bulk_delete_scope_ok_caches_true(monkeypatch):
+    """When the access_token's scope list includes the full Gmail scope,
+    `probe_gmail_bulk_delete_scope_ok` returns True and caches the result."""
+    from storage import db
+    from tools import approvals as approval_tools
+
+    # Clear cache
+    db.runtime_set("gmail_bulk_delete_scope_ok", None)
+    db.runtime_set("gmail_bulk_delete_scope_checked_at", None)
+
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "csec")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "rtok")
+
+    class _StubResp:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return
+
+        def json(self):
+            return self._payload
+
+    class _StubAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, data=None, **kw):
+            assert "oauth2.googleapis.com/token" in url
+            return _StubResp({"access_token": "atok", "expires_in": 3600})
+
+        async def get(self, url, params=None, **kw):
+            assert "tokeninfo" in url
+            return _StubResp({"scope": (
+                "https://mail.google.com/ "
+                "https://www.googleapis.com/auth/calendar"
+            )})
+
+    monkeypatch.setattr(
+        "tools.approvals.httpx.AsyncClient", _StubAsyncClient,
+    )
+
+    ok = await approval_tools.probe_gmail_bulk_delete_scope_ok()
+    assert ok is True
+    assert db.runtime_get("gmail_bulk_delete_scope_ok") == "true"
+
+
+async def test_probe_gmail_bulk_delete_scope_ok_false_when_scope_missing(monkeypatch):
+    """When the access_token's scope list is gmail.modify only,
+    `probe_gmail_bulk_delete_scope_ok` returns False (modify doesn't include
+    batchDelete)."""
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set("gmail_bulk_delete_scope_ok", None)
+    db.runtime_set("gmail_bulk_delete_scope_checked_at", None)
+
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "csec")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "rtok")
+
+    class _StubResp:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return
+
+        def json(self):
+            return self._payload
+
+    class _StubAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, data=None, **kw):
+            return _StubResp({"access_token": "atok", "expires_in": 3600})
+
+        async def get(self, url, params=None, **kw):
+            return _StubResp({"scope": (
+                "https://www.googleapis.com/auth/gmail.modify "
+                "https://www.googleapis.com/auth/calendar"
+            )})
+
+    monkeypatch.setattr(
+        "tools.approvals.httpx.AsyncClient", _StubAsyncClient,
+    )
+
+    ok = await approval_tools.probe_gmail_bulk_delete_scope_ok()
+    assert ok is False
+    assert db.runtime_get("gmail_bulk_delete_scope_ok") == "false"
+
+
+async def test_probe_gmail_bulk_delete_scope_ok_returns_cached_value(monkeypatch):
+    """Within the 24h TTL, the probe returns the cached value without hitting
+    the network."""
+    from datetime import UTC, datetime
+
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set("gmail_bulk_delete_scope_ok", "true")
+    db.runtime_set(
+        "gmail_bulk_delete_scope_checked_at",
+        datetime.now(UTC).isoformat(),
+    )
+
+    # No network stub — if it tried to hit the wire the test would hang/fail
+    ok = await approval_tools.probe_gmail_bulk_delete_scope_ok()
+    assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# Task 7: compose_email_message scope gate
+# ---------------------------------------------------------------------------
+
+
+async def test_compose_email_message_skips_delete_proposal_when_scope_missing(
+    monkeypatch,
+):
+    """When `probe_gmail_bulk_delete_scope_ok()` returns False, the morning
+    digest omits the 'nuke them?' delete line even if deletable_count > 0."""
+    from agents import daily_checkin
+
+    async def _no_scope():
+        return False
+
+    monkeypatch.setattr(
+        "agents.daily_checkin.probe_gmail_bulk_delete_scope_ok",
+        _no_scope,
+        raising=False,
+    )
+
+    # Stub voice composer to capture the prompt the LLM would see
+    captured_prompts: list[str] = []
+
+    async def _capture(prompt):
+        captured_prompts.append(prompt)
+        return "ok"
+
+    monkeypatch.setattr(daily_checkin, "_compose", _capture)
+
+    data = {
+        "unread_personal": [],
+        "calendar_invites": [],
+        "deletable": {"count": 42, "top_senders": ["spam.example"], "sample_ids": ["x"]},
+    }
+    await daily_checkin.compose_email_message(data)
+    assert len(captured_prompts) == 1
+    p = captured_prompts[0]
+    assert "deletable" not in p.lower()
+    assert "nuke" not in p.lower()
+
+
+async def test_compose_email_message_keeps_delete_proposal_when_scope_ok(monkeypatch):
+    """When the probe returns True, the existing delete-proposal flow is
+    untouched."""
+    from agents import daily_checkin
+
+    async def _ok_scope():
+        return True
+
+    monkeypatch.setattr(
+        "agents.daily_checkin.probe_gmail_bulk_delete_scope_ok",
+        _ok_scope,
+        raising=False,
+    )
+    captured: list[str] = []
+
+    async def _capture(prompt):
+        captured.append(prompt)
+        return "ok"
+
+    monkeypatch.setattr(daily_checkin, "_compose", _capture)
+
+    data = {
+        "unread_personal": [],
+        "calendar_invites": [],
+        "deletable": {"count": 42, "top_senders": ["spam.example"], "sample_ids": ["x"]},
+    }
+    await daily_checkin.compose_email_message(data)
+    p = captured[0]
+    assert "deletable" in p.lower()
+    assert "nuke" in p.lower()

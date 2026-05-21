@@ -27,6 +27,7 @@ from agents.runtime import (
     run_visible_proactive,
 )
 from storage import db
+from tools.approvals import probe_gmail_bulk_delete_scope_ok
 
 logger = logging.getLogger(__name__)
 
@@ -507,12 +508,25 @@ async def compose_email_message(data: dict[str, Any]) -> str | None:
     invites_count = len(invites)
     delete_line = ""
     if deletable_count > 0:
-        senders_phrase = ", ".join(deletable_senders[:3]) or "various"
-        delete_line = (
-            f"\n  deletable: {deletable_count} in promos/updates "
-            f"(top: {senders_phrase}). ALWAYS end with a one-sentence "
-            f"proposal asking if you should nuke them."
-        )
+        scope_ok = await probe_gmail_bulk_delete_scope_ok()
+        if scope_ok:
+            senders_phrase = ", ".join(deletable_senders[:3]) or "various"
+            delete_line = (
+                f"\n  deletable: {deletable_count} in promos/updates "
+                f"(top: {senders_phrase}). ALWAYS end with a one-sentence "
+                f"proposal asking if you should nuke them."
+            )
+        else:
+            logger.info(
+                "compose_email_message: skipping delete proposal — "
+                "gmail bulk_delete scope unavailable",
+            )
+    delete_rule = (
+        "- if deletable > 0, ALWAYS end with a delete proposal in voice "
+        "('want me to nuke them?' / 'nuke the X?' / similar).\n"
+        if delete_line
+        else ""
+    )
     prompt = (
         "you are reporting the morning email digest. write ONE short message "
         "in your voice (1-4 sentences, lowercase, no markdown).\n\n"
@@ -522,8 +536,7 @@ async def compose_email_message(data: dict[str, Any]) -> str | None:
         "rules:\n"
         "- name personal subjects only if they're interesting; otherwise just "
         "say the count.\n"
-        "- if deletable > 0, ALWAYS end with a delete proposal in voice "
-        "('want me to nuke them?' / 'nuke the X?' / similar).\n"
+        f"{delete_rule}"
         "- if there's nothing in any bucket, output NO_MESSAGE.\n\n"
         "output ONLY the message text."
     )

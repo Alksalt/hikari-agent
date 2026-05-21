@@ -25,6 +25,10 @@ async def test_compose_email_returns_voice_text(monkeypatch):
     from agents import daily_checkin
     mock = AsyncMock(return_value="three actual emails. 28 promos. want me to nuke them?")
     monkeypatch.setattr(daily_checkin, "run_visible_proactive", mock)
+    # Stub scope probe to True so the delete proposal is injected.
+    monkeypatch.setattr(
+        daily_checkin, "probe_gmail_bulk_delete_scope_ok", AsyncMock(return_value=True)
+    )
     data = {
         "unread_personal": [{"id": "1", "from": "mom@x.com", "subject": "call me", "snippet": "..."}],
         "calendar_invites": [],
