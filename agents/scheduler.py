@@ -228,6 +228,21 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
+    # Decision-log resolver: weekly Sunday 19:00 local. Asks about
+    # decisions whose resolve_by has passed. See agents/decision_log.py.
+    if bool(cfg.get("decision_log.enabled", True)):
+        from .decision_log import run_decision_resolver
+        dl_hour = int(cfg.get("decision_log.hour", 19))
+        dl_minute = int(cfg.get("decision_log.minute", 0))
+        async def _decision_resolver_job():
+            return await run_decision_resolver(send_text)
+        scheduler.add_job(
+            _decision_resolver_job,
+            CronTrigger(day_of_week="sun", hour=dl_hour, minute=dl_minute),
+            id="decision_resolver",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
     # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.
     # Letta sleep-time pattern (Apr 2025) — synthesizes a 200-word weekly
     # "what i noticed about him" summary into core_blocks['weekly_consolidation'],

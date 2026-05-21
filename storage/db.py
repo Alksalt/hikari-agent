@@ -468,6 +468,27 @@ CREATE TABLE IF NOT EXISTS future_letters (
 );
 CREATE INDEX IF NOT EXISTS idx_future_letters_month
     ON future_letters(month_iso);
+
+-- Decision log + Brier-style calibration. Capture: extract prediction
+-- speech acts from chat into a row. Resolve: weekly job asks the user
+-- about decisions whose resolve_by has passed. Mirror: rolling Brier
+-- score surfaced in voice. Brand-new table, indexes inline per the
+-- schema-migration-ordering memory rule.
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    statement TEXT NOT NULL,
+    predicted_p REAL NOT NULL CHECK (predicted_p >= 0.0 AND predicted_p <= 1.0),
+    resolve_by TEXT NOT NULL,
+    outcome INTEGER,
+    resolved_at TEXT,
+    reasoning TEXT,
+    asked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_unresolved
+    ON decisions(resolve_by) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS idx_decisions_resolved
+    ON decisions(resolved_at) WHERE outcome IS NOT NULL;
 """
 
 
@@ -2782,3 +2803,85 @@ def future_letter_mark_sent(month_iso: str) -> None:
             "UPDATE future_letters SET sent_at = ? WHERE month_iso = ?",
             (_now(), month_iso),
         )
+
+
+# ---------- decisions (calibration log) ----------
+
+def decision_insert(statement: str, predicted_p: float, resolve_by: str,
+                    reasoning: str | None = None) -> int:
+    """Insert a captured prediction. resolve_by is ISO date or ISO datetime."""
+    p = max(0.0, min(1.0, float(predicted_p)))
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO decisions (statement, predicted_p, resolve_by, "
+            "reasoning) VALUES (?, ?, ?, ?)",
+            (statement, p, resolve_by, reasoning),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def decision_resolve(decision_id: int, outcome: int) -> None:
+    """Mark a decision resolved. outcome must be 0 or 1."""
+    if outcome not in (0, 1):
+        raise ValueError("outcome must be 0 or 1")
+    with _conn() as c:
+        c.execute(
+            "UPDATE decisions SET outcome = ?, resolved_at = ? WHERE id = ?",
+            (int(outcome), _now(), int(decision_id)),
+        )
+
+
+def decisions_unresolved_due(limit: int = 5) -> list[dict[str, Any]]:
+    """Decisions whose resolve_by has passed and outcome is still null,
+    oldest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, statement, predicted_p, resolve_by, asked_at "
+            "FROM decisions "
+            "WHERE outcome IS NULL AND resolve_by <= date('now') "
+            "ORDER BY resolve_by ASC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def decisions_unresolved_overdue_count() -> int:
+    """Count of overdue-unresolved decisions, for the inject_memory mirror."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM decisions "
+            "WHERE outcome IS NULL AND resolve_by <= date('now')"
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def decision_mark_asked(decision_id: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE decisions SET asked_at = ? WHERE id = ?",
+            (_now(), int(decision_id)),
+        )
+
+
+def decision_brier_score(window_days: int = 90) -> dict[str, Any]:
+    """Return ``{n, brier, mean_predicted, mean_outcome}`` over decisions
+    resolved in the last window_days, or ``{n: 0}`` if none."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT predicted_p, outcome FROM decisions "
+            "WHERE outcome IS NOT NULL "
+            "AND resolved_at >= datetime('now', '-' || ? || ' days')",
+            (int(window_days),),
+        ).fetchall()
+    n = len(rows)
+    if n == 0:
+        return {"n": 0}
+    brier = sum((float(r["predicted_p"]) - int(r["outcome"])) ** 2
+                for r in rows) / n
+    mean_p = sum(float(r["predicted_p"]) for r in rows) / n
+    mean_o = sum(int(r["outcome"]) for r in rows) / n
+    return {
+        "n": n, "brier": round(brier, 4),
+        "mean_predicted": round(mean_p, 4),
+        "mean_outcome": round(mean_o, 4),
+    }

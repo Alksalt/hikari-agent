@@ -161,6 +161,8 @@ def test_scheduler_builds(monkeypatch):
         "drift_canary",      # weekly Sunday 20:00 — three hard-opinion probes
         # 2026-05-21 Ghost-of-Future-Self letter (first Sunday of month, 10:00).
         "future_letter",
+        # 2026-05-21 Decision-log resolver (weekly Sunday 19:00).
+        "decision_resolver",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

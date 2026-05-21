@@ -379,6 +379,20 @@ async def inject_memory(
                 )
         except Exception:
             logger.exception("inject_memory: callback_surface failed (non-fatal)")
+        # Decision log mirror: surface count of overdue-unresolved decisions
+        # so Hikari can naturally ask about them. The actual ask is a
+        # scheduled job (run_decision_resolver) but if the user is
+        # mid-conversation, she has the awareness.
+        try:
+            n_overdue = db.decisions_unresolved_overdue_count()
+            if n_overdue > 0:
+                parts.append(
+                    f"\n# memory: unresolved decisions ({n_overdue})\n"
+                    "(brier-style calibration log — when natural, ask whether "
+                    "one of these resolved.)"
+                )
+        except Exception:
+            logger.exception("inject_memory: decisions count failed (non-fatal)")
         # Retrieval moved to the recall subagent — Hikari calls it on demand.
         _ = user_prompt
     except Exception:

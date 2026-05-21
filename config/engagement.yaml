@@ -503,6 +503,7 @@ cadence_governor:
   cap_exempt_sources:
     - daily_checkin
     - future_letter
+    - decision_log
 
 noticings:
   enabled: true
@@ -915,3 +916,14 @@ future_letter:
   # past 30 days produced fewer than this many receipt entries AND no
   # episodes, the model is asked to decline rather than fabricate a letter.
   min_receipts_for_letter: 5
+
+decision_log:
+  enabled: true
+  # Weekly Sunday 19:00 local — sits before drift_canary at 20:00 so they
+  # don't double-fire a heavy proactive within the same hour.
+  hour: 19
+  minute: 0
+  # Cap on overdue decisions asked about per weekly run. Higher feels naggy.
+  max_per_week_ask: 3
+  # Window for the Brier rolling score surfaced in voice.
+  brier_window_days: 90
