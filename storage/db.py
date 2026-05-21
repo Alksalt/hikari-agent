@@ -16,6 +16,7 @@ Schema covers everything memory- and runtime-related:
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from collections.abc import Iterable
@@ -25,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import sqlite_vec
+
+logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(os.environ.get("HIKARI_DB_PATH") or
                 Path(__file__).parent.parent / "data" / "hikari.db")
@@ -511,6 +514,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_facts_recall_decay(conn)
     _migrate_reminders_apple_columns(conn)
     _migrate_drift_canary_indexes(conn)
+    _migrate_fact_relations_validity(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -552,6 +556,34 @@ def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE facts ADD COLUMN source TEXT")
     # Indexes — IF NOT EXISTS makes these idempotent.
     conn.execute("CREATE INDEX IF NOT EXISTS facts_status ON facts(status)")
+
+
+def _migrate_fact_relations_validity(conn: sqlite3.Connection) -> None:
+    """Bi-temporal fact_relations: when a fact transitions to 'superseded',
+    every relation touching it gets stamped with valid_to + the new fact's
+    id. Recall filters valid_to IS NOT NULL. Graphiti pattern (Zep,
+    arxiv 2501.13956)."""
+    existing = {
+        row["name"]
+        for row in conn.execute(
+            "PRAGMA table_info(fact_relations)").fetchall()
+    }
+    if "valid_to" not in existing:
+        conn.execute(
+            "ALTER TABLE fact_relations ADD COLUMN valid_to TEXT"
+        )
+    if "invalidated_by_fact_id" not in existing:
+        conn.execute(
+            "ALTER TABLE fact_relations ADD COLUMN "
+            "invalidated_by_fact_id INTEGER REFERENCES facts(id)"
+        )
+    # Per the schema-migration-ordering memory note: indexes for ALTER-added
+    # columns live in the migration fn, never in _SCHEMA, because tests use
+    # fresh DBs and _SCHEMA runs before migrations on those.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fact_relations_valid_to "
+        "ON fact_relations(valid_to) WHERE valid_to IS NULL"
+    )
 
 
 def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
@@ -900,6 +932,16 @@ def mark_fact_invalid(fact_id: int, superseded_by: int | None = None,
                 "INSERT INTO character_thoughts (thought, created_at) VALUES (?, ?)",
                 (f"mark_fact_invalid #{fid}: {reason}", _now()),
             )
+    # Bi-temporal: walk this fact's edges and stamp them invalidated.
+    try:
+        fact_relations_invalidate_for_fact(
+            fid, invalidated_by=superseded_by,
+        )
+    except Exception:
+        logger.exception(
+            "mark_fact_invalid: edge invalidation failed for fact_id=%s",
+            fid,
+        )
 
 
 def active_facts(limit: int = 100) -> list[dict[str, Any]]:
@@ -1188,6 +1230,24 @@ def fact_relation_insert(subject_id: int, predicate: str, object_id: int) -> int
         return int(cur.lastrowid or 0)
 
 
+def fact_relations_invalidate_for_fact(
+    fact_id: int, invalidated_by: int | None = None,
+) -> int:
+    """Stamp valid_to + invalidated_by_fact_id on every edge touching
+    ``fact_id`` that is currently live. Returns the number of edges newly
+    invalidated. Idempotent — already-invalidated edges are skipped via
+    the partial WHERE valid_to IS NULL."""
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE fact_relations "
+            "SET valid_to = ?, invalidated_by_fact_id = ? "
+            "WHERE (subject_fact_id = ? OR object_fact_id = ?) "
+            "AND valid_to IS NULL",
+            (_now(), invalidated_by, int(fact_id), int(fact_id)),
+        )
+    return int(cur.rowcount or 0)
+
+
 def fact_relations_for(fact_id: int) -> list[dict[str, Any]]:
     """Return all edges touching ``fact_id`` (as either subject or object),
     joined with the matching fact rows so callers can render the graph
@@ -1209,7 +1269,8 @@ def fact_relations_for(fact_id: int) -> list[dict[str, Any]]:
             "FROM fact_relations r "
             "LEFT JOIN facts s ON s.id = r.subject_fact_id "
             "LEFT JOIN facts o ON o.id = r.object_fact_id "
-            "WHERE r.subject_fact_id = ? OR r.object_fact_id = ? "
+            "WHERE (r.subject_fact_id = ? OR r.object_fact_id = ?) "
+            "AND r.valid_to IS NULL "
             "ORDER BY r.created_at DESC",
             (fid, fid),
         ).fetchall()
