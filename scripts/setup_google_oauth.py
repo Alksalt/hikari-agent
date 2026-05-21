@@ -29,8 +29,12 @@ from pathlib import Path
 CLIENT_FILE = Path(__file__).parent.parent / "secrets" / "google_oauth_client.json"
 
 # Broad scope set — pick what google-workspace-mcp tools you actually want
-# Hikari to be able to call. Gmail.modify covers read + draft + send.
+# Hikari to be able to call. The full `mail.google.com/` scope is required
+# for bulk_delete + other destructive ops the morning-pile workflow needs;
+# `gmail.modify` alone won't cover it. After editing this list, the user must
+# re-run this script so the new refresh token carries the broader grant.
 SCOPES = [
+    "https://mail.google.com/",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",

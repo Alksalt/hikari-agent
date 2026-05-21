@@ -200,6 +200,11 @@ async def recover_deferred_approvals(bot: Bot) -> None:
 
     We use the same prompt format as the original defer prompt + a config-
     driven suffix so the user knows it's a resurrection, not a duplicate.
+
+    Also seeds each row's ``deferred_tool_use_id`` into the cancel queue. If
+    the same SDK session ever retries the halted tool_use_id (e.g. session
+    resume rolling forward), ``defer_gated_tools`` returns deny immediately
+    instead of double-deferring and waiting 60s for a fresh timeout watcher.
     """
     from agents import config as cfg
     from tools import approvals as approval_tools
@@ -215,6 +220,9 @@ async def recover_deferred_approvals(bot: Bot) -> None:
         chat_id = int(row["chat_id"])
         tier = int(row["tier"])
         summary = str(row["summary"]) + suffix
+        # Seed first — if send fails, we still want the queue primed so the
+        # next session retry of this tool_use_id terminates cleanly.
+        approval_tools._queue_cancel_tool_use(row.get("deferred_tool_use_id"))
         try:
             await approval_tools.send_defer_prompt(
                 chat_id=chat_id, tier=tier, summary=summary,

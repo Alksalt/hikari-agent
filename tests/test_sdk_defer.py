@@ -548,6 +548,63 @@ async def test_recover_deferred_approvals_resurfaces_prompt(monkeypatch):
     assert "still waiting" in summary.lower()
 
 
+@pytest.mark.asyncio
+async def test_recover_deferred_approvals_seeds_cancel_queue(monkeypatch):
+    """Recovery primes the cancel queue with each stale deferred_tool_use_id
+    so a session that retries the halted call gets denied on the next defer
+    hook hit instead of waiting on a fresh 60s timeout watcher."""
+    from agents import background_listener
+    from tools import approvals as approval_tools
+
+    async def fake_send_defer(chat_id, tier, summary):
+        pass
+    monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send_defer)
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="t1", tier=2, summary="s1",
+        args={}, deferred_tool_use_id="tu_stale_a", deferred_tool_input={},
+    )
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="t2", tier=2, summary="s2",
+        args={}, deferred_tool_use_id="tu_stale_b", deferred_tool_input={},
+    )
+
+    class _Bot:
+        pass
+    await background_listener.recover_deferred_approvals(_Bot())
+
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert raw is not None
+    assert json.loads(raw) == ["tu_stale_a", "tu_stale_b"]
+
+
+@pytest.mark.asyncio
+async def test_recover_deferred_approvals_seeds_queue_even_when_send_fails(monkeypatch):
+    """Queue seed happens before the prompt send and survives a send failure —
+    the whole point of the seed is to unstick the SDK loop even if Telegram
+    is unreachable at recovery time."""
+    from agents import background_listener
+    from tools import approvals as approval_tools
+
+    async def boom(chat_id, tier, summary):
+        raise RuntimeError("telegram unreachable")
+    monkeypatch.setattr(approval_tools, "send_defer_prompt", boom)
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="t", tier=2, summary="s",
+        args={}, deferred_tool_use_id="tu_stale_c", deferred_tool_input={},
+    )
+
+    class _Bot:
+        pass
+    await background_listener.recover_deferred_approvals(_Bot())
+
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["tu_stale_c"]
+
+
 # ---------- Task 1: _queue_cancel_tool_use helper ----------
 
 def test_queue_cancel_tool_use_appends_and_dedups(tmp_path, monkeypatch):
