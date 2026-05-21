@@ -10,10 +10,11 @@ from claude_agent_sdk import tool
 
 from storage import db
 from tools._response import ok as _ok
+from tools.decision_log._shared import TOOL_NAME
 
 
 @tool(
-    "decision_log_capture",
+    TOOL_NAME,
     "Log a user's prediction so we can score calibration later. Use when "
     "the user states a probability + a date ('i think we ship friday at "
     "80%', 'probably 60% chance the deal closes by next monday').",
