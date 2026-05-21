@@ -1636,6 +1636,13 @@ def main() -> None:
                     "authenticate. Run scripts/setup_google_oauth.py.",
                     _gw_missing,
                 )
+            if "readwise" in servers and not os.environ.get("READWISE_TOKEN"):
+                logger.warning(
+                    "readwise MCP is registered in .mcp.json but READWISE_TOKEN is "
+                    "not set — the server will fail to authenticate. Get a token at "
+                    "https://readwise.io/access_token, paste into .env, then "
+                    "launchctl kickstart -k gui/$(id -u)/com.hikari.agent",
+                )
         except Exception:  # noqa: BLE001
             pass
 

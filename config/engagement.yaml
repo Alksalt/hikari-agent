@@ -742,6 +742,7 @@ prompt_injection:
     - "^mcp__hikari_utility__note_create$"
     - "^mcp__hikari_utility__read_attachment$"
     - "^mcp__duckdb__"
+    - "^mcp__readwise__"
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted

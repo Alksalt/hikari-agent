@@ -203,6 +203,7 @@ _DEDICATED_AND_EXTERNAL_TOOLS = [
     "mcp__notion__*",
     "mcp__playwright__*",
     "mcp__duckdb__*",
+    "mcp__readwise__*",
 ]
 
 

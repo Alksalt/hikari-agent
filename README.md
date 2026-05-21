@@ -18,6 +18,15 @@ Phased plan: `/Users/alt/.claude/plans/memoized-fluttering-meerkat.md`.
 
 Google Workspace MCP (Phase 7) requires OAuth user credentials: set `GOOGLE_WORKSPACE_CLIENT_ID`, `GOOGLE_WORKSPACE_CLIENT_SECRET`, and `GOOGLE_WORKSPACE_REFRESH_TOKEN` in `.env`, then uncomment the server in `.mcp.json`.
 
+### Readwise (optional)
+
+For Hikari to surface your saved highlights and Reader docs:
+
+1. Get a token at https://readwise.io/access_token
+2. Add to `.env`: `READWISE_TOKEN=<paste>`
+3. Restart: `launchctl kickstart -k gui/$(id -u)/com.hikari.agent`
+4. Verify: `tail -5 ~/Library/Logs/hikari.err` — should NOT warn about missing `READWISE_TOKEN`.
+
 ### macOS native integrations
 
 - **Apple Reminders + Calendar** (via the `apple_events` MCP server, EventKit): the first call triggers an Automation permission prompt for Reminders/Calendar — accept it in System Settings → Privacy & Security → Automation.
