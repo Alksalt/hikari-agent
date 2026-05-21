@@ -581,6 +581,41 @@ async def defer_gated_tools(
         )
         return {}
 
+    # Cancel queue: unstick a dangling tool_use whose approval already
+    # terminated (timeout / reject / implicit-cancel / resume-via-side-channel).
+    # Returning ``deny`` here makes the SDK synthesize a deny tool_result for
+    # this tool_use_id, completes the halted turn, and lets the model see the
+    # next user message instead of looping on the same defer. One-shot — the
+    # id is popped after firing.
+    if sdk_tool_use_id:
+        import json as _json
+        from tools.approvals import CANCEL_QUEUE_KEY
+        raw_queue = db.runtime_get(CANCEL_QUEUE_KEY)
+        try:
+            queue = _json.loads(raw_queue) if raw_queue else []
+            if not isinstance(queue, list):
+                queue = []
+        except (ValueError, TypeError):
+            queue = []
+        if sdk_tool_use_id in queue:
+            queue = [q for q in queue if q != sdk_tool_use_id]
+            db.runtime_set(CANCEL_QUEUE_KEY, _json.dumps(queue))
+            logger.info(
+                "defer_gated_tools: denying %s (tool_use_id=%s) — cancel queue hit",
+                tool_name, sdk_tool_use_id,
+            )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"{tool_name} was resolved out of band "
+                        "(approved + executed elsewhere, rejected, timed out, "
+                        "or abandoned by a new user message)"
+                    ),
+                }
+            }
+
     input_dict = tool_input if isinstance(tool_input, dict) else {}
     if not tool_name or not _is_defer_gated(tool_name, input_dict):
         return {}

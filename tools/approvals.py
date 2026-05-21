@@ -53,6 +53,40 @@ def owner_chat_id() -> int:
     return int(raw)
 
 
+# Single source of truth for the runtime_state key consumed by the defer
+# hook to unstick the live SDK session after an approval terminates without
+# a real tool_result. JSON-encoded list of SDK tool_use_ids.
+CANCEL_QUEUE_KEY = "cancelled_tool_use_ids"
+
+
+def _queue_cancel_tool_use(tool_use_id: str | None) -> None:
+    """Append ``tool_use_id`` to the one-shot cancellation queue read by
+    ``agents.hooks.defer_gated_tools``. Dedup-safe; no-op on falsy input.
+
+    Why this exists: when a PreToolUse hook returns ``defer``, the SDK halts
+    at the assistant ``tool_use`` block and emits no ``tool_result``. Without
+    cleanup, every subsequent ``client.query(...)`` resuming the same
+    session_id re-fires the tool_use → hook defers again → the user's new
+    message never reaches the model. Queueing the tool_use_id here lets the
+    hook return ``deny`` the next time the SDK retries it, which synthesizes
+    a denial result and unsticks the session.
+    """
+    import json as _json
+    if not tool_use_id:
+        return
+    raw = db.runtime_get(CANCEL_QUEUE_KEY)
+    try:
+        existing = _json.loads(raw) if raw else []
+        if not isinstance(existing, list):
+            existing = []
+    except (ValueError, TypeError):
+        existing = []
+    if tool_use_id in existing:
+        return
+    existing.append(str(tool_use_id))
+    db.runtime_set(CANCEL_QUEUE_KEY, _json.dumps(existing))
+
+
 # approval_id -> (event, on_approve callback, captured args)
 PENDING_CALLBACKS: dict[int, tuple[asyncio.Event,
                                    Callable[[dict[str, Any]], Awaitable[Any]],
@@ -139,6 +173,9 @@ async def _timeout_watcher(aid: int, chat_id: int) -> None:
     # Still pending?
     pending = db.approval_pending_for(chat_id)
     if pending and int(pending["id"]) == aid:
+        # Enqueue the deferred tool_use_id BEFORE marking the row terminal,
+        # so a concurrent reader can't race past it.
+        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
         db.approval_resolve(aid, "timeout")
         PENDING_CALLBACKS.pop(aid, None)
         await _safe_send(chat_id, f"⌛ approval {aid} timed out. didn't do it.")
@@ -154,6 +191,12 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     - Legacy (PENDING_CALLBACKS callback): runs ``_run_approval``.
     - Phase-6 SDK defer (``deferred_tool_use_id`` set): runs
       ``_resume_after_defer`` which fires a fresh ``_run_query``.
+
+    Implicit-cancel: when a deferred approval is pending and the user sends a
+    non-CONFIRM-SEND, non-reject message, the approval is auto-cancelled
+    (enqueue tool_use_id + mark rejected + brief in-voice ack). The original
+    message still routes to the agent (returns False). This is what unsticks
+    the chat path when the user moves on instead of confirming.
     """
     pending = db.approval_pending_for(chat_id)
     if not pending:
@@ -161,8 +204,6 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     aid = int(pending["id"])
     text_clean = text.strip()
 
-    # Phase 8: single-tier model. Confirmation is the explicit phrase only.
-    # Reject phrases stay; everything else falls through to normal chat.
     reject_phrases = [
         str(p).lower() for p in cfg.get("approvals.reject_phrases", []) or []
     ]
@@ -173,18 +214,31 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     rejected = lower in reject_phrases
 
     if approved:
-        # Route by row shape — defer rows have a deferred_tool_use_id; legacy
-        # rows don't (and have a callback in PENDING_CALLBACKS).
         if pending.get("deferred_tool_use_id"):
             return await _resume_after_defer(aid, pending)
         return await _run_approval(aid, pending)
     if rejected:
+        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
         db.approval_resolve(aid, "rejected")
         PENDING_CALLBACKS.pop(aid, None)
         await _safe_send(chat_id, "ok. didn't do it.")
         return True
 
-    # Not a match — let the message route normally. Approval stays pending.
+    # Implicit-cancel: only for SDK-defer rows. Legacy callback rows
+    # (PENDING_CALLBACKS) don't strand the SDK session, so keep the old
+    # "stay pending" behavior for them.
+    if pending.get("deferred_tool_use_id"):
+        tool_name = str(pending.get("tool_name") or "")
+        short_name = tool_name.rsplit("__", 1)[-1] or "that"
+        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
+        db.approval_resolve(aid, "rejected")
+        PENDING_CALLBACKS.pop(aid, None)
+        await _safe_send(
+            chat_id, f"...dropping the {short_name} thing. moving on.",
+        )
+        # Fall through (return False) — the user's actual message still
+        # routes to the agent.
+
     return False
 
 
@@ -356,6 +410,7 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
             # Mark the row failed so restart-recovery doesn't loop forever on
             # it, but leave an audit trace explaining what happened.
             try:
+                _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
                 db.approval_resolve(aid, "rejected")
                 db.audit_append(
                     tool=tool_name,
@@ -371,6 +426,7 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
             return True
 
         # Success path: only NOW mark approved + write the audit row.
+        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
         db.approval_resolve(aid, "approved")
         db.audit_append(
             tool=tool_name,

@@ -346,10 +346,19 @@ async def test_resolve_routes_defer_row_to_resume(monkeypatch):
         tier=2, summary="...",
         args={}, deferred_tool_use_id="tu_routed", deferred_tool_input={},
     )
-    # Phase 8: only CONFIRM-SEND triggers; a stray "y" should NOT consume.
+    # Phase 8: only CONFIRM-SEND triggers; a stray "y" should NOT consume
+    # (returns False so message routes to agent), but for deferred rows it now
+    # also implicit-cancels the pending row (Task 4 behavior).
     handled_y = await approval_tools.resolve_pending_approval(12345, "y")
     assert handled_y is False
     assert routed["resume"] == 0
+    # The deferred row was implicit-cancelled by "y" — create a fresh row
+    # before exercising the CONFIRM-SEND routing path.
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
+        tier=2, summary="...",
+        args={}, deferred_tool_use_id="tu_routed_2", deferred_tool_input={},
+    )
     # The explicit phrase routes through to resume.
     handled = await approval_tools.resolve_pending_approval(12345, "CONFIRM-SEND")
     assert handled is True
@@ -537,3 +546,240 @@ async def test_recover_deferred_approvals_resurfaces_prompt(monkeypatch):
     assert chat_id == 12345
     assert tier == 2
     assert "still waiting" in summary.lower()
+
+
+# ---------- Task 1: _queue_cancel_tool_use helper ----------
+
+def test_queue_cancel_tool_use_appends_and_dedups(tmp_path, monkeypatch):
+    """`_queue_cancel_tool_use` writes the id into runtime_state under
+    `cancelled_tool_use_ids` (JSON list), is dedup-safe on repeat, and is a
+    no-op on falsy input."""
+    import json
+    from tools import approvals as approval_tools
+    from storage import db
+
+    # Pristine state
+    db.runtime_set("cancelled_tool_use_ids", None)
+
+    approval_tools._queue_cancel_tool_use("toolu_a")
+    approval_tools._queue_cancel_tool_use("toolu_b")
+    approval_tools._queue_cancel_tool_use("toolu_a")  # dedup
+    approval_tools._queue_cancel_tool_use("")          # no-op
+    approval_tools._queue_cancel_tool_use(None)        # no-op
+
+    raw = db.runtime_get("cancelled_tool_use_ids")
+    assert raw is not None
+    assert json.loads(raw) == ["toolu_a", "toolu_b"]
+
+
+# ---------- Task 2: defer hook honors cancel queue ----------
+
+async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_path):
+    """`defer_gated_tools` returns permissionDecision='deny' for a tool_use_id
+    already enqueued in `cancelled_tool_use_ids`. The id is popped (one-shot);
+    a second call with the same id would defer again."""
+    import json
+    from agents import hooks
+    from storage import db
+    from tools import approvals as approval_tools
+
+    # OWNER_TELEGRAM_ID is required by the legacy defer path; the deny branch
+    # short-circuits before that lookup, but set it to be safe.
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, json.dumps(["toolu_stuck"]))
+
+    out = await hooks.defer_gated_tools(
+        {
+            "tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
+            "tool_input": {"message_ids": ["x"]},
+            "tool_use_id": "toolu_stuck",
+        },
+        None, None,
+    )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # Queue is now empty
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == []
+
+    # A fresh defer-attempt with the same id (after pop) defers normally again
+    out2 = await hooks.defer_gated_tools(
+        {
+            "tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
+            "tool_input": {"message_ids": ["x"]},
+            "tool_use_id": "toolu_stuck",
+        },
+        None, None,
+    )
+    assert out2["hookSpecificOutput"]["permissionDecision"] == "defer"
+
+
+# ---------- Task 3: timeout watcher enqueues ----------
+
+async def test_timeout_watcher_enqueues_deferred_tool_use_id(monkeypatch):
+    """When `_timeout_watcher` fires on a deferred approval, the
+    `deferred_tool_use_id` is appended to `cancelled_tool_use_ids` so the next
+    user turn unsticks the SDK session."""
+    import json
+    import asyncio
+    from storage import db
+    from tools import approvals as approval_tools
+
+    # Reset queue + create a deferred row
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    aid = db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="x", args={},
+        deferred_tool_use_id="toolu_timed_out",
+        deferred_tool_input={},
+    )
+
+    # Stub the Telegram send and shorten the timeout
+    async def _noop_send(*a, **kw):
+        return
+    monkeypatch.setattr(approval_tools, "_safe_send", _noop_send)
+    monkeypatch.setattr(approval_tools, "_timeout_sec", lambda: 0)
+
+    await approval_tools._timeout_watcher(aid, 12345)
+
+    # Approval row is terminal, and the cancel queue has the id
+    pending = db.approval_pending_for(12345)
+    assert pending is None
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["toolu_timed_out"]
+
+
+# ---------- Task 4: reject phrase enqueues + implicit-cancel ----------
+
+async def test_resolve_pending_approval_rejected_enqueues(monkeypatch):
+    """User typing a reject phrase ('cancel'/'stop'/'abort') enqueues the
+    deferred tool_use_id so the next user turn unsticks the SDK session."""
+    import json
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="x", args={},
+        deferred_tool_use_id="toolu_rejected",
+        deferred_tool_input={},
+    )
+
+    async def _noop_send(*a, **kw):
+        return
+    monkeypatch.setattr(approval_tools, "_safe_send", _noop_send)
+
+    consumed = await approval_tools.resolve_pending_approval(12345, "cancel")
+    assert consumed is True
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["toolu_rejected"]
+
+
+async def test_resolve_pending_approval_implicit_cancel_on_unrelated_message(monkeypatch):
+    """A non-CONFIRM/non-reject message while a deferred approval is pending
+    implicitly cancels: enqueues the tool_use_id, marks the row rejected,
+    sends a short ack, and returns False so the message still routes to the
+    agent normally."""
+    import json
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="x", args={},
+        deferred_tool_use_id="toolu_abandoned",
+        deferred_tool_input={},
+    )
+
+    sent: list[tuple[int, str]] = []
+    async def _capture(chat_id, text):
+        sent.append((chat_id, text))
+    monkeypatch.setattr(approval_tools, "_safe_send", _capture)
+
+    consumed = await approval_tools.resolve_pending_approval(
+        12345, "what do you think about vyshyvanka?",
+    )
+    # Not consumed — the message still routes to the agent
+    assert consumed is False
+    # Row is terminal
+    assert db.approval_pending_for(12345) is None
+    # Queue holds the id
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["toolu_abandoned"]
+    # User got exactly one short ack
+    assert len(sent) == 1
+    assert "dropping" in sent[0][1].lower() or "moving on" in sent[0][1].lower()
+
+
+# ---------- Task 5: resume-after-defer enqueues on success + failure ----------
+
+async def test_resume_after_defer_enqueues_on_success(monkeypatch, tmp_path):
+    """On successful resume (the stateless side channel ran the tool), the
+    deferred_tool_use_id is enqueued so the live session's dangling tool_use
+    gets denied on its next attempt."""
+    import json
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    aid = db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="x", args={},
+        deferred_tool_use_id="toolu_resume_ok",
+        deferred_tool_input={"message_ids": ["a"]},
+    )
+    pending = db.approval_pending_for(12345)
+
+    async def _fake_run_internal_control(*a, **kw):
+        return "ok done"
+    monkeypatch.setattr(
+        "agents.runtime.run_internal_control", _fake_run_internal_control,
+    )
+
+    # Stub out the bridge choreography to avoid needing a live Bot
+    async def _stub_choreo(bot, chat_id, text):
+        return
+    monkeypatch.setattr(
+        "agents.telegram_bridge._send_text_with_choreography", _stub_choreo,
+    )
+
+    class _DummyBot:
+        pass
+    monkeypatch.setattr(approval_tools, "_bot", lambda: _DummyBot())
+
+    consumed = await approval_tools._resume_after_defer(aid, pending)
+    assert consumed is True
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["toolu_resume_ok"]
+
+
+async def test_resume_after_defer_enqueues_on_failure(monkeypatch, tmp_path):
+    """On failed resume (the side-channel SDK call raised), the
+    deferred_tool_use_id is STILL enqueued — we don't want a failed execute
+    to leave the live session stuck either."""
+    import json
+    from storage import db
+    from tools import approvals as approval_tools
+
+    db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, None)
+    aid = db.approval_create_deferred(
+        chat_id=12345, tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="x", args={},
+        deferred_tool_use_id="toolu_resume_fail",
+        deferred_tool_input={"message_ids": ["a"]},
+    )
+    pending = db.approval_pending_for(12345)
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("simulated SDK failure")
+    monkeypatch.setattr(
+        "agents.runtime.run_internal_control", _boom,
+    )
+    async def _noop_send(*a, **kw):
+        return
+    monkeypatch.setattr(approval_tools, "_safe_send", _noop_send)
+
+    await approval_tools._resume_after_defer(aid, pending)
+    raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
+    assert json.loads(raw or "[]") == ["toolu_resume_fail"]
