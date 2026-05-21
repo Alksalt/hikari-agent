@@ -511,6 +511,16 @@ noticings:
   max_active_noticings: 5
   delta_signals: [sentiment_ma, mention_topic_freq, response_latency_ma, msg_length_ma]
 
+# Callback surfacer (2026-05-21): inject one "rememberable moment" hint
+# into Hikari's turn context when a recent high-importance episode is
+# topically adjacent to the user's message. Her CLAUDE.md "i noticed —"
+# rule already caps surfacing to once per session, so this only proposes.
+callbacks:
+  enabled: true
+  min_importance: 6
+  min_score: 0.25
+  window_days: 90
+
 mcp_external:
   # Phase 7 / 14: Cross-device sync. When enabled, `uv run python -m mcp_external.launch`
   # starts a Streamable HTTP MCP server on bind_host:bind_port. Front it with

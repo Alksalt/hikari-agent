@@ -364,6 +364,21 @@ async def inject_memory(
         tools_block = _format_tools_available()
         if tools_block:
             parts.append(tools_block)
+        # Callback surfacer (2026-05-21): one rememberable moment, topically
+        # scored. Lands after everything else so it doesn't crowd higher-
+        # priority blocks. Her one-notice-per-session rule still applies.
+        try:
+            from agents.callback_surface import pick_callback_candidate
+            candidate = pick_callback_candidate(user_prompt)
+            if candidate:
+                parts.append(
+                    f"# callback candidate (score {candidate['score']}):\n"
+                    f"  [{candidate['date']}] {candidate['text'][:200]}\n"
+                    "(surface sideways if it fits — your one-notice-per-session "
+                    "rule still applies.)"
+                )
+        except Exception:
+            logger.exception("inject_memory: callback_surface failed (non-fatal)")
         # Retrieval moved to the recall subagent — Hikari calls it on demand.
         _ = user_prompt
     except Exception:
