@@ -18,3 +18,6 @@ hikari.db
 *.db-shm
 *.db-wal
 
+# Claude Code agent worktree cache (created by Agent subagents running in isolation)
+.claude/worktrees/
+
