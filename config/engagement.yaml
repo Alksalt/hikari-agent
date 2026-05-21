@@ -34,6 +34,17 @@ proactive:
   reengage_min_hours: 2
   reengage_max_hours: 6
 
+# --- Gap awareness ---
+# Inject `# gap_since_last:` block into inject_memory when the user
+# has been quiet. Three bands: <soft_threshold_hours invisible,
+# soft_threshold_hours..long_threshold_hours soft notice, >long
+# triggers the explicit voice-line directive. Mirrors the existing
+# re-engagement bands so two systems don't drift apart.
+gap_awareness:
+  enabled: true
+  soft_threshold_hours: 2
+  long_threshold_hours: 24
+
 daily_checkin:
   enabled: true
   default_time: "07:00"          # HH:MM 24h, local clock

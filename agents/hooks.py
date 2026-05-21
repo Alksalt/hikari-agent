@@ -309,6 +309,44 @@ def _frame_episode(text: str, iso: str) -> str:
     return f"{text} ({suffix})"
 
 
+def _format_gap_since_last(
+    last_user_message_iso: str | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Format a # gap_since_last: line based on how long since the last
+    user message. Returns "" if invisible (<2h) or unparseable. Two bands:
+    2h-24h soft, >24h strong (triggers the existing voice line).
+
+    Thresholds are config-driven via gap_awareness.{soft,long}_threshold_hours.
+    """
+    if not last_user_message_iso:
+        return ""
+    try:
+        last = datetime.fromisoformat(last_user_message_iso)
+    except (TypeError, ValueError):
+        return ""
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    if now is None:
+        now = datetime.now(UTC)
+    if not cfg.get("gap_awareness.enabled", True):
+        return ""
+    soft_h = float(cfg.get("gap_awareness.soft_threshold_hours", 2))
+    long_h = float(cfg.get("gap_awareness.long_threshold_hours", 24))
+    delta = now - last
+    total_h = delta.total_seconds() / 3600.0
+    if total_h < soft_h:
+        return ""
+    if total_h < long_h:
+        return f"# gap_since_last: {int(round(total_h))}h"
+    days = int(delta.total_seconds() // 86400)
+    return (
+        f'# gap_since_last: {days}d (long quiet — your '
+        f'"you went quiet. that\'s disruptive" rule applies)'
+    )
+
+
 async def inject_memory(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -325,6 +363,10 @@ async def inject_memory(
         now_block = _format_now()
         if now_block:
             parts.append(now_block)
+        last_msg = db.runtime_get("last_user_message")
+        gap_block = _format_gap_since_last(last_msg)
+        if gap_block:
+            parts.append(gap_block)
         block = _format_core_blocks()
         if block:
             parts.append(block)
