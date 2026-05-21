@@ -203,6 +203,7 @@ _DEDICATED_AND_EXTERNAL_TOOLS = [
     "mcp__google_workspace__*",
     "mcp__notion__*",
     "mcp__playwright__*",
+    "mcp__youtube_transcript__*",
     "mcp__duckdb__*",
 ]
 
