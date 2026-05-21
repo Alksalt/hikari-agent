@@ -198,6 +198,7 @@ _DEDICATED_AND_EXTERNAL_TOOLS = [
     "mcp__hikari_codex__list_codex_reports",
     "mcp__hikari_codex__read_codex_report",
     "mcp__apple_events__*",
+    "mcp__apple_shortcuts__*",
     "mcp__github__*",
     "mcp__google_workspace__*",
     "mcp__notion__*",

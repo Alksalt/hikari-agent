@@ -31,6 +31,7 @@ For Hikari to surface your saved highlights and Reader docs:
 
 - **Apple Reminders + Calendar** (via the `apple_events` MCP server, EventKit): the first call triggers an Automation permission prompt for Reminders/Calendar — accept it in System Settings → Privacy & Security → Automation.
 - **Apple Notes** (via in-process `note_create` / `note_search` / `note_read` tools, AppleScript): the first call to any of these triggers a macOS Automation permission prompt for Notes.app — accept it the same way. These tools are for quick capture / cross-device sticky notes; permanent personal knowledge lives in the Obsidian wiki.
+- **Apple Shortcuts** (via the `apple_shortcuts` MCP server): exposes every Shortcut you've authored in the Shortcuts app as a callable tool. First call may trigger an Automation permission prompt — accept in System Settings → Privacy & Security → Automation. No env vars or auth needed.
 
 ## Setup
 

@@ -722,6 +722,7 @@ prompt_injection:
     - "mcp__github__"
     - "mcp__playwright__"
     - "mcp__apple_events__"
+    - "mcp__apple_shortcuts__"
     - "mcp__hikari_utility__note_search"
     - "mcp__hikari_utility__note_read"
     # Stream B: additional attacker-touchable surfaces
@@ -756,6 +757,7 @@ prompt_injection:
     - "^mcp__github__"
     - "^mcp__playwright__"
     - "^mcp__apple_events__"
+    - "^mcp__apple_shortcuts__"
     - "^mcp__hikari_utility__note_search$"
     - "^mcp__hikari_utility__note_read$"
     # Stream B: additional attacker-touchable surfaces
