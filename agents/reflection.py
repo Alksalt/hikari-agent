@@ -128,6 +128,7 @@ async def run_daily_reflection() -> bool:
                 subject=subj, predicate=pred, object_=obj,
                 importance=int(f.get("importance") or 5),
                 confidence=float(f.get("confidence") or 0.9),
+                attribution="hikari_inferred",
             )
             await _embed_fact(fact_id, subj, pred, obj)
             applied += 1
@@ -145,6 +146,7 @@ async def run_daily_reflection() -> bool:
                 subject=subj, predicate=pred, object_=obj,
                 importance=int(new.get("importance") or 5),
                 confidence=float(new.get("confidence") or 0.9),
+                attribution="hikari_inferred",
             )
             await _embed_fact(new_id, subj, pred, obj)
             db.supersede_fact(old_id, new_id, reason="daily reflection")
@@ -639,6 +641,7 @@ async def reflection_after_task(task_id: str) -> None:
                 subject=subj, predicate=pred, object_=obj,
                 importance=int(f.get("importance") or 5),
                 confidence=0.8,
+                attribution="hikari_inferred",
             )
             await _embed_fact(fact_id, subj, pred, obj)
             written += 1

@@ -533,6 +533,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_messages_telegram_message_id(conn)
     _migrate_facts_bitemporal(conn)
     _migrate_facts_recall_decay(conn)
+    _migrate_facts_attribution(conn)
     _migrate_reminders_apple_columns(conn)
     _migrate_drift_canary_indexes(conn)
     _migrate_fact_relations_validity(conn)
@@ -619,6 +620,28 @@ def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE facts ADD COLUMN recall_hit_count INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_facts_attribution(conn: sqlite3.Connection) -> None:
+    """Actor-aware attribution column on facts.
+
+    Documented values (not enforced at DB level):
+      user_stated         — user told Hikari directly
+      user_observed       — inferred from user's actions, not stated
+      hikari_inferred     — Hikari's own reflection extracted from chat
+      subagent_extracted  — an explorer/research subagent surfaced it
+      external_source     — came from a tool result (email, wiki, MCP)
+
+    NULL = legacy/unknown. Recall scoring currently treats NULL as neutral.
+    Pure-additive: no behavior change at recall today.
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+    }
+    if "attribution" not in existing:
+        conn.execute("ALTER TABLE facts ADD COLUMN attribution TEXT")
+    # No index — attribution is read alongside the fact row, not queried by.
 
 
 def _migrate_drift_canary_indexes(conn: sqlite3.Connection) -> None:
@@ -814,21 +837,26 @@ def insert_fact(
     confidence: float = 0.9,
     source_message_id: int | None = None,
     source: str | None = None,
+    attribution: str | None = None,
 ) -> int:
     """Insert a new fact. Returns row id. Caller is responsible for any
     contradiction/supersession logic — this function does NOT auto-supersede.
 
     Bi-temporal: ``valid_from`` is set to now, ``valid_to`` left NULL, and
     ``status`` defaults to ``'active'``. The optional ``source`` column is a
-    free-text provenance tag (e.g. ``'user_message'``, ``'reflection'``)."""
+    free-text provenance tag (e.g. ``'user_message'``, ``'reflection'``).
+
+    ``attribution`` is the structured provenance tag (one of:
+    user_stated, user_observed, hikari_inferred, subagent_extracted,
+    external_source) — see _migrate_facts_attribution for semantics."""
     now = _now()
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO facts (subject, predicate, object, confidence, importance, "
-            "valid_from, source_message_id, source, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            "valid_from, source_message_id, source, attribution, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
             (subject, predicate, object_, confidence, importance, now,
-             source_message_id, source, now),
+             source_message_id, source, attribution, now),
         )
         fact_id = cur.lastrowid
         c.execute(

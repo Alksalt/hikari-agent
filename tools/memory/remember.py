@@ -39,7 +39,10 @@ async def remember(args: dict[str, Any]) -> dict[str, Any]:
 
     existing = db.active_facts_matching(subject, predicate)
 
-    new_id = db.insert_fact(subject, predicate, object_, importance, confidence)
+    new_id = db.insert_fact(
+        subject, predicate, object_, importance, confidence,
+        attribution="user_stated",
+    )
 
     try:
         emb = await embeddings.aembed(f"{subject} {predicate} {object_}")
