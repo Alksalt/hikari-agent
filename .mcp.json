@@ -35,14 +35,6 @@
       "_comment": "Read-only DuckDB analytics over Hikari's SQLite stores. Boots an in-memory DuckDB (DuckDB limitation: in-memory is always writable, but no real DB is exposed); the agent ATTACHes the user's SQLite files at query time via DuckDB's sqlite_scanner extension: INSTALL sqlite; LOAD sqlite; ATTACH 'data/hikari.db' AS hikari (TYPE sqlite, READ_ONLY); — see docs/duckdb_mcp.md for example queries. Receipts SQLite lives at $DAY_RECEIPT_DB or ~/.day-receipt/receipt.db. Ephemeral connections keep the SQLite files unlocked for concurrent reads with the bot writer.",
       "command": "uvx",
       "args": ["--from", "mcp-server-motherduck", "mcp-server-motherduck", "--db-path", ":memory:", "--ephemeral-connections", "--max-rows", "256", "--query-timeout", "15"]
-    },
-    "readwise": {
-      "_comment": "Readwise highlights + Reader docs. Single access token from readwise.io/access_token — the upstream package expects it as ACCESS_TOKEN; we surface it as READWISE_TOKEN in .env for namespace clarity.",
-      "command": "npx",
-      "args": ["-y", "@readwise/readwise-mcp"],
-      "env": {
-        "ACCESS_TOKEN": "${READWISE_TOKEN}"
-      }
     }
   }
 }

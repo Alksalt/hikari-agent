@@ -21,8 +21,6 @@ any plan or future iteration.
 
 - **OOC channel ("/ooc" or "[ooc]" prefix)** — `S, ~3h`. Prefix detection + thin alternate system-prompt overlay that loosens deflection layer while keeping her dry register. The hard part is character integrity, NOT engineering. Risk: becomes the AI-assistant escape hatch she's forbidden from if voice slips even slightly. Defer until needed.
 
-- **Voice replies (TTS via ElevenLabs, mood-gated)** — `M-L, 3-5d`. Mirror the photo-gating logic already in place. Her short dry lowercase style is *easier* to voice than warmer companions because there's less prosody risk. Wrong voice would kill the character instantly; needs careful voice selection + heavy testing. Highest-retention feature across the entire companion category according to user reviews — but biggest character risk on the list. Defer until the rest of the v2 voice work feels solid.
-
 ## Memory architecture (from 2025-2026 papers + Letta / Mem0 / Graphiti)
 
 - **Actor-aware attribution on facts** — `S, ~2h`. Single column add: `facts.attribution` enum (`user_stated` / `user_observed` / `hikari_inferred` / `subagent_extracted` / `external_source`). Recall scorer ranks by attribution; contradiction resolution favors user_stated. Pure-additive, no architectural risk. Mem0 2026 pattern.

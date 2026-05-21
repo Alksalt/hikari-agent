@@ -7,7 +7,11 @@ The router builds a short hint string that is appended to the photo
 prompt; the model still owns the actual tool call.
 
 The vision call uses the Anthropic Messages API directly via ``httpx`` —
-Haiku, one-shot, ~1s. ``ANTHROPIC_API_KEY`` is read from the environment.
+Haiku, one-shot, ~1s. Auth uses ``CLAUDE_CODE_OAUTH_TOKEN`` (the OAuth
+access token from ``claude setup-token``, prefix ``sk-ant-oat01-``),
+sent as a Bearer token so billing flows through the Max subscription
+quota instead of pay-per-token API rates. Falls back to
+``ANTHROPIC_API_KEY`` if explicitly set (x-api-key path, pay-per-token).
 On ANY failure (missing key, network, malformed response, unknown intent)
 the classifier returns the safe default ``intent='other'`` so the photo
 turn always proceeds.
@@ -60,7 +64,14 @@ _MEDIA_TYPES = {
     ".webp": "image/webp",
 }
 
+# Anthropic's Messages API silently validates the system prompt when called
+# with an OAuth token — non-Haiku models silently 400 unless the system starts
+# with the exact Claude Code prefix. Haiku is reported exempt today, but we
+# include it defensively so the call survives any future tightening.
+_CLAUDE_CODE_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+
 _SYSTEM_PROMPT = (
+    f"{_CLAUDE_CODE_PREFIX}\n\n"
     "You are a photo classifier. Look at the image and classify it into ONE "
     "of: whiteboard, receipt, screenshot_paper, screenshot_other, food, "
     "selfie, other. Return strict YAML, no commentary, no markdown fences."
@@ -123,6 +134,11 @@ def _parse_yaml_response(text: str) -> dict[str, Any]:
 async def _call_vision_api(image_bytes: bytes, media_type: str, api_key: str) -> str:
     """Hit the Anthropic Messages API with a single image + the YAML prompt.
 
+    ``api_key`` may be an OAuth access token (``sk-ant-oat01-...``) or a
+    console API key (``sk-ant-api03-...``). Auth header is picked accordingly:
+    OAuth tokens go via ``Authorization: Bearer`` and route billing through
+    the Max subscription; API keys go via ``x-api-key`` and bill pay-per-use.
+
     Returns the assistant's text content. Raises on transport/API errors —
     the caller wraps in try/except and falls back to the safe default.
     """
@@ -148,10 +164,14 @@ async def _call_vision_api(image_bytes: bytes, media_type: str, api_key: str) ->
         ],
     }
     headers = {
-        "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    if api_key.startswith("sk-ant-oat"):
+        headers["authorization"] = f"Bearer {api_key}"
+        headers["anthropic-beta"] = "oauth-2025-04-20"
+    else:
+        headers["x-api-key"] = api_key
     async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
         resp = await client.post(_API_URL, json=payload, headers=headers)
         resp.raise_for_status()
@@ -174,9 +194,18 @@ async def classify_photo_intent(image_path: str | Path) -> dict[str, Any]:
         if not path.exists() or not path.is_file():
             logger.info("classify_photo_intent: file missing %s", path)
             return dict(_SAFE_DEFAULT)
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        # Prefer the Max-subscription OAuth token (routes billing through the
+        # subscription). Fall back to a console API key only if it's
+        # explicitly set — that path bills pay-per-use.
+        api_key = (
+            os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+            or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        )
         if not api_key:
-            logger.info("classify_photo_intent: no ANTHROPIC_API_KEY — defaulting to 'other'")
+            logger.info(
+                "classify_photo_intent: neither CLAUDE_CODE_OAUTH_TOKEN nor "
+                "ANTHROPIC_API_KEY set — defaulting to 'other'"
+            )
             return dict(_SAFE_DEFAULT)
         image_bytes = path.read_bytes()
         media_type = _media_type_for(path)

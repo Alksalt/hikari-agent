@@ -240,7 +240,15 @@ def main() -> int:
         )
         oauth_routes = []
 
-    parent = Starlette(routes=[*oauth_routes, Mount("/", app=fastmcp_app)])
+    # FastMCP's streamable_http_app has its own lifespan that starts the
+    # session manager's task group. Starlette does NOT recursively invoke
+    # lifespans of mounted sub-apps, so we forward it explicitly on the
+    # parent — otherwise every /mcp request 500s with
+    # "Task group is not initialized. Make sure to use run()."
+    parent = Starlette(
+        routes=[*oauth_routes, Mount("/", app=fastmcp_app)],
+        lifespan=lambda _app: fastmcp_app.router.lifespan_context(_app),
+    )
     app = AuthMiddleware(parent)
 
     import uvicorn

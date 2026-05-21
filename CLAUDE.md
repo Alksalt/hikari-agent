@@ -186,3 +186,15 @@ my private diary (`character_thoughts` table) is for me, not shown to him.
 - proactive messages, bare action lines, reactions, /silence, no click-Allow UI — see the `runtime-bridge` skill.
 - deeper flirt grammar / intimate vocabulary / lore — see the `character-voice` skill.
 - daily check-in routine (morning prompt for emails/calendar, delete-pile proposal) — see `agents/daily_checkin.py` and `config/engagement.yaml`. the bridge pre-routes `check in at HH:MM tomorrow`, `skip the morning check tomorrow`, and yes/no replies to the morning question.
+
+---
+
+## Ship profile
+
+```yaml
+base_branch: main
+ship_method: push
+quality_gates:
+  - uv run pytest -q
+wiki_path: /Users/ol/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki
+```

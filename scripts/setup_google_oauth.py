@@ -11,9 +11,13 @@ Usage:
   2. Save that file as secrets/google_oauth_client.json (gitignored).
   3. Make sure these APIs are enabled in the same Cloud project:
        Gmail API, Calendar API, Drive API, Docs API, Sheets API
-  4. OAuth consent screen: External, Testing, add your own email under
-     "Test users". Sensitive scopes for unverified apps mean the refresh
-     token will expire after 7 days unless the app is published.
+  4. OAuth consent screen: External, **Published / In production** (click
+     the "PUBLISH APP" button on the OAuth consent screen page). Leaving
+     it in Testing mode causes the refresh token to expire after 7 days
+     for sensitive scopes (gmail, drive). Production-without-verification
+     is fine for a single-user personal app — you'll just see an
+     "Unverified app" warning once on the consent screen; click
+     "Advanced -> Go to <app> (unsafe)" to proceed.
   5. Run:
        uv run python scripts/setup_google_oauth.py
 """
@@ -91,8 +95,10 @@ def main() -> int:
     print(f"GOOGLE_WORKSPACE_REFRESH_TOKEN={creds.refresh_token}")
     print("=" * 60)
     print()
-    print("(refresh token expires in 7 days while the app is in Testing mode.")
-    print(" re-run this script to get a fresh one.)")
+    print("(if the OAuth consent screen is Published, this refresh token is")
+    print(" permanent — no re-run needed unless you revoke access, change")
+    print(" your Google password, or don't use it for 6 months. if it's")
+    print(" still in Testing mode, expect a 7-day expiry — publish the app.)")
     return 0
 
 

@@ -25,6 +25,54 @@ from ruamel.yaml import YAML
 
 logger = logging.getLogger(__name__)
 
+
+# ---- upstream bug workaround ------------------------------------------------
+# obsidiantools' _get_md_front_matter_and_content (md_utils.py:248) assigns
+# `file_string` INSIDE its try block, then references it from a bare `except:`
+# clause. If `open()` itself fails (PermissionError, OSError) or `f.read()`
+# raises (UnicodeDecodeError on non-UTF-8 files), `file_string` is never bound
+# and the except branch raises UnboundLocalError instead of returning ({}, "").
+# That error propagates out of Vault.gather() and crashes wiki_search before
+# our own try/except can catch it. We replace the function with a safe version.
+def _patch_obsidiantools_md_utils() -> None:
+    def _safe_read(filepath, *, str_transform_func=None):
+        try:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except Exception:  # noqa: BLE001
+                return ({}, "")
+        except Exception:  # noqa: BLE001
+            return ({}, "")
+        if str_transform_func:
+            try:
+                content = str_transform_func(content)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return frontmatter.parse(content)
+        except Exception:  # noqa: BLE001 — yaml errors etc.
+            return ({}, content)
+
+    # Patch BOTH known import sites: md_utils (defining module) AND api
+    # (which does ``from .md_utils import _get_md_front_matter_and_content``
+    # at module load, creating an independent name binding inside the api
+    # namespace). The api binding is what Vault.gather() actually calls.
+    for mod_path in ("obsidiantools.md_utils", "obsidiantools.api"):
+        try:
+            import importlib
+            m = importlib.import_module(mod_path)
+            if hasattr(m, "_get_md_front_matter_and_content"):
+                m._get_md_front_matter_and_content = _safe_read
+        except Exception:  # noqa: BLE001
+            continue
+
+
+_patch_obsidiantools_md_utils()
+
 VAULT_ROOT = Path(
     os.environ.get("HIKARI_WIKI_VAULT")
     or Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki"

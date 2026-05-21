@@ -39,6 +39,15 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     importlib.reload(db)
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     config.reload()
+    # Isolate tests from operator config: TestClient uses plain HTTP, so
+    # state cookies must NOT be Secure (Secure cookies are dropped on http://).
+    # Force behind_tls_proxy=False here regardless of engagement.yaml.
+    monkeypatch.setattr(
+        config, "get",
+        lambda key, default=None, _orig=config.get: (
+            False if key == "mcp_external.behind_tls_proxy" else _orig(key, default)
+        ),
+    )
     # Reset rate limiter — module-level singleton survives across tests.
     from mcp_external._rate_limit import passphrase_limiter
     passphrase_limiter.reset()

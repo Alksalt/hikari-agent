@@ -123,7 +123,36 @@ def build_server() -> FastMCP:
     Factory pattern so tests can construct + introspect without a running
     HTTP server.
     """
-    mcp = FastMCP(_SERVER_NAME)
+    # FastMCP auto-enables DNS rebinding protection when bound to 127.0.0.1
+    # with allowed_hosts limited to localhost. Behind Cloudflare Tunnel we
+    # receive requests carrying the public Host header (e.g. hikari.example.com)
+    # → those get rejected with 421 "Invalid Host header" unless we extend
+    # allowed_hosts/allowed_origins from mcp_external.public_base_url.
+    from urllib.parse import urlparse
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    allowed_origins = [
+        "http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*",
+    ]
+    public_base_url = cfg.get("mcp_external.public_base_url")
+    if public_base_url:
+        parsed = urlparse(str(public_base_url))
+        if parsed.hostname:
+            # Host header arrives with port for non-default; without for
+            # default. Allow both forms to be safe.
+            allowed_hosts.append(parsed.hostname)
+            allowed_hosts.append(f"{parsed.hostname}:*")
+            origin = f"{parsed.scheme}://{parsed.hostname}"
+            allowed_origins.append(origin)
+            allowed_origins.append(f"{origin}:*")
+
+    security_settings = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
+    mcp = FastMCP(_SERVER_NAME, transport_security=security_settings)
 
     @mcp.tool()
     async def hikari_recall(query: str, limit: int = 0) -> str:
