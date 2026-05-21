@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,6 +27,18 @@ from . import handoff as handoff_mod
 from . import tool_inventory as tool_inventory_mod
 
 logger = logging.getLogger(__name__)
+
+
+# Set to the qualified tool name currently being resumed after CONFIRM-SEND
+# approval. When set, ``defer_gated_tools`` skips the defer for that specific
+# tool name only — other gated tools called during the same resume turn still
+# defer normally. Set by ``tools.approvals._resume_after_defer`` when it falls
+# back to identity (no separate ``_confirmed`` sibling exists for the gated
+# tool). Without this, the resume turn would re-trigger the defer hook and
+# loop forever.
+IN_APPROVAL_RESUME_TOOL: ContextVar[str | None] = ContextVar(
+    "hikari_in_approval_resume_tool", default=None,
+)
 
 
 def _resolve_local_tz_name() -> str:
@@ -483,6 +496,19 @@ async def defer_gated_tools(
     tool_name = str(input_data.get("tool_name") or "")
     tool_input = input_data.get("tool_input") or {}
     sdk_tool_use_id = str(input_data.get("tool_use_id") or tool_use_id or "")
+
+    # Approval-resume bypass: when ``tools.approvals._resume_after_defer`` is
+    # running a fresh turn to execute the approved tool by its original name
+    # (identity fallback for tools without a separate ``_confirmed`` sibling),
+    # the hook would otherwise re-defer the same tool and the resume would
+    # loop. Bypass is scoped to the exact tool name — any *other* gated tool
+    # the model decides to call during the resume turn still defers normally.
+    if tool_name and IN_APPROVAL_RESUME_TOOL.get() == tool_name:
+        logger.info(
+            "defer_gated_tools: bypassing defer for %s (approved resume)",
+            tool_name,
+        )
+        return {}
 
     input_dict = tool_input if isinstance(tool_input, dict) else {}
     if not tool_name or not _is_defer_gated(tool_name, input_dict):

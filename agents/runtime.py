@@ -26,8 +26,15 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
     create_sdk_mcp_server,
 )
+
+# Re-exported for backwards compatibility — the contextvar itself lives in
+# ``agents._turn_state`` so importlib.reload(agents.runtime) (used by
+# allowlist tests) doesn't create a new ContextVar object and silently break
+# the chat-path fabrication backstop.
+from ._turn_state import LAST_TURN_TOOL_NAMES  # noqa: F401
 
 from agents import config as cfg
 from storage import db
@@ -320,6 +327,11 @@ async def _invoke_sdk(
     """
     session_id = resume
     parts: list[str] = []
+    # Fresh per-call set of tool names — overwrites any stale value from a
+    # prior turn in this Context. Read by ``agents.post_filter`` on the chat
+    # path to detect hallucinated external-data results.
+    tool_names_this_turn: set[str] = set()
+    LAST_TURN_TOOL_NAMES.set(tool_names_this_turn)
     for attempt in (1, 2):
         options = _build_options(
             resume=session_id,
@@ -337,6 +349,8 @@ async def _invoke_sdk(
                         for block in msg.content:
                             if isinstance(block, TextBlock):
                                 parts.append(block.text)
+                            elif isinstance(block, ToolUseBlock):
+                                tool_names_this_turn.add(str(block.name))
                     elif isinstance(msg, ResultMessage):
                         if log_session_id and msg.session_id:
                             db.set_session_id(msg.session_id)

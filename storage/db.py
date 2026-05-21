@@ -447,6 +447,24 @@ CREATE TABLE IF NOT EXISTS drift_canary_answers (
     rubric_version TEXT NOT NULL DEFAULT 'v1',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Ghost-of-Future-Self letters: monthly LLM-composed letter written AS the
+-- user 5 years from now (MIT Media Lab Future You project pattern). One
+-- row per month_iso (YYYY-MM), persisted both here (queryable) and as a
+-- markdown file under data/future_letters/ for human-readable durability.
+-- Composer draws on receipts, episodes, character_thoughts, weekly
+-- consolidations for the past 30 days. Brand-new table, no ALTER ADD
+-- COLUMN, so the unique-constraint index lives inline.
+CREATE TABLE IF NOT EXISTS future_letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month_iso TEXT NOT NULL UNIQUE,    -- 'YYYY-MM'
+    theme TEXT NOT NULL,                -- the "decision X" the letter reflects on
+    body TEXT NOT NULL,                 -- the letter content
+    sent_at TEXT,                       -- ISO ts when delivered via Telegram, null until then
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_future_letters_month
+    ON future_letters(month_iso);
 """
 
 
@@ -2667,3 +2685,39 @@ def oauth_cleanup_expired(revoked_retention_days: int = 30) -> int:
             (now_iso, revoked_cutoff),
         ).rowcount
     return int(n1 or 0) + int(n2 or 0)
+
+
+# ---------- future_letters (Ghost-of-Future-Self monthly letter) ----------
+
+def future_letter_insert(month_iso: str, theme: str, body: str) -> int:
+    """Insert a composed letter for ``month_iso`` (``YYYY-MM``). Returns the
+    new row id. Raises ``sqlite3.IntegrityError`` on duplicate month (the
+    UNIQUE constraint catches double-fires)."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO future_letters (month_iso, theme, body) "
+            "VALUES (?, ?, ?)",
+            (month_iso, theme, body),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def future_letter_get(month_iso: str) -> dict[str, Any] | None:
+    """Return the letter row for the given ``YYYY-MM`` month, or None."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, month_iso, theme, body, sent_at, created_at "
+            "FROM future_letters WHERE month_iso = ?",
+            (month_iso,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def future_letter_mark_sent(month_iso: str) -> None:
+    """Stamp ``sent_at`` with the current time once Telegram delivery succeeds.
+    Idempotent — overwrites a prior stamp if called again."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE future_letters SET sent_at = ? WHERE month_iso = ?",
+            (_now(), month_iso),
+        )

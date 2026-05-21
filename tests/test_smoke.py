@@ -159,6 +159,8 @@ def test_scheduler_builds(monkeypatch):
         # 2026-05-20 five-feature batch:
         "evening_diary",     # daily 22:00 — composes data/diary/YYYY-MM-DD.md
         "drift_canary",      # weekly Sunday 20:00 — three hard-opinion probes
+        # 2026-05-21 Ghost-of-Future-Self letter (first Sunday of month, 10:00).
+        "future_letter",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

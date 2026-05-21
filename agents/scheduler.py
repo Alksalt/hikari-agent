@@ -206,6 +206,28 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
+    # Ghost-of-Future-Self letter: first Sunday of the month, 10:00 local
+    # (avoids the memory_prune 04:00 on day-of-month=1 collision). Composes
+    # a letter AS the user 5 years from now, drawing on 30 days of real
+    # activity. MIT Media Lab "Future You" project pattern.
+    # CronTrigger(day='1-7', day_of_week='sun', ...) fires on the Sunday
+    # that falls in the first 7 days of the month — i.e. the first Sunday.
+    if bool(cfg.get("future_letter.enabled", True)):
+        from .future_letter import run_future_letter
+        fl_hour = int(cfg.get("future_letter.hour", 10))
+        fl_minute = int(cfg.get("future_letter.minute", 0))
+        async def _future_letter_job():
+            return await run_future_letter(send_text)
+        scheduler.add_job(
+            _future_letter_job,
+            CronTrigger(
+                day="1-7", day_of_week="sun",
+                hour=fl_hour, minute=fl_minute,
+            ),
+            id="future_letter",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
     # Phase 11: weekly sleep-time consolidation, Sunday 04:30 local.
     # Letta sleep-time pattern (Apr 2025) — synthesizes a 200-word weekly
     # "what i noticed about him" summary into core_blocks['weekly_consolidation'],

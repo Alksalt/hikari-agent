@@ -75,6 +75,123 @@ def _strip_click_allow(text: str) -> tuple[str, bool]:
     return text, False
 
 
+# ---------- fabricated external-data backstop ----------
+# Live 2026-05-21: user asked Hikari to check unread emails. Reply: "5 unread,
+# all from Google: ..." with no actual gmail tool call (tool_uses: 0). The
+# persona prompt has no rule against fabricating tool-shaped data, and the
+# terseness bias favors a confident-sounding fake over the tool call. We
+# detect the most obvious fabrication shapes (inbox counts, "today's calendar"
+# event listings) and only fire when NO relevant fetch tool ran this turn —
+# the contextvar is set in ``agents.runtime._invoke_sdk``.
+
+_FABRICATED_INBOX_RE = re.compile(
+    r"\b\d+\s+(new\s+|unread\s+)?(emails?|messages?)\b"
+    r"|\b\d+\s+unread\b"
+    r"|\byour\s+inbox\s+(has|shows|contains|holds)\s+\d+\b"
+    r"|\bin\s+your\s+inbox\b"
+    r"|\bnothing\s+(new\s+)?in\s+(your\s+)?inbox\b"
+    r"|\binbox\s+is\s+(empty|clear|clean)\b",
+    re.IGNORECASE,
+)
+
+_FABRICATED_CALENDAR_RE = re.compile(
+    r"\byou\s+have\s+\d+\s+(meetings?|events?|appointments?|calls?)\b"
+    r"|\b(today|tomorrow)('|’)?s\s+(calendar|schedule|agenda)\b"
+    r"|\bnext\s+up\s+(at|is)\s+\d"
+    r"|\bnothing\s+on\s+(your\s+)?calendar\b"
+    r"|\b(calendar|schedule)\s+is\s+(empty|clear|clean|empty\s+today)\b",
+    re.IGNORECASE,
+)
+
+# Tools that count as a legitimate fetch of external data. If ANY of these
+# fired on the turn, the reply gets a pass — Hikari might be summarizing real
+# data and naturally describing it with inbox/calendar shape. Includes:
+#   - Specific Gmail/Calendar/Drive tools on the google_workspace MCP server
+#   - The generic Agent/Task dispatch (subagent fetches happen out-of-stream
+#     and don't surface individual tool names to the parent's message loop)
+#   - The drive_gmail subagent specifically by qualified name
+#   - The background dispatch path (long-running fetches)
+_INBOX_FETCH_PREFIXES = (
+    "mcp__google_workspace__gmail_",
+    "mcp__google_workspace__query_gmail",
+)
+_CALENDAR_FETCH_PREFIXES = (
+    "mcp__google_workspace__calendar_",
+)
+_GENERIC_DELEGATION_NAMES = frozenset({
+    "Agent", "Task",
+    "mcp__hikari_dispatch__dispatch_claude_session",
+})
+
+_FABRICATION_REPLACEMENT = (
+    "give me a sec — let me actually check."
+)
+
+
+def _strip_fabricated_external_data(text: str) -> tuple[str, bool, str]:
+    """Catch the failure mode where the model claims fresh email/calendar
+    contents without calling the corresponding tool. Returns
+    ``(text, fired, reason)``.
+
+    Reads ``agents.runtime.LAST_TURN_TOOL_NAMES`` — set per ``_invoke_sdk``
+    call. Same asyncio task throughout the chat turn so the ContextVar
+    propagates naturally; non-chat paths (proactive, internal-control)
+    are unaffected because they don't run ``filter_outgoing``.
+
+    Disabled if ``post_filter.fabrication_backstop_enabled`` is false.
+    """
+    if not cfg.get("post_filter.fabrication_backstop_enabled", True):
+        return text, False, ""
+    if not text:
+        return text, False, ""
+
+    inbox_hit = bool(_FABRICATED_INBOX_RE.search(text))
+    cal_hit = bool(_FABRICATED_CALENDAR_RE.search(text))
+    if not (inbox_hit or cal_hit):
+        return text, False, ""
+
+    # Import from the dedicated _turn_state module rather than agents.runtime
+    # so importlib.reload(agents.runtime) — used by allowlist tests — doesn't
+    # replace the ContextVar object behind our back. Same singleton on every
+    # call.
+    try:
+        from agents._turn_state import LAST_TURN_TOOL_NAMES
+        tool_names = LAST_TURN_TOOL_NAMES.get() or set()
+    except Exception:
+        # If we can't read the contextvar, conservatively ship the original.
+        return text, False, ""
+
+    # Generic delegation gets a free pass — subagent tool calls don't appear
+    # in the parent's message stream, so we can't tell if they fetched email
+    # or not. Trust the dispatch.
+    if tool_names & _GENERIC_DELEGATION_NAMES:
+        return text, False, ""
+
+    if inbox_hit:
+        called_inbox_tool = any(
+            n.startswith(_INBOX_FETCH_PREFIXES) for n in tool_names
+        )
+        if not called_inbox_tool:
+            logger.warning(
+                "fabrication_backstop_fired (inbox): tool_names=%s text=%r",
+                sorted(tool_names)[:6], text[:200],
+            )
+            return _FABRICATION_REPLACEMENT, True, "inbox_no_fetch"
+
+    if cal_hit:
+        called_cal_tool = any(
+            n.startswith(_CALENDAR_FETCH_PREFIXES) for n in tool_names
+        )
+        if not called_cal_tool:
+            logger.warning(
+                "fabrication_backstop_fired (calendar): tool_names=%s text=%r",
+                sorted(tool_names)[:6], text[:200],
+            )
+            return _FABRICATION_REPLACEMENT, True, "calendar_no_fetch"
+
+    return text, False, ""
+
+
 # ---------- compiled-pattern caches ----------
 
 _PATTERN_CACHE: dict[str, list[re.Pattern[str]]] = {}
@@ -393,6 +510,21 @@ def filter_outgoing(text: str) -> FilterResult:
             text=text,
             refusal_short_replaced=True,
             refusal_hits=["click_allow_backstop"],
+            sycophancy_triggered=False,
+            sycophancy_violations=[],
+            needs_llm_rewrite=False,
+            rewrite_instruction=None,
+        )
+
+    # Fabricated external-data backstop — catch inbox/calendar claims when no
+    # corresponding fetch tool ran this turn. Ships a redirect line instead of
+    # the made-up summary so the next user turn forces a real call.
+    text, fab_fired, fab_reason = _strip_fabricated_external_data(text)
+    if fab_fired:
+        return FilterResult(
+            text=text,
+            refusal_short_replaced=True,
+            refusal_hits=[f"fabrication_backstop:{fab_reason}"],
             sycophancy_triggered=False,
             sycophancy_violations=[],
             needs_llm_rewrite=False,

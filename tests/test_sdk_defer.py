@@ -183,9 +183,18 @@ async def test_resume_after_defer_invokes_run_query_with_extra_tool(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_resume_after_defer_aborts_without_confirmed_mapping(monkeypatch, tmp_path):
-    """If config has no defer_confirmed_tools entry for the gated tool, the
-    resume aborts cleanly (no _run_query call, status=rejected)."""
+async def test_resume_after_defer_identity_fallback_when_no_mapping(monkeypatch, tmp_path):
+    """When no defer_confirmed_tools entry exists for the gated tool, the resume
+    falls through to identity: it calls run_internal_control with the original
+    tool name in the synthesized prompt, sets the IN_APPROVAL_RESUME_TOOL
+    contextvar so the PreToolUse defer hook bypasses for this tool only, and
+    does NOT extend extra_allowed_tools (the tool is already in the base
+    allowlist via wildcard).
+
+    Was previously codified as 'aborts cleanly' — that was the bug surfaced by
+    the live gmail_bulk_delete_messages CONFIRM-SEND test: 16 destructive tools
+    were never executable on approval because each lacked a sibling mapping.
+    """
     # Tweak config so defer_confirmed_tools is empty.
     cfg_text = (
         "approvals:\n"
@@ -196,31 +205,114 @@ async def test_resume_after_defer_aborts_without_confirmed_mapping(monkeypatch, 
     monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
     config.reload()
 
+    from agents import hooks
     from tools import approvals as approval_tools
+
     sent: list[tuple[int, str]] = []
 
     async def fake_safe_send(chat_id, text):
         sent.append((chat_id, text))
     monkeypatch.setattr(approval_tools, "_safe_send", fake_safe_send)
 
-    called = {"n": 0}
+    captured: dict = {}
 
-    async def fake_run_internal_control(*a, **k):
-        called["n"] += 1
-        return "should not be called"
+    async def fake_run_internal_control(prompt, *, max_turns, max_budget_usd,
+                                        extra_allowed_tools=None):
+        captured["prompt"] = prompt
+        captured["extra_allowed_tools"] = extra_allowed_tools
+        # The contextvar must be set to the gated tool name at the moment the
+        # SDK call runs — that's how the PreToolUse defer hook knows to skip.
+        captured["contextvar"] = hooks.IN_APPROVAL_RESUME_TOOL.get()
+        return "deleted."
 
     import agents.runtime as runtime_mod
-    monkeypatch.setattr(runtime_mod, "run_internal_control", fake_run_internal_control)
+    monkeypatch.setattr(runtime_mod, "run_internal_control",
+                        fake_run_internal_control)
 
     aid = db.approval_create_deferred(
-        chat_id=12345, tool_name="mcp__hikari_dispatch__dispatch_claude_session",
-        tier=2, summary="...",
-        args={}, deferred_tool_use_id="tu_oops", deferred_tool_input={},
+        chat_id=12345,
+        tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        tier=2, summary="bulk delete 11 messages",
+        args={"message_ids": ["a", "b", "c"]},
+        deferred_tool_use_id="tu_gmail_bulk",
+        deferred_tool_input={"message_ids": ["a", "b", "c"]},
     )
     pending = db.approval_pending_for(12345)
-    await approval_tools._resume_after_defer(aid, pending)
-    assert called["n"] == 0  # run_internal_control never called
-    assert any("no confirmed-tool mapping" in t for _, t in sent)
+    consumed = await approval_tools._resume_after_defer(aid, pending)
+    assert consumed is True
+    # The SDK call was made (no abort).
+    assert "prompt" in captured
+    # No "_confirmed" sibling — the prompt instructs the model to call the
+    # original tool name directly.
+    assert "gmail_bulk_delete_messages" in captured["prompt"]
+    # extra_allowed_tools is None: the tool is already in the base allowlist
+    # via the mcp__google_workspace__* wildcard; passing it would also
+    # incorrectly trigger the dispatch-confirmed server attachment heuristic
+    # in _build_options.
+    assert captured["extra_allowed_tools"] is None
+    # Contextvar was set to the exact tool name being resumed.
+    assert captured["contextvar"] == (
+        "mcp__google_workspace__gmail_bulk_delete_messages"
+    )
+    # And it's been reset back to None by the time the resume returns.
+    assert hooks.IN_APPROVAL_RESUME_TOOL.get() is None
+    # No abort message was sent.
+    assert not any("no confirmed-tool mapping" in t for _, t in sent)
+
+
+@pytest.mark.asyncio
+async def test_defer_hook_bypasses_when_in_approval_resume(monkeypatch):
+    """When IN_APPROVAL_RESUME_TOOL is set to the tool being called, the
+    PreToolUse defer hook short-circuits — that's how the resume turn can
+    actually execute the gated tool without looping the defer."""
+    from agents import hooks
+
+    token = hooks.IN_APPROVAL_RESUME_TOOL.set(
+        "mcp__google_workspace__gmail_bulk_delete_messages",
+    )
+    try:
+        out = await hooks.defer_gated_tools(
+            {"tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
+             "tool_use_id": "tu_resume",
+             "tool_input": {"message_ids": ["a"]}},
+            None, None,
+        )
+        # Empty dict = "don't defer, let the SDK run the tool."
+        assert out == {}
+        # No approval row created during the bypass.
+        assert db.approval_pending_for(12345) is None
+    finally:
+        hooks.IN_APPROVAL_RESUME_TOOL.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_defer_hook_still_defers_other_tools_during_approval_resume(monkeypatch):
+    """Bypass is scoped to the EXACT tool name in IN_APPROVAL_RESUME_TOOL. If
+    the resume turn's model decides to call a *different* gated tool, that
+    tool still defers normally — the user shouldn't lose approval coverage
+    on unrelated destructive operations just because one approval is mid-flight.
+    """
+    from agents import hooks
+    from tools import approvals as approval_tools
+
+    async def fake_send(chat_id, tier, summary):
+        pass
+    monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send)
+
+    token = hooks.IN_APPROVAL_RESUME_TOOL.set(
+        "mcp__google_workspace__gmail_bulk_delete_messages",
+    )
+    try:
+        # Different gated tool — must defer.
+        out = await hooks.defer_gated_tools(
+            {"tool_name": "mcp__google_workspace__drive_delete_file",
+             "tool_use_id": "tu_other",
+             "tool_input": {"file_id": "xyz"}},
+            None, None,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
+    finally:
+        hooks.IN_APPROVAL_RESUME_TOOL.reset(token)
 
 
 # ---------- routing through resolve_pending_approval ----------

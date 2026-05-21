@@ -253,22 +253,25 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
     except (ValueError, TypeError):
         tool_input = {}
 
-    # Look up the post-approval sibling tool from config. Note: the runtime
-    # attaches the matching `*_confirmed` MCP server only when the resume
-    # codepath passes the matching tool name via `extra_allowed_tools`, so the
-    # name we read here must match the server-namespaced form.
+    # Look up the post-approval sibling tool from config. The dispatch case
+    # uses a separate `*_confirmed` MCP server attached only during the resume
+    # turn (via `extra_allowed_tools`). For all other gated tools (Gmail,
+    # Drive, Notion, GitHub, python_run...) there is no separate sibling — the
+    # post-approval action is to call the same tool by its original name. In
+    # that case fall through to identity and rely on the `IN_APPROVAL_RESUME_TOOL`
+    # contextvar (set below) to bypass the PreToolUse defer hook for this tool
+    # only, so the resume turn doesn't loop.
     confirmed_map = cfg.get("approvals.defer_confirmed_tools") or {}
     confirmed_tool = confirmed_map.get(tool_name)
+    use_identity_fallback = False
     if not confirmed_tool:
-        db.approval_resolve(aid, "rejected")
-        await _safe_send(
-            chat_id,
-            f"approval {aid}: no confirmed-tool mapping for {tool_name}. "
-            "aborted.",
+        confirmed_tool = tool_name
+        use_identity_fallback = True
+        logger.info(
+            "resume_after_defer: identity fallback for %s "
+            "(no defer_confirmed_tools entry)",
+            tool_name,
         )
-        logger.error("resume_after_defer: missing defer_confirmed_tools entry "
-                     "for %s", tool_name)
-        return True
 
     template = cfg.get("approvals.defer_resume_prompt_template") or (
         "[system: the deferred tool call {tool_use_id} ({tool_name}) was "
@@ -309,66 +312,95 @@ async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
     # Phase 13 (Stream C): approval resume is a stateless control prompt —
     # never resume the live SDK session, never mutate session_id, never
     # touch `messages`. The confirmed-tool allowlist still flows through.
+    from agents.hooks import IN_APPROVAL_RESUME_TOOL
     from agents.runtime import run_internal_control
 
     # CRITICAL ORDERING: do NOT mark the approval resolved until the SDK
     # actually completes. If we marked early and execution failed, the row
     # would be unrecoverable (no longer 'pending' so restart-recovery skips it).
     reply: str | None = None
-    try:
-        reply = await run_internal_control(
-            prompt,
-            max_turns=5,
-            max_budget_usd=0.30,
-            extra_allowed_tools=[confirmed_tool],
-        )
-    except Exception as e:
-        logger.exception(
-            "resume_after_defer: run_internal_control failed for aid=%s", aid,
-        )
-        await _safe_send(chat_id, f"approval ran but execution fell over: {e}")
-        # Mark the row failed so restart-recovery doesn't loop forever on it,
-        # but leave an audit trace explaining what happened.
-        try:
-            db.approval_resolve(aid, "rejected")
-            db.audit_append(
-                tool=tool_name,
-                args_json_redacted=_redact(json.dumps(tool_input))[:500],
-                result_summary=(
-                    f"deferred->resume FAILED via {confirmed_tool} "
-                    f"(tu={tool_use_id}): {e}"
-                )[:500],
-                approved_by="owner",
-            )
-        except Exception:
-            logger.exception("resume_after_defer: cleanup writes failed")
-        return True
-
-    # Success path: only NOW mark approved + write the audit row.
-    db.approval_resolve(aid, "approved")
-    db.audit_append(
-        tool=tool_name,
-        args_json_redacted=_redact(json.dumps(tool_input))[:500],
-        result_summary=f"deferred->resumed via {confirmed_tool} (tu={tool_use_id})",
-        approved_by="owner",
+    # Identity-fallback path: set the contextvar so the PreToolUse defer hook
+    # skips defer for *this exact tool name* during the resume turn. Without
+    # this, the hook would re-defer and the resume would loop. The dispatch
+    # case uses a separate `_confirmed` tool name that isn't in the gated
+    # list, so no bypass is needed there; passing the confirmed sibling via
+    # `extra_allowed_tools` is enough.
+    token = (
+        IN_APPROVAL_RESUME_TOOL.set(tool_name)
+        if use_identity_fallback else None
     )
-    if reply:
-        # H-4 (Phase 13.1 fixup): the bridge's module-level
-        # ``_send_text_with_choreography`` already does filter → send → persist
-        # (with ``telegram_message_id`` stamped) → ``postsend.mark_pending_surfaced``.
-        # We feed it the same bot the rest of approvals uses via ``_bot()``.
+    try:
         try:
-            from agents.telegram_bridge import (  # noqa: PLC0415
-                _send_text_with_choreography,
+            reply = await run_internal_control(
+                prompt,
+                max_turns=5,
+                max_budget_usd=0.30,
+                # Identity case: tool is already in the base allowlist via the
+                # appropriate wildcard (mcp__google_workspace__*, mcp__notion__*,
+                # mcp__github__*) or the utility registry (python_run). No need
+                # to extend allowed_tools — and we must not, since that would
+                # trigger `_build_options` to attach the `_confirmed` sibling
+                # server based on a name that doesn't live there.
+                extra_allowed_tools=(
+                    None if use_identity_fallback else [confirmed_tool]
+                ),
             )
-            await _send_text_with_choreography(_bot(), chat_id, reply[:1000])
-        except Exception:
+        except Exception as e:
             logger.exception(
-                "resume_after_defer: bridge choreography failed; "
-                "falling back to _safe_send (no persist)"
+                "resume_after_defer: run_internal_control failed for aid=%s",
+                aid,
             )
-            await _safe_send(chat_id, reply[:1000])
-    return True
+            await _safe_send(
+                chat_id, f"approval ran but execution fell over: {e}",
+            )
+            # Mark the row failed so restart-recovery doesn't loop forever on
+            # it, but leave an audit trace explaining what happened.
+            try:
+                db.approval_resolve(aid, "rejected")
+                db.audit_append(
+                    tool=tool_name,
+                    args_json_redacted=_redact(json.dumps(tool_input))[:500],
+                    result_summary=(
+                        f"deferred->resume FAILED via {confirmed_tool} "
+                        f"(tu={tool_use_id}): {e}"
+                    )[:500],
+                    approved_by="owner",
+                )
+            except Exception:
+                logger.exception("resume_after_defer: cleanup writes failed")
+            return True
+
+        # Success path: only NOW mark approved + write the audit row.
+        db.approval_resolve(aid, "approved")
+        db.audit_append(
+            tool=tool_name,
+            args_json_redacted=_redact(json.dumps(tool_input))[:500],
+            result_summary=(
+                f"deferred->resumed via {confirmed_tool} (tu={tool_use_id})"
+            ),
+            approved_by="owner",
+        )
+        if reply:
+            # H-4 (Phase 13.1 fixup): the bridge's module-level
+            # ``_send_text_with_choreography`` already does filter → send →
+            # persist (with ``telegram_message_id`` stamped) →
+            # ``postsend.mark_pending_surfaced``.
+            # We feed it the same bot the rest of approvals uses via ``_bot()``.
+            try:
+                from agents.telegram_bridge import (  # noqa: PLC0415
+                    _send_text_with_choreography,
+                )
+                await _send_text_with_choreography(_bot(), chat_id, reply[:1000])
+            except Exception:
+                logger.exception(
+                    "resume_after_defer: bridge choreography failed; "
+                    "falling back to _safe_send (no persist)"
+                )
+                await _safe_send(chat_id, reply[:1000])
+        return True
+    finally:
+        if token is not None:
+            IN_APPROVAL_RESUME_TOOL.reset(token)
 
 
 _REDACT_PATTERNS = [

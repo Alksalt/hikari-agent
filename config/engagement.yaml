@@ -322,6 +322,13 @@ post_filter:
     exclamation marks for enthusiasm. NO 'as an AI', 'I'd be happy to',
     'great question', 'I cannot'. Output the rewritten reply only — no
     preamble, no quotes, no markdown.{mood_clause}]
+  # Bug 2 (live 2026-05-21): the model claimed "5 unread, all from Google..."
+  # without ever calling gmail (tool_uses: 0). When set true (default),
+  # filter_outgoing catches reply text that looks like an inbox/calendar
+  # summary, checks the LAST_TURN_TOOL_NAMES contextvar set in
+  # agents.runtime._invoke_sdk, and ships a redirect line if no relevant
+  # fetch tool was invoked this turn. Toggle off if false-positive flood.
+  fabrication_backstop_enabled: true
 
 # ============================================================================
 # Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay
@@ -495,6 +502,7 @@ cadence_governor:
   # through the cap.
   cap_exempt_sources:
     - daily_checkin
+    - future_letter
 
 noticings:
   enabled: true
@@ -864,3 +872,35 @@ evening_diary:
 drift_canary:
   enabled: true
   alert_threshold: "drift"        # 'hold' | 'partial' | 'drift' — alert when verdict >= threshold
+
+# Ghost-of-Future-Self letter (MIT Media Lab "Future You" pattern).
+# Once a month, Hikari composes a letter AS the user, 5 years from now,
+# reflecting on a decision drawn from the past 30 days of real activity:
+# receipts, episodes, character_thoughts, weekly consolidations. Persisted
+# in the future_letters table + a markdown file in data/future_letters/.
+# Delivered via Telegram as plain text (chunked if longer than the limit).
+future_letter:
+  enabled: true
+  # Trigger window — first Sunday of the month at hour:minute local. The
+  # day='1-7' + day_of_week='sun' combination fires on whatever Sunday falls
+  # in the first week of the month, avoiding the 1st-of-month overlap with
+  # memory_prune (which runs at 04:00 on day 1).
+  hour: 10
+  minute: 0
+  # User's current age. The letter is written as the user 5 years from now,
+  # so it'll address the reader at age (user_age + 5). Update yearly.
+  user_age: 26
+  # Budgets for the two LLM passes inside run_future_letter. Theme picker
+  # is cheap (read-only structured input → one-sentence theme); composition
+  # is the main writing pass.
+  theme_picker_max_budget_usd: 0.05
+  composition_max_budget_usd: 0.30
+  # Output paths and chunking. data/future_letters/YYYY-MM.md is the
+  # durable, human-readable archive that survives DB resets. The chunk
+  # limit is Telegram's 4096 char hard cap with margin for safety markers.
+  file_dir: "data/future_letters"
+  telegram_chunk_chars: 3800
+  # Sparse-data threshold for the NO_LETTER veto in compose_letter — if the
+  # past 30 days produced fewer than this many receipt entries AND no
+  # episodes, the model is asked to decline rather than fabricate a letter.
+  min_receipts_for_letter: 5

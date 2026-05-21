@@ -198,6 +198,21 @@ async def _send_with_choreography(
     chat_id = message.chat_id
     mood = _mood()
 
+    # SDK-error guard: catch raw "Failed to authenticate. API Error: 401..."
+    # / "ProcessError: ..." strings that leaked into an AssistantMessage's
+    # TextBlock instead of being raised. Proactive/diary/checkin paths already
+    # had this guard; the chat path was the missing one — without this, an
+    # auth error during a respond() call would ship to Telegram as the reply.
+    # Replace with an in-voice line so the user sees Hikari, not the SDK.
+    from agents.runtime import looks_like_sdk_error  # noqa: PLC0415
+    if looks_like_sdk_error(reply_text):
+        logger.warning(
+            "chat: SDK error leaked into reply text (len=%d preview=%r); "
+            "swapping to in-voice fallback",
+            len(reply_text), reply_text[:120],
+        )
+        reply_text = "tool fell over. give me a sec."
+
     filtered = filter_outgoing(reply_text)
     text_to_send = filtered.text
     if filtered.refusal_short_replaced:
@@ -1679,6 +1694,35 @@ def main() -> None:
         dispatch_tools.set_owner_chat_id(owner_id())
         # Wire bot ref into approvals so tools can send approval prompts out-of-band.
         approval_tools.set_bot(application.bot)
+
+        # Bug 1 fix (live 2026-05-21): probe the Google Workspace refresh
+        # token at startup so a revoked/expired credential fails loud here
+        # rather than silently in a user-visible 401 mid-conversation. The
+        # scheduler's `_calendar_creds_healthy` already reads
+        # runtime_state.calendar_heartbeat_healthy; we just have to populate
+        # it. Failure does not block startup — the chat path still tries,
+        # and the scheduler simply sits out its calendar jobs.
+        try:
+            from agents.google_health import probe_google_token  # noqa: PLC0415
+            healthy, reason = await probe_google_token()
+            if healthy:
+                db.runtime_set("calendar_heartbeat_healthy", "1")
+                logger.info(
+                    "google_workspace: refresh token healthy at startup",
+                )
+            else:
+                db.runtime_set("calendar_heartbeat_healthy", f"0:{reason}")
+                logger.warning(
+                    "google_workspace: refresh token UNHEALTHY at startup "
+                    "(%s). calendar/gmail/drive tools will 401. "
+                    "Run: uv run python scripts/setup_google_oauth.py, "
+                    "then `launchctl kickstart -k gui/$(id -u)/com.hikari.agent`",
+                    reason,
+                )
+        except Exception:
+            logger.exception(
+                "google_workspace startup probe failed (non-fatal)",
+            )
 
         # Tell the user about any tasks that were running mid-restart.
         await recover_running_tasks(application.bot)
