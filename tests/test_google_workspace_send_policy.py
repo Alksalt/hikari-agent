@@ -1,6 +1,10 @@
-"""Stream A gating policy regression: Gmail sends, bulk deletes, calendar event
-delete, and Drive file delete must all be in the defer_gated_tools list and
-must actually trigger the defer hook on a fake PreToolUse invocation.
+"""Stream A gating policy regression: Gmail sends, calendar event delete, and
+Drive file delete must all be in the defer_gated_tools list and must actually
+trigger the defer hook on a fake PreToolUse invocation.
+
+Phase E: gmail_bulk_delete_messages has been migrated from gate: defer to
+gate: gatekeeper. It is excluded from the defer-path assertions here and
+tested separately in test_gatekeeper_integration.py.
 """
 from __future__ import annotations
 
@@ -23,10 +27,10 @@ def _reload_config(tmp_path: Path, monkeypatch):
     yield
 
 
-_GATED_TOOLS = [
+# Phase E: gmail_bulk_delete_messages removed from defer list (now gatekeeper-gated).
+_DEFER_GATED_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
     "mcp__google_workspace__gmail_reply_to_email",
-    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
 ]
@@ -54,25 +58,29 @@ def _is_matched_by_patterns(tool_name: str) -> bool:
 
 
 def test_defer_gated_tools_contains_required_patterns():
-    """config/tools.yaml must list patterns that match every Stream A gated tool.
+    """config/tools.yaml must list patterns that match every Stream A defer-gated tool.
 
     Phase A (step 9): source is now tools.yaml registry, not engagement.yaml.
+    Phase E: gmail_bulk_delete_messages excluded (now gatekeeper-gated).
     """
     from tools._tools_yaml import load_registry
     patterns = load_registry().defer_gated_patterns()
     assert patterns, "tools.yaml defer_gated_patterns() is empty"
 
-    for tool_name in _GATED_TOOLS:
+    for tool_name in _DEFER_GATED_TOOLS:
         assert _is_matched_by_patterns(tool_name), (
             f"{tool_name!r} is not matched by any pattern in "
             f"tools.yaml defer_gated_patterns: {patterns}"
         )
 
 
-@pytest.mark.parametrize("tool_name", _GATED_TOOLS)
+@pytest.mark.parametrize("tool_name", _DEFER_GATED_TOOLS)
 @pytest.mark.asyncio
 async def test_defer_hook_fires_for_gated_workspace_tool(tool_name, monkeypatch):
-    """A fake PreToolUse event for each gated tool actually triggers defer."""
+    """A fake PreToolUse event for each defer-gated tool actually triggers defer.
+
+    Phase E: gmail_bulk_delete_messages excluded (now gatekeeper-gated, not defer).
+    """
     from agents import hooks
     from tools import approvals as approval_tools
 

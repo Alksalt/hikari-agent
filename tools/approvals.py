@@ -215,6 +215,32 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     approved = text_clean == confirm_phrase
     rejected = lower in reject_phrases
 
+    # Phase E: gatekeeper branch — must be checked BEFORE the legacy defer branch.
+    # Gatekeeper rows have gate_kind='gatekeeper' and tool_use_id set (from SDK).
+    # Resolution wakes the asyncio.Event inside GATEKEEPER.request(); the SDK
+    # then receives Allow/Deny directly without a fresh _run_query.
+    gate_kind = pending.get("gate_kind")
+    tool_use_id_gk = pending.get("tool_use_id")
+    if gate_kind == "gatekeeper" and tool_use_id_gk:
+        from tools.gatekeeper import GATEKEEPER
+        if approved:
+            await GATEKEEPER.resolve(str(tool_use_id_gk), "approved")
+            return True  # tool will execute via SDK can_use_tool Allow
+        else:
+            # rejected phrase OR implicit-cancel (any non-CONFIRM-SEND text)
+            await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
+            if rejected:
+                await _safe_send(chat_id, "ok. didn't do it.")
+                return True
+            else:
+                # Implicit-cancel: drop the gate, let the user's message through.
+                tool_name_gk = str(pending.get("tool_name") or "")
+                short_name = tool_name_gk.rsplit("__", 1)[-1] or "that"
+                await _safe_send(
+                    chat_id, f"...dropping the {short_name} thing. moving on.",
+                )
+                return False
+
     if approved:
         if pending.get("deferred_tool_use_id"):
             return await _resume_after_defer(aid, pending)

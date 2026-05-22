@@ -605,6 +605,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_tool_calls(conn)
     _migrate_proactive_events(conn)
     _migrate_proactive_events_feedback(conn)
+    _migrate_approvals_gatekeeper(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -920,6 +921,61 @@ def _migrate_approvals_defer_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE approvals ADD COLUMN deferred_tool_input_json TEXT"
         )
+
+
+def _migrate_approvals_gatekeeper(conn: sqlite3.Connection) -> None:
+    """Phase E (Sprint 2): add gatekeeper-specific columns to ``approvals``.
+
+    Adds tool_use_id (backfilled from deferred_tool_use_id), deadline_iso,
+    executed_at, result_summary, and gate_kind. Two partial unique indexes
+    enforce the one-pending-per-chat and one-pending-per-use-id invariants.
+
+    Per MEMORY.md feedback_schema_migration_ordering: indexes MUST live inside
+    the migration fn, never in _SCHEMA, so fresh-DB bootstrap passes stay
+    index-free for columns that don't exist yet.
+
+    IMPORTANT: this migration contains a DML UPDATE statement. Unlike DDL
+    (ALTER TABLE / CREATE INDEX), DML starts an implicit transaction in
+    Python's sqlite3 module. We commit explicitly at the end so callers that
+    invoke this outside a _conn() context manager (e.g. _ensure_schema) don't
+    leave an open write transaction that blocks concurrent writers even in WAL
+    mode (SQLITE_LOCKED bypasses busy_timeout).
+    """
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(approvals)").fetchall()}
+    needs_backfill = "tool_use_id" not in existing
+    if needs_backfill:
+        conn.execute("ALTER TABLE approvals ADD COLUMN tool_use_id TEXT")
+    if "deadline_iso" not in existing:
+        conn.execute("ALTER TABLE approvals ADD COLUMN deadline_iso TEXT")
+    if "executed_at" not in existing:
+        conn.execute("ALTER TABLE approvals ADD COLUMN executed_at TEXT")
+    if "result_summary" not in existing:
+        conn.execute("ALTER TABLE approvals ADD COLUMN result_summary TEXT")
+    if "gate_kind" not in existing:
+        conn.execute("ALTER TABLE approvals ADD COLUMN gate_kind TEXT")
+    # Partial unique indexes — per the schema-migration-ordering memory note,
+    # these live here (not in _SCHEMA) because they reference ALTER-added columns.
+    # Gatekeeper-only: scope to gate_kind='gatekeeper' so the legacy defer path
+    # (which always allowed multiple pending rows) is unaffected.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS approvals_one_pending_per_chat "
+        "ON approvals(chat_id) WHERE status='pending' AND gate_kind='gatekeeper'"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS approvals_one_pending_per_use_id "
+        "ON approvals(tool_use_id) WHERE status='pending' AND tool_use_id IS NOT NULL"
+    )
+    # Backfill AFTER DDL so the column exists and index is already built.
+    if needs_backfill:
+        conn.execute(
+            "UPDATE approvals SET tool_use_id = deferred_tool_use_id "
+            "WHERE tool_use_id IS NULL AND deferred_tool_use_id IS NOT NULL"
+        )
+    # Explicit commit: the DML UPDATE above starts an implicit transaction in
+    # Python's sqlite3 module (isolation_level='', deferred). Without this,
+    # _ensure_schema leaves the connection with an open write transaction that
+    # causes SQLITE_LOCKED for concurrent writers even in WAL mode.
+    conn.commit()
 
 
 @contextmanager
@@ -2442,12 +2498,91 @@ def approval_pending_for(chat_id: int) -> dict[str, Any] | None:
 
 
 def approval_resolve(approval_id: int, status: str) -> None:
-    """status: 'approved' | 'rejected' | 'timeout'."""
+    """status: 'approved' | 'rejected' | 'timeout' | 'expired'."""
     with _conn() as c:
         c.execute(
             "UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ?",
             (status, _now(), approval_id),
         )
+
+
+def approval_create_gatekeeper(
+    chat_id: int,
+    tool_name: str,
+    tool_use_id: str,
+    args_json: str,
+    summary: str,
+    deadline_iso: str,
+) -> int:
+    """Phase E: write an approval row for the can_use_tool gatekeeper path.
+
+    Unlike the legacy defer path, gatekeeper rows have:
+      - tool_use_id populated from the SDK ToolPermissionContext
+      - deadline_iso set by the caller
+      - gate_kind = 'gatekeeper'
+      - tier = 2 (kept for schema compat with approval_pending_for)
+    """
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO approvals "
+            "(chat_id, tool_name, tier, summary, args_json, status, created_at, "
+            " tool_use_id, deadline_iso, gate_kind) "
+            "VALUES (?, ?, 2, ?, ?, 'pending', ?, ?, ?, 'gatekeeper')",
+            (chat_id, tool_name, summary, args_json, _now(),
+             tool_use_id, deadline_iso),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def approval_pending_by_use_id(tool_use_id: str) -> dict[str, Any] | None:
+    """Return a pending approval row matching tool_use_id, or None."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM approvals "
+            "WHERE tool_use_id = ? AND status = 'pending' "
+            "LIMIT 1",
+            (tool_use_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def approval_mark_executed(approval_id: int, result_summary: str) -> None:
+    """Phase E: stamp executed_at + result_summary after the tool ran."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE approvals "
+            "SET executed_at = ?, result_summary = ? "
+            "WHERE id = ?",
+            (_now(), result_summary, approval_id),
+        )
+
+
+def approval_expire_stale(cutoff_iso: str) -> int:
+    """Phase E: mark pending gatekeeper rows older than cutoff_iso as 'timeout'.
+
+    Returns the number of rows affected. Only targets gate_kind='gatekeeper'
+    rows — legacy defer rows are not touched. Uses 'timeout' (not 'expired')
+    because the approvals CHECK constraint only allows the legacy status values.
+    """
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE approvals SET status = 'timeout', resolved_at = ? "
+            "WHERE status = 'pending' AND gate_kind = 'gatekeeper' "
+            "AND created_at < ?",
+            (_now(), cutoff_iso),
+        )
+    return int(cur.rowcount or 0)
+
+
+def approvals_list_pending_gatekeeper() -> list[dict[str, Any]]:
+    """Phase E: return all pending gatekeeper rows (for restart recovery)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM approvals "
+            "WHERE status = 'pending' AND gate_kind = 'gatekeeper' "
+            "ORDER BY created_at",
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------- audit_log (hash-chained tool-call ledger) ----------

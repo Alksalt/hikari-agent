@@ -221,19 +221,38 @@ async def test_apple_events_writes_do_not_trigger_defer_hook(tool_name, monkeypa
 # ---------------------------------------------------------------------------
 # Google Workspace: existing gated tools still work (non-regression)
 # ---------------------------------------------------------------------------
+# Phase E: gmail_bulk_delete_messages migrated from defer → gatekeeper.
+# The remaining tools stay on the defer path.
 
-_EXISTING_GW_GATED_TOOLS = [
+_EXISTING_GW_DEFER_GATED_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
-    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
 ]
 
 
-@pytest.mark.parametrize("tool_name", _EXISTING_GW_GATED_TOOLS)
+@pytest.mark.parametrize("tool_name", _EXISTING_GW_DEFER_GATED_TOOLS)
 def test_existing_gw_gated_tools_still_gated(tool_name):
-    """Existing Stream A gated tools must not have been accidentally ungated."""
+    """Existing Stream A defer-gated tools must not have been accidentally ungated.
+
+    Phase E: gmail_bulk_delete_messages is excluded here — it now has
+    gate: gatekeeper and is tested separately.
+    """
     assert _is_matched_by_patterns(tool_name), (
         f"{tool_name!r} was previously gated and must remain so. "
         "Non-regression check for Stream J changes."
+    )
+
+
+def test_gmail_bulk_delete_is_gatekeeper_gated():
+    """Phase E non-regression: gmail_bulk_delete_messages must be gatekeeper-gated."""
+    from tools._tools_yaml import load_registry
+    spec = load_registry()._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
+    assert spec is not None
+    assert spec.gate == "gatekeeper", (
+        "gmail_bulk_delete_messages must have gate: gatekeeper after Phase E migration"
+    )
+    # Must NOT appear in defer patterns.
+    assert not _is_matched_by_patterns("mcp__google_workspace__gmail_bulk_delete_messages"), (
+        "gmail_bulk_delete_messages must NOT be in defer_gated_patterns after Phase E"
     )

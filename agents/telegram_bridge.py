@@ -1864,9 +1864,20 @@ def main() -> None:
                 "google_workspace startup probe failed (non-fatal)",
             )
 
+        # Phase E: wire the gatekeeper send_text BEFORE recovery so nudge
+        # messages during restart_recovery can actually reach Telegram.
+        from tools.gatekeeper import GATEKEEPER as _gatekeeper  # noqa: PLC0415
+        _bot_ref = application.bot
+
+        async def _gk_send(chat_id: int, text: str) -> None:
+            await _bot_ref.send_message(chat_id=chat_id, text=text)
+
+        _gatekeeper.set_send_text(_gk_send)
+
         # Tell the user about any tasks that were running mid-restart.
         await recover_running_tasks(application.bot)
         # Phase 6: resurface any deferred approval that was pending pre-restart.
+        # Phase E: gatekeeper restart_recovery is called inside this function.
         await recover_deferred_approvals(application.bot)
 
         # Phase B: start persistent SDK client pool (live + haiku judge).

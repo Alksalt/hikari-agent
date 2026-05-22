@@ -634,7 +634,14 @@ def test_queue_cancel_tool_use_appends_and_dedups(tmp_path, monkeypatch):
 async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_path):
     """`defer_gated_tools` returns permissionDecision='deny' for a tool_use_id
     already enqueued in `cancelled_tool_use_ids`. The id is popped (one-shot);
-    a second call with the same id would defer again."""
+    a second call with the same id (on a defer-gated tool) would defer again.
+
+    Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
+    The cancel-queue deny path fires BEFORE _is_defer_gated so the deny still
+    fires for any tool_use_id in the queue, regardless of gate_kind.
+    For the second call we use gmail_send_email (still defer-gated) to verify
+    the pop-and-defer-again behavior.
+    """
     import json
     from agents import hooks
     from storage import db
@@ -645,6 +652,7 @@ async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
     db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, json.dumps(["toolu_stuck"]))
 
+    # The deny fires for any tool_use_id in the cancel queue, regardless of gate_kind.
     out = await hooks.defer_gated_tools(
         {
             "tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
@@ -654,16 +662,21 @@ async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_
         None, None,
     )
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    # Queue is now empty
+    # Queue is now empty.
     raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
     assert json.loads(raw or "[]") == []
 
-    # A fresh defer-attempt with the same id (after pop) defers normally again
+    # A fresh defer-attempt with the same id (after pop) uses a defer-gated tool
+    # to verify the tool_use_id is no longer in the queue and the hook defers normally.
+    async def _noop_send(chat_id, tier, summary):
+        pass
+    monkeypatch.setattr(approval_tools, "send_defer_prompt", _noop_send)
+
     out2 = await hooks.defer_gated_tools(
         {
-            "tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
-            "tool_input": {"message_ids": ["x"]},
-            "tool_use_id": "toolu_stuck",
+            "tool_name": "mcp__google_workspace__gmail_send_email",  # still defer-gated
+            "tool_input": {"to": "a@b.com", "subject": "hi", "body": "hello"},
+            "tool_use_id": "toolu_fresh",
         },
         None, None,
     )
@@ -850,18 +863,23 @@ async def test_resume_after_defer_enqueues_on_failure(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
     """When _precheck_scopes returns None (scope satisfied), the defer hook
-    should still defer gated tools normally."""
+    should still defer gated tools normally.
+
+    Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
+    This test uses gmail_send_email (still defer-gated) to verify the same
+    precheck-OK → defer behavior.
+    """
     from agents import hooks
     from auth.providers import ToolSpec, ScopeConfig
     import auth.providers as prov_mod
 
-    # Patch scope config to show the scope is satisfied for gmail_bulk_delete
-    cfg = ScopeConfig(
+    # Patch scope config to show the scope is satisfied for gmail_send_email.
+    _cfg = ScopeConfig(
         tool_specs={
-            "mcp__google_workspace__gmail_bulk_delete_messages": ToolSpec(
+            "mcp__google_workspace__gmail_send_email": ToolSpec(
                 provider="google",
                 required_scopes=["https://mail.google.com/"],
-                action="nuke them",
+                action="send email",
             )
         },
         provider_templates={"google": "can't {action}"},
@@ -871,7 +889,7 @@ async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
         async def current_scopes(self):
             return {"https://mail.google.com/"}
 
-    monkeypatch.setattr(prov_mod, "load_scope_config", lambda: cfg)
+    monkeypatch.setattr(prov_mod, "load_scope_config", lambda: _cfg)
     monkeypatch.setattr(prov_mod, "get_provider", lambda name: _FullProvider())
     monkeypatch.setenv("AUTH_PRECHECK", "enforce")
 
@@ -882,9 +900,9 @@ async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
     monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send)
 
     out = await hooks.defer_gated_tools(
-        {"tool_name": "mcp__google_workspace__gmail_bulk_delete_messages",
+        {"tool_name": "mcp__google_workspace__gmail_send_email",
          "tool_use_id": "tu_scope_ok",
-         "tool_input": {"message_ids": ["a", "b"]}},
+         "tool_input": {"to": "x@y.com", "subject": "hi", "body": "hello"}},
         None, None,
     )
     # Scope is OK → precheck passes → tool still defers normally

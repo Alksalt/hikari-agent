@@ -237,3 +237,13 @@ async def recover_deferred_approvals(bot: Bot) -> None:
                 "recover_deferred_approvals: resurfaced approval %s (tool=%s)",
                 row.get("id"), row.get("tool_name"),
             )
+
+    # Phase E: gatekeeper restart recovery — expire stale rows + nudge survivors.
+    # Must run AFTER sdk_pool.startup() (called in post_init after this fn returns)
+    # so we call it lazily from post_init instead of here.  But the import is safe.
+    try:
+        from tools.gatekeeper import GATEKEEPER
+        gk_count = await GATEKEEPER.restart_recovery(bot)
+        logger.info("gatekeeper restart_recovery: %d pending rows handled", gk_count)
+    except Exception:
+        logger.exception("gatekeeper restart_recovery failed (non-fatal)")

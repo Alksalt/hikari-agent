@@ -136,16 +136,22 @@ class TestDeferGatedPatterns:
         ), "dispatch_claude_session must be in defer_gated_patterns"
 
     def test_gmail_sends_are_gated(self, registry):
+        """Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
+        gmail_send_email and gmail_reply_to_email remain on the defer path."""
         import re
         patterns = registry.defer_gated_patterns()
         for tool in [
             "mcp__google_workspace__gmail_send_email",
             "mcp__google_workspace__gmail_reply_to_email",
-            "mcp__google_workspace__gmail_bulk_delete_messages",
         ]:
             assert any(re.fullmatch(p, tool) for p in patterns), (
                 f"{tool} must be in defer_gated_patterns"
             )
+        # gmail_bulk_delete_messages is now on the gatekeeper path.
+        spec = registry._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
+        assert spec is not None and spec.gate == "gatekeeper", (
+            "gmail_bulk_delete_messages must have gate: gatekeeper (Phase E)"
+        )
 
     def test_notion_writes_are_gated(self, registry):
         import re

@@ -267,6 +267,9 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     # runtime_state keys that the concurrent user turn was about to commit.
     if inject_memory_enabled:
         hooks_dict["UserPromptSubmit"] = [HookMatcher(hooks=[inject_memory])]
+    # Phase E: wire the gatekeeper can_use_tool hook. Imported lazily so tests
+    # that mock the registry still work; the callable itself is stateless.
+    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
     return ClaudeAgentOptions(
         model=MODEL_PRIMARY,
         fallback_model=MODEL_FALLBACK,
@@ -278,6 +281,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         mcp_servers=mcp_servers,
         allowed_tools=allowed,
         hooks=hooks_dict,
+        can_use_tool=gatekeeper_can_use_tool,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
         resume=resume,

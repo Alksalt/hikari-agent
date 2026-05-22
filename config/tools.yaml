@@ -440,7 +440,7 @@ tools:
   - id: "mcp__google_workspace__gmail_bulk_delete_messages"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
