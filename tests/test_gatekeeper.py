@@ -240,3 +240,91 @@ async def test_resolve_unknown_use_id_returns_false(gatekeeper):
     db.upsert_core_block("ping", "pong")
     result = await gatekeeper.resolve("nonexistent_id", "approved")
     assert result is False
+
+
+# ---------- Fix 1: race — timeout does not overwrite concurrent approve ----------
+
+@pytest.mark.asyncio
+async def test_timeout_does_not_overwrite_concurrent_approve(gatekeeper):
+    """If outcome is already set to 'approved', the timeout-expire path must not
+    overwrite it. Simulates the race by pre-setting outcome on the _Pending object
+    before calling _resolve_internal with 'expired'."""
+    from tools.gatekeeper import _Pending
+
+    db.upsert_core_block("ping", "pong")
+
+    # Create a real DB row so _resolve_internal can find it.
+    aid = db.approval_create_gatekeeper(
+        chat_id=12345,
+        tool_name="some_tool",
+        tool_use_id="tu_race_001",
+        args_json="{}",
+        summary="race test",
+        deadline_iso="2099-01-01T00:00:00+00:00",
+    )
+
+    # Manually inject a _Pending with outcome already set to 'approved'.
+    import asyncio as _asyncio
+    pending = _Pending(
+        aid=aid,
+        chat_id=12345,
+        tool_use_id="tu_race_001",
+        tool_name="some_tool",
+    )
+    pending.outcome = "approved"
+    pending.event.set()
+    gatekeeper._by_use_id["tu_race_001"] = pending
+
+    # Mark the DB row approved (simulating the approve path ran first).
+    db.approval_resolve(aid, "approved")
+
+    # Now call the timeout-expire path — it must be a no-op.
+    await gatekeeper._resolve_internal("tu_race_001", "expired")
+
+    # outcome on the in-memory object must still be 'approved'.
+    assert pending.outcome == "approved"
+
+    # DB row must still show 'approved', not 'timeout'.
+    with db._conn() as c:
+        row = c.execute(
+            "SELECT status FROM approvals WHERE tool_use_id = 'tu_race_001'"
+        ).fetchone()
+    assert row["status"] == "approved"
+
+
+# ---------- Fix 3: approved gatekeeper call writes audit row ----------
+
+@pytest.mark.asyncio
+async def test_gatekeeper_approve_writes_audit_row(gatekeeper):
+    """After approval, _resolve_internal must append a hash-chained audit row."""
+    gatekeeper.set_send_text(AsyncMock())
+    db.upsert_core_block("ping", "pong")
+
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+
+    async def _approve():
+        await asyncio.sleep(0.05)
+        await gatekeeper.resolve("tu_audit_001", "approved")
+
+    task = asyncio.create_task(_approve())
+    outcome = await gatekeeper.request(
+        tool_use_id="tu_audit_001",
+        tool_name="mcp__google_workspace__gmail_bulk_delete_messages",
+        chat_id=12345,
+        args={"query": "label:trash"},
+        summary="audit row test",
+        deadline=deadline,
+    )
+    await task
+    assert outcome == "approved"
+
+    # An audit_log row must exist for this tool call.
+    with db._conn() as c:
+        row = c.execute(
+            "SELECT tool, approved_by, result_summary FROM audit_log "
+            "WHERE tool = 'mcp__google_workspace__gmail_bulk_delete_messages' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None, "audit_append was not called after gatekeeper approval"
+    assert row["approved_by"] == "owner"
+    assert "gatekeeper approved" in (row["result_summary"] or "")

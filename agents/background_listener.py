@@ -239,8 +239,9 @@ async def recover_deferred_approvals(bot: Bot) -> None:
             )
 
     # Phase E: gatekeeper restart recovery — expire stale rows + nudge survivors.
-    # Must run AFTER sdk_pool.startup() (called in post_init after this fn returns)
-    # so we call it lazily from post_init instead of here.  But the import is safe.
+    # Runs here (before sdk_pool.startup) intentionally: recovery only uses
+    # db.* and send_text (Telegram bot), not the SDK client pool. The send_text
+    # fn was set in post_init before recover_deferred_approvals was called.
     try:
         from tools.gatekeeper import GATEKEEPER
         gk_count = await GATEKEEPER.restart_recovery(bot)

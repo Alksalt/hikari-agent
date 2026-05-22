@@ -128,7 +128,12 @@ class Gatekeeper:
             await asyncio.wait_for(pending_obj.event.wait(), timeout=timeout_s)
         except asyncio.TimeoutError:
             logger.info("gatekeeper: timeout for tool_use_id=%s", tool_use_id)
-            await self._resolve_internal(tool_use_id, "expired")
+            # Only expire if not already resolved by a concurrent approve/reject.
+            async with self._lock:
+                _p = self._by_use_id.get(tool_use_id)
+                already_resolved = _p is None or _p.outcome is not None
+            if not already_resolved:
+                await self._resolve_internal(tool_use_id, "expired")
 
         # Clean up the in-memory slot (only the last waiter needs to do it;
         # use discard rather than pop so concurrent callers don't race).
@@ -151,10 +156,13 @@ class Gatekeeper:
         async with self._lock:
             p = self._by_use_id.get(tool_use_id)
             if p:
+                if p.outcome is not None:
+                    return True  # already resolved — idempotent, don't overwrite
                 p.outcome = outcome
                 db.approval_resolve(p.aid, db_status)
                 if outcome == "approved":
                     db.approval_mark_executed(p.aid, result_summary="(handed back to SDK)")
+                    self._write_audit_row(p)
                 p.event.set()
                 return True
 
@@ -208,6 +216,39 @@ class Gatekeeper:
             )
 
         return expired_count + len(survivors)
+
+    def _write_audit_row(self, p: "_Pending") -> None:
+        """Write a hash-chained audit row for an approved gatekeeper call.
+
+        Called inside _resolve_internal (under lock) after approval_mark_executed.
+        Non-fatal: any exception is logged and swallowed so the in-memory state
+        (event.set) still unblocks the awaiting request() caller.
+        """
+        try:
+            with db._conn() as _c:
+                row = _c.execute(
+                    "SELECT args_json FROM approvals WHERE id=?", (p.aid,)
+                ).fetchone()
+            from tools.approvals import _redact  # noqa: PLC0415
+            import json as _json  # noqa: PLC0415
+            args_redacted = _redact(row["args_json"] or "")[:500] if row else ""
+            try:
+                from agents.injection_guard import flag_args_with_untrusted_content  # noqa: PLC0415
+                args_dict = _json.loads(row["args_json"] or "{}") if row else {}
+                taint_flag, taint_reason = flag_args_with_untrusted_content(args_dict)
+                summary_str = "gatekeeper approved"
+                if taint_flag:
+                    summary_str = f"[UNTRUSTED:{taint_reason}] {summary_str}"
+            except Exception:
+                summary_str = "gatekeeper approved"
+            db.audit_append(
+                tool=p.tool_name,
+                args_json_redacted=args_redacted,
+                result_summary=summary_str,
+                approved_by="owner",
+            )
+        except Exception:
+            logger.exception("gatekeeper: audit_append failed for aid=%s", p.aid)
 
     @staticmethod
     def _format_prompt(tool_name: str, summary: str) -> str:

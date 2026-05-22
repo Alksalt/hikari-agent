@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from agents import cadence, config as cfg
-from agents.cadence import Pool
 from agents.runtime import looks_like_sdk_error, run_internal_control
 from storage import db
 

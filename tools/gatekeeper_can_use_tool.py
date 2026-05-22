@@ -35,6 +35,7 @@ def _gate_for(tool_name: str) -> str | None:
 
 def _deadline_for(tool_name: str) -> datetime:
     """Compute the approval deadline for a tool."""
+    MAX_TIMEOUT_S = 600  # 10-minute hard cap to prevent event-loop task pileup
     # Per-tool override first, then global default.
     per_tool_secs: int | None = None
     try:
@@ -44,6 +45,7 @@ def _deadline_for(tool_name: str) -> datetime:
     except Exception:
         pass
     secs = per_tool_secs or int(cfg.get("gatekeeper.default_timeout_s", 300))
+    secs = min(secs, MAX_TIMEOUT_S)
     return datetime.now(timezone.utc) + timedelta(seconds=secs)
 
 
@@ -89,6 +91,22 @@ async def gatekeeper_can_use_tool(
     except RuntimeError as e:
         logger.error("gatekeeper_can_use_tool: cannot resolve chat_id: %s", e)
         return PermissionResultDeny(message=f"gatekeeper config error: {e}")
+
+    try:
+        from agents.injection_guard import flag_args_with_untrusted_content  # noqa: PLC0415
+        taint_flag, taint_reason = flag_args_with_untrusted_content(input)
+        if taint_flag:
+            logger.warning(
+                "gatekeeper_can_use_tool: args flagged untrusted-origin (%s) for %s",
+                taint_reason, tool_name,
+            )
+            return PermissionResultDeny(
+                message=f"gatekeeper denied: untrusted-origin content in args ({taint_reason})"
+            )
+    except Exception:
+        logger.debug(
+            "gatekeeper_can_use_tool: taint check failed for %s", tool_name, exc_info=True
+        )
 
     try:
         from tools.gatekeeper import GATEKEEPER

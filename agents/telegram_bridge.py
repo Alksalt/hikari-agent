@@ -1870,7 +1870,13 @@ def main() -> None:
         _bot_ref = application.bot
 
         async def _gk_send(chat_id: int, text: str) -> None:
-            await _bot_ref.send_message(chat_id=chat_id, text=text)
+            from agents.post_filter import filter_outgoing  # noqa: PLC0415
+            filtered = filter_outgoing(text)
+            if filtered.refusal_hits and "canary_leak" in filtered.refusal_hits:
+                logging.getLogger(__name__).critical(
+                    "gatekeeper: blocked outbound containing canary leak"
+                )
+            await _bot_ref.send_message(chat_id=chat_id, text=filtered.text)
 
         _gatekeeper.set_send_text(_gk_send)
 

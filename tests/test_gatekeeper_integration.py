@@ -47,25 +47,6 @@ def _fake_deny(**kwargs):
     return types.SimpleNamespace(behavior="deny", **kwargs)
 
 
-@pytest.fixture()
-def patched_can_use_tool(monkeypatch):
-    """Patch out SDK imports so tests work without a real SDK install."""
-    import tools.gatekeeper_can_use_tool as mod
-
-    # Patch the SDK result types with our fakes.
-    fake_sdk_types = types.ModuleType("claude_agent_sdk.types")
-    fake_sdk_types.PermissionResultAllow = _fake_allow
-    fake_sdk_types.PermissionResultDeny = _fake_deny
-    monkeypatch.setitem(importlib.import_module.__self__.__class__.__module__
-                        and {}, "claude_agent_sdk.types", fake_sdk_types)
-    import sys
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk.types", fake_sdk_types)
-
-    # Reload the module so the patched import is picked up.
-    importlib.reload(mod)
-    return mod
-
-
 # ---------- non-gated tool passes through ----------
 
 @pytest.mark.asyncio

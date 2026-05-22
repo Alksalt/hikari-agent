@@ -961,9 +961,14 @@ def _migrate_approvals_gatekeeper(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS approvals_one_pending_per_chat "
         "ON approvals(chat_id) WHERE status='pending' AND gate_kind='gatekeeper'"
     )
+    # Drop then recreate so existing DBs get the corrected gate_kind clause
+    # (the old index lacked it, which would allow the unique constraint to fire
+    # across legacy defer rows that share a tool_use_id with a gatekeeper row).
+    conn.execute("DROP INDEX IF EXISTS approvals_one_pending_per_use_id")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS approvals_one_pending_per_use_id "
-        "ON approvals(tool_use_id) WHERE status='pending' AND tool_use_id IS NOT NULL"
+        "ON approvals(tool_use_id) WHERE status='pending' "
+        "AND tool_use_id IS NOT NULL AND gate_kind='gatekeeper'"
     )
     # Backfill AFTER DDL so the column exists and index is already built.
     if needs_backfill:
