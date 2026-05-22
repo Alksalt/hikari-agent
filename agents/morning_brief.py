@@ -140,10 +140,16 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
 
 async def maybe_send_morning_brief(send_text) -> bool:
     """Returns True if a brief was sent."""
+    from agents import cadence
+    from agents.cadence import Pool
     if _is_disabled():
         logger.info("morning_brief: disabled via core_block")
         return False
     if not bool(cfg.get("morning_brief.enabled", True)):
+        return False
+    allowed, reason = cadence.can_send("morning_brief", Pool.SCHEDULED_CEREMONY)
+    if not allowed:
+        logger.info("morning_brief: cadence governor vetoed: %s", reason)
         return False
     loc = _resolve_location()
     if loc is None:
@@ -193,6 +199,16 @@ async def maybe_send_morning_brief(send_text) -> bool:
         logger.exception(
             "morning_brief: append_message post-send failed (non-fatal)",
         )
+    try:
+        db.proactive_event_insert(
+            source="morning_brief",
+            pattern="ceremony",
+            payload_json="{}",
+            telegram_message_id=tg_id,
+        )
+    except Exception:
+        logger.exception("morning_brief: proactive_event_insert failed (non-fatal)")
+    cadence.record_ceremony_sent("morning_brief")
     db.runtime_set("last_morning_brief_sent",
                    datetime.now(UTC).isoformat())
     logger.info("morning_brief: sent (sources=%s)",

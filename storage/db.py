@@ -604,6 +604,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_fact_relations_validity(conn)
     _migrate_tool_calls(conn)
     _migrate_proactive_events(conn)
+    _migrate_proactive_events_feedback(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -728,6 +729,43 @@ def _migrate_proactive_events(conn: sqlite3.Connection) -> None:
         "CREATE INDEX idx_proactive_events_telegram_msg "
         "ON proactive_events(telegram_message_id) "
         "WHERE telegram_message_id IS NOT NULL"
+    )
+
+
+def _migrate_proactive_events_feedback(conn: sqlite3.Connection) -> None:
+    """Phase D (Sprint 2): add reaction-feedback columns to proactive_events.
+
+    Per MEMORY.md feedback_schema_migration_ordering: index refs to
+    ALTER-added columns MUST live inside the migration fn — never in _SCHEMA.
+    Tests use fresh DBs only so always launchctl-restart + tail err log after
+    schema-changing merges."""
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(proactive_events)"
+    ).fetchall()}
+    if "thumbs_up" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN "
+            "thumbs_up INTEGER NOT NULL DEFAULT 0"
+        )
+    if "thumbs_down" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN "
+            "thumbs_down INTEGER NOT NULL DEFAULT 0"
+        )
+    if "silenced_within_1h" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN "
+            "silenced_within_1h INTEGER NOT NULL DEFAULT 0"
+        )
+    if "reaction_received_at" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN "
+            "reaction_received_at TEXT"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_events_feedback "
+        "ON proactive_events(reaction_received_at) "
+        "WHERE reaction_received_at IS NOT NULL"
     )
 
 
@@ -2212,6 +2250,40 @@ def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
             (_now(), source, pattern, payload_json, telegram_message_id),
         )
     return int(cur.lastrowid or 0)
+
+
+def proactive_event_record_reaction(telegram_message_id: int, kind: str) -> int:
+    """Record a 👍 or 👎 reaction on a proactive_events row.
+
+    ``kind`` must be ``'up'`` or ``'down'``. Updates the matching row's
+    thumbs_up/thumbs_down counter and stamps reaction_received_at on first
+    reaction. Returns the number of rows updated (0 if no matching row)."""
+    col = "thumbs_up" if kind == "up" else "thumbs_down"
+    with _conn() as c:
+        cur = c.execute(
+            f"UPDATE proactive_events SET {col} = {col} + 1, "
+            "reaction_received_at = COALESCE(reaction_received_at, ?) "
+            "WHERE telegram_message_id = ?",
+            (_now(), int(telegram_message_id)),
+        )
+    return int(cur.rowcount or 0)
+
+
+def proactive_event_record_silence_window(now_iso: str | None = None) -> int:
+    """Flip silenced_within_1h=1 for all proactive_events rows sent in the
+    last hour. Called by /silence so the calibration loop can discount
+    sources that tend to trigger silence commands.
+
+    Returns the number of rows updated."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE proactive_events SET silenced_within_1h = 1 "
+            "WHERE sent_at >= ?",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
 
 
 # ---------- pruners ----------

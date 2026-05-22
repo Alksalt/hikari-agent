@@ -1179,6 +1179,10 @@ async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pass
     until = datetime.now(UTC) + timedelta(minutes=minutes)
     db.runtime_set("silence_until", until.isoformat())
+    try:
+        db.proactive_event_record_silence_window()
+    except Exception:
+        logger.exception("proactive_event_record_silence_window failed (non-fatal)")
     await message.reply_text(f"ok. quiet for {minutes} minutes. don't make me regret it.")
 
 
@@ -1601,6 +1605,12 @@ async def handle_message_reaction(
                 "feedback_record failed for msg_id=%s rating=%s",
                 rxn.message_id, rating,
             )
+        try:
+            db.proactive_event_record_reaction(
+                int(rxn.message_id), "up" if rating == 1 else "down"
+            )
+        except Exception:
+            logger.exception("proactive_event_record_reaction failed (non-fatal)")
         # If feedback-also-replies is off (default), stop here.
         if not _reaction_feedback_also_replies():
             return

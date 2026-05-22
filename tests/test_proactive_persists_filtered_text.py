@@ -96,6 +96,7 @@ async def test_heartbeat_persists_filtered_text_and_telegram_id(monkeypatch):
     monkeypatch.setattr(proactive, "should_send_heartbeat", lambda: True)
     monkeypatch.setattr(proactive, "_pick_seed", lambda: (0, "thinking of you", "open_loop"))
     monkeypatch.setattr(cadence, "can_send_proactive", lambda source: (True, "ok"))
+    monkeypatch.setattr(cadence, "can_send", lambda source, pool=None: (True, "ok"))
     monkeypatch.setattr(proactive, "_record_sent", lambda idx: None)
 
     # Stub run_proactive to return DRAFT_TEXT
@@ -149,6 +150,7 @@ async def test_heartbeat_persists_draft_when_no_filter_applied(monkeypatch):
     monkeypatch.setattr(proactive, "should_send_heartbeat", lambda: True)
     monkeypatch.setattr(proactive, "_pick_seed", lambda: (0, "hey", "open_loop"))
     monkeypatch.setattr(cadence, "can_send_proactive", lambda source: (True, "ok"))
+    monkeypatch.setattr(cadence, "can_send", lambda source, pool=None: (True, "ok"))
     monkeypatch.setattr(proactive, "_record_sent", lambda idx: None)
 
     async def fake_run_proactive(prompt, **kwargs):
@@ -179,6 +181,7 @@ async def test_heartbeat_no_row_when_send_text_returns_failure(monkeypatch):
     monkeypatch.setattr(proactive, "should_send_heartbeat", lambda: True)
     monkeypatch.setattr(proactive, "_pick_seed", lambda: (0, "hey", "open_loop"))
     monkeypatch.setattr(cadence, "can_send_proactive", lambda source: (True, "ok"))
+    monkeypatch.setattr(cadence, "can_send", lambda source, pool=None: (True, "ok"))
     monkeypatch.setattr(proactive, "_record_sent", lambda idx: None)
 
     async def fake_run_proactive(prompt, **kwargs):

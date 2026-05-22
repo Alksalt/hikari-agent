@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any, Callable
 
+from agents import cadence
 from agents.engagement.triggers import TriggerCandidate
 from storage import db
 
@@ -35,7 +36,7 @@ async def send(text: str, candidate: TriggerCandidate,
         except (TypeError, ValueError):
             telegram_message_id = None
     try:
-        return db.proactive_event_insert(
+        row_id = db.proactive_event_insert(
             source=candidate.source,
             pattern=candidate.pattern,
             payload_json=json.dumps(candidate.payload, default=str),
@@ -44,3 +45,8 @@ async def send(text: str, candidate: TriggerCandidate,
     except Exception:
         logger.exception("sender: proactive_event_insert failed (non-fatal)")
         return None
+    try:
+        cadence.record_user_anchored_sent(candidate.source)
+    except Exception:
+        logger.exception("sender: record_user_anchored_sent failed (non-fatal)")
+    return row_id

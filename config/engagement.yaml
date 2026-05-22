@@ -451,24 +451,32 @@ emotional_half_life:
 
 cadence_governor:
   enabled: true
-  max_proactive_per_7d: 8
-  # A proactive message must cite at least one source from this list; else vetoed.
-  allowed_trigger_sources:
-    - open_loop
-    - pattern_observation
-    - lexicon_callback
-    - noticed_change
-    - recent_episode_callback
-    - calendar_event
-    - reengage_silence
-    - daily_checkin
-  # Sources that bypass the 7d cap. Use for user-scheduled routines that
-  # aren't spontaneous "Hikari decided to ping" proactives — those still go
-  # through the cap.
-  cap_exempt_sources:
-    - daily_checkin
-    - future_letter
-    - decision_log
+  pools:
+    agent_spontaneous:
+      max_per_7d: 8
+      allowed_sources:
+        - open_loop
+        - pattern_observation
+        - noticed_change
+        - calendar_event
+        - reengage_silence
+    scheduled_ceremony:
+      max_per_7d: 14
+      allowed_sources:
+        - daily_checkin
+        - decision_log
+        - future_letter
+        - future_letter_send
+        - morning_brief
+        - evening_diary
+    user_anchored:
+      max_per_7d: 30
+      allowed_sources:
+        - callback_episode
+        - lexicon_callback
+        - recent_episode_callback
+        - reaction_followup
+        - wiki_new_file
 
 working_memory:
   enabled: true

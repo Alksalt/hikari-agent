@@ -104,11 +104,20 @@ def test_cadence_prunes_old_entries_outside_window():
 
 
 def test_cadence_governor_blocks_at_cap(monkeypatch, tmp_path):
+    # Pool-based YAML: open_loop is in agent_spontaneous, cap=2 for the test.
     cfg_text = (
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 2\n"
-        "  allowed_trigger_sources: [open_loop, recent_episode_callback]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 2\n"
+        "      allowed_sources: [open_loop, reengage_silence]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file]\n"
     )
     p = tmp_path / "engagement.yaml"
     p.write_text(cfg_text, encoding="utf-8")
@@ -122,11 +131,20 @@ def test_cadence_governor_blocks_at_cap(monkeypatch, tmp_path):
 
 
 def test_cadence_governor_blocks_unjustified_source(monkeypatch, tmp_path):
+    # recent_episode_callback is NOT in any pool in this reduced config.
     cfg_text = (
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 10\n"
-        "  allowed_trigger_sources: [open_loop, pattern_observation]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 10\n"
+        "      allowed_sources: [open_loop, pattern_observation]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file]\n"
     )
     p = tmp_path / "engagement.yaml"
     p.write_text(cfg_text, encoding="utf-8")
@@ -141,8 +159,16 @@ def test_cadence_governor_allows_justified_under_cap(monkeypatch, tmp_path):
     cfg_text = (
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 4\n"
-        "  allowed_trigger_sources: [open_loop, pattern_observation, reengage_silence]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 4\n"
+        "      allowed_sources: [open_loop, pattern_observation, reengage_silence]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file]\n"
     )
     p = tmp_path / "engagement.yaml"
     p.write_text(cfg_text, encoding="utf-8")
@@ -227,9 +253,17 @@ async def test_heartbeat_blocked_when_cap_reached(monkeypatch, tmp_path):
         "  reengage_max_hours: 6\n"
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 1\n"
-        "  allowed_trigger_sources: [open_loop, recent_episode_callback,\n"
-        "    pattern_observation, noticed_change, lexicon_callback, reengage_silence]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 1\n"
+        "      allowed_sources: [open_loop, pattern_observation, noticed_change,\n"
+        "        reengage_silence, morning]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file, lexicon_callback, recent_episode_callback]\n"
         "soft_scarcity:\n"
         "  enabled: false\n"
     )
@@ -358,8 +392,16 @@ async def test_calendar_heartbeat_skips_already_notified(monkeypatch, tmp_path):
         "  notified_ttl_hours: 4\n"
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 10\n"
-        "  allowed_trigger_sources: [calendar_event]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 10\n"
+        "      allowed_sources: [calendar_event, open_loop, reengage_silence]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file]\n"
     )
     p = tmp_path / "engagement.yaml"
     p.write_text(cfg_text, encoding="utf-8")
@@ -419,8 +461,16 @@ async def test_calendar_heartbeat_fires_for_fresh_event(monkeypatch, tmp_path):
         "  notified_ttl_hours: 4\n"
         "cadence_governor:\n"
         "  enabled: true\n"
-        "  max_proactive_per_7d: 10\n"
-        "  allowed_trigger_sources: [calendar_event]\n"
+        "  pools:\n"
+        "    agent_spontaneous:\n"
+        "      max_per_7d: 10\n"
+        "      allowed_sources: [calendar_event, open_loop, reengage_silence]\n"
+        "    scheduled_ceremony:\n"
+        "      max_per_7d: 14\n"
+        "      allowed_sources: [daily_checkin]\n"
+        "    user_anchored:\n"
+        "      max_per_7d: 30\n"
+        "      allowed_sources: [wiki_new_file]\n"
     )
     p = tmp_path / "engagement.yaml"
     p.write_text(cfg_text, encoding="utf-8")

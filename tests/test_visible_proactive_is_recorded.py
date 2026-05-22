@@ -33,10 +33,11 @@ def _seed_heartbeat_conditions(monkeypatch):
     monkeypatch.setattr(proactive, "should_send_heartbeat", lambda: True)
 
     # Provide a fake _pick_seed that returns (idx, seed_text, source).
-    monkeypatch.setattr(proactive, "_pick_seed", lambda: (0, "thinking of you", "test"))
+    monkeypatch.setattr(proactive, "_pick_seed", lambda: (0, "thinking of you", "open_loop"))
 
-    # Force cadence governor to allow.
+    # Force cadence governor to allow (patch both old compat shim and new API).
     monkeypatch.setattr(cadence, "can_send_proactive", lambda source: (True, "ok"))
+    monkeypatch.setattr(cadence, "can_send", lambda source, pool=None: (True, "ok"))
 
     # Suppress _record_sent.
     monkeypatch.setattr(proactive, "_record_sent", lambda idx: None)

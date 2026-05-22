@@ -50,9 +50,11 @@ async def test_heartbeat_refuses_to_send_sdk_error_string(monkeypatch):
     # Force the heartbeat path to think a send is allowed.
     monkeypatch.setattr(proactive, "should_send_heartbeat", lambda: True)
     monkeypatch.setattr(proactive, "_pick_seed",
-                        lambda: (0, "seed", "morning"))
+                        lambda: (0, "seed", "open_loop"))
     monkeypatch.setattr(proactive.cadence, "can_send_proactive",
                         lambda src: (True, src))
+    monkeypatch.setattr(proactive.cadence, "can_send",
+                        lambda src, pool=None: (True, src))
     monkeypatch.setattr(proactive, "_mood_from_core", lambda: "focused")
     monkeypatch.setattr(proactive, "_build_prompt", lambda mood, seed: "PROMPT")
 
@@ -75,6 +77,8 @@ async def test_reengage_refuses_to_send_sdk_error_string(monkeypatch):
     monkeypatch.setattr(proactive, "should_send_reengagement", lambda: True)
     monkeypatch.setattr(proactive.cadence, "can_send_proactive",
                         lambda src: (True, src))
+    monkeypatch.setattr(proactive.cadence, "can_send",
+                        lambda src, pool=None: (True, src))
     monkeypatch.setattr(proactive, "_mood_from_core", lambda: "focused")
 
     async def _fake_proactive(prompt):
@@ -115,6 +119,8 @@ async def test_calendar_heartbeat_refuses_to_send_sdk_error_string(monkeypatch):
                         lambda sig: None)
     monkeypatch.setattr(proactive.cadence, "can_send_proactive",
                         lambda src: (True, src))
+    monkeypatch.setattr(proactive.cadence, "can_send",
+                        lambda src, pool=None: (True, src))
     monkeypatch.setattr(proactive, "_mood_from_core", lambda: "focused")
     monkeypatch.setattr(proactive, "_build_prompt", lambda mood, seed: "PROMPT")
 

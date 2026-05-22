@@ -639,7 +639,8 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     if not should_fire_now(now_local):
         return False
     from agents import cadence
-    allowed, reason = cadence.can_send_proactive("daily_checkin")
+    from agents.cadence import Pool
+    allowed, reason = cadence.can_send("daily_checkin", Pool.SCHEDULED_CEREMONY)
     if not allowed:
         logger.info("daily_checkin: cadence governor vetoed: %s", reason)
         return False
@@ -651,6 +652,17 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     if not ok:
         logger.warning("daily_checkin: send_text reported failure; not marking fired")
         return False
+    # Write proactive_events row + cadence record.
+    try:
+        db.proactive_event_insert(
+            source="daily_checkin",
+            pattern="ceremony",
+            payload_json="{}",
+            telegram_message_id=None,
+        )
+    except Exception:
+        logger.exception("daily_checkin: proactive_event_insert failed (non-fatal)")
+    cadence.record_ceremony_sent("daily_checkin")
     # Mark fired + start pending-reply window. Choreography helper persisted
     # the assistant row with source='daily_checkin' already.
     mark_fired_today(now_local)

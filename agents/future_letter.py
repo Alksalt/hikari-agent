@@ -30,7 +30,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agents import config as cfg
+from agents import cadence, config as cfg
+from agents.cadence import Pool
 from agents.runtime import looks_like_sdk_error, run_internal_control
 from storage import db
 
@@ -591,6 +592,18 @@ async def run_future_letter(
                 "future_letter: marking sent failed (letter persisted, "
                 "manual re-send possible)"
             )
+        try:
+            db.proactive_event_insert(
+                source="future_letter_send",
+                pattern="ceremony",
+                payload_json="{}",
+                telegram_message_id=None,
+            )
+        except Exception:
+            logger.exception(
+                "future_letter: proactive_event_insert failed (non-fatal)"
+            )
+        cadence.record_ceremony_sent("future_letter_send")
         logger.info(
             "future_letter: composed + delivered for %s (theme=%r, %d chars, %d chunks)",
             month_iso, theme[:60], len(body), len(chunks),

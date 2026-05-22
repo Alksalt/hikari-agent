@@ -25,6 +25,7 @@ import yaml
 from storage import db
 
 from . import cadence
+from .cadence import Pool
 from . import config as cfg
 from .hooks import _resolve_local_tz_name
 from .runtime import looks_like_sdk_error, run_internal_control, run_visible_proactive
@@ -225,7 +226,7 @@ async def maybe_send_heartbeat(send_text) -> bool:
     idx, seed, source = pick
 
     # Cadence governor: enforce 7d cap + require justified source.
-    allowed, reason = cadence.can_send_proactive(source)
+    allowed, reason = cadence.can_send(source, Pool.AGENT_SPONTANEOUS)
     if not allowed:
         logger.info("cadence governor vetoed heartbeat: %s", reason)
         return False
@@ -271,7 +272,16 @@ async def maybe_send_heartbeat(send_text) -> bool:
             "heartbeat: append_message post-send failed (non-fatal)",
         )
     _record_sent(idx)
-    cadence.record_proactive_sent()
+    try:
+        db.proactive_event_insert(
+            source=source,
+            pattern="heartbeat",
+            payload_json="{}",
+            telegram_message_id=tg_id,
+        )
+    except Exception:
+        logger.exception("heartbeat: proactive_event_insert failed (non-fatal)")
+    cadence.record_spontaneous_sent(source)
     logger.info("heartbeat sent (source=%s)", source)
     return True
 
@@ -316,7 +326,9 @@ async def maybe_send_reengagement(send_text) -> bool:
         return False
     # Cadence governor check BEFORE the LLM call — don't burn tokens on a
     # reengage we're going to drop anyway.
-    allowed, reason = cadence.can_send_proactive("reengage_silence")
+    allowed, reason = cadence.can_send(
+        "reengage_silence", Pool.AGENT_SPONTANEOUS
+    )
     if not allowed:
         logger.info("cadence governor vetoed reengage: %s", reason)
         return False
@@ -366,7 +378,16 @@ async def maybe_send_reengagement(send_text) -> bool:
     if last_ts:
         db.runtime_set("reengage_sent_for_gap", last_ts.isoformat())
     db.runtime_set("last_proactive_sent", datetime.now(UTC).isoformat())
-    cadence.record_proactive_sent()
+    try:
+        db.proactive_event_insert(
+            source="reengage_silence",
+            pattern="reengage",
+            payload_json="{}",
+            telegram_message_id=tg_id,
+        )
+    except Exception:
+        logger.exception("reengage: proactive_event_insert failed (non-fatal)")
+    cadence.record_spontaneous_sent("reengage_silence")
     return True
 
 
@@ -524,7 +545,7 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
     signature = _calendar_event_signature(event)
     mins_until_rounded = int(round(mins_until))
 
-    allowed, reason = cadence.can_send_proactive("calendar_event")
+    allowed, reason = cadence.can_send("calendar_event", Pool.AGENT_SPONTANEOUS)
     if not allowed:
         logger.info("cadence governor vetoed calendar heartbeat: %s", reason)
         return False
@@ -576,7 +597,18 @@ async def maybe_send_calendar_heartbeat(send_text) -> bool:
         )
 
     _mark_calendar_event_notified(signature)
-    cadence.record_proactive_sent()
+    try:
+        db.proactive_event_insert(
+            source="calendar_event",
+            pattern="calendar_heartbeat",
+            payload_json="{}",
+            telegram_message_id=tg_id,
+        )
+    except Exception:
+        logger.exception(
+            "calendar heartbeat: proactive_event_insert failed (non-fatal)"
+        )
+    cadence.record_spontaneous_sent("calendar_event")
     db.runtime_set("last_proactive_sent", datetime.now(UTC).isoformat())
     logger.info(
         "calendar heartbeat sent (event=%r, mins_until=%d)",
