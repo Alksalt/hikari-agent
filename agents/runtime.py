@@ -301,7 +301,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
 
 
 async def _invoke_sdk(
-    prompt: str,
+    prompt: str | list[dict],
     *,
     resume: str | None,
     log_session_id: bool,
@@ -347,7 +347,22 @@ async def _invoke_sdk(
         parts = []
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
+                if isinstance(prompt, list):
+                    # SDK's query() accepts str | AsyncIterable[dict]; for a
+                    # content-block list, wrap into a single user-message
+                    # envelope and yield from an async generator.
+                    blocks = prompt
+
+                    async def _stream_blocks():
+                        yield {
+                            "type": "user",
+                            "message": {"role": "user", "content": blocks},
+                            "parent_tool_use_id": None,
+                        }
+
+                    await client.query(_stream_blocks())
+                else:
+                    await client.query(prompt)
                 async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):
                         for block in msg.content:
@@ -416,6 +431,22 @@ async def run_user_turn(user_text: str) -> str:
     async with _RUN_LOCK:
         return await _invoke_sdk(
             user_text,
+            resume=db.get_session_id(),
+            log_session_id=True,
+            max_turns=DEFAULT_MAX_TURNS,
+            max_budget_usd=0.50,
+            retry_on_process_error=True,
+        )
+
+
+async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
+    """Variant of run_user_turn that accepts a pre-built list of content blocks
+    instead of a plain string. Used by handle_document for PDF/image/HTML ingest
+    so the next user turn contains a native ``document`` or ``image`` block,
+    not a base64 blob wedged into text."""
+    async with _RUN_LOCK:
+        return await _invoke_sdk(
+            content_blocks,
             resume=db.get_session_id(),
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,

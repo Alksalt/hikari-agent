@@ -1,0 +1,34 @@
+"""Tests for _build_ingest_block — HTML branch."""
+from __future__ import annotations
+
+import pytest
+
+from agents.telegram_bridge import _build_ingest_block
+
+_HTML = "<html><body><p>hello world</p><script>alert(1)</script></body></html>"
+
+
+def test_html_strips_to_text(tmp_path):
+    path = tmp_path / "page.html"
+    path.write_text(_HTML, encoding="utf-8")
+    block, kind_note = _build_ingest_block(path, "text/html", "page.html")
+
+    assert block is not None
+    assert block["type"] == "text"
+    text = block["text"]
+    assert "hello world" in text
+    assert "<p>" not in text
+    assert "<script>" not in text
+    assert "html" in kind_note.lower()
+
+
+def test_html_truncated_at_64k(tmp_path):
+    # Build 70KB of content wrapped in HTML tags
+    inner = "a" * 70_000
+    html = f"<html><body>{inner}</body></html>"
+    path = tmp_path / "big.html"
+    path.write_text(html, encoding="utf-8")
+    block, kind_note = _build_ingest_block(path, "text/html", "big.html")
+
+    assert block is not None
+    assert "truncated" in block["text"]
