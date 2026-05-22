@@ -80,6 +80,20 @@ def test_runtime_allowlist_includes_link_shelf():
     )
 
 
+def test_allowed_tool_names_no_duplicates():
+    """_base_allowed_tools must not contain duplicates after Fix 2 dedup.
+
+    Before the fix, utility tools listed in both tools.yaml and auto-discovered
+    by discover_utility_tool_names() appeared twice in the concatenated list.
+    """
+    from agents.runtime import allowed_tool_names
+    names = allowed_tool_names()
+    assert len(names) == len(set(names)), (
+        f"duplicate tool names in allowlist: "
+        f"{[n for n in names if names.count(n) > 1]}"
+    )
+
+
 def test_dedicated_server_modules_not_in_utility():
     """The registry must NOT pull memory/photos/wiki/dispatch/codex into
     hikari_utility — those have their own MCP servers."""

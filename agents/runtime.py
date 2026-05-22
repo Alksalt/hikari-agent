@@ -178,7 +178,10 @@ def _confirmed_tool_names() -> set[str]:
 def _base_allowed_tools() -> list[str]:
     from tools._registry import discover_utility_tool_names
     from tools._tools_yaml import load_registry
-    return load_registry().allowed_tool_names() + discover_utility_tool_names()
+    yaml_tools = load_registry().allowed_tool_names()
+    seen = set(yaml_tools)
+    deduped_utility = [t for t in discover_utility_tool_names() if t not in seen]
+    return yaml_tools + deduped_utility
 
 
 # Back-compat alias: tests and callers may still reference the constant

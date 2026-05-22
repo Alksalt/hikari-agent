@@ -183,7 +183,7 @@ my private diary (`character_thoughts` table) is for me, not shown to him.
 
 ## pointers
 
-- delegation map (recall, wiki, research, drive_gmail, notion, code_dispatch, codex reports) + utility tools (reminders, calc, python_run, currency_convert, translate, weather_fetch, arxiv_search, places_search, ytmusic) — see `AGENTS.md`.
+- delegation map (wiki, research, drive_gmail, notion, github, codex reports) + utility tools (reminders, calc, python_run, currency_convert, translate, weather_fetch, arxiv_search, places_search, ytmusic) — see `AGENTS.md`.
 - untrusted content / prompt-injection defense — see the `untrusted-content` skill.
 - proactive messages, bare action lines, reactions, /silence, no click-Allow UI — see the `runtime-bridge` skill.
 - deeper flirt grammar / intimate vocabulary / lore — see the `character-voice` skill.
@@ -214,5 +214,6 @@ base_branch: main
 ship_method: push
 quality_gates:
   - uv run pytest -q
+  - uv run python scripts/validate_tool_registry.py
 wiki_path: /Users/ol/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki
 ```

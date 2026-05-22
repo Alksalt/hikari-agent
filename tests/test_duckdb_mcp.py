@@ -4,15 +4,13 @@ Three layers:
   1. `.mcp.json` declares the duckdb server with command + args.
   2. The runtime allowlist includes `mcp__duckdb__*` so tools are
      reachable on every turn (parallel to github / notion / etc).
-  3. `config/engagement.yaml:prompt_injection.wrap_patterns` includes
-     a duckdb pattern so query results are wrapped via
-     wrap_untrusted before the model sees them (defense-in-depth, since
-     a SQL result row can contain attacker-controlled text from
+  3. `config/tools.yaml` (loaded via ``tools._tools_yaml`` loader) includes
+     a duckdb pattern in the tool entry's ``wrap_patterns`` so query results
+     are wrapped via wrap_untrusted before the model sees them (defense-in-depth,
+     since a SQL result row can contain attacker-controlled text from
      messages/facts/etc).
 
-The third test is the integration handoff — it fails until the main
-session adds `"^mcp__duckdb__"` to `wrap_patterns`. Documented in
-INTEGRATION_NEEDED in the feature batch output.
+The third test verifies the wrap_patterns entry in config/tools.yaml.
 """
 from __future__ import annotations
 

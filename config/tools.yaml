@@ -276,6 +276,14 @@ tools:
     untrusted_output: false
     wrap_patterns: []
 
+  # hikari_dispatch_confirmed (bucket 1, conditional — attached only on approval-resume turns)
+  - id: "mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"
+    bucket: 1
+    server: hikari_dispatch_confirmed
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
   # --------------------------------------------------------------------------
   # hikari_codex (bucket 1)
   # --------------------------------------------------------------------------

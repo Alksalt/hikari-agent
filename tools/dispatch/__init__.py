@@ -15,8 +15,7 @@ OAuth token, native message types, trivial cost extraction. Trade-off:
 dies if Hikari restarts — recovered via session_id resume.
 
 Re-exports:
-  * ``WORK_DIR_ROOT`` — module constant; some external callers
-    (``agents/subagents.py``) import it from this package.
+  * ``WORK_DIR_ROOT`` — module constant.
   * ``DISPATCH_EVENTS`` — the queue ``agents/background_listener``
     drains.
   * ``set_owner_chat_id`` — called once by ``telegram_bridge`` post_init.

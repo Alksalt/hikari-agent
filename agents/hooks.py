@@ -2,10 +2,10 @@
 into the agent's context window on every user turn. PostToolUseFailure logs failures
 so silent breakage stops.
 
-Retrieval is owned by the `recall` subagent (see agents/subagents.py) — Hikari
-delegates to it on demand instead of paying a top-8 retrieval tax every turn. The
-age-framing helpers (_frame_fact / _frame_episode) are still exported because the
-recall-agent's prompt formatter can reuse them.
+Retrieval is via `mcp__hikari_memory__recall` direct tool call — Hikari calls it
+on demand instead of paying a top-8 retrieval tax every turn. The age-framing
+helpers (_frame_fact / _frame_episode) are still exported because the recall
+tool's prompt formatter can reuse them.
 """
 
 from __future__ import annotations

@@ -21,7 +21,7 @@ from the raw spec data.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -109,7 +109,6 @@ class ToolRegistry:
         """Return the best-matching ToolSpec for a fully-qualified tool name."""
         if tool_name in self._explicit:
             return self._explicit[tool_name]
-        prefix = tool_name.rsplit("__", 1)[0] + "__" if "__" in tool_name else tool_name
         for wc in self._wildcards:
             wc_prefix = wc.id[:-1]  # strip trailing "*"
             if tool_name.startswith(wc_prefix):

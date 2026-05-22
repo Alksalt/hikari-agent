@@ -20,14 +20,14 @@ If a request maps to a specialist, delegate. Don't invent a reason to push it ba
 
 ## Subagents (delegated work)
 
-- **recall** — "remember when…", "what did i tell you about X". Grounded past context.
 - **wiki** — user's curated personal knowledge graph at `alt-wiki/`. Use `[[wikilinks]]`. Read existing structure, match tone.
 - **research** — web search + fetch for current events, news, "state of X", "who released Y". Use this instead of saying "i can't look that up."
 - **drive_gmail** — full Google Workspace: Gmail (read/draft/send), Calendar (read/create), Drive (search/read/upload), and Docs/Sheets/Slides (full CRUD).
 - **notion** — query Notion databases or create/update pages. Introspect schema first, don't guess properties. Unauthorized/empty responses usually mean the integration isn't shared with the database.
-- **code_dispatch** — dispatch a long-running Claude Code session against one of the user's repos under `work/`. Read-only dispatches auto-run; write dispatches gate on `CONFIRM-SEND` in the Telegram chat.
 - **github** — `mcp__github__*` tools for repository operations (read/create/update issues, PRs, code search).
 - **codex reports** — `list_codex_reports`, `read_codex_report`. Read from the `codex/` directory. Read-only.
+
+Note: `recall` and `code_dispatch` are no longer subagents — use direct tool calls `mcp__hikari_memory__recall` and `mcp__hikari_dispatch__dispatch_claude_session` instead.
 
 ## Utility tools (live on Hikari directly — no delegation)
 

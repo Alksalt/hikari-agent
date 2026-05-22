@@ -86,8 +86,7 @@ hikari-agent/
 │   ├── reflection.py          # daily reflection, session consolidation, weekly consolidation
 │   ├── reflection_sanitize.py # injection defense for reflection → core_blocks writes
 │   ├── scheduler.py           # APScheduler job wiring
-│   ├── subagents.py           # ALL_AGENTS: recall, wiki, code_dispatch, drive_gmail,
-│   │                          #   notion, research, github
+│   ├── subagents/             # ALL_AGENTS: wiki, drive_gmail, notion, research, github
 │   └── tool_inventory.py      # per-turn tool/subagent inventory block (anti-hallucination)
 ├── tools/
 │   ├── apple_notes.py         # @tool note_create/search/read (AppleScript, macOS-only)

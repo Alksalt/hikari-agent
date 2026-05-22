@@ -383,6 +383,25 @@ def test_dispatch_rejects_outside_workdir(tmp_path, monkeypatch):
     assert "outside" in text.lower() or "work_dir" in text.lower()
 
 
+def test_dispatch_confirmed_server_attaches_on_resume(monkeypatch):
+    """The hikari_dispatch_confirmed server must attach when its tool is in
+    extra_allowed_tools (resume path). Regression guard for Fix 1: if the tool
+    entry is missing from config/tools.yaml the server_tools set is empty and
+    the conditional server never attaches."""
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
+    from agents import runtime
+    importlib.reload(runtime)
+    opts = runtime._build_options(
+        resume="abc",
+        extra_allowed_tools=["mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"],
+    )
+    server_names = set(opts.mcp_servers.keys()) if hasattr(opts, "mcp_servers") else set()
+    assert "hikari_dispatch_confirmed" in server_names, (
+        "hikari_dispatch_confirmed not attached on resume turn — "
+        "check config/tools.yaml for the tool entry"
+    )
+
+
 def test_silence_commands_persist(tmp_path, monkeypatch):
     """/silence writes silence_until to runtime_state; /unsilence clears it."""
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
