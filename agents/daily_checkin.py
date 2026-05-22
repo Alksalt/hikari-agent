@@ -664,7 +664,6 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     mark_fired_today(now_local)
     clear_expired_overrides(now_local)
     db.runtime_set(PENDING_KEY, datetime.now(UTC).isoformat())
-    cadence.record_proactive_sent()  # bookkeeping; cap-exempt
     logger.info("daily_checkin: question sent (pending reply window open)")
     return True
 

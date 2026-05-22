@@ -52,6 +52,8 @@ _NOTION_WRITE_TOOLS = [
     "mcp__notion__API-patch-block-children",
     "mcp__notion__API-patch-page",
     "mcp__notion__API-post-page",
+    "mcp__notion__API-update-a-block",
+    "mcp__notion__API-delete-a-block",
 ]
 
 
@@ -100,6 +102,9 @@ async def test_notion_write_tools_trigger_defer_hook(tool_name, monkeypatch):
 _GITHUB_CREATE_TOOLS = [
     "mcp__github__create_issue",
     "mcp__github__create_pull_request",
+    "mcp__github__merge_pull_request",
+    "mcp__github__delete_file",
+    "mcp__github__delete_repository",
 ]
 
 

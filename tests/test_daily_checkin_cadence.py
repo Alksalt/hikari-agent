@@ -30,7 +30,7 @@ def _fill_proactive_log(n: int) -> None:
 
 def test_cap_blocks_normal_source_at_max():
     from agents import cadence
-    _fill_proactive_log(4)
+    _fill_proactive_log(8)
     allowed, reason = cadence.can_send_proactive("open_loop")
     assert allowed is False
     assert "cap_reached" in reason
@@ -38,7 +38,7 @@ def test_cap_blocks_normal_source_at_max():
 
 def test_daily_checkin_source_bypasses_cap():
     from agents import cadence
-    _fill_proactive_log(10)  # well past the 4/7d cap
+    _fill_proactive_log(10)  # well past the 8/7d cap
     allowed, reason = cadence.can_send_proactive("daily_checkin")
     assert allowed is True
     assert reason == "daily_checkin_exempt"

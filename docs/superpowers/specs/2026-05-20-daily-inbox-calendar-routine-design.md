@@ -277,8 +277,11 @@ The check-in counts as a proactive event for cadence purposes:
 
 - `agents/cadence.py:can_send_proactive("daily_checkin")` is called before
   the trigger fires.
-- On send, `cadence.record_proactive_sent()` is called so the proactive cap
-  heuristic accounts for it.
+- `daily_checkin` is in `cap_exempt_sources` and intentionally does NOT call
+  `cadence.record_proactive_sent()` — counting cap-exempt sends toward the
+  rolling 7d log is what was burning the spontaneous-heartbeat budget. A
+  separate `record_ceremony_sent()` for ceremony bookkeeping lands in a
+  later sprint.
 
 A new `daily_checkin` source key is added to whatever allowlist
 `cadence.can_send_proactive` consults (existing pattern, no code structure

@@ -497,7 +497,7 @@ emotional_half_life:
 
 cadence_governor:
   enabled: true
-  max_proactive_per_7d: 4
+  max_proactive_per_7d: 8
   # A proactive message must cite at least one source from this list; else vetoed.
   allowed_trigger_sources:
     - open_loop
@@ -515,6 +515,11 @@ cadence_governor:
     - daily_checkin
     - future_letter
     - decision_log
+
+working_memory:
+  enabled: true
+  last_k_turns: 6
+  snippet_chars: 400
 
 noticings:
   enabled: true

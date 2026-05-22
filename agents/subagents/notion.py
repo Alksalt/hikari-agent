@@ -26,9 +26,11 @@ NOTION_AGENT = AgentDefinition(
         "  Users: API-get-self, API-get-user, API-get-users\n\n"
         "Before querying a data source, call `API-retrieve-a-data-source` to learn "
         "its property schema. Don't guess property names — Notion is strict.\n\n"
-        "For writes (API-post-page, API-patch-page): call the tool — these auto-run; "
-        "Notion's own undo covers mistakes. Return data + page IDs (UUIDs), not prose. "
-        "The lead can chain page IDs into update calls if needed."
+        "For writes (API-post-page, API-patch-page, API-patch-block-children, "
+        "API-update-a-block, API-delete-a-block): these are CONFIRM-SEND-gated. "
+        "Call the tool normally — the runtime defers, prompts the owner via "
+        "Telegram, and resumes when they type CONFIRM-SEND. Don't ask for "
+        "confirmation yourself. Return data + page IDs (UUIDs), not prose."
     ),
     model="haiku",
     tools=["mcp__notion__*"],

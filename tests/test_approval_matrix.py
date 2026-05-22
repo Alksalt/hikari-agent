@@ -46,8 +46,13 @@ def _isolated_db(tmp_path: Path, monkeypatch):
         ("mcp__claude_ai_Google_Calendar__create_event",
          {"attendees": ["a@b.com"]},
          False),
-        # Notion writes auto-run.
+        # Notion: only the real API-* tool names defer-gate; bare names don't match.
         ("mcp__notion__create_page", {"title": "x"}, False),
+        ("mcp__notion__API-post-page", {"parent": {}}, True),
+        ("mcp__notion__API-patch-page", {"page_id": "x"}, True),
+        ("mcp__notion__API-patch-block-children", {"block_id": "x"}, True),
+        ("mcp__notion__API-update-a-block", {"block_id": "x"}, True),
+        ("mcp__notion__API-delete-a-block", {"block_id": "x"}, True),
         # Read-only dispatch auto-runs.
         ("mcp__hikari_dispatch__dispatch_claude_session",
          {"allowed_tools": "Read,Grep"},

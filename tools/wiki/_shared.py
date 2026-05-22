@@ -112,17 +112,22 @@ def _resolve_note(path_or_name: str) -> Path | None:
     p = (path_or_name or "").strip()
     if not p:
         return None
-    if not p.endswith(".md"):
-        p_md = p + ".md"
-    else:
-        p_md = p
-    candidate = VAULT_ROOT / p_md
+    p_md = p if p.endswith(".md") else p + ".md"
+    candidate = (VAULT_ROOT / p_md).resolve()
+    try:
+        candidate.relative_to(VAULT_ROOT.resolve())
+    except ValueError:
+        return None
     if candidate.exists():
         return candidate
-    # Try by filename across the vault
     stem = Path(p).stem
     for md_path in VAULT_ROOT.rglob(f"{stem}.md"):
-        return md_path
+        resolved = md_path.resolve()
+        try:
+            resolved.relative_to(VAULT_ROOT.resolve())
+        except ValueError:
+            continue
+        return resolved
     return None
 
 
@@ -136,7 +141,12 @@ async def _do_wiki_append(args: dict[str, Any]) -> str:
     abs_path = _resolve_note(path_arg)
     if not abs_path:
         target_rel = path_arg if path_arg.endswith(".md") else path_arg + ".md"
-        abs_path = VAULT_ROOT / target_rel
+        candidate = (VAULT_ROOT / target_rel).resolve()
+        try:
+            candidate.relative_to(VAULT_ROOT.resolve())
+        except ValueError:
+            return f"wiki: refused — path {path_arg!r} resolves outside the vault."
+        abs_path = candidate
         if not abs_path.parent.exists():
             return (
                 f"wiki: can't write — parent dir {abs_path.parent} doesn't exist. "

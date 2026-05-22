@@ -509,6 +509,16 @@ async def probe_gmail_bulk_delete_scope_ok() -> bool:
     """
     from datetime import UTC, datetime, timedelta
 
+    client_id = os.environ.get("GOOGLE_WORKSPACE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_WORKSPACE_CLIENT_SECRET")
+    refresh_token = os.environ.get("GOOGLE_WORKSPACE_REFRESH_TOKEN")
+    if not (client_id and client_secret and refresh_token):
+        logger.info(
+            "probe_gmail_bulk_delete_scope_ok: missing google creds env; "
+            "returning False (no cache update)",
+        )
+        return False
+
     cached = db.runtime_get(SCOPE_PROBE_OK_KEY)
     checked_raw = db.runtime_get(SCOPE_PROBE_CHECKED_AT_KEY)
     if cached is not None and checked_raw:
@@ -522,16 +532,6 @@ async def probe_gmail_bulk_delete_scope_ok() -> bool:
                 return cached == "true"
         except (ValueError, TypeError):
             pass  # cache corrupt, re-probe
-
-    client_id = os.environ.get("GOOGLE_WORKSPACE_CLIENT_ID")
-    client_secret = os.environ.get("GOOGLE_WORKSPACE_CLIENT_SECRET")
-    refresh_token = os.environ.get("GOOGLE_WORKSPACE_REFRESH_TOKEN")
-    if not (client_id and client_secret and refresh_token):
-        logger.info(
-            "probe_gmail_bulk_delete_scope_ok: missing google creds env; "
-            "returning False (no cache update)",
-        )
-        return False
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as cli:

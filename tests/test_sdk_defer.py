@@ -963,6 +963,10 @@ async def test_probe_gmail_bulk_delete_scope_ok_returns_cached_value(monkeypatch
     from storage import db
     from tools import approvals as approval_tools
 
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake_id")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake_secret")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake_token")
+
     db.runtime_set("gmail_bulk_delete_scope_ok", "true")
     db.runtime_set(
         "gmail_bulk_delete_scope_checked_at",
