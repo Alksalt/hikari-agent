@@ -194,6 +194,8 @@ _DEDICATED_AND_EXTERNAL_TOOLS = [
     "mcp__hikari_wiki__wiki_read",
     "mcp__hikari_wiki__wiki_append",
     "mcp__hikari_wiki__wiki_backlinks",
+    "mcp__hikari_wiki__wiki_list",
+    "mcp__hikari_wiki__wiki_tree",
     "mcp__hikari_dispatch__dispatch_claude_session",
     "mcp__hikari_codex__list_codex_reports",
     "mcp__hikari_codex__read_codex_report",

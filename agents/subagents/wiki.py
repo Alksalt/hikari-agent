@@ -17,7 +17,8 @@ WIKI_AGENT = AgentDefinition(
         "- use wiki_search to find candidate notes before reading;\n"
         "- use wiki_read to pull content + frontmatter;\n"
         "- use wiki_append to add new content under the right ## H2 section;\n"
-        "- use wiki_backlinks when the user asks about cross-references.\n"
+        "- use wiki_backlinks when the user asks about cross-references;\n"
+        "- use wiki_list to enumerate one folder; wiki_tree for a depth-limited recursive view. Both are always-fresh — never assume cached state.\n"
         "When appending: keep additions tight, use [[wikilinks]] for related notes, "
         "match existing tone. For heavy curation jobs (rewriting indexes, generating "
         "weekly logs, lint passes) say so explicitly so the lead can decide whether "
@@ -30,5 +31,6 @@ WIKI_AGENT = AgentDefinition(
     ),
     model="haiku",
     tools=["mcp__hikari_wiki__wiki_search", "mcp__hikari_wiki__wiki_read",
-           "mcp__hikari_wiki__wiki_append", "mcp__hikari_wiki__wiki_backlinks"],
+           "mcp__hikari_wiki__wiki_append", "mcp__hikari_wiki__wiki_backlinks",
+           "mcp__hikari_wiki__wiki_list", "mcp__hikari_wiki__wiki_tree"],
 )

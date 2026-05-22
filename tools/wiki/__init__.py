@@ -31,14 +31,14 @@ from tools.wiki._shared import (  # noqa: F401 — back-compat re-exports
 )
 from tools.wiki.append import wiki_append
 from tools.wiki.backlinks import wiki_backlinks
+from tools.wiki.list import wiki_list, wiki_tree
 from tools.wiki.read import wiki_read
 from tools.wiki.search import wiki_search
 
 # Public tools — registered on the always-on ``hikari_wiki`` MCP server.
 # These are the tools Sonnet can see on every turn (subject to allowlist).
-# Phase 8 dropped the ``wiki_append_confirmed`` sibling because
-# ``wiki_append`` no longer requires approval.
-PUBLIC_TOOLS = [wiki_search, wiki_read, wiki_append, wiki_backlinks]
+# wiki_append no longer requires approval (iCloud history is the safety net).
+PUBLIC_TOOLS = [wiki_search, wiki_read, wiki_append, wiki_backlinks, wiki_list, wiki_tree]
 
 # Phase 8: no privileged wiki tools. ``CONFIRMED_TOOLS`` retained for
 # back-compat (empty list) so any importer using the symbol doesn't break.

@@ -734,6 +734,8 @@ prompt_injection:
     # Stream B: additional attacker-touchable surfaces
     - "mcp__hikari_utility__python_run"
     - "mcp__hikari_wiki__wiki_search"
+    - "mcp__hikari_wiki__wiki_list"
+    - "mcp__hikari_wiki__wiki_tree"
     - "mcp__hikari_utility__note_create"
     - "mcp__hikari_utility__read_attachment"
   # Phase 8: regex patterns for the generic PostToolUse wrap hook
@@ -770,6 +772,8 @@ prompt_injection:
     # Stream B: additional attacker-touchable surfaces
     - "^mcp__hikari_utility__python_run$"
     - "^mcp__hikari_wiki__wiki_search$"
+    - "^mcp__hikari_wiki__wiki_list$"
+    - "^mcp__hikari_wiki__wiki_tree$"
     - "^mcp__hikari_utility__note_create$"
     - "^mcp__hikari_utility__read_attachment$"
     - "^mcp__duckdb__"

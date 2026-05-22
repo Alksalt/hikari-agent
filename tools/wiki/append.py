@@ -8,7 +8,7 @@ from claude_agent_sdk import tool
 
 from storage import db
 from tools._response import ok as _ok
-from tools.wiki._shared import _do_wiki_append
+from tools.wiki._shared import _do_wiki_append, invalidate_vault
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,10 @@ async def wiki_append(args: dict[str, Any]) -> dict[str, Any]:
         return _ok("wiki_append: content is empty.")
 
     result_str = await _do_wiki_append(args)
+    # Invalidate the vault cache so wiki_search/wiki_backlinks see the new content
+    # immediately without waiting for the TTL window to expire.
+    if result_str.startswith("wiki: appended"):
+        invalidate_vault()
     # Audit every wiki append so the trail is intact even without an approval row.
     try:
         section_str = f" under '## {section}'" if section else ""

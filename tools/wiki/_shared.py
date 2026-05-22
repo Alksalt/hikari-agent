@@ -16,7 +16,7 @@ import logging
 import os
 import re
 import subprocess
-from functools import lru_cache
+import time
 from pathlib import Path
 from typing import Any
 
@@ -103,15 +103,31 @@ async def _icloud_materialize(path: Path, timeout: int = 30) -> None:
     await asyncio.to_thread(_brctl_download, path, timeout)
 
 
-@lru_cache(maxsize=1)
+_VAULT_CACHE: tuple[Any, float] | None = None
+_VAULT_TTL_SEC: float = 300
+
+
 def _vault() -> Vault:
-    """Build the vault graph once. Connected + gathered so all queries work."""
+    """Build (or return a cached) vault graph. Rebuilt after TTL expires."""
+    global _VAULT_CACHE
+    now = time.monotonic()
+    if _VAULT_CACHE is not None and (now - _VAULT_CACHE[1]) < _VAULT_TTL_SEC:
+        return _VAULT_CACHE[0]
     logger.info("connecting to obsidian vault at %s", VAULT_ROOT)
     v = Vault(VAULT_ROOT).connect().gather()
     logger.info("vault ready: %d notes, %d backlinks", len(v.md_file_index), sum(
         1 for _ in v.backlinks_index.values()
     ))
+    _VAULT_CACHE = (v, now)
     return v
+
+
+def invalidate_vault() -> None:
+    """Drop the cached Vault so the next _vault() call rebuilds. Call this
+    from any code path that writes a new file under VAULT_ROOT — otherwise
+    wiki_search/wiki_backlinks may not see the new file for up to TTL_SEC."""
+    global _VAULT_CACHE
+    _VAULT_CACHE = None
 
 
 def _resolve_note(path_or_name: str) -> Path | None:
