@@ -165,6 +165,8 @@ def test_scheduler_builds(monkeypatch):
         "decision_resolver",
         # Phase 3: monthly pruner (messages, audit_log, calendar_kv).
         "monthly_prune",
+        # Phase 7: wiki_new_file engagement producer (5-min poll).
+        "wiki_new_file_tick",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

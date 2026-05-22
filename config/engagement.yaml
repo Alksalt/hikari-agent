@@ -964,3 +964,8 @@ retention:
 # "database is locked" under concurrent writes (scheduler + bridge threads).
 sqlite:
   busy_timeout_ms: 5000
+
+engagement:
+  wiki_new_file:
+    enabled: true
+    max_per_24h: 2

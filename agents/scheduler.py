@@ -272,6 +272,38 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    # wiki_new_file producer: scan for new .md files every 5 min, send one
+    # proactive ping in voice if found. Producer self-handles missing wiki_path.
+    async def _wiki_new_file_tick():
+        from agents.engagement.producers import wiki_new_file as wnf
+        from agents.engagement import composer, guard, sender
+
+        candidates = wnf.collect()
+        if not candidates:
+            return
+        # Process all cap-allowed candidates in order; advance the watermark
+        # ONLY for ones that actually shipped. Guard-rejected and
+        # send-failed candidates stay eligible for the next tick.
+        for candidate in candidates:
+            text = await composer.compose(candidate)
+            if not text:
+                logger.info("wiki_new_file: compose returned NO_MESSAGE or empty")
+                continue
+            ok, reason = guard.passes(text, candidate)
+            if not ok:
+                logger.info("wiki_new_file: guard rejected — %s", reason)
+                continue
+            row_id = await sender.send(text, candidate, send_text)
+            if row_id is not None:
+                wnf.mark_consumed(candidate)
+
+    scheduler.add_job(
+        _wiki_new_file_tick,
+        IntervalTrigger(minutes=5),
+        id="wiki_new_file_tick",
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+
     return scheduler
 
 

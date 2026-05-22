@@ -603,6 +603,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_drift_canary_indexes(conn)
     _migrate_fact_relations_validity(conn)
     _migrate_tool_calls(conn)
+    _migrate_proactive_events(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -698,6 +699,36 @@ def _migrate_tool_calls(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX idx_tool_calls_started_at ON tool_calls(started_at)")
     conn.execute("CREATE INDEX idx_tool_calls_tool_started ON tool_calls(tool_id, started_at)")
+
+
+def _migrate_proactive_events(conn: sqlite3.Connection) -> None:
+    """Create the proactive_events table + indexes for the engagement pipeline.
+    Lives in a migration fn (not _SCHEMA) per the schema-migration-ordering
+    convention so indexes are co-located with the table DDL."""
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='proactive_events'"
+    ).fetchall()}
+    if "proactive_events" in existing:
+        return
+    conn.execute("""
+        CREATE TABLE proactive_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sent_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            telegram_message_id INTEGER
+        )
+    """)
+    conn.execute("CREATE INDEX idx_proactive_events_sent_at ON proactive_events(sent_at)")
+    conn.execute("CREATE INDEX idx_proactive_events_source_sent ON proactive_events(source, sent_at)")
+    # Sprint 2's reaction-handler joins on telegram_message_id; partial index
+    # keeps it small (NULL rows excluded) and avoids a full table scan.
+    conn.execute(
+        "CREATE INDEX idx_proactive_events_telegram_msg "
+        "ON proactive_events(telegram_message_id) "
+        "WHERE telegram_message_id IS NOT NULL"
+    )
 
 
 def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
@@ -2165,6 +2196,20 @@ def tool_calls_insert(
             "success, error_class, output_size) VALUES (?, ?, ?, ?, ?, ?)",
             (tool_id, _now(), int(duration_ms), 1 if success else 0,
              error_class, int(output_size)),
+        )
+    return int(cur.lastrowid or 0)
+
+
+# ---------- proactive_events ----------
+
+def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
+                           telegram_message_id: int | None = None) -> int:
+    """Insert a row into proactive_events. Returns the new row id."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO proactive_events (sent_at, source, pattern, payload_json, "
+            "telegram_message_id) VALUES (?, ?, ?, ?, ?)",
+            (_now(), source, pattern, payload_json, telegram_message_id),
         )
     return int(cur.lastrowid or 0)
 
