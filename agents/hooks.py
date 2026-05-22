@@ -627,6 +627,59 @@ def _summary_for_defer(tool_name: str, tool_input: dict[str, Any]) -> str:
     return f"{tool_name}\nargs: {pretty}"
 
 
+async def _precheck_scopes(
+    tool_name: str,
+    tool_input: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Pre-flight scope check for PreToolUse.
+
+    Reads ``AUTH_PRECHECK`` env var (default "shadow"):
+      - "off"     → always returns None (disabled)
+      - "shadow"  → logs a warning on mismatch, returns None (observe only)
+      - "enforce" → returns a deny dict with a Hikari-voice reason on mismatch
+
+    Returns None when no action should be taken (scope OK, tool unknown, or
+    mode is off/shadow). Returns a deny hook output dict when mode="enforce"
+    and a scope deficit is found.
+    """
+    mode = os.environ.get("AUTH_PRECHECK", "shadow").lower()
+    if mode == "off":
+        return None
+    try:
+        from auth.providers import get_provider, load_scope_config
+        cfg = load_scope_config()
+        spec = cfg.tool_specs.get(tool_name)
+        if not spec:
+            return None
+        provider = get_provider(spec.provider)
+        have = await provider.current_scopes()
+        missing = [s for s in spec.required_scopes if s not in have]
+        if not missing:
+            return None
+        voice = cfg.provider_templates.get(spec.provider, "scope missing").format(
+            action=spec.action,
+            provider=spec.provider,
+            missing_scopes=" ".join(missing),
+        )
+        if mode == "shadow":
+            logger.warning(
+                "scope_precheck shadow miss: tool=%s missing=%s",
+                tool_name, missing,
+            )
+            return None
+        # enforce
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": voice,
+            }
+        }
+    except Exception:
+        logger.exception("_precheck_scopes: unexpected error (non-fatal, continuing)")
+        return None
+
+
 async def defer_gated_tools(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -693,6 +746,12 @@ async def defer_gated_tools(
             }
 
     input_dict = tool_input if isinstance(tool_input, dict) else {}
+
+    # Scope precheck — runs before defer gate (shadow-mode by default).
+    precheck_result = await _precheck_scopes(tool_name, input_dict)
+    if precheck_result is not None:
+        return precheck_result
+
     if not tool_name or not _is_defer_gated(tool_name, input_dict):
         return {}
 

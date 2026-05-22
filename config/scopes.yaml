@@ -1,0 +1,136 @@
+version: 1
+
+# ---------------------------------------------------------------------------
+# Provider definitions
+# ---------------------------------------------------------------------------
+providers:
+  google:
+    provider_class: auth.google.GoogleProvider
+    voice_template: "can't {action} — my {provider} grant doesn't cover {missing_scopes}. run `uv run python -m scripts.auth google grant --add {missing_scopes}` and re-launch me."
+
+  notion:
+    provider_class: auth.providers.NotionProvider
+    voice_template: "can't reach notion — token isn't set."
+
+  github:
+    provider_class: auth.providers.GitHubProvider
+    voice_template: "can't reach github — token isn't set."
+
+# ---------------------------------------------------------------------------
+# Tool scope requirements
+# (populated from config/tools.yaml gate:defer entries)
+# ---------------------------------------------------------------------------
+tools:
+  # --- Google Workspace (gated write/send/delete) ---
+
+  mcp__google_workspace__gmail_bulk_delete_messages:
+    provider: google
+    required_scopes:
+      - https://mail.google.com/
+    action: "nuke them"
+
+  mcp__google_workspace__gmail_send_email:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/gmail.modify
+    action: "send that email"
+
+  mcp__google_workspace__gmail_reply_to_email:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/gmail.modify
+    action: "send that reply"
+
+  mcp__google_workspace__delete_calendar_event:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/calendar
+    action: "delete that event"
+
+  mcp__google_workspace__create_calendar_event:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/calendar
+    action: "create that event"
+
+  mcp__google_workspace__drive_delete_file:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/drive
+    action: "delete that file"
+
+  mcp__google_workspace__drive_delete_folder:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/drive
+    action: "delete that folder"
+
+  mcp__google_workspace__drive_upload_file:
+    provider: google
+    required_scopes:
+      - https://www.googleapis.com/auth/drive
+    action: "upload that file"
+
+  # --- Notion (gated writes) ---
+
+  mcp__notion__API-patch-block-children:
+    provider: notion
+    required_scopes:
+      - _present
+    action: "write to notion"
+
+  mcp__notion__API-update-a-block:
+    provider: notion
+    required_scopes:
+      - _present
+    action: "update that notion block"
+
+  mcp__notion__API-delete-a-block:
+    provider: notion
+    required_scopes:
+      - _present
+    action: "delete that notion block"
+
+  mcp__notion__API-patch-page:
+    provider: notion
+    required_scopes:
+      - _present
+    action: "update that notion page"
+
+  mcp__notion__API-post-page:
+    provider: notion
+    required_scopes:
+      - _present
+    action: "create that notion page"
+
+  # --- GitHub (gated state-changing ops) ---
+
+  mcp__github__create_issue:
+    provider: github
+    required_scopes:
+      - _present
+    action: "create that issue"
+
+  mcp__github__create_pull_request:
+    provider: github
+    required_scopes:
+      - _present
+    action: "open that pull request"
+
+  mcp__github__merge_pull_request:
+    provider: github
+    required_scopes:
+      - _present
+    action: "merge that pull request"
+
+  mcp__github__delete_file:
+    provider: github
+    required_scopes:
+      - _present
+    action: "delete that file"
+
+  mcp__github__delete_repository:
+    provider: github
+    required_scopes:
+      - _present
+    action: "delete that repository"

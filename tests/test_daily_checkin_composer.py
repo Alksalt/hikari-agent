@@ -25,10 +25,6 @@ async def test_compose_email_returns_voice_text(monkeypatch):
     from agents import daily_checkin
     mock = AsyncMock(return_value="three actual emails. 28 promos. want me to nuke them?")
     monkeypatch.setattr(daily_checkin, "run_visible_proactive", mock)
-    # Stub scope probe to True so the delete proposal is injected.
-    monkeypatch.setattr(
-        daily_checkin, "probe_gmail_bulk_delete_scope_ok", AsyncMock(return_value=True)
-    )
     data = {
         "unread_personal": [{"id": "1", "from": "mom@x.com", "subject": "call me", "snippet": "..."}],
         "calendar_invites": [],
@@ -36,7 +32,7 @@ async def test_compose_email_returns_voice_text(monkeypatch):
     }
     text = await daily_checkin.compose_email_message(data)
     assert "promos" in text or "emails" in text
-    # The data-driven delete proposal must be injected when count > 0.
+    # The delete proposal is now unconditional when count > 0.
     prompt = mock.call_args[0][0]
     assert "deletable: 28" in prompt
     assert "in promos/updates" in prompt

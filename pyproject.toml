@@ -28,6 +28,7 @@ dependencies = [
     "ytmusicapi>=1.12.0",
     "itsdangerous>=2.2.0",
     "pillow>=10.0",
+    "keyring>=24",
 ]
 
 [dependency-groups]
