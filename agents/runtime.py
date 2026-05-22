@@ -158,17 +158,6 @@ def _dispatch_confirmed_server():
     )
 
 
-def _confirmed_tool_names() -> set[str]:
-    """Set of fully-qualified tool names that live on a confirmed server.
-
-    Used by ``_build_options`` to decide whether to attach a confirmed
-    server based on ``extra_allowed_tools``. Phase 8: only the dispatch
-    arg-gate uses this mechanism.
-    """
-    return {f"mcp__hikari_dispatch_confirmed__{t.name}"
-            for t in dispatch_tools.CONFIRMED_TOOLS}
-
-
 # _DEDICATED_AND_EXTERNAL_TOOLS was deleted in Phase A (step 5).
 # The single source of truth is now config/tools.yaml, loaded via
 # tools._tools_yaml.load_registry().allowed_tool_names().
@@ -183,25 +172,6 @@ def _base_allowed_tools() -> list[str]:
     seen = set(yaml_tools)
     deduped_utility = [t for t in discover_utility_tool_names() if t not in seen]
     return yaml_tools + deduped_utility
-
-
-# Back-compat alias: tests and callers may still reference the constant
-# name. Resolves via the cached function on first access.
-class _AllowedToolsProxy:
-    def __iter__(self):
-        return iter(_base_allowed_tools())
-
-    def __contains__(self, item):
-        return item in _base_allowed_tools()
-
-    def __len__(self):
-        return len(_base_allowed_tools())
-
-    def __getitem__(self, i):
-        return _base_allowed_tools()[i]
-
-
-_BASE_ALLOWED_TOOLS = _AllowedToolsProxy()
 
 
 def allowed_tool_names() -> list[str]:

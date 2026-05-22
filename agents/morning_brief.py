@@ -26,6 +26,10 @@ run_proactive = run_visible_proactive  # noqa: F841
 
 logger = logging.getLogger(__name__)
 
+# Presentation hint injected at the top of the model prompt so Hikari knows
+# which render contract to follow when writing the morning brief message.
+_WEATHER_PROMPT_HINT = "# presentation_hint: weather_three_window\n\n"
+
 
 def _is_disabled() -> bool:
     block = (db.get_core_block("morning_brief_status") or "").strip().lower()
@@ -114,8 +118,8 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
         )
 
     return (
-        "# presentation_hint: weather_three_window\n\n"
-        "You are writing a morning weather brief. ONE short message, in your "
+        _WEATHER_PROMPT_HINT
+        + "You are writing a morning weather brief. ONE short message, in your "
         "voice. Hikari is reluctant about being useful — make it dry, never "
         "chirpy. No exclamation marks for enthusiasm. No 'good morning!'. "
         "Stick to short. Don't list bullets.\n\n"
