@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -497,25 +498,89 @@ CREATE INDEX IF NOT EXISTS idx_decisions_resolved
 # sentinel eliminates per-connection PRAGMA table_info + bookkeeping reads from
 # the steady-state path. Reset via ``_reset_schema_sentinel()`` in test fixtures.
 _SCHEMA_INITIALIZED = False
+_SCHEMA_LOCK = threading.Lock()
+
+# Per-thread persistent connection pool. Keyed on _DB_PATH so test fixtures
+# that swap _DB_PATH get a fresh connection on the next _conn() call.
+_LOCAL = threading.local()
+
+
+def _cfg_get(key: str, default: Any) -> Any:
+    """Lazy config lookup. Falls back gracefully when agents package isn't
+    importable (e.g. during standalone storage-only tests)."""
+    try:
+        from agents import config
+        val = config.get(key)
+        return val if val is not None else default
+    except Exception:
+        return default
 
 
 def _reset_schema_sentinel() -> None:
     """Test helper — clears the process-level migration cache so test fixtures
-    that swap ``_DB_PATH`` rerun migrations against the fresh per-test DB."""
+    that swap ``_DB_PATH`` rerun migrations against the fresh per-test DB.
+    Also closes and drops the per-thread cached connection so the next _conn()
+    call opens a fresh connection against the new path."""
     global _SCHEMA_INITIALIZED
     _SCHEMA_INITIALIZED = False
+    cached = getattr(_LOCAL, "conn", None)
+    if cached is not None:
+        try:
+            cached.close()
+        except Exception:
+            pass
+        try:
+            del _LOCAL.conn
+            del _LOCAL.path
+        except AttributeError:
+            pass
+
+
+def _get_pooled_conn() -> sqlite3.Connection:
+    """Return the per-thread cached SQLite connection. Lazy-init on first call
+    per thread. Re-inits if _DB_PATH changed since the last call (covers test
+    fixtures that swap the path between cases)."""
+    cached = getattr(_LOCAL, "conn", None)
+    cached_path = getattr(_LOCAL, "path", None)
+    if cached is not None and cached_path == _DB_PATH:
+        return cached
+    if cached is not None:
+        try:
+            cached.close()
+        except Exception:
+            pass
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(_DB_PATH, check_same_thread=True)
+    c.row_factory = sqlite3.Row
+    c.enable_load_extension(True)
+    sqlite_vec.load(c)
+    c.enable_load_extension(False)
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    busy_ms = int(_cfg_get("sqlite.busy_timeout_ms", 5000))
+    c.execute(f"PRAGMA busy_timeout={busy_ms}")
+    c.execute("PRAGMA synchronous=NORMAL")
+    _ensure_schema(c)
+    _LOCAL.conn = c
+    _LOCAL.path = _DB_PATH
+    return c
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     global _SCHEMA_INITIALIZED
     if _SCHEMA_INITIALIZED:
         return
-    for stmt in _SCHEMA.strip().split(";"):
-        stmt = stmt.strip()
-        if stmt:
-            conn.execute(stmt)
-    _migrate_tasks_decay_columns(conn)
-    _SCHEMA_INITIALIZED = True
+    with _SCHEMA_LOCK:
+        if _SCHEMA_INITIALIZED:
+            return
+        for stmt in _SCHEMA.strip().split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(stmt)
+        _migrate_tasks_decay_columns(conn)
+        _SCHEMA_INITIALIZED = True
 
 
 def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
@@ -537,6 +602,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_reminders_apple_columns(conn)
     _migrate_drift_canary_indexes(conn)
     _migrate_fact_relations_validity(conn)
+    _migrate_tool_calls(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -606,6 +672,32 @@ def _migrate_fact_relations_validity(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_fact_relations_valid_to "
         "ON fact_relations(valid_to) WHERE valid_to IS NULL"
     )
+
+
+def _migrate_tool_calls(conn: sqlite3.Connection) -> None:
+    """Create the tool_calls telemetry table + its indexes. Lives in this
+    migration fn (not _SCHEMA) so the indexes are co-located with the table
+    DDL — the project's schema-migration-ordering rule applies to ALTER-added
+    columns specifically, and following the same pattern here keeps the
+    pattern uniform."""
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'"
+    ).fetchall()}
+    if "tool_calls" in existing:
+        return
+    conn.execute("""
+        CREATE TABLE tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            success INTEGER NOT NULL,
+            error_class TEXT,
+            output_size INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX idx_tool_calls_started_at ON tool_calls(started_at)")
+    conn.execute("CREATE INDEX idx_tool_calls_tool_started ON tool_calls(tool_id, started_at)")
 
 
 def _migrate_facts_recall_decay(conn: sqlite3.Connection) -> None:
@@ -763,25 +855,16 @@ def _migrate_approvals_defer_columns(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _conn():
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(_DB_PATH)
-    c.row_factory = sqlite3.Row
-    c.enable_load_extension(True)
-    sqlite_vec.load(c)
-    c.enable_load_extension(False)
-    # WAL gives us readers-don't-block-writers semantics, which matters for the
-    # daily decay sweep + the dispatch worker writing in parallel.
+    c = _get_pooled_conn()
     try:
-        c.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError:
-        # In-memory DBs reject WAL; fall back silently.
-        pass
-    try:
-        _ensure_schema(c)
         yield c
         c.commit()
-    finally:
-        c.close()
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        raise
 
 
 # ---------- session ----------
@@ -2063,6 +2146,39 @@ def runtime_increment(key: str, by: int = 1) -> int:
         return int(row["value"]) if row else int(by)
     except (ValueError, TypeError):
         return int(by)
+
+
+# ---------- tool_calls telemetry ----------
+
+def tool_calls_insert(
+    *,
+    tool_id: str,
+    duration_ms: int,
+    success: bool,
+    error_class: str | None,
+    output_size: int,
+) -> int:
+    """Insert one telemetry row. Returns the new row id."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO tool_calls (tool_id, started_at, duration_ms, "
+            "success, error_class, output_size) VALUES (?, ?, ?, ?, ?, ?)",
+            (tool_id, _now(), int(duration_ms), 1 if success else 0,
+             error_class, int(output_size)),
+        )
+    return int(cur.lastrowid or 0)
+
+
+# ---------- pruners ----------
+
+def prune_messages_older_than_days(days: int) -> int:
+    """Delete messages older than `days` from now. Returns rows deleted."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM messages WHERE ts < datetime('now', '-' || ? || ' days')",
+            (int(days),),
+        )
+    return int(cur.rowcount or 0)
 
 
 # ---------- background_tasks (long-running dispatched work) ----------

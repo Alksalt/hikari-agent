@@ -147,6 +147,30 @@ def _extract_tool_name(t: Any) -> str | None:
     return None
 
 
+def discover_instrumented_tools() -> list:
+    """Return the merged ALL_TOOLS for hikari_utility, with every handler
+    wrapped by the per-tool telemetry decorator. Each call returns a fresh
+    list copy. The underlying tool objects are mutated once (handler is
+    replaced with its instrumented wrapper) and the mutation is idempotent —
+    re-wrapping the same handler twice is harmless because the wrapper is
+    transparent to callers."""
+    from tools._telemetry import instrumented
+
+    tools = discover_utility_tools()
+    for t in tools:
+        name = _extract_tool_name(t)
+        if name is None:
+            continue
+        original = getattr(t, "handler", None)
+        if original is None:
+            continue
+        # Guard against double-wrapping: the wrapper sets __wrapped__.
+        if getattr(original, "__wrapped__", None) is not None:
+            continue
+        t.handler = instrumented(name)(original)
+    return tools
+
+
 def clear_cache() -> None:
     """Test helper — clears the discovery cache so a fresh import sweep
     runs on next access. Real callers should never need this."""

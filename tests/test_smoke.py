@@ -163,6 +163,8 @@ def test_scheduler_builds(monkeypatch):
         "future_letter",
         # 2026-05-21 Decision-log resolver (weekly Sunday 19:00).
         "decision_resolver",
+        # Phase 3: monthly pruner (messages, audit_log, calendar_kv).
+        "monthly_prune",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

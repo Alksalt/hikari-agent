@@ -948,3 +948,15 @@ decision_log:
   brier_window_days: 90
   # Days to wait before re-asking about the same decision after a check.
   reask_cooldown_days: 14
+
+retention:
+  # Messages older than this many days are deleted by the monthly_prune job.
+  # audit_log is intentionally append-only (SHA-chained forensic ledger).
+  # runtime_state calendar dedup keys are not pruned in this sprint —
+  # needs a proper schema with a timestamp column to honor the 4h TTL.
+  messages_days: 365
+
+# SQLite connection-pool busy timeout. Raised from default 0 to avoid
+# "database is locked" under concurrent writes (scheduler + bridge threads).
+sqlite:
+  busy_timeout_ms: 5000

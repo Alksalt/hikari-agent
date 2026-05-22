@@ -22,7 +22,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Iterator
 
@@ -168,7 +168,7 @@ def add_entry(
     if not text:
         raise ValueError("entry text is empty")
     tag_str = ",".join(t.strip() for t in tags if t.strip())
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     with connect(db) as conn:
         cur = conn.execute(
             "INSERT INTO entries(receipt_date, category, text, tags, created_at) "
@@ -195,7 +195,7 @@ def list_entries(receipt_date: date, *, db: Path | None = None) -> tuple[Entry, 
 
 def set_note(receipt_date: date, note: str, *, db: Path | None = None) -> None:
     note = note.strip()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     with connect(db) as conn:
         if not note:
             conn.execute("DELETE FROM notes WHERE receipt_date = ?", (receipt_date.isoformat(),))

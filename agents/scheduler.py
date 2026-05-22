@@ -259,6 +259,19 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    async def _monthly_prune_job():
+        from storage import db
+        days_msg = int(cfg.get("retention.messages_days", 365))
+        n1 = db.prune_messages_older_than_days(days_msg)
+        logger.info("monthly_prune: messages=%d", n1)
+
+    scheduler.add_job(
+        _monthly_prune_job,
+        CronTrigger(day=1, hour=4, minute=0),
+        id="monthly_prune",
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+
     return scheduler
 
 

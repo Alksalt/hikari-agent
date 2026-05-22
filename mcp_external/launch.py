@@ -179,10 +179,24 @@ BearerAuthMiddleware = AuthMiddleware
 
 
 def main() -> int:
-    logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        level=logging.INFO,
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+    _log_dir = Path(__file__).resolve().parent.parent / "data" / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    _rot = RotatingFileHandler(
+        _log_dir / "mcp_external.log",
+        maxBytes=20_000_000, backupCount=5, encoding="utf-8",
     )
+    _rot.setFormatter(_fmt)
+    _stderr = logging.StreamHandler()
+    _stderr.setFormatter(_fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(_rot)
+    root.addHandler(_stderr)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     install_root_filter()
 
     # Match telegram_bridge: load .env so HIKARI_MCP_SECRET / HIKARI_OAUTH_*

@@ -26,7 +26,7 @@ async def wiki_read(args: dict[str, Any]) -> dict[str, Any]:
     abs_path = _resolve_note(path_arg)
     if not abs_path:
         return _ok(f"wiki_read: note not found: {path_arg!r}.")
-    _icloud_materialize(abs_path)
+    await _icloud_materialize(abs_path)
     try:
         post = frontmatter.load(str(abs_path))
     except Exception as e:  # noqa: BLE001

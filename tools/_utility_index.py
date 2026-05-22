@@ -10,11 +10,11 @@ for the feature-folder convention.
 
 from __future__ import annotations
 
-from tools._registry import discover_utility_tools
+from tools._registry import discover_instrumented_tools
 
 
 def _all_tools() -> list:
-    return discover_utility_tools()
+    return discover_instrumented_tools()
 
 
 # Property-like access via module attribute so callers can keep writing

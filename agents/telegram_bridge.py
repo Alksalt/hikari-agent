@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import os
 import random
 import time
@@ -1607,10 +1608,24 @@ def build_application() -> Application:
 
 def main() -> None:
     load_dotenv()
-    logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        level=logging.INFO,
+    _log_dir = REPO_ROOT / "data" / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _rot = logging.handlers.RotatingFileHandler(
+        _log_dir / "hikari.log",
+        maxBytes=20_000_000,
+        backupCount=5,
+        encoding="utf-8",
     )
+    _rot.setFormatter(_fmt)
+    _stderr = logging.StreamHandler()
+    _stderr.setFormatter(_fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(_rot)
+    root.addHandler(_stderr)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     # Install secret-redacting + canary-leak filter on the root logger so
     # secrets never hit stdout/files.
     install_root_filter()

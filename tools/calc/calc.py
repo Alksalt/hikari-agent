@@ -5,6 +5,7 @@ For pandas-style work or anything requiring imports, use ``python_run``.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -30,7 +31,9 @@ async def calc(args: dict[str, Any]) -> dict[str, Any]:
     if not expr:
         return _ok("refused: empty expression")
     timeout = float(cfg.get("calc.timeout_sec", 5))
-    result, err = _run_asteval(expr, timeout)
+    # _run_asteval blocks inside a ThreadPoolExecutor; run it off the event
+    # loop so concurrent asyncio tasks aren't stalled during evaluation.
+    result, err = await asyncio.to_thread(_run_asteval, expr, timeout)
     if err:
         return _ok(f"err: {err}", data={"result": None, "error": err})
     return _ok(f"{result!r}", data={"result": result})

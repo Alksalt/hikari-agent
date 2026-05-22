@@ -8,6 +8,7 @@ to the same degree.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -23,6 +24,16 @@ from tools._response import ok as _ok
 from tools.calc._shared import _sandbox_exec_profile
 
 logger = logging.getLogger(__name__)
+
+
+def _run_sandboxed(cmd: list[str], timeout: float, cwd: str,
+                   env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Blocking subprocess call. Runs in a thread via asyncio.to_thread."""
+    return subprocess.run(
+        cmd,
+        capture_output=True, timeout=timeout, cwd=cwd,
+        env=env,
+    )
 
 
 @tool(
@@ -57,12 +68,10 @@ async def python_run(args: dict[str, Any]) -> dict[str, Any]:
         sub_env["DYLD_LIBRARY_PATH"] = os.environ["DYLD_LIBRARY_PATH"]
     if os.environ.get("DYLD_FALLBACK_LIBRARY_PATH"):
         sub_env["DYLD_FALLBACK_LIBRARY_PATH"] = os.environ["DYLD_FALLBACK_LIBRARY_PATH"]
+    cmd = ["sandbox-exec", "-p", profile, sys.executable, "-I", "-S", "-c", code]
+    import shutil
     try:
-        proc = subprocess.run(
-            ["sandbox-exec", "-p", profile, sys.executable, "-I", "-S", "-c", code],
-            capture_output=True, timeout=timeout, cwd=tmpdir,
-            env=sub_env,
-        )
+        proc = await asyncio.to_thread(_run_sandboxed, cmd, timeout, tmpdir, sub_env)
         stdout = proc.stdout.decode("utf-8", errors="replace")[:max_bytes]
         stderr = proc.stderr.decode("utf-8", errors="replace")[:max_bytes]
         return _ok(
@@ -75,5 +84,4 @@ async def python_run(args: dict[str, Any]) -> dict[str, Any]:
     except FileNotFoundError:
         return _ok("refused: sandbox-exec not available")
     finally:
-        import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)

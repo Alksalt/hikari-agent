@@ -11,6 +11,7 @@ for now, restart-on-change is acceptable.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -83,10 +84,8 @@ _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=4, offset=2)
 
 
-def _icloud_materialize(path: Path, timeout: int = 30) -> None:
-    """Force iCloud to download a placeholder file. No-op if already materialized."""
-    if not path.exists() and not path.with_name(f".{path.name}.icloud").exists():
-        return
+def _brctl_download(path: Path, timeout: int) -> None:
+    """Blocking brctl call. Meant to be run via asyncio.to_thread."""
     try:
         subprocess.run(
             ["brctl", "download", str(path)],
@@ -94,6 +93,14 @@ def _icloud_materialize(path: Path, timeout: int = 30) -> None:
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         logger.warning("brctl download failed for %s: %s", path, e)
+
+
+async def _icloud_materialize(path: Path, timeout: int = 30) -> None:
+    """Force iCloud to download a placeholder file. No-op if already materialized.
+    Runs brctl off the event loop via asyncio.to_thread."""
+    if not path.exists() and not path.with_name(f".{path.name}.icloud").exists():
+        return
+    await asyncio.to_thread(_brctl_download, path, timeout)
 
 
 @lru_cache(maxsize=1)
@@ -155,7 +162,7 @@ async def _do_wiki_append(args: dict[str, Any]) -> str:
         abs_path.touch()
         logger.info("wiki_append: created new note %s", abs_path)
 
-    _icloud_materialize(abs_path)
+    await _icloud_materialize(abs_path)
     try:
         post = frontmatter.load(str(abs_path))
     except Exception as e:  # noqa: BLE001
