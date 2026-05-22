@@ -538,9 +538,24 @@ def _is_defer_gated(tool_name: str, tool_input: dict[str, Any] | None = None) ->
     per-arg condition in ``defer_when_args_match`` — in which case the call
     only defers when the named arg contains one of the configured needles.
 
+    Phase A (step 4): the gated-tool pattern list is sourced from
+    ``tools._tools_yaml.load_registry().defer_gated_patterns()`` with
+    ``approvals.defer_gated_tools`` from engagement.yaml as fallback.
+    ``defer_when_args_match`` and ``defer_confirmed_tools`` remain in
+    engagement.yaml (they carry more than tool ids).
+
     Returns True iff the call should be deferred.
     """
-    gated = cfg.get("approvals.defer_gated_tools") or []
+    # Source the gated patterns from the registry; fall back to config.
+    cfg_gated = cfg.get("approvals.defer_gated_tools")
+    if cfg_gated is not None:
+        gated = list(cfg_gated)
+    else:
+        try:
+            from tools._tools_yaml import load_registry
+            gated = load_registry().defer_gated_patterns()
+        except Exception:
+            gated = []
     if not gated:
         return False
 

@@ -1,0 +1,659 @@
+version: 1
+
+# ============================================================================
+# MCP Servers
+# ============================================================================
+#
+# bucket 1 = in-process (create_sdk_mcp_server, no subprocess)
+# bucket 3 = external  (command/args/env, subprocess)
+#
+# runtime_factory: "module:callable" — the @cache factory in agents/runtime.py
+# conditional: if true, attached only when extra_allowed_tools intersects
+#              the server's tool list (see _build_options)
+
+mcp_servers:
+  hikari_memory:
+    bucket: 1
+    runtime_factory: "agents.runtime:_memory_server"
+    conditional: false
+
+  hikari_dispatch:
+    bucket: 1
+    runtime_factory: "agents.runtime:_dispatch_server"
+    conditional: false
+
+  hikari_dispatch_confirmed:
+    bucket: 1
+    runtime_factory: "agents.runtime:_dispatch_confirmed_server"
+    conditional: true
+
+  hikari_utility:
+    bucket: 1
+    runtime_factory: "agents.runtime:_utility_server"
+    conditional: false
+
+  hikari_wiki:
+    bucket: 1
+    runtime_factory: "agents.runtime:_wiki_server"
+    conditional: false
+
+  hikari_photo:
+    bucket: 1
+    runtime_factory: "agents.runtime:_photo_server"
+    conditional: false
+
+  hikari_codex:
+    bucket: 1
+    runtime_factory: "agents.runtime:_codex_server"
+    conditional: false
+
+  google_workspace:
+    bucket: 3
+    command: "uvx"
+    args:
+      - "--from"
+      - "google-workspace-mcp"
+      - "python"
+      - "-c"
+      - "import google_workspace_mcp.__main__ as m; m.mcp.run()"
+    env:
+      GOOGLE_WORKSPACE_CLIENT_ID: {from_env: GOOGLE_WORKSPACE_CLIENT_ID}
+      GOOGLE_WORKSPACE_CLIENT_SECRET: {from_env: GOOGLE_WORKSPACE_CLIENT_SECRET}
+      GOOGLE_WORKSPACE_REFRESH_TOKEN: {from_env: GOOGLE_WORKSPACE_REFRESH_TOKEN}
+
+  notion:
+    bucket: 3
+    command: "npx"
+    args:
+      - "-y"
+      - "@notionhq/notion-mcp-server"
+    env:
+      NOTION_TOKEN: {from_env: NOTION_TOKEN}
+
+  github:
+    bucket: 3
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: {from_env: GITHUB_PERSONAL_ACCESS_TOKEN}
+
+  playwright:
+    bucket: 3
+    command: "npx"
+    args:
+      - "-y"
+      - "@playwright/mcp@latest"
+    env: {}
+
+  apple_events:
+    bucket: 3
+    command: "npx"
+    args:
+      - "-y"
+      - "mcp-server-apple-events"
+    env: {}
+
+  apple_shortcuts:
+    bucket: 3
+    command: "npx"
+    args:
+      - "-y"
+      - "mcp-server-apple-shortcuts"
+    env: {}
+
+  youtube_transcript:
+    bucket: 3
+    command: "uvx"
+    args:
+      - "--from"
+      - "git+https://github.com/jkawamoto/mcp-youtube-transcript@v0.6.4"
+      - "mcp-youtube-transcript"
+    env: {}
+
+  duckdb:
+    bucket: 3
+    command: "uvx"
+    args:
+      - "--from"
+      - "mcp-server-motherduck"
+      - "mcp-server-motherduck"
+      - "--db-path"
+      - ":memory:"
+      - "--ephemeral-connections"
+      - "--max-rows"
+      - "256"
+      - "--query-timeout"
+      - "15"
+    env: {}
+
+# ============================================================================
+# Tools
+# ============================================================================
+#
+# Explicit ids win over wildcard patterns (longest-prefix match for wildcards).
+#
+# gate: null | defer | gatekeeper
+# untrusted_output: true if this tool's output must be wrapped before model sees it
+# wrap_patterns: list of regex patterns (the PostToolUse wrap hook uses these)
+#
+# Wildcard entries use glob-style id ending in "*".
+# They are lower precedence than explicit ids.
+
+tools:
+  # --------------------------------------------------------------------------
+  # Native SDK tools
+  # --------------------------------------------------------------------------
+  - id: "Agent"
+    bucket: 1
+    server: null
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "WebFetch"
+    bucket: 1
+    server: null
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^WebFetch$"]
+
+  - id: "WebSearch"
+    bucket: 1
+    server: null
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^WebSearch$"]
+
+  # --------------------------------------------------------------------------
+  # hikari_memory (bucket 1)
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_memory__recall"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_memory__recall$"]
+
+  - id: "mcp__hikari_memory__remember"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_memory__mark_fact_invalid"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_memory__update_core_block"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_memory__task_create"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_memory__task_update"
+    bucket: 1
+    server: hikari_memory
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  # --------------------------------------------------------------------------
+  # hikari_photo (bucket 1)
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_photo__generate_photo"
+    bucket: 1
+    server: hikari_photo
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  # --------------------------------------------------------------------------
+  # hikari_wiki (bucket 1)
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_wiki__wiki_search"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_wiki__wiki_search$"]
+
+  - id: "mcp__hikari_wiki__wiki_read"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_wiki__wiki_read$"]
+
+  - id: "mcp__hikari_wiki__wiki_append"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_wiki__wiki_backlinks"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_wiki__wiki_list"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_wiki__wiki_list$"]
+
+  - id: "mcp__hikari_wiki__wiki_tree"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_wiki__wiki_tree$"]
+
+  # --------------------------------------------------------------------------
+  # hikari_dispatch (bucket 1)
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_dispatch__dispatch_claude_session"
+    bucket: 1
+    server: hikari_dispatch
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  # --------------------------------------------------------------------------
+  # hikari_codex (bucket 1)
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_codex__list_codex_reports"
+    bucket: 1
+    server: hikari_codex
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_codex__read_codex_report"
+    bucket: 1
+    server: hikari_codex
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_codex__read_codex_report$"]
+
+  # --------------------------------------------------------------------------
+  # hikari_utility (bucket 1) — explicit names for untrusted/wrap; rest auto
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_utility__translate"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__translate$"]
+
+  - id: "mcp__hikari_utility__weather_fetch"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__weather_fetch$"]
+
+  - id: "mcp__hikari_utility__arxiv_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__arxiv_search$"]
+
+  - id: "mcp__hikari_utility__places_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__places_search$"]
+
+  - id: "mcp__hikari_utility__place_open_now"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__place_open_now$"]
+
+  - id: "mcp__hikari_utility__ytmusic_recent"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__ytmusic_recent$"]
+
+  - id: "mcp__hikari_utility__ytmusic_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__ytmusic_search$"]
+
+  - id: "mcp__hikari_utility__ytmusic_library"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__ytmusic_library$"]
+
+  - id: "mcp__hikari_utility__currency_convert"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__currency_convert$"]
+
+  - id: "mcp__hikari_utility__note_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__note_search$"]
+
+  - id: "mcp__hikari_utility__note_read"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__note_read$"]
+
+  - id: "mcp__hikari_utility__note_create"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__note_create$"]
+
+  # Prefix entries matching the engagement.yaml untrusted substring patterns
+  # These are wildcards covering mcp__hikari_utility__places_* and ytmusic_*
+  - id: "mcp__hikari_utility__places_*"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__ytmusic_*"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__read_attachment"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__read_attachment$"]
+
+  - id: "mcp__hikari_utility__python_run"
+    bucket: 1
+    server: hikari_utility
+    gate: defer
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__python_run$"]
+
+  # --------------------------------------------------------------------------
+  # External MCP servers (bucket 3) — explicit gated tools first
+  # --------------------------------------------------------------------------
+
+  # Google Workspace — gated (destructive/send)
+  - id: "mcp__google_workspace__gmail_send_email"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__gmail_reply_to_email"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__gmail_bulk_delete_messages"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__delete_calendar_event"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__drive_delete_file"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__create_calendar_event"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__drive_delete_folder"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__google_workspace__drive_upload_file"
+    bucket: 3
+    server: google_workspace
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  # Google Workspace — wildcard catch-all (untrusted read outputs)
+  - id: "mcp__google_workspace__*"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__google_workspace__"]
+
+  # Notion — gated (writes)
+  - id: "mcp__notion__API-patch-block-children"
+    bucket: 3
+    server: notion
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__notion__API-update-a-block"
+    bucket: 3
+    server: notion
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__notion__API-delete-a-block"
+    bucket: 3
+    server: notion
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__notion__API-patch-page"
+    bucket: 3
+    server: notion
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__notion__API-post-page"
+    bucket: 3
+    server: notion
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  # Notion — wildcard catch-all
+  - id: "mcp__notion__*"
+    bucket: 3
+    server: notion
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__notion__"]
+
+  # GitHub — gated (destructive/state-changing)
+  - id: "mcp__github__create_issue"
+    bucket: 3
+    server: github
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__github__create_pull_request"
+    bucket: 3
+    server: github
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__github__merge_pull_request"
+    bucket: 3
+    server: github
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__github__delete_file"
+    bucket: 3
+    server: github
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__github__delete_repository"
+    bucket: 3
+    server: github
+    gate: defer
+    untrusted_output: false
+    wrap_patterns: []
+
+  # GitHub — wildcard catch-all
+  - id: "mcp__github__*"
+    bucket: 3
+    server: github
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__github__"]
+
+  # Apple Events — wildcard (no gate; low-risk local device)
+  - id: "mcp__apple_events__*"
+    bucket: 3
+    server: apple_events
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__apple_events__"]
+
+  # Apple Shortcuts — wildcard
+  - id: "mcp__apple_shortcuts__*"
+    bucket: 3
+    server: apple_shortcuts
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__apple_shortcuts__"]
+
+  # Playwright — wildcard
+  - id: "mcp__playwright__*"
+    bucket: 3
+    server: playwright
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__playwright__"]
+
+  # YouTube Transcript — wildcard
+  - id: "mcp__youtube_transcript__*"
+    bucket: 3
+    server: youtube_transcript
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__youtube_transcript__"]
+
+  # DuckDB — wildcard
+  - id: "mcp__duckdb__*"
+    bucket: 3
+    server: duckdb
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__duckdb__"]
+
+# ============================================================================
+# Subagents
+# ============================================================================
+#
+# recall and code_dispatch are DELETED — their functionality is served by
+# direct tool calls (mcp__hikari_memory__recall, mcp__hikari_dispatch__*).
+# The 5 remaining subagents are listed here as the authoritative registry.
+
+subagents:
+  wiki:
+    model: haiku
+    tools:
+      - "mcp__hikari_wiki__wiki_search"
+      - "mcp__hikari_wiki__wiki_read"
+      - "mcp__hikari_wiki__wiki_append"
+      - "mcp__hikari_wiki__wiki_backlinks"
+      - "mcp__hikari_wiki__wiki_list"
+      - "mcp__hikari_wiki__wiki_tree"
+    description_path: "agents/subagents/prompts/wiki.description.md"
+    prompt_path: "agents/subagents/prompts/wiki.prompt.md"
+
+  drive_gmail:
+    model: haiku
+    tools:
+      - "mcp__google_workspace__*"
+    description_path: "agents/subagents/prompts/drive_gmail.description.md"
+    prompt_path: "agents/subagents/prompts/drive_gmail.prompt.md"
+
+  notion:
+    model: haiku
+    tools:
+      - "mcp__notion__*"
+    description_path: "agents/subagents/prompts/notion.description.md"
+    prompt_path: "agents/subagents/prompts/notion.prompt.md"
+
+  research:
+    model: sonnet
+    tools:
+      - "WebFetch"
+      - "WebSearch"
+      - "mcp__playwright__*"
+    description_path: "agents/subagents/prompts/research.description.md"
+    prompt_path: "agents/subagents/prompts/research.prompt.md"
+
+  github:
+    model: haiku
+    tools:
+      - "mcp__github__*"
+    description_path: "agents/subagents/prompts/github.description.md"
+    prompt_path: "agents/subagents/prompts/github.prompt.md"

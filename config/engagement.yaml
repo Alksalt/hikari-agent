@@ -65,54 +65,8 @@ approvals:
   # Bare "n"/"no" intentionally excluded — too common as conversational
   # replies ("no I disagree"). Explicit "cancel"/"stop" only.
   reject_phrases: ["cancel", "stop", "abort"]
-  # Patterns (matched via re.fullmatch against the qualified tool name) that
-  # trigger permissionDecision="defer" via the PreToolUse hook. The SDK halts;
-  # user types CONFIRM-SEND; resume runs a fresh _run_query that calls the
-  # post-approval sibling tool (see defer_confirmed_tools).
-  #
-  # Phase 8 matrix (per user choice "delete as much approval as possible"):
-  #   - dispatch_claude_session — only when its allowed_tools arg includes
-  #     Edit/Write/Bash (see defer_when_args_match below)
-  #
-  # Stream A: Gmail sends, destructive deletes (bulk delete, calendar event
-  # delete, Drive file delete) are owner-gated. Drafts, calendar adds, and
-  # Drive uploads auto-run. The gate fires via the standard PreToolUse
-  # defer mechanism — call the tool normally; the hook handles CONFIRM-SEND.
-  defer_gated_tools:
-    - "^mcp__hikari_dispatch__dispatch_claude_session$"
-    - "^mcp__google_workspace__gmail_send_email$"
-    - "^mcp__google_workspace__gmail_reply_to_email$"
-    - "^mcp__google_workspace__gmail_bulk_delete_messages$"
-    - "^mcp__google_workspace__delete_calendar_event$"
-    - "^mcp__google_workspace__drive_delete_file$"
-    # Stream B: python_run executes arbitrary subprocess code — defense in depth
-    - "^mcp__hikari_utility__python_run$"
-    # Stream J: Notion writes — reversible via Notion's own undo but still
-    # owner-visible; gate destructive/mutating paths.
-    - "^mcp__notion__API-patch-block-children$"
-    - "^mcp__notion__API-update-a-block$"
-    - "^mcp__notion__API-delete-a-block$"
-    - "^mcp__notion__API-patch-page$"
-    - "^mcp__notion__API-post-page$"
-    # GitHub destructive / state-changing
-    - "^mcp__github__create_issue$"
-    - "^mcp__github__create_pull_request$"
-    - "^mcp__github__merge_pull_request$"
-    - "^mcp__github__delete_file$"
-    - "^mcp__github__delete_repository$"
-    # Apple Events writes are intentionally NOT gated. Apple Reminders /
-    # Calendar writes are local-device only (your own iPhone/Mac via iCloud),
-    # not internet-attached, so the spam-attack value from prompt injection is
-    # low — you'd see a phantom reminder pop up immediately and dismiss it.
-    # The bot also uses these tools to mirror its own legitimate reminders;
-    # gating would require either a caller-tag arg (mcp-server-apple-events
-    # doesn't expose one) or a contextvar-based exemption keyed to internal
-    # control flow. Skipping the gate here keeps the mirror path working AND
-    # avoids name-drift bugs between the prompt and the gate regex.
-    # Google Calendar create (only Google write not already gated)
-    - "^mcp__google_workspace__create_calendar_event$"
-    - "^mcp__google_workspace__drive_delete_folder$"
-    - "^mcp__google_workspace__drive_upload_file$"
+  # defer_gated_tools DELETED (Phase A, step 9) — now sourced from
+  # config/tools.yaml via tools._tools_yaml.load_registry().defer_gated_patterns().
   # Arg-conditional defer. Map qualified tool name → condition spec.
   # Spec keys: key (str, arg name), contains_any (list of substring needles),
   # case_insensitive (bool, default true). If the named arg's string form
@@ -708,75 +662,10 @@ location:
 
 prompt_injection:
   enabled: true
-  # Tools whose outputs are treated as untrusted attacker surface (used by
-  # flag_args_with_untrusted_content + is_untrusted_source). Substring match.
-  untrusted_tools:
-    - "mcp__hikari_memory__recall"
-    - "mcp__hikari_wiki__wiki_read"
-    - "mcp__google_workspace__"
-    - "mcp__notion__"
-    - "WebFetch"
-    - "WebSearch"
-    # Phase 10 utility tools that hit external endpoints
-    - "mcp__hikari_utility__translate"
-    - "mcp__hikari_utility__weather_fetch"
-    - "mcp__hikari_utility__arxiv_search"
-    - "mcp__hikari_utility__places_"
-    - "mcp__hikari_utility__ytmusic_"
-    - "mcp__hikari_utility__currency_convert"
-    - "mcp__github__"
-    - "mcp__playwright__"
-    - "mcp__apple_events__"
-    - "mcp__apple_shortcuts__"
-    - "mcp__youtube_transcript__"
-    - "mcp__hikari_utility__note_search"
-    - "mcp__hikari_utility__note_read"
-    # Stream B: additional attacker-touchable surfaces
-    - "mcp__hikari_utility__python_run"
-    - "mcp__hikari_wiki__wiki_search"
-    - "mcp__hikari_wiki__wiki_list"
-    - "mcp__hikari_wiki__wiki_tree"
-    - "mcp__hikari_utility__note_create"
-    - "mcp__hikari_utility__read_attachment"
-  # Phase 8: regex patterns for the generic PostToolUse wrap hook
-  # (agents/external_wrap_hook.py). When any of these match the qualified
-  # tool name, the tool's text output is automatically wrapped via
-  # wrap_untrusted before the model sees it. One hook, all external surfaces
-  # — replaces the prior per-tool wrap pattern (which only covered wiki_read
-  # and was a Codex P1 enforcement gap).
-  wrap_patterns:
-    - "^mcp__hikari_codex__read_codex_report$"
-    - "^mcp__hikari_memory__recall$"
-    - "^mcp__hikari_wiki__wiki_read$"
-    - "^mcp__google_workspace__"
-    - "^mcp__notion__"
-    - "^WebFetch$"
-    - "^WebSearch$"
-    # Phase 10 utility tools that hit external endpoints
-    - "^mcp__hikari_utility__translate$"
-    - "^mcp__hikari_utility__weather_fetch$"
-    - "^mcp__hikari_utility__arxiv_search$"
-    - "^mcp__hikari_utility__places_search$"
-    - "^mcp__hikari_utility__place_open_now$"
-    - "^mcp__hikari_utility__ytmusic_recent$"
-    - "^mcp__hikari_utility__ytmusic_search$"
-    - "^mcp__hikari_utility__ytmusic_library$"
-    - "^mcp__hikari_utility__currency_convert$"
-    - "^mcp__github__"
-    - "^mcp__playwright__"
-    - "^mcp__apple_events__"
-    - "^mcp__apple_shortcuts__"
-    - "^mcp__youtube_transcript__"
-    - "^mcp__hikari_utility__note_search$"
-    - "^mcp__hikari_utility__note_read$"
-    # Stream B: additional attacker-touchable surfaces
-    - "^mcp__hikari_utility__python_run$"
-    - "^mcp__hikari_wiki__wiki_search$"
-    - "^mcp__hikari_wiki__wiki_list$"
-    - "^mcp__hikari_wiki__wiki_tree$"
-    - "^mcp__hikari_utility__note_create$"
-    - "^mcp__hikari_utility__read_attachment$"
-    - "^mcp__duckdb__"
+  # untrusted_tools DELETED (Phase A, step 9) — now sourced from
+  # config/tools.yaml via tools._tools_yaml.load_registry().untrusted_tools().
+  # wrap_patterns DELETED (Phase A, step 9) — now sourced from
+  # config/tools.yaml via tools._tools_yaml.load_registry().wrap_patterns().
   canary_token_env: HIKARI_CANARY_TOKEN
   flag_untrusted_urls: true
   # Any outbound action whose args contain content originating from an untrusted

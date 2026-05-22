@@ -67,8 +67,25 @@ def get_canary() -> str:
 
 
 def is_untrusted_source(tool_name: str) -> bool:
-    """True if the named tool's output should be treated as attacker-touchable."""
-    patterns = cfg.get("prompt_injection.untrusted_tools") or []
+    """True if the named tool's output should be treated as attacker-touchable.
+
+    Source priority:
+      1. ``prompt_injection.untrusted_tools`` from engagement.yaml when
+         explicitly present (allows per-test / per-env override).
+      2. ``tools._tools_yaml.load_registry().untrusted_tools()`` — the
+         single-source registry (step 2 of Phase A migration).
+    """
+    # Config-level override (populated in engagement.yaml; tests may set a
+    # minimal override via monkeypatch). Use it when present.
+    cfg_patterns = cfg.get("prompt_injection.untrusted_tools")
+    if cfg_patterns is not None:
+        return any(p in tool_name for p in cfg_patterns)
+    # Fall through to registry when config key is absent.
+    try:
+        from tools._tools_yaml import load_registry
+        patterns = load_registry().untrusted_tools()
+    except Exception:
+        return False
     return any(p in tool_name for p in patterns)
 
 

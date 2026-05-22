@@ -1,48 +1,77 @@
 """Specialist subagents Hikari delegates to via the `Agent` tool.
 
-Each subagent is a Haiku worker (Sonnet for research) with a tight tool list
-and a focused prompt. Their output is never surfaced to the user verbatim —
-Hikari rewrites in voice.
+Phase A (step 7): subagent definitions are now generated from
+``config/tools.yaml`` via ``tools._tools_yaml.load_registry().subagents()``.
+The ``recall`` and ``code_dispatch`` subagents have been removed — their
+functionality is served by direct tool calls (mcp__hikari_memory__recall,
+mcp__hikari_dispatch__dispatch_claude_session).
 
-Naming convention: lowercase keys in the ``agents={}`` dict passed to
-``ClaudeAgentOptions``. The ``Agent`` tool sees this key as the subagent
-identifier.
-
-One file per subagent; this module re-exports the constants and the
-``ALL_AGENTS`` dict so existing imports (``from .subagents import ALL_AGENTS``
-in ``agents/runtime.py``, ``from agents import subagents`` in tests) keep
-working unchanged.
+``ALL_AGENTS`` is kept as a property-backed dict for backwards-compat with
+callers that do ``from agents.subagents import ALL_AGENTS``. It delegates to
+the registry on every access so that test monkeypatching of the registry path
+still works.
 """
 
 from __future__ import annotations
 
 from claude_agent_sdk import AgentDefinition
 
-from agents.subagents.code_dispatch import CODE_DISPATCH_AGENT
-from agents.subagents.drive_gmail import DRIVE_GMAIL_AGENT
-from agents.subagents.github import GITHUB_AGENT
-from agents.subagents.notion import NOTION_AGENT
-from agents.subagents.recall import RECALL_AGENT
-from agents.subagents.research import RESEARCH_AGENT
-from agents.subagents.wiki import WIKI_AGENT
 
-ALL_AGENTS: dict[str, AgentDefinition] = {
-    "recall": RECALL_AGENT,
-    "wiki": WIKI_AGENT,
-    "code_dispatch": CODE_DISPATCH_AGENT,
-    "drive_gmail": DRIVE_GMAIL_AGENT,
-    "notion": NOTION_AGENT,
-    "research": RESEARCH_AGENT,
-    "github": GITHUB_AGENT,
-}
+def _get_all_agents() -> dict[str, AgentDefinition]:
+    from tools._tools_yaml import load_registry
+    return load_registry().subagents()
 
-__all__ = [
-    "ALL_AGENTS",
-    "CODE_DISPATCH_AGENT",
-    "DRIVE_GMAIL_AGENT",
-    "GITHUB_AGENT",
-    "NOTION_AGENT",
-    "RECALL_AGENT",
-    "RESEARCH_AGENT",
-    "WIKI_AGENT",
-]
+
+class _AllAgentsProxy(dict):
+    """Lazy-loading dict that delegates to the registry on first access.
+
+    Acts as a regular dict once populated. Tests that monkeypatch the registry
+    path will see the updated values because each test import cycle re-calls
+    _get_all_agents().
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._loaded = False
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            self.update(_get_all_agents())
+            self._loaded = True
+
+    def __getitem__(self, key):
+        self._ensure_loaded()
+        return super().__getitem__(key)
+
+    def __iter__(self):
+        self._ensure_loaded()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure_loaded()
+        return super().__len__()
+
+    def __contains__(self, key):
+        self._ensure_loaded()
+        return super().__contains__(key)
+
+    def items(self):
+        self._ensure_loaded()
+        return super().items()
+
+    def keys(self):
+        self._ensure_loaded()
+        return super().keys()
+
+    def values(self):
+        self._ensure_loaded()
+        return super().values()
+
+    def get(self, key, default=None):
+        self._ensure_loaded()
+        return super().get(key, default)
+
+
+ALL_AGENTS: dict[str, AgentDefinition] = _AllAgentsProxy()
+
+__all__ = ["ALL_AGENTS"]

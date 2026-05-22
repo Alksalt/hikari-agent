@@ -50,12 +50,9 @@ def test_duckdb_in_wrap_patterns():
     PostToolUse wrap hook should wrap duckdb outputs with the
     HIKARI_UNTRUSTED delimiters before the model reads them.
 
-    NOTE: this test fails until the main session adds
-    `"^mcp__duckdb__"` to config/engagement.yaml:prompt_injection.wrap_patterns.
-    Tracked under INTEGRATION_NEEDED.
+    Phase A (step 9): wrap_patterns moved from engagement.yaml to tools.yaml.
     """
-    import yaml
-    cfg = yaml.safe_load((REPO / "config/engagement.yaml").read_text())
-    patterns = cfg["prompt_injection"]["wrap_patterns"]
+    from tools._tools_yaml import load_registry
+    patterns = load_registry().wrap_patterns()
     assert any("duckdb" in p for p in patterns), \
-        "no wrap_pattern covers duckdb tools — see INTEGRATION_NEEDED"
+        "no wrap_pattern covers duckdb tools in config/tools.yaml"

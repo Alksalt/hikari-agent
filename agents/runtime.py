@@ -46,7 +46,6 @@ from tools import wiki as wiki_tools
 
 from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
-from .subagents import ALL_AGENTS
 
 REPO_ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -169,51 +168,17 @@ def _confirmed_tool_names() -> set[str]:
             for t in dispatch_tools.CONFIRMED_TOOLS}
 
 
-# Tools allowlisted on every turn. The ``hikari_utility`` entries are
-# auto-derived from ``tools/_registry.discover_utility_tool_names()`` —
-# adding a feature folder under ``tools/<name>/`` with ``ALL_TOOLS`` is
-# enough; no edit here required. The dedicated-server entries
-# (memory/photo/wiki/dispatch/codex) and external MCP wildcards still
-# live here because they don't go through the utility registry.
-_DEDICATED_AND_EXTERNAL_TOOLS = [
-    "Agent",
-    # Claude SDK native tools used by the `research` subagent
-    # (agents/subagents/research.py). Without these in the parent
-    # allowlist the subagent can't invoke web tools at all — failure mode
-    # is silent at spawn time.
-    "WebFetch",
-    "WebSearch",
-    "mcp__hikari_memory__recall",
-    "mcp__hikari_memory__remember",
-    "mcp__hikari_memory__mark_fact_invalid",
-    "mcp__hikari_memory__update_core_block",
-    "mcp__hikari_memory__task_create",
-    "mcp__hikari_memory__task_update",
-    "mcp__hikari_photo__generate_photo",
-    "mcp__hikari_wiki__wiki_search",
-    "mcp__hikari_wiki__wiki_read",
-    "mcp__hikari_wiki__wiki_append",
-    "mcp__hikari_wiki__wiki_backlinks",
-    "mcp__hikari_wiki__wiki_list",
-    "mcp__hikari_wiki__wiki_tree",
-    "mcp__hikari_dispatch__dispatch_claude_session",
-    "mcp__hikari_codex__list_codex_reports",
-    "mcp__hikari_codex__read_codex_report",
-    "mcp__apple_events__*",
-    "mcp__apple_shortcuts__*",
-    "mcp__github__*",
-    "mcp__google_workspace__*",
-    "mcp__notion__*",
-    "mcp__playwright__*",
-    "mcp__youtube_transcript__*",
-    "mcp__duckdb__*",
-]
+# _DEDICATED_AND_EXTERNAL_TOOLS was deleted in Phase A (step 5).
+# The single source of truth is now config/tools.yaml, loaded via
+# tools._tools_yaml.load_registry().allowed_tool_names().
+# Utility tool names remain auto-discovered from tools._registry.
 
 
 @cache
 def _base_allowed_tools() -> list[str]:
     from tools._registry import discover_utility_tool_names
-    return list(_DEDICATED_AND_EXTERNAL_TOOLS) + discover_utility_tool_names()
+    from tools._tools_yaml import load_registry
+    return load_registry().allowed_tool_names() + discover_utility_tool_names()
 
 
 # Back-compat alias: tests and callers may still reference the constant
@@ -250,21 +215,37 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     allowed = list(_base_allowed_tools())
     if extra_allowed_tools:
         allowed.extend(extra_allowed_tools)
-    mcp_servers = {
-        "hikari_memory": _memory_server(),
-        "hikari_photo": _photo_server(),
-        "hikari_wiki": _wiki_server(),
-        "hikari_dispatch": _dispatch_server(),
-        "hikari_codex": _codex_server(),
-        "hikari_utility": _utility_server(),
-    }
-    # Phase 8: attach the privileged dispatch-confirmed server only when the
-    # resume path explicitly opts in via extra_allowed_tools. On a normal turn
-    # the schema for dispatch_claude_session_confirmed is not in the MCP
-    # manifest at all.
-    needed = _confirmed_tool_names()
-    if extra_allowed_tools and any(t in needed for t in extra_allowed_tools):
-        mcp_servers["hikari_dispatch_confirmed"] = _dispatch_confirmed_server()
+
+    # Phase A (step 6): build mcp_servers from the registry.
+    # Bucket-1 servers are attached by calling their runtime_factory function.
+    # Conditional servers are attached only when extra_allowed_tools intersects
+    # the set of tool names that live on that server.
+    from tools._tools_yaml import load_registry
+    import importlib
+
+    registry = load_registry()
+    mcp_servers: dict = {}
+    extra_set: set[str] = set(extra_allowed_tools or [])
+
+    for server_name, spec in registry.mcp_servers().items():
+        if spec.bucket != 1:
+            continue  # bucket-3 external servers are wired via .mcp.json
+        if not spec.runtime_factory:
+            continue
+        if spec.conditional:
+            # Attach only when extra_allowed_tools contains a tool on this server.
+            # The server's tools are those whose spec.server == server_name.
+            server_tools: set[str] = set()
+            for tspec in registry.specs():
+                if tspec.server == server_name:
+                    server_tools.add(tspec.id)
+            if not (extra_set & server_tools):
+                continue
+        # Resolve the factory: "module:callable"
+        module_path, fn_name = spec.runtime_factory.rsplit(":", 1)
+        mod = importlib.import_module(module_path)
+        factory = getattr(mod, fn_name)
+        mcp_servers[server_name] = factory()
     hooks_dict: dict = {
         "PostToolUseFailure": [HookMatcher(hooks=[log_tool_failure])],
         # Phase 6: intercept gated tools (e.g. dispatch with write) with
@@ -289,7 +270,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         setting_sources=["project"],
         skills="all",
         system_prompt=_persona(),
-        agents=ALL_AGENTS,
+        agents=registry.subagents(),
         mcp_servers=mcp_servers,
         allowed_tools=allowed,
         hooks=hooks_dict,

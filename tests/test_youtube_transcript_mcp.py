@@ -36,16 +36,23 @@ def test_youtube_transcript_in_mcp_json():
 
 
 def test_youtube_transcript_in_allowlist():
-    """runtime.py allowlist contains mcp__youtube_transcript__*."""
-    src = (REPO_ROOT / "agents" / "runtime.py").read_text()
-    assert "mcp__youtube_transcript__*" in src
+    """tools.yaml allowlist contains mcp__youtube_transcript__*."""
+    import yaml as _yaml
+    cfg = _yaml.safe_load((REPO_ROOT / "config" / "tools.yaml").read_text())
+    tool_ids = [t["id"] for t in cfg.get("tools", [])]
+    assert "mcp__youtube_transcript__*" in tool_ids, (
+        f"mcp__youtube_transcript__* not found in tools.yaml ids: {tool_ids}"
+    )
 
 
 def test_youtube_transcript_in_wrap_patterns():
-    """engagement.yaml prompt_injection.wrap_patterns contains a regex
-    matching mcp__youtube_transcript__* — transcript content is external."""
-    cfg = yaml.safe_load((REPO_ROOT / "config" / "engagement.yaml").read_text())
-    patterns = cfg["prompt_injection"]["wrap_patterns"]
+    """tools.yaml registry wrap_patterns contains a regex matching
+    mcp__youtube_transcript__* — transcript content is external.
+
+    Phase A: wrap_patterns sourced from tools.yaml registry.
+    """
+    from tools._tools_yaml import load_registry
+    patterns = load_registry().wrap_patterns()
     matched = any(
         re.match(pat, "mcp__youtube_transcript__get_transcript")
         for pat in patterns

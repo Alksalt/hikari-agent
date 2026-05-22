@@ -20,17 +20,24 @@ def test_apple_shortcuts_in_mcp_json():
 
 
 def test_apple_shortcuts_in_allowlist():
-    """runtime.py allowlist contains mcp__apple_shortcuts__*."""
-    src = (REPO_ROOT / "agents" / "runtime.py").read_text()
-    assert "mcp__apple_shortcuts__*" in src
+    """tools.yaml allowlist contains mcp__apple_shortcuts__*."""
+    import yaml as _yaml
+    cfg = _yaml.safe_load((REPO_ROOT / "config" / "tools.yaml").read_text())
+    tool_ids = [t["id"] for t in cfg.get("tools", [])]
+    assert "mcp__apple_shortcuts__*" in tool_ids, (
+        f"mcp__apple_shortcuts__* not found in tools.yaml ids: {tool_ids}"
+    )
 
 
 def test_apple_shortcuts_in_wrap_patterns():
     """Shortcuts output can include external content (RSS, HTTP fetches),
     so the MCP must be in prompt_injection.wrap_patterns. Mirrors the
-    treatment of apple_events for consistency with project precedent."""
-    cfg = yaml.safe_load((REPO_ROOT / "config" / "engagement.yaml").read_text())
-    patterns = cfg["prompt_injection"]["wrap_patterns"]
+    treatment of apple_events for consistency with project precedent.
+
+    Phase A: wrap_patterns sourced from tools.yaml registry.
+    """
+    from tools._tools_yaml import load_registry
+    patterns = load_registry().wrap_patterns()
     matched = any(
         re.match(pat, "mcp__apple_shortcuts__run_shortcut")
         for pat in patterns

@@ -1,0 +1,1 @@
+Internet research specialist. Use whenever the lead needs fresh information from the web — what's happening with X, current state of Y, who's saying Z. Returns cited summaries, not raw search dumps. For *serious* deep research the user prefers Opus in the Claude app; this specialist handles casual lookups.

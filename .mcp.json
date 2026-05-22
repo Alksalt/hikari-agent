@@ -1,10 +1,57 @@
 {
   "_comment": "External MCP servers. Hikari delegates to specialist subagents (drive_gmail, notion, research) that own these servers. The bridge logs warnings at startup if required env vars are missing.",
+  "_generated_by": "tools/_tools_yaml.py via scripts/regen_mcp_json.py",
   "mcpServers": {
+    "apple_events": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-apple-events"
+      ]
+    },
+    "apple_shortcuts": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-apple-shortcuts"
+      ]
+    },
+    "duckdb": {
+      "_comment": "Read-only DuckDB analytics over Hikari's SQLite stores. Boots an in-memory DuckDB (DuckDB limitation: in-memory is always writable, but no real DB is exposed); the agent ATTACHes the user's SQLite files at query time via DuckDB's sqlite_scanner extension: INSTALL sqlite; LOAD sqlite; ATTACH 'data/hikari.db' AS hikari (TYPE sqlite, READ_ONLY); — see docs/duckdb_mcp.md for example queries. Receipts SQLite lives at $DAY_RECEIPT_DB or ~/.day-receipt/receipt.db. Ephemeral connections keep the SQLite files unlocked for concurrent reads with the bot writer.",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mcp-server-motherduck",
+        "mcp-server-motherduck",
+        "--db-path",
+        ":memory:",
+        "--ephemeral-connections",
+        "--max-rows",
+        "256",
+        "--query-timeout",
+        "15"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    },
     "google_workspace": {
       "_comment": "Upstream uses OAuth user creds (NOT service account) — see scripts/setup_google_oauth.py for the one-time consent flow. Entrypoint workaround: package's own __main__ wraps a sync FastMCP.run() in asyncio.run(), so we bypass it by importing the module (which registers tools) then calling mcp.run() directly.",
       "command": "uvx",
-      "args": ["--from", "google-workspace-mcp", "python", "-c", "import google_workspace_mcp.__main__ as m; m.mcp.run()"],
+      "args": [
+        "--from",
+        "google-workspace-mcp",
+        "python",
+        "-c",
+        "import google_workspace_mcp.__main__ as m; m.mcp.run()"
+      ],
       "env": {
         "GOOGLE_WORKSPACE_CLIENT_ID": "${GOOGLE_WORKSPACE_CLIENT_ID}",
         "GOOGLE_WORKSPACE_CLIENT_SECRET": "${GOOGLE_WORKSPACE_CLIENT_SECRET}",
@@ -13,27 +60,20 @@
     },
     "notion": {
       "command": "npx",
-      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server"
+      ],
       "env": {
         "NOTION_TOKEN": "${NOTION_TOKEN}"
       }
     },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"}
-    },
     "playwright": {
       "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
-    },
-    "apple_events": {
-      "command": "npx",
-      "args": ["-y", "mcp-server-apple-events"]
-    },
-    "apple_shortcuts": {
-      "command": "npx",
-      "args": ["-y", "mcp-server-apple-shortcuts"]
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
     },
     "youtube_transcript": {
       "_comment": "jkawamoto/mcp-youtube-transcript — Python, distributed via uvx. The bare npm name 'mcp-youtube-transcript' was unpublished March 2025 and is squat-bait; pinned to a git tag so a hostile force-push can't swap the code on next launch. See https://github.com/jkawamoto/mcp-youtube-transcript.",
@@ -43,11 +83,6 @@
         "git+https://github.com/jkawamoto/mcp-youtube-transcript@v0.6.4",
         "mcp-youtube-transcript"
       ]
-    },
-    "duckdb": {
-      "_comment": "Read-only DuckDB analytics over Hikari's SQLite stores. Boots an in-memory DuckDB (DuckDB limitation: in-memory is always writable, but no real DB is exposed); the agent ATTACHes the user's SQLite files at query time via DuckDB's sqlite_scanner extension: INSTALL sqlite; LOAD sqlite; ATTACH 'data/hikari.db' AS hikari (TYPE sqlite, READ_ONLY); — see docs/duckdb_mcp.md for example queries. Receipts SQLite lives at $DAY_RECEIPT_DB or ~/.day-receipt/receipt.db. Ephemeral connections keep the SQLite files unlocked for concurrent reads with the bot writer.",
-      "command": "uvx",
-      "args": ["--from", "mcp-server-motherduck", "mcp-server-motherduck", "--db-path", ":memory:", "--ephemeral-connections", "--max-rows", "256", "--query-timeout", "15"]
     }
   }
 }

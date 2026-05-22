@@ -296,8 +296,17 @@ async def test_wrap_audit_records_tool_name():
 # ---------------------------------------------------------------------------
 
 def _loaded_wrap_patterns() -> list[str]:
-    """Return the wrap_patterns list from the currently-loaded config."""
-    return config.get("prompt_injection.wrap_patterns", [])
+    """Return the wrap_patterns from the registry (single source of truth).
+
+    Phase A (step 9): wrap_patterns deleted from engagement.yaml; source
+    is now config/tools.yaml via tools._tools_yaml.load_registry().
+    Falls back to config for tests that monkeypatch a custom engagement.yaml.
+    """
+    cfg_patterns = config.get("prompt_injection.wrap_patterns")
+    if cfg_patterns is not None:
+        return list(cfg_patterns)
+    from tools._tools_yaml import load_registry
+    return load_registry().wrap_patterns()
 
 
 def _matches_any_pattern(tool_name: str) -> bool:

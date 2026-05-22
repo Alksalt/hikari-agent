@@ -1,0 +1,1 @@
+Read and append to the user's Obsidian wiki (personal knowledge base). Use for 'what did i learn about X', 'add this to my notes', or any query about previously-captured research. Heavy curation (index rewrites, log entries, cross-page audits) should still be delegated separately.

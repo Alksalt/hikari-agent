@@ -1,0 +1,1 @@
+Notion specialist. Use for: querying the user's databases (tasks, reading list, Q2 roadmap, 0→Hero), creating pages, updating properties. The user has shared a small set of databases with the integration — discover them via API-post-search; don't assume.

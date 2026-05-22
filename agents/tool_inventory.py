@@ -52,7 +52,26 @@ def _in_process_groups() -> dict[str, list[str]]:
 
 
 def _load_mcp_servers() -> dict[str, dict]:
-    """Read .mcp.json once per call. Tiny file."""
+    """Return bucket-3 MCP server specs from the registry.
+
+    Phase A (step 8): sources from tools._tools_yaml registry rather than
+    reading .mcp.json directly. Falls back to .mcp.json if registry fails.
+    """
+    try:
+        from tools._tools_yaml import load_registry
+        registry = load_registry()
+        result: dict[str, dict] = {}
+        for name, spec in registry.mcp_servers().items():
+            if spec.bucket != 3:
+                continue
+            entry: dict = {}
+            if spec.env:
+                entry["env"] = dict(spec.env)
+            result[name] = entry
+        return result
+    except Exception:
+        pass
+    # Fallback: read .mcp.json
     try:
         raw = MCP_JSON_PATH.read_text(encoding="utf-8")
     except OSError:
@@ -97,15 +116,37 @@ def _external_mcp_status() -> list[tuple[str, str]]:
 
 
 def _subagents() -> list[tuple[str, str]]:
-    from . import subagents as subagents_mod
+    """Return (name, first-line-description) for each registered subagent.
 
-    out: list[tuple[str, str]] = []
+    Phase A (step 8): sources from registry SubagentSpec (reads description
+    sidecar file) rather than importing AgentDefinition objects directly.
+    Falls back to ALL_AGENTS if registry is unavailable.
+    """
+    try:
+        from tools._tools_yaml import load_registry
+        registry = load_registry()
+        out: list[tuple[str, str]] = []
+        for sid, spec in registry._subagents_spec.items():
+            desc_path = REPO_ROOT / spec.description_path
+            try:
+                first_line = desc_path.read_text(encoding="utf-8").strip().splitlines()[0]
+            except (OSError, IndexError):
+                first_line = ""
+            if len(first_line) > 100:
+                first_line = first_line[:97] + "..."
+            out.append((sid, first_line))
+        return out
+    except Exception:
+        pass
+    # Fallback
+    from . import subagents as subagents_mod
+    out2: list[tuple[str, str]] = []
     for name, agent in subagents_mod.ALL_AGENTS.items():
         desc = (agent.description or "").strip().splitlines()[0] if agent.description else ""
         if len(desc) > 100:
             desc = desc[:97] + "..."
-        out.append((name, desc))
-    return out
+        out2.append((name, desc))
+    return out2
 
 
 def format_for_injection() -> str:

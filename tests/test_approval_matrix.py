@@ -143,12 +143,16 @@ def test_subagent_prompts_dont_falsely_claim_approval_gates():
     """Phase 8 guardrail (per Codex P1 finding): subagent prompts must not
     promise approval gates that don't exist in the runtime. The remaining
     gated paths are gmail_send (not yet exposed) and dispatch-with-write.
-    Drafts, Notion writes, and wiki_append are NOT gated."""
-    from agents import subagents
+    Drafts, Notion writes, and wiki_append are NOT gated.
 
-    drive_prompt = subagents.DRIVE_GMAIL_AGENT.prompt.lower()
-    notion_prompt = subagents.NOTION_AGENT.prompt.lower()
-    wiki_prompt = subagents.WIKI_AGENT.prompt.lower()
+    Phase A: subagent AgentDefinition objects are now sourced from ALL_AGENTS
+    (registry-driven) rather than from module-level constants.
+    """
+    from agents.subagents import ALL_AGENTS
+
+    drive_prompt = ALL_AGENTS["drive_gmail"].prompt.lower()
+    notion_prompt = ALL_AGENTS["notion"].prompt.lower()
+    wiki_prompt = ALL_AGENTS["wiki"].prompt.lower()
 
     # Forbidden claims — these are the lies Codex flagged.
     forbidden = ["tier-1", "tier 1", "y to confirm", "y' to confirm"]

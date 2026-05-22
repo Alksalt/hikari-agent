@@ -33,8 +33,17 @@ _GATED_TOOLS = [
 
 
 def _is_matched_by_patterns(tool_name: str) -> bool:
-    """Replicate the exact matching logic from agents/hooks.py:_is_defer_gated."""
-    patterns = config.get("approvals.defer_gated_tools") or []
+    """Replicate the exact matching logic from agents/hooks.py:_is_defer_gated.
+
+    Phase A (step 9): defer_gated_tools removed from engagement.yaml;
+    patterns now sourced from tools._tools_yaml registry with config fallback.
+    """
+    cfg_patterns = config.get("approvals.defer_gated_tools")
+    if cfg_patterns is not None:
+        patterns = cfg_patterns
+    else:
+        from tools._tools_yaml import load_registry
+        patterns = load_registry().defer_gated_patterns()
     for pat in patterns:
         try:
             if re.fullmatch(str(pat), tool_name):
@@ -45,15 +54,18 @@ def _is_matched_by_patterns(tool_name: str) -> bool:
 
 
 def test_defer_gated_tools_contains_required_patterns():
-    """config/engagement.yaml must list regex patterns that match every
-    Stream A gated tool."""
-    patterns = config.get("approvals.defer_gated_tools") or []
-    assert patterns, "approvals.defer_gated_tools is empty"
+    """config/tools.yaml must list patterns that match every Stream A gated tool.
+
+    Phase A (step 9): source is now tools.yaml registry, not engagement.yaml.
+    """
+    from tools._tools_yaml import load_registry
+    patterns = load_registry().defer_gated_patterns()
+    assert patterns, "tools.yaml defer_gated_patterns() is empty"
 
     for tool_name in _GATED_TOOLS:
         assert _is_matched_by_patterns(tool_name), (
             f"{tool_name!r} is not matched by any pattern in "
-            f"approvals.defer_gated_tools: {patterns}"
+            f"tools.yaml defer_gated_patterns: {patterns}"
         )
 
 

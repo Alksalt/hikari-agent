@@ -132,11 +132,25 @@ def _audit_wrap(tool_name: str) -> None:
 def make_post_tool_use_hook(
     patterns: list[str] | None = None,
 ) -> Callable[..., Any]:
-    """Build the PostToolUse hook closure. ``patterns`` defaults to
-    ``prompt_injection.wrap_patterns`` from config."""
-    raw_patterns = list(patterns) if patterns is not None else (
-        cfg.get("prompt_injection.wrap_patterns") or []
-    )
+    """Build the PostToolUse hook closure.
+
+    Pattern source priority:
+      1. Explicit ``patterns`` arg (tests / callers may override).
+      2. ``prompt_injection.wrap_patterns`` from engagement.yaml when present.
+      3. ``tools._tools_yaml.load_registry().wrap_patterns()`` — single-source registry.
+    """
+    if patterns is not None:
+        raw_patterns = list(patterns)
+    else:
+        cfg_patterns = cfg.get("prompt_injection.wrap_patterns")
+        if cfg_patterns is not None:
+            raw_patterns = list(cfg_patterns)
+        else:
+            try:
+                from tools._tools_yaml import load_registry
+                raw_patterns = load_registry().wrap_patterns()
+            except Exception:
+                raw_patterns = []
     compiled = _compile_patterns(raw_patterns)
 
     async def wrap_post_tool_use(
