@@ -35,6 +35,8 @@ async def decision_log_capture(args: dict) -> dict:
         p = float(args.get("predicted_p") or 0.0)
     except (TypeError, ValueError):
         return _ok("decision_log_capture: predicted_p must be a number.")
+    if not (0.0 <= p <= 1.0):
+        return _ok(f"decision_log_capture: predicted_p must be in [0,1]; got {p}.")
     resolve_by = str(args.get("resolve_by") or "").strip()
     if not resolve_by:
         return _ok("decision_log_capture: resolve_by is required.")

@@ -18,7 +18,9 @@ async def run_decision_resolver(send_text) -> int:
     if not bool(cfg.get("decision_log.enabled", True)):
         return 0
     max_per_run = int(cfg.get("decision_log.max_per_week_ask", 3))
-    overdue = db.decisions_unresolved_due(limit=max_per_run)
+    cooldown = int(cfg.get("decision_log.reask_cooldown_days", 14))
+    overdue = db.decisions_unresolved_due(limit=max_per_run,
+                                          cooldown_days=cooldown)
     if not overdue:
         return 0
 
@@ -30,12 +32,19 @@ async def run_decision_resolver(send_text) -> int:
         )
         try:
             await send_text(line)
-            db.decision_mark_asked(int(d["id"]))
-            asked += 1
         except Exception:
             logger.exception(
                 "decision_resolver: send failed for decision_id=%s",
                 d["id"],
             )
+            continue
+        try:
+            db.decision_mark_asked(int(d["id"]))
+        except Exception:
+            logger.exception(
+                "decision_resolver: mark_asked failed for decision_id=%s",
+                d["id"],
+            )
+        asked += 1
     logger.info("decision_resolver: asked about %d overdue decisions", asked)
     return asked

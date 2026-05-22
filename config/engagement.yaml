@@ -946,3 +946,5 @@ decision_log:
   max_per_week_ask: 3
   # Window for the Brier rolling score surfaced in voice.
   brier_window_days: 90
+  # Days to wait before re-asking about the same decision after a check.
+  reask_cooldown_days: 14

@@ -2849,36 +2849,73 @@ def decision_insert(statement: str, predicted_p: float, resolve_by: str,
 
 
 def decision_resolve(decision_id: int, outcome: int) -> None:
-    """Mark a decision resolved. outcome must be 0 or 1."""
+    """Mark a decision resolved. outcome must be 0 or 1.
+
+    Immutable: refuses to overwrite an existing outcome with a different
+    value. Same-value re-resolve is a silent no-op (true idempotency).
+    Every state-changing call writes an audit_log row so the calibration
+    ledger has a forensic trail against prompt-injected resolves.
+    """
+    import json
     if outcome not in (0, 1):
         raise ValueError("outcome must be 0 or 1")
+    did = int(decision_id)
     with _conn() as c:
+        row = c.execute(
+            "SELECT outcome FROM decisions WHERE id = ?", (did,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"decision {did} not found")
+        if row["outcome"] is not None:
+            if int(row["outcome"]) != int(outcome):
+                raise ValueError(
+                    f"decision {did} already resolved as {row['outcome']}; "
+                    f"refusing to overwrite with {outcome}"
+                )
+            return
         c.execute(
-            "UPDATE decisions SET outcome = ?, resolved_at = ? WHERE id = ?",
-            (int(outcome), _now(), int(decision_id)),
+            "UPDATE decisions SET outcome = ?, resolved_at = ? "
+            "WHERE id = ? AND outcome IS NULL",
+            (int(outcome), _now(), did),
         )
+    audit_append(
+        tool="decision_resolve",
+        args_json_redacted=json.dumps(
+            {"decision_id": did, "outcome": int(outcome)}
+        ),
+        result_summary="resolved",
+        approved_by="owner",
+    )
 
 
-def decisions_unresolved_due(limit: int = 5) -> list[dict[str, Any]]:
+def decisions_unresolved_due(limit: int = 5,
+                             cooldown_days: int = 14) -> list[dict[str, Any]]:
     """Decisions whose resolve_by has passed and outcome is still null,
-    oldest first."""
+    oldest first. Skips rows asked about within the cooldown window."""
     with _conn() as c:
         rows = c.execute(
             "SELECT id, statement, predicted_p, resolve_by, asked_at "
             "FROM decisions "
-            "WHERE outcome IS NULL AND resolve_by <= date('now') "
+            "WHERE outcome IS NULL "
+            "AND resolve_by <= date('now') "
+            "AND (asked_at IS NULL "
+            "     OR asked_at < datetime('now', '-' || ? || ' days')) "
             "ORDER BY resolve_by ASC LIMIT ?",
-            (int(limit),),
+            (int(cooldown_days), int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def decisions_unresolved_overdue_count() -> int:
+def decisions_unresolved_overdue_count(cooldown_days: int = 14) -> int:
     """Count of overdue-unresolved decisions, for the inject_memory mirror."""
     with _conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS n FROM decisions "
-            "WHERE outcome IS NULL AND resolve_by <= date('now')"
+            "WHERE outcome IS NULL "
+            "AND resolve_by <= date('now') "
+            "AND (asked_at IS NULL "
+            "     OR asked_at < datetime('now', '-' || ? || ' days'))",
+            (int(cooldown_days),),
         ).fetchone()
     return int(row["n"] or 0)
 
