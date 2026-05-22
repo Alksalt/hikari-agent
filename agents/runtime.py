@@ -46,6 +46,7 @@ from tools import wiki as wiki_tools
 
 from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
+from . import sdk_pool
 
 REPO_ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -284,6 +285,89 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     )
 
 
+async def _invoke_sdk_persistent_live(
+    prompt: str | list[dict],
+    *,
+    log_session_id: bool,
+) -> str:
+    """Persistent-client path for run_user_turn + run_visible_proactive.
+
+    Uses sdk_pool.get_live_client() — no fresh subprocess fork.
+    On ProcessError or TimeoutError: clears suspect session if applicable,
+    reconnects once, retries once, then re-raises on second failure.
+    On ResultMessage: stores session_id if log_session_id=True.
+    """
+    sdk_turn_timeout = float(cfg.get("runtime.sdk_turn_timeout_s", 90))
+    tool_names_this_turn: set[str] = set()
+    LAST_TURN_TOOL_NAMES.set(tool_names_this_turn)
+
+    async def _run_one() -> str:
+        client = await sdk_pool.get_live_client()
+        parts: list[str] = []
+
+        if isinstance(prompt, list):
+            blocks = prompt
+
+            async def _stream_blocks():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": blocks},
+                    "parent_tool_use_id": None,
+                }
+
+            await client.query(_stream_blocks())
+        else:
+            await client.query(prompt)
+
+        async def _collect():
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            parts.append(block.text)
+                        elif isinstance(block, ToolUseBlock):
+                            tool_names_this_turn.add(str(block.name))
+                elif isinstance(msg, ResultMessage):
+                    if log_session_id and msg.session_id:
+                        db.set_session_id(msg.session_id)
+                    if msg.subtype != "success":
+                        logger.warning("agent loop ended subtype=%s", msg.subtype)
+                    if msg.usage:
+                        logger.info(
+                            "sdk_usage(persistent): in=%s cache_create=%s cache_read=%s out=%s",
+                            msg.usage.get("input_tokens", "-"),
+                            msg.usage.get("cache_creation_input_tokens", "-"),
+                            msg.usage.get("cache_read_input_tokens", "-"),
+                            msg.usage.get("output_tokens", "-"),
+                        )
+
+        await asyncio.wait_for(_collect(), timeout=sdk_turn_timeout)
+        return "".join(parts).strip()
+
+    try:
+        result = await _run_one()
+    except (ProcessError, asyncio.TimeoutError) as exc:
+        reason = type(exc).__name__
+        # If a stored session_id was involved, clear it (suspect session).
+        stored = db.get_session_id()
+        if stored:
+            logger.warning(
+                "_invoke_sdk_persistent_live: %s — clearing suspect session_id (present=True) and reconnecting",
+                reason,
+            )
+            db.set_session_id("")
+        else:
+            logger.warning(
+                "_invoke_sdk_persistent_live: %s — reconnecting live client",
+                reason,
+            )
+        await sdk_pool._reconnect_live(f"{reason} on user turn")
+        result = await _run_one()   # one retry; re-raises on second failure
+
+    sdk_pool._maybe_schedule_live_recycle()
+    return result
+
+
 async def _invoke_sdk(
     prompt: str | list[dict],
     *,
@@ -294,6 +378,7 @@ async def _invoke_sdk(
     extra_allowed_tools: list[str] | None = None,
     retry_on_process_error: bool = True,
     inject_memory_enabled: bool = True,
+    use_persistent_live: bool = False,
 ) -> str:
     """Phase 13 (Stream C) — single private SDK invocation helper.
 
@@ -313,6 +398,11 @@ async def _invoke_sdk(
     Returns the joined assistant text (no DB append — caller appends visible
     outbound text post-send).
     """
+    if use_persistent_live and sdk_pool.is_live_persistent_path_enabled():
+        return await _invoke_sdk_persistent_live(
+            prompt, log_session_id=log_session_id,
+        )
+
     session_id = resume
     parts: list[str] = []
     # Fresh per-call set of tool names — overwrites any stale value from a
@@ -420,6 +510,7 @@ async def run_user_turn(user_text: str) -> str:
             max_turns=DEFAULT_MAX_TURNS,
             max_budget_usd=0.50,
             retry_on_process_error=True,
+            use_persistent_live=True,
         )
 
 
@@ -427,7 +518,14 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     """Variant of run_user_turn that accepts a pre-built list of content blocks
     instead of a plain string. Used by handle_document for PDF/image/HTML ingest
     so the next user turn contains a native ``document`` or ``image`` block,
-    not a base64 blob wedged into text."""
+    not a base64 blob wedged into text.
+
+    Note: ``use_persistent_live`` is intentionally NOT set here (defaults
+    False).  The persistent live client expects string prompts on its
+    subprocess stdin; injecting a content-block list would corrupt the
+    transcript format.  This call goes through the standard ephemeral
+    (cold-start) path which handles arbitrary prompt shapes correctly.
+    """
     async with _RUN_LOCK:
         return await _invoke_sdk(
             content_blocks,
@@ -457,6 +555,7 @@ async def run_visible_proactive(seed_prompt: str) -> str:
             max_turns=5,
             max_budget_usd=0.20,
             retry_on_process_error=True,
+            use_persistent_live=True,
         )
 
 

@@ -33,6 +33,13 @@ import random
 import re
 from dataclasses import dataclass
 
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    TextBlock,
+)
+
 from storage import db
 
 from . import config as cfg
@@ -369,17 +376,6 @@ async def bounded_rewrite(
 
     model = str(cfg.get("post_filter.rewrite_model", "claude-haiku-4-5"))
     max_budget = float(cfg.get("post_filter.rewrite_max_budget_usd", 0.01))
-
-    try:
-        from claude_agent_sdk import (
-            AssistantMessage,
-            ClaudeAgentOptions,
-            ClaudeSDKClient,
-            TextBlock,
-        )
-    except Exception:
-        logger.exception("bounded_rewrite: SDK import failed")
-        return None
 
     options = ClaudeAgentOptions(
         model=model,

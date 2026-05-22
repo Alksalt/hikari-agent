@@ -26,14 +26,13 @@ from typing import Any
 import yaml
 from claude_agent_sdk import (
     AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
     TextBlock,
 )
 
 from storage import db
 
 from . import config as cfg
+from . import sdk_pool
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +49,6 @@ def _probability() -> float:
 
 def _cooldown() -> int:
     return int(cfg.get("drift_telemetry.cooldown_min_messages", 4))
-
-
-def _model() -> str:
-    return str(cfg.get("drift_telemetry.model", "claude-haiku-4-5"))
-
-
-def _budget() -> float:
-    return float(cfg.get("drift_telemetry.max_budget_usd", 0.01))
 
 
 def _daily_cap() -> int:
@@ -100,30 +91,29 @@ def _strip_fences(raw: str) -> str:
 
 async def judge_outbound(text: str) -> dict[str, Any] | None:
     """Score one outbound message via Haiku. Returns parsed dict or None on
-    any failure. **Never re-raises** — best-effort by design."""
+    any failure. **Never re-raises** — best-effort by design.
+
+    Uses the persistent Haiku judge client from sdk_pool.  Falls back to
+    a fresh ephemeral client if the pool is unavailable (startup not called
+    yet, or judge client failed to connect).
+    """
     if not text or not text.strip():
         return None
     rubric = _rubric()
     if not rubric:
         return None
-    options = ClaudeAgentOptions(
-        model=_model(),
-        max_turns=1,
-        max_budget_usd=_budget(),
-        system_prompt=rubric,
-        # Critical: no resume= (separate session), no log_to_memory at the
-        # call site, no shared lock (acquired by primary _run_query).
-    )
     try:
         parts: list[str] = []
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(f"Score this Hikari reply:\n\n{text[:1000]}")
-            async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
+        client = await sdk_pool.get_haiku_judge()
+        await client.query(f"Score this Hikari reply:\n\n{text[:1000]}")
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
         raw = "".join(parts).strip()
+        # Advance recycle counter outside the lock.
+        sdk_pool._maybe_schedule_judge_recycle()
     except Exception:  # noqa: BLE001
         logger.exception("drift_judge: judge_outbound SDK call failed (non-fatal)")
         return None

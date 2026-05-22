@@ -60,6 +60,7 @@ from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
 from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_user_turn
 from .scheduler import build_scheduler
+from . import sdk_pool as _sdk_pool
 
 logger = logging.getLogger(__name__)
 
@@ -1858,11 +1859,24 @@ def main() -> None:
         # Phase 6: resurface any deferred approval that was pending pre-restart.
         await recover_deferred_approvals(application.bot)
 
+        # Phase B: start persistent SDK client pool (live + haiku judge).
+        await _sdk_pool.startup()
+        logger.info("sdk_pool started")
+
         # Start the long-running dispatch event listener.
         asyncio.create_task(listener_loop(application.bot))
         logger.info("dispatch listener task started")
 
+    async def post_shutdown(application) -> None:
+        """Graceful shutdown of persistent SDK clients."""
+        try:
+            await _sdk_pool.shutdown()
+            logger.info("sdk_pool shut down cleanly")
+        except Exception:  # noqa: BLE001
+            logger.exception("sdk_pool shutdown error (non-fatal)")
+
     app.post_init = post_init
+    app.post_shutdown = post_shutdown
     logger.info("starting hikari-agent (full stack)")
     # Phase 8: include MESSAGE_REACTION so 👍/👎 ground-truth gets delivered.
     # Telegram excludes reactions from the default allowed_updates set.

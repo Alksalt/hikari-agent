@@ -39,9 +39,13 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 
 def _patch_sdk_returning(monkeypatch, text_blocks: list[str]) -> dict[str, int]:
-    """Patch ClaudeSDKClient inside agents.post_filter.bounded_rewrite to
-    yield ``text_blocks`` from receive_response. Returns a counter dict for
-    assertions about how often the SDK was constructed."""
+    """Patch ClaudeSDKClient inside agents.post_filter to yield ``text_blocks``
+    from receive_response. Returns a counter dict for assertions about how
+    often the SDK was constructed.
+
+    Now patches agents.post_filter.ClaudeSDKClient directly (module-level
+    import) rather than monkeypatching builtins.__import__.
+    """
     counter = {"opens": 0, "queries": 0}
 
     class _FakeAssistant:
@@ -69,21 +73,11 @@ def _patch_sdk_returning(monkeypatch, text_blocks: list[str]) -> dict[str, int]:
         async def receive_response(self):
             yield _FakeAssistant([_FakeTextBlock(t) for t in text_blocks])
 
-    fake_module = SimpleNamespace(
-        ClaudeAgentOptions=lambda **kw: SimpleNamespace(**kw),
-        ClaudeSDKClient=_FakeClient,
-        AssistantMessage=_FakeAssistant,
-        TextBlock=_FakeTextBlock,
-    )
-
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
-
-    def patched_import(name, *args, **kwargs):
-        if name == "claude_agent_sdk":
-            return fake_module
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.__import__", patched_import)
+    monkeypatch.setattr(post_filter, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(post_filter, "AssistantMessage", _FakeAssistant)
+    monkeypatch.setattr(post_filter, "TextBlock", _FakeTextBlock)
+    monkeypatch.setattr(post_filter, "ClaudeAgentOptions",
+                        lambda **kw: SimpleNamespace(**kw))
     return counter
 
 
@@ -123,21 +117,9 @@ async def test_bounded_rewrite_returns_none_on_sdk_exception(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    fake_module = SimpleNamespace(
-        ClaudeAgentOptions=lambda **kw: SimpleNamespace(**kw),
-        ClaudeSDKClient=_BoomClient,
-        AssistantMessage=type("A", (), {}),
-        TextBlock=type("T", (), {}),
-    )
-
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
-
-    def patched_import(name, *args, **kwargs):
-        if name == "claude_agent_sdk":
-            return fake_module
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.__import__", patched_import)
+    monkeypatch.setattr(post_filter, "ClaudeSDKClient", _BoomClient)
+    monkeypatch.setattr(post_filter, "ClaudeAgentOptions",
+                        lambda **kw: SimpleNamespace(**kw))
 
     out = await post_filter.bounded_rewrite("x", instruction="y")
     assert out is None
