@@ -618,19 +618,23 @@ def _is_pending_active(now_utc: datetime) -> bool:
     return True
 
 
-async def _safe_send(send_text, text: str) -> bool:
-    """Wrap send_text in try/except; return ok-bool. Accepts callbacks that
-    return either bool, None (legacy), or (text, msg_id, ok) tuples."""
+async def _safe_send(send_text, text: str) -> tuple[bool, int | None]:
+    """Returns (ok, telegram_message_id). Handles None/bool/tuple returns."""
     try:
         result = await send_text(text)
     except Exception:
         logger.exception("daily_checkin: send_text raised")
-        return False
+        return False, None
     if result is None:
-        return True
+        return True, None
     if isinstance(result, tuple) and len(result) == 3:
-        return bool(result[2])
-    return bool(result)
+        _, tg_id, ok = result
+        try:
+            tg_id = int(tg_id) if tg_id is not None else None
+        except (TypeError, ValueError):
+            tg_id = None
+        return bool(ok), tg_id
+    return bool(result), None
 
 
 async def maybe_run_daily_checkin(send_text) -> bool:
@@ -648,7 +652,7 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     if not text:
         logger.info("daily_checkin: composer returned no question; skipping fire")
         return False
-    ok = await _safe_send(send_text, text)
+    ok, tg_id = await _safe_send(send_text, text)
     if not ok:
         logger.warning("daily_checkin: send_text reported failure; not marking fired")
         return False
@@ -658,7 +662,7 @@ async def maybe_run_daily_checkin(send_text) -> bool:
             source="daily_checkin",
             pattern="ceremony",
             payload_json="{}",
-            telegram_message_id=None,
+            telegram_message_id=tg_id,
         )
     except Exception:
         logger.exception("daily_checkin: proactive_event_insert failed (non-fatal)")

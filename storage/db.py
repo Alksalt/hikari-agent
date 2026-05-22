@@ -2270,9 +2270,14 @@ def proactive_event_record_reaction(telegram_message_id: int, kind: str) -> int:
 
 
 def proactive_event_record_silence_window(now_iso: str | None = None) -> int:
-    """Flip silenced_within_1h=1 for all proactive_events rows sent in the
-    last hour. Called by /silence so the calibration loop can discount
-    sources that tend to trigger silence commands.
+    """Flip silenced_within_1h=1 for rows sent in the last hour.
+
+    NOTE: no chat_id filter — current bot is single-user, callers are gated by
+    owner-id checks. If multi-tenancy is added (Sprint 3+), add a chat_id
+    column to proactive_events and scope this UPDATE.
+
+    Called by /silence so the calibration loop can discount sources that tend
+    to trigger silence commands.
 
     Returns the number of rows updated."""
     from datetime import timedelta

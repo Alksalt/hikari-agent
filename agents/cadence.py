@@ -165,7 +165,10 @@ def proactive_count_last_7d() -> int:
     return _count_last_7d(Pool.AGENT_SPONTANEOUS)
 
 
-# ---------- compat shims (removed in step 7) ----------
+# ---------- compat shims (deleted in Phase F, Sprint 2) ----------
+# DO NOT call from new code. Use can_send(source, pool) directly.
+# Callers: tests/test_proactive_intel.py, tests/test_daily_checkin_cadence.py,
+#          tests/test_proactive_sdk_error_guard.py — update all three in Phase F.
 
 def can_send_proactive(source: str | None) -> tuple[bool, str]:
     """Backward-compat shim. Resolves pool from source and delegates to can_send."""

@@ -273,19 +273,15 @@ cost.
 
 ## Cadence governor integration
 
-The check-in counts as a proactive event for cadence purposes:
+The check-in counts against the `scheduled_ceremony` pool:
 
-- `agents/cadence.py:can_send_proactive("daily_checkin")` is called before
-  the trigger fires.
-- `daily_checkin` is in `cap_exempt_sources` and intentionally does NOT call
-  `cadence.record_proactive_sent()` — counting cap-exempt sends toward the
-  rolling 7d log is what was burning the spontaneous-heartbeat budget. A
-  separate `record_ceremony_sent()` for ceremony bookkeeping lands in a
-  later sprint.
-
-A new `daily_checkin` source key is added to whatever allowlist
-`cadence.can_send_proactive` consults (existing pattern, no code structure
-change).
+- `agents/cadence.can_send("daily_checkin", Pool.SCHEDULED_CEREMONY)` is called
+  before the trigger fires.
+- On successful send, `cadence.record_ceremony_sent("daily_checkin")` is called.
+  The ceremony pool (cap=14/7d) is independent of the spontaneous pool (cap=8/7d),
+  so daily_checkin sends never consume heartbeat budget.
+- The old `can_send_proactive` / `record_proactive_sent` / `cap_exempt_sources`
+  API was removed in Sprint 2 Phase D. See `agents/cadence.py`.
 
 ## Open questions
 

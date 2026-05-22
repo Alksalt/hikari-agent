@@ -75,10 +75,11 @@ class KeychainStore(TokenStore):
         self._keyring.set_password(self._service(provider), key, value)
 
     def clear(self, provider: str) -> None:
-        try:
-            self._keyring.delete_password(self._service(provider), "*")
-        except Exception:
-            pass  # best-effort; individual keys may not exist
+        for key in ("client_id", "client_secret", "refresh_token", "access_token"):
+            try:
+                self._keyring.delete_password(self._service(provider), key)
+            except Exception:
+                pass  # key may not exist; best-effort
 
 
 # Module-level singleton — created once.

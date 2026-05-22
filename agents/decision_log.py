@@ -35,8 +35,15 @@ async def run_decision_resolver(send_text) -> int:
             f"calibration check: '{d['statement']}' "
             f"(you said {d['predicted_p']}). did it happen? yes / no."
         )
+        tg_id: int | None = None
         try:
-            await send_text(line)
+            result = await send_text(line)
+            if isinstance(result, tuple) and len(result) == 3:
+                _, raw_tg_id, _ = result
+                try:
+                    tg_id = int(raw_tg_id) if raw_tg_id is not None else None
+                except (TypeError, ValueError):
+                    tg_id = None
         except Exception:
             logger.exception(
                 "decision_resolver: send failed for decision_id=%s",
@@ -55,7 +62,7 @@ async def run_decision_resolver(send_text) -> int:
                 source="decision_log",
                 pattern="ceremony",
                 payload_json="{}",
-                telegram_message_id=None,
+                telegram_message_id=tg_id,
             )
         except Exception:
             logger.exception(

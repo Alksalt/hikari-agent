@@ -1,11 +1,16 @@
-"""Reset runtime_state.proactive_log_v1 to '[]'. One-shot use after the
-cap-burning bug fix. Delete this file after running once."""
+"""Reset all three proactive cadence pool logs. Run after a cap-burning bug
+fix or to clear state during manual testing."""
 from storage import db
 
 
 def main():
-    db.runtime_set("proactive_log_v1", "[]")
-    print("proactive_log_v1 cleared.")
+    for key in (
+        "proactive_log_v1",
+        "proactive_ceremony_log_v1",
+        "proactive_user_anchored_log_v1",
+    ):
+        db.runtime_set(key, "[]")
+        print(f"{key} cleared.")
 
 
 if __name__ == "__main__":

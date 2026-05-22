@@ -574,11 +574,20 @@ async def run_future_letter(
     chunks = _chunk_for_telegram(body, chunk_chars)
 
     send_ok = True
+    last_tg_id: int | None = None
     try:
         await send_text(preamble)
         for chunk in chunks:
-            _, _, ok = await send_text(chunk)
-            send_ok = send_ok and bool(ok)
+            result = await send_text(chunk)
+            if isinstance(result, tuple) and len(result) == 3:
+                _, raw_tg_id, ok = result
+                send_ok = send_ok and bool(ok)
+                try:
+                    last_tg_id = int(raw_tg_id) if raw_tg_id is not None else last_tg_id
+                except (TypeError, ValueError):
+                    pass
+            else:
+                send_ok = send_ok and bool(result) if result is not None else send_ok
     except Exception:
         logger.exception("future_letter: send failed")
         send_ok = False
@@ -597,7 +606,7 @@ async def run_future_letter(
                 source="future_letter_send",
                 pattern="ceremony",
                 payload_json="{}",
-                telegram_message_id=None,
+                telegram_message_id=last_tg_id,
             )
         except Exception:
             logger.exception(
