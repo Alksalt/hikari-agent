@@ -65,7 +65,7 @@ async def test_fetch_forecast_merges_two_sources(monkeypatch):
     assert "sources" in out
     assert "open_meteo" in out["sources"]
     assert "met_no" in out["sources"]
-    assert out["consensus"]["temp_high_c"] is not None
+    assert out["consensus"]["values"]["temp_high_c"] is not None
 
 
 @pytest.mark.asyncio

@@ -38,7 +38,7 @@ async def test_morning_brief_uses_home_when_no_share(monkeypatch):
         captured["lat"] = lat
         captured["lon"] = lon
         return {"sources": {"open_meteo": {"temp_high_c": 18, "temp_low_c": 10}},
-                "consensus": {"temp_high_c": 18, "temp_low_c": 10, "high_spread": 0}}
+                "consensus": {"values": {"temp_high_c": 18, "temp_low_c": 10}, "disagree": []}}
     async def fake_run_proactive(prompt, **kwargs): return "morning. high 18, low 10."
     async def fake_send(s): pass
     from agents import morning_brief
@@ -63,7 +63,7 @@ async def test_morning_brief_ignores_stale_location(monkeypatch):
     async def fake_fetch(lat, lon):
         captured["lat"] = lat
         return {"sources": {"open_meteo": {"temp_high_c": 20, "temp_low_c": 10}},
-                "consensus": {"temp_high_c": 20, "temp_low_c": 10, "high_spread": 0}}
+                "consensus": {"values": {"temp_high_c": 20, "temp_low_c": 10}, "disagree": []}}
     async def fake_run_proactive(prompt, **kwargs): return "morning."
     async def fake_send(s): pass
     from agents import morning_brief
@@ -87,7 +87,7 @@ async def test_morning_brief_prefers_recent_share(monkeypatch):
     async def fake_fetch(lat, lon):
         captured["lat"] = lat
         return {"sources": {"open_meteo": {"temp_high_c": 25, "temp_low_c": 18}},
-                "consensus": {"temp_high_c": 25, "temp_low_c": 18, "high_spread": 0}}
+                "consensus": {"values": {"temp_high_c": 25, "temp_low_c": 18}, "disagree": []}}
     async def fake_run_proactive(prompt, **kwargs): return "morning."
     async def fake_send(s): pass
     from agents import morning_brief

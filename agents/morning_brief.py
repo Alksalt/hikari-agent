@@ -71,19 +71,50 @@ def _resolve_location() -> tuple[float, float, str | None] | None:
 
 
 def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
-    c = forecast["consensus"]
+    from tools.weather._shared import wmo_label  # noqa: PLC0415
+    raw_consensus = forecast["consensus"]
+    c = raw_consensus["values"]
+    disagree = raw_consensus.get("disagree") or []
     sources = ", ".join(forecast["sources"].keys()) or "no sources"
     high = c.get("temp_high_c")
     low = c.get("temp_low_c")
-    spread = c.get("high_spread") or 0
-    where = f"in {label}" if label else "where you are"
-    disagreement = ""
-    if spread > 3:
-        disagreement = (
-            f"\n  note: sources disagree (spread {spread}°C) — mention briefly "
-            f"if it fits the voice."
+    feels_high = c.get("feels_high_c")
+    feels_low = c.get("feels_low_c")
+    uv = c.get("uv_index_max")
+    wind = c.get("wind_max_kmh")
+    rain_max = c.get("precip_prob_max_pct")
+    where = label or "where you are"
+
+    windows = forecast.get("windows") or {}
+    morning = windows.get("morning") or {}
+    midday = windows.get("midday") or {}
+    evening = windows.get("evening") or {}
+    sunrise = forecast.get("sunrise")
+    sunset = forecast.get("sunset")
+
+    disagreement_note = ""
+    if disagree:
+        disagreement_note = (
+            f"\n  note: sources disagree on {', '.join(disagree[:2])} — mention "
+            f"briefly only if it fits the voice."
         )
+
+    window_text = ""
+    if morning or midday or evening:
+        def _win(w: dict, name: str) -> str:
+            t = w.get("temp_c")
+            cond = wmo_label(w.get("weather_code")) if w.get("weather_code") is not None else ""
+            precip = w.get("precip_prob_pct")
+            return f"  {name}: {t}°C{' ' + cond if cond else ''}{' rain ' + str(precip) + '%' if precip else ''}"
+        window_text = (
+            "\n  windows:\n"
+            + _win(morning, "morning") + "\n"
+            + _win(midday, "midday") + "\n"
+            + _win(evening, "evening")
+        )
+
     return (
+        "# presentation_hint: weather_three_window\n\n"
         "You are writing a morning weather brief. ONE short message, in your "
         "voice. Hikari is reluctant about being useful — make it dry, never "
         "chirpy. No exclamation marks for enthusiasm. No 'good morning!'. "
@@ -92,8 +123,16 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
         f"  location: {where}\n"
         f"  high_c: {high}\n"
         f"  low_c: {low}\n"
+        f"  feels_high_c: {feels_high}\n"
+        f"  feels_low_c: {feels_low}\n"
+        f"  precip_prob_max_pct: {rain_max}\n"
+        f"  uv_index_max: {uv}\n"
+        f"  wind_max_kmh: {wind}\n"
+        f"  sunrise: {sunrise}\n"
+        f"  sunset: {sunset}\n"
         f"  sources: {sources}"
-        f"{disagreement}\n\n"
+        f"{window_text}"
+        f"{disagreement_note}\n\n"
         "Output ONLY the message text — no preamble, no quotes. If you can't "
         "write something true to her voice, output NO_MESSAGE."
     )
