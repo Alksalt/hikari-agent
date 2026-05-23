@@ -891,3 +891,5 @@ graph:
   llm_model: deepseek/deepseek-chat      # cheap; ~$0.14/M input via openrouter
   # Embeddings: local-only via tools/embeddings.py (fastembed + BAAI/bge-small-en-v1.5).
   # No hosted embedding API — project rule (NO direct API; OAuth/subscription only).
+  backfill_min_interval_s: 0.5           # throttle between episodes
+  backfill_max_episodes: 500             # hard cap; raise + re-run for larger DBs

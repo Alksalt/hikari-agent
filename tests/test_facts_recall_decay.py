@@ -54,7 +54,7 @@ def test_recall_prefers_fresh_fact_over_old():
     # the multiplier shrinks the relevance term noticeably.
     _backdate(old, days_ago=28)
 
-    hits = retrieval.retrieve("matcha cake", limit=5)
+    hits = retrieval.legacy_retrieve("matcha cake", limit=5)
     fact_hits = [h for h in hits if h.kind == "fact"]
     assert len(fact_hits) >= 2, (
         f"expected both facts retrieved, got {[(h.kind, h.ref_id) for h in hits]}"
@@ -78,7 +78,7 @@ def test_recall_bumps_hit_count_and_last_recalled_at():
     assert row_before["recall_hit_count"] == 0
     assert row_before["last_recalled_at"] is None
 
-    hits = retrieval.retrieve("attention mechanisms", limit=5)
+    hits = retrieval.legacy_retrieve("attention mechanisms", limit=5)
     assert any(h.kind == "fact" and h.ref_id == fid for h in hits)
 
     row_after = db.get_fact(fid)
@@ -86,7 +86,7 @@ def test_recall_bumps_hit_count_and_last_recalled_at():
     assert row_after["last_recalled_at"] is not None
 
     # Second recall — counter should keep climbing.
-    retrieval.retrieve("attention mechanisms", limit=5)
+    retrieval.legacy_retrieve("attention mechanisms", limit=5)
     row_third = db.get_fact(fid)
     assert row_third["recall_hit_count"] == 2
 

@@ -117,7 +117,7 @@ def test_retrieval_returns_hits(tmp_path, monkeypatch):
     db.insert_fact("user", "drinks", "tea then coffee", importance=4)
     db.insert_episode("2026-05-17", "talked about transformer attention papers", importance=6)
 
-    hits = retrieval.retrieve("openai", limit=5)
+    hits = retrieval.legacy_retrieve("openai", limit=5)
     assert len(hits) >= 1
     assert any("openai" in h.text.lower() for h in hits)
 

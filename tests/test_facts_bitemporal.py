@@ -80,14 +80,14 @@ def test_recall_excludes_invalid_facts(monkeypatch):
 
     fid = db.fact_insert(text="loves cabbage stew", source="user_message")
     # Sanity: active fact is retrievable.
-    hits = retrieval.retrieve("cabbage stew", limit=5)
+    hits = retrieval.legacy_retrieve("cabbage stew", limit=5)
     assert any(h.kind == "fact" and h.ref_id == fid for h in hits), (
         f"expected fid={fid} in hits, got {[(h.kind, h.ref_id) for h in hits]}"
     )
 
     # Invalidate and re-query.
     db.mark_fact_invalid(fid)
-    hits_after = retrieval.retrieve("cabbage stew", limit=5)
+    hits_after = retrieval.legacy_retrieve("cabbage stew", limit=5)
     assert not any(h.kind == "fact" and h.ref_id == fid for h in hits_after), (
         f"invalidated fid={fid} leaked into hits: "
         f"{[(h.kind, h.ref_id) for h in hits_after]}"

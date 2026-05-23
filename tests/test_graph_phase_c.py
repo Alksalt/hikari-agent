@@ -215,7 +215,7 @@ async def test_memory_diff_command_returns_both_result_sets():
     fake_context.args = ["oslo"]
 
     with patch("agents.telegram_bridge.owner_id", return_value=12345), \
-         patch("storage.retrieval.retrieve", return_value=[{"subject": "user", "predicate": "lives_in", "object": "oslo"}]), \
+         patch("storage.retrieval.legacy_retrieve", return_value=[{"subject": "user", "predicate": "lives_in", "object": "oslo"}]), \
          patch("storage.graph.search", new=AsyncMock(return_value=[MagicMock(fact="user lives in oslo")])):
         await cmd_memory_diff(fake_update, fake_context)
 

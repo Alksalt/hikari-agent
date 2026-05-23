@@ -191,8 +191,12 @@ def _seconds_since(iso: str | None) -> float:
     return max(0.0, (datetime.now(UTC) - ts).total_seconds())
 
 
-def retrieve(query: str, limit: int = 8) -> list[Hit]:
+def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
     """Retrieve top-N hits across facts + episodes using hybrid scoring.
+
+    Renamed from ``retrieve`` in Phase D. Kept for one release as the
+    rollback path when graphiti reads degrade. New call sites should use
+    ``storage.graph.search`` instead.
 
     T3.2 layers an Ebbinghaus forgetting curve over the relevance signal:
     each fact's relevance is multiplied by ``exp(-delta / tau)`` where

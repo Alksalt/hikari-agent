@@ -205,22 +205,25 @@ def test_lexicon_decay_and_prune_floors_weight():
 
 
 def test_recall_confidence_scales_with_hit_count(monkeypatch):
-    """Cold-start guard: a single high-relevance hit must not self-certify
-    as confidence=1.0 because of within-pool normalization."""
+    """Cold-start guard: a single high-relevance SQLite hit in the legacy
+    fallback must not self-certify as confidence=1.0 due to within-pool
+    normalization. Exercises the fallback path (graph returns empty)."""
+    import asyncio
     import importlib
+    from unittest.mock import AsyncMock
 
     import tools.memory as mem_mod
 
-    # Build a fake retrieval module that returns exactly one synthetic hit.
     from storage.retrieval import Hit
 
     fake_hit = Hit(
         kind="fact", ref_id=1, text="x", iso_ts="2026-01-01T00:00:00+00:00",
         score=1.0, recency=1.0, importance=0.5, relevance=1.0,
     )
-    monkeypatch.setattr(mem_mod.retrieval, "retrieve", lambda q, limit=8: [fake_hit])
+    # Graph returns empty → fallback fires.
+    monkeypatch.setattr("storage.graph.search", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mem_mod.retrieval, "legacy_retrieve", lambda q, limit=8: [fake_hit])
 
-    import asyncio
     res = asyncio.run(mem_mod.recall.handler({"query": "x"}))
     data = res["data"]
     # With only 1 hit, confidence is scaled by 1/3 ≈ 0.333, not 1.0.

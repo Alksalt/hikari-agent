@@ -1377,7 +1377,7 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("usage: /memory_diff <query>")
         return
 
-    from storage.retrieval import retrieve as legacy_retrieve  # noqa: PLC0415
+    from storage.retrieval import legacy_retrieve  # noqa: PLC0415
     from storage.graph import search as graph_search  # noqa: PLC0415
 
     sqlite_hits = []
