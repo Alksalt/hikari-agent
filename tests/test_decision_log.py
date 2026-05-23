@@ -17,6 +17,16 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _gate_open(monkeypatch):
+    """Ensure the proactive gate never suppresses due to quiet hours or
+    silence window in unit tests — those paths are covered by
+    test_proactive_global_reservation.py."""
+    import agents.proactive_gate as _gate
+    monkeypatch.setattr(_gate, "_is_quiet_now", lambda _db=None: False)
+    monkeypatch.setattr(_gate, "_silence_active", lambda _db: False)
+
+
 def test_decision_table_created():
     from storage import db
     db.upsert_core_block("ping", "ping")  # triggers schema bootstrap

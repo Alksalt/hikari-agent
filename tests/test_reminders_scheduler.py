@@ -21,6 +21,14 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     config.reload()
     yield
 
+@pytest.fixture(autouse=True)
+def _gate_open(monkeypatch):
+    """Keep the proactive gate open in unit tests — quiet-hours / silence
+    checks are covered by tests/test_proactive_global_reservation.py."""
+    import agents.proactive_gate as _gate
+    monkeypatch.setattr(_gate, "_is_quiet_now", lambda _db=None: False)
+    monkeypatch.setattr(_gate, "_silence_active", lambda _db: False)
+
 @pytest.mark.asyncio
 async def test_fire_due_reminders_sends_text_and_marks_fired():
     sent: list[str] = []

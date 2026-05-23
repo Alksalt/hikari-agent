@@ -30,6 +30,15 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _gate_open(monkeypatch):
+    """Keep the proactive gate open — quiet-hours / silence checks are tested
+    in test_proactive_global_reservation.py, not here."""
+    import agents.proactive_gate as _gate
+    monkeypatch.setattr(_gate, "_is_quiet_now", lambda _db=None: False)
+    monkeypatch.setattr(_gate, "_silence_active", lambda _db: False)
+
+
 # ---------------------------------------------------------------------------
 # daily_checkin
 # ---------------------------------------------------------------------------

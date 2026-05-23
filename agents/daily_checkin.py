@@ -652,23 +652,18 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     if not text:
         logger.info("daily_checkin: composer returned no question; skipping fire")
         return False
-    ok, tg_id = await _safe_send(send_text, text)
-    if not ok:
-        logger.warning("daily_checkin: send_text reported failure; not marking fired")
+    from agents.proactive_gate import reserve_and_send
+    result = await reserve_and_send(
+        send_text_fn=send_text,
+        producer_id="daily_checkin",
+        pattern="ceremony",
+        text=text,
+        payload_json="{}",
+    )
+    if result.status != "sent":
+        logger.info("daily_checkin: skipped (%s)", result.reason)
         return False
-    # Write proactive_events row + cadence record.
-    try:
-        db.proactive_event_insert(
-            source="daily_checkin",
-            pattern="ceremony",
-            payload_json="{}",
-            telegram_message_id=tg_id,
-        )
-    except Exception:
-        logger.exception("daily_checkin: proactive_event_insert failed (non-fatal)")
     cadence.record_ceremony_sent("daily_checkin")
-    # Mark fired + start pending-reply window. The send_text closure (Phase 4A)
-    # persists the assistant row via send_and_persist with source='proactive'.
     mark_fired_today(now_local)
     clear_expired_overrides(now_local)
     db.runtime_set(PENDING_KEY, datetime.now(UTC).isoformat())

@@ -4,6 +4,7 @@ as asked so we don't re-ask the same one every week (cooldown logic can
 extend this later)."""
 from __future__ import annotations
 
+import json
 import logging
 
 from agents import cadence, config as cfg
@@ -29,25 +30,26 @@ async def run_decision_resolver(send_text) -> int:
     if not overdue:
         return 0
 
+    from agents.proactive_gate import reserve_and_send
+
     asked = 0
     for d in overdue:
         line = (
             f"calibration check: '{d['statement']}' "
             f"(you said {d['predicted_p']}). did it happen? yes / no."
         )
-        tg_id: int | None = None
-        try:
-            result = await send_text(line)
-            if isinstance(result, tuple) and len(result) == 3:
-                _, raw_tg_id, _ = result
-                try:
-                    tg_id = int(raw_tg_id) if raw_tg_id is not None else None
-                except (TypeError, ValueError):
-                    tg_id = None
-        except Exception:
-            logger.exception(
-                "decision_resolver: send failed for decision_id=%s",
-                d["id"],
+        result = await reserve_and_send(
+            send_text_fn=send_text,
+            producer_id="decision_log",
+            pattern="ceremony",
+            text=line,
+            payload_json=json.dumps({"decision_id": d["id"]}),
+            dedup_key=f"decision_log:{d['id']}",
+        )
+        if result.status != "sent":
+            logger.info(
+                "decision_resolver: gate skipped decision_id=%s (%s)",
+                d["id"], result.reason,
             )
             continue
         try:
@@ -56,17 +58,6 @@ async def run_decision_resolver(send_text) -> int:
             logger.exception(
                 "decision_resolver: mark_asked failed for decision_id=%s",
                 d["id"],
-            )
-        try:
-            db.proactive_event_insert(
-                source="decision_log",
-                pattern="ceremony",
-                payload_json="{}",
-                telegram_message_id=tg_id,
-            )
-        except Exception:
-            logger.exception(
-                "decision_resolver: proactive_event_insert failed (non-fatal)"
             )
         cadence.record_ceremony_sent("decision_log")
         asked += 1

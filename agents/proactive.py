@@ -21,6 +21,7 @@ from storage import db
 from . import cadence
 from . import config as cfg
 from .hooks import _resolve_local_tz_name
+from .proactive_gate import reserve_and_send
 from .runtime import run_internal_control, run_visible_proactive
 
 # Legacy alias so tests that monkeypatch ``proactive.run_proactive`` keep working.
@@ -63,9 +64,6 @@ def _mood_from_core() -> str:
 def should_send_heartbeat() -> bool:
     p = _p()
     now = datetime.now(UTC)
-    silence_until = _parse_dt(db.runtime_get("silence_until"))
-    if silence_until and now < silence_until:
-        return False
     if _is_quiet_now():
         return False
     last_user = _parse_dt(db.runtime_get("last_user_message"))
@@ -92,9 +90,6 @@ def should_send_reengagement() -> bool:
     already sent a re-engagement nudge for this specific silence gap."""
     p = _p()
     now = datetime.now(UTC)
-    silence_until = _parse_dt(db.runtime_get("silence_until"))
-    if silence_until and now < silence_until:
-        return False
     if _is_quiet_now():
         return False
     role, last_ts = _last_message_role()
@@ -111,6 +106,7 @@ def should_send_reengagement() -> bool:
     return True
 
 
+# TODO: remove after all callers migrate to reserve_and_send (Sprint 4 Phase 4B+).
 def _unpack_send_result(
     result: object, draft_text: str,
 ) -> tuple[str, int | None, bool]:
@@ -201,9 +197,22 @@ async def fire_due_reminders(send_text) -> int:
     """Drain reminder_due() — for each row, format + send + mark fired.
     If row has a repeat spec, insert the next occurrence as a fresh row.
     Returns count fired."""
+    import json as _json
+
     due = db.reminder_due()
     if not due:
         return 0
+
+    # Wrap send_text so reserve_and_send always gets the 3-tuple it expects.
+    # Legacy callers (tests, transitional fakes) may return None; normalize.
+    async def _send_text_fn(text: str) -> tuple[str, int | None, bool]:
+        try:
+            result = await send_text(text)
+        except Exception:
+            raise
+        final, tg_id, ok = _unpack_send_result(result, text)
+        return final, tg_id, ok
+
     fired = 0
     for row in due:
         # Phase 13.1 (Stream G — decision): we ship the literal user-set
@@ -211,18 +220,18 @@ async def fire_due_reminders(send_text) -> int:
         # pass. The hard-coded "reminder: " prefix is intentional — no LLM
         # round-trip latency at fire time, and the user expects the exact
         # text they set. Voice-flavor reminders would be a separate feature.
-        text = f"reminder: {row['text']}"
-        try:
-            result = await send_text(text)
-        except Exception:
-            logger.exception("fire_due_reminders: send_text failed for #%s", row["id"])
-            continue
-        _, _, ok = _unpack_send_result(result, text)
-        if not ok:
-            logger.warning(
-                "fire_due_reminders: send_text reported failure for #%s; not persisting",
-                row["id"],
-            )
+        text = row["text"] if row["text"].startswith("reminder:") else f"reminder: {row['text']}"
+        payload = _json.dumps({"reminder_id": row["id"]})
+        result = await reserve_and_send(
+            send_text_fn=_send_text_fn,
+            producer_id="reminder",
+            pattern="fire",
+            text=text,
+            payload_json=payload,
+            dedup_key=f"reminder:{row['id']}",
+        )
+        if result.status != "sent":
+            logger.info("fire_due_reminders: skipped #%s (%s)", row["id"], result.reason)
             continue
         db.reminder_mark_fired(row["id"])
         fired += 1

@@ -51,9 +51,6 @@ def collect() -> list[TriggerCandidate]:
         return []
 
     now = datetime.now(UTC)
-    silence_until = _parse_dt(db.runtime_get("silence_until"))
-    if silence_until and now < silence_until:
-        return []
 
     # Anchor the silence gap on the last inbound user message — proactive
     # assistant rows now persist (Phase 4A) and would otherwise reset the

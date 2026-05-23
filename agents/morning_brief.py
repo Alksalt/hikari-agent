@@ -178,27 +178,17 @@ async def maybe_send_morning_brief(send_text) -> bool:
         return False
     if not text or text.upper().startswith("NO_MESSAGE"):
         return False
-    try:
-        result = await send_text(text)
-    except Exception:
-        logger.exception("morning_brief: send_text failed")
+    from agents.proactive_gate import reserve_and_send
+    result = await reserve_and_send(
+        send_text_fn=send_text,
+        producer_id="morning_brief",
+        pattern="ceremony",
+        text=text,
+        payload_json="{}",
+    )
+    if result.status != "sent":
+        logger.info("morning_brief: skipped (%s)", result.reason)
         return False
-    # Reuse the proactive helper to keep one canonical unpacker (handles
-    # both the production 3-tuple and the legacy None-returning fakes).
-    from agents.proactive import _unpack_send_result
-    _, tg_id, ok = _unpack_send_result(result, text)
-    if not ok:
-        logger.warning("morning_brief: send_text reported failure; not persisting")
-        return False
-    try:
-        db.proactive_event_insert(
-            source="morning_brief",
-            pattern="ceremony",
-            payload_json="{}",
-            telegram_message_id=tg_id,
-        )
-    except Exception:
-        logger.exception("morning_brief: proactive_event_insert failed (non-fatal)")
     cadence.record_ceremony_sent("morning_brief")
     db.runtime_set("last_morning_brief_sent",
                    datetime.now(UTC).isoformat())

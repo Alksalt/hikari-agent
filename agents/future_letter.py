@@ -568,28 +568,52 @@ async def run_future_letter(
 
     # Deliver. Preamble is a single Hikari-voice line so the user knows what's
     # arriving without breaking the letter's first-person frame.
+    import json
+    from agents.proactive_gate import reserve_and_send
+
     chunk_chars = int(cfg.get("future_letter.telegram_chunk_chars", 3800))
     preamble = "i made you something. read it when you have a sec."
     chunks = _chunk_for_telegram(body, chunk_chars)
 
-    send_ok = True
-    last_tg_id: int | None = None
+    r_preamble = await reserve_and_send(
+        send_text_fn=send_text,
+        producer_id="future_letter",
+        pattern="monthly",
+        text=preamble,
+        payload_json=json.dumps({"month": month_iso, "chunk": "preamble"}),
+    )
+    if r_preamble.status != "sent":
+        logger.info("future_letter preamble skipped (%s)", r_preamble.reason)
+        return False
+
+    results = []
+    for i, chunk in enumerate(chunks):
+        r = await reserve_and_send(
+            send_text_fn=send_text,
+            producer_id="future_letter",
+            pattern="monthly",
+            text=chunk,
+            payload_json=json.dumps({"month": month_iso, "chunk": i}),
+        )
+        results.append(r)
+        if r.status != "sent":
+            logger.warning("future_letter chunk %d skipped (%s)", i, r.reason)
+
+    send_ok = all(r.status == "sent" for r in results) and r_preamble.status == "sent"
+
+    # Emit one ceremony audit row so reaction joins work (source='future_letter_send').
+    last_tg_id = results[-1].telegram_message_id if results else r_preamble.telegram_message_id
     try:
-        await send_text(preamble)
-        for chunk in chunks:
-            result = await send_text(chunk)
-            if isinstance(result, tuple) and len(result) == 3:
-                _, raw_tg_id, ok = result
-                send_ok = send_ok and bool(ok)
-                try:
-                    last_tg_id = int(raw_tg_id) if raw_tg_id is not None else last_tg_id
-                except (TypeError, ValueError):
-                    pass
-            else:
-                send_ok = send_ok and bool(result) if result is not None else send_ok
+        db.proactive_event_insert(
+            source="future_letter_send",
+            pattern="ceremony",
+            payload_json="{}",
+            telegram_message_id=last_tg_id,
+        )
     except Exception:
-        logger.exception("future_letter: send failed")
-        send_ok = False
+        logger.exception(
+            "future_letter: proactive_event_insert (summary row) failed (non-fatal)"
+        )
 
     if send_ok:
         try:
@@ -599,17 +623,6 @@ async def run_future_letter(
             logger.exception(
                 "future_letter: marking sent failed (letter persisted, "
                 "manual re-send possible)"
-            )
-        try:
-            db.proactive_event_insert(
-                source="future_letter_send",
-                pattern="ceremony",
-                payload_json="{}",
-                telegram_message_id=last_tg_id,
-            )
-        except Exception:
-            logger.exception(
-                "future_letter: proactive_event_insert failed (non-fatal)"
             )
         cadence.record_ceremony_sent("future_letter_send")
         logger.info(

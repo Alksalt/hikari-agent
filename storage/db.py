@@ -606,6 +606,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_proactive_events(conn)
     _migrate_proactive_events_feedback(conn)
     _migrate_proactive_events_chat_id(conn)
+    _migrate_proactive_events_status(conn)
     _migrate_approvals_gatekeeper(conn)
     _migrate_calendar_notifications(conn)
 
@@ -784,6 +785,32 @@ def _migrate_proactive_events_chat_id(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_proactive_events_chat_id_sent "
         "ON proactive_events(chat_id, sent_at)"
+    )
+
+
+def _migrate_proactive_events_status(conn: sqlite3.Connection) -> None:
+    """Add status + aborted_reason + dedup_key columns to proactive_events for reservation audit.
+
+    Index references the ALTER-added columns, so it must live inside the
+    migration fn (not in _SCHEMA)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(proactive_events)").fetchall()}
+    if "status" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'"
+        )
+    if "aborted_reason" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN aborted_reason TEXT"
+        )
+    if "dedup_key" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN dedup_key TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_events_status_sent "
+        "ON proactive_events(status, sent_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_events_dedup "
+        "ON proactive_events(source, dedup_key, sent_at) WHERE dedup_key IS NOT NULL"
     )
 
 
@@ -2357,15 +2384,65 @@ def tool_calls_insert(
 
 def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
                            telegram_message_id: int | None = None,
-                           chat_id: int | None = None) -> int:
-    """Insert a row into proactive_events. Returns the new row id."""
+                           chat_id: int | None = None,
+                           status: str = "sent",
+                           dedup_key: str | None = None) -> int:
+    """Insert a row into proactive_events. Returns the new row id.
+
+    ``status`` defaults to ``'sent'`` to backfill old call sites that haven't
+    migrated to the reservation pattern yet. Pass ``'reserved'`` from
+    ``reserve_and_send`` before the final gate runs.
+    ``dedup_key`` is persisted to the dedup_key column for exact-match dedup."""
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO proactive_events (sent_at, source, pattern, payload_json, "
-            "telegram_message_id, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (_now(), source, pattern, payload_json, telegram_message_id, chat_id),
+            "telegram_message_id, chat_id, status, dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (_now(), source, pattern, payload_json, telegram_message_id, chat_id, status, dedup_key),
         )
     return int(cur.lastrowid or 0)
+
+
+def proactive_event_update_terminal(
+    event_id: int,
+    *,
+    status: str,
+    telegram_message_id: int | None = None,
+    aborted_reason: str | None = None,
+    payload_json: str | None = None,
+) -> None:
+    """Flip a reserved proactive_events row to a terminal state.
+    Optionally update payload_json on the sent path so reservation rows
+    can stay PII-minimal until commit."""
+    with _conn() as c:
+        if payload_json is not None:
+            c.execute(
+                "UPDATE proactive_events SET status = ?, payload_json = ?, "
+                "telegram_message_id = COALESCE(?, telegram_message_id), "
+                "aborted_reason = ? WHERE id = ?",
+                (status, payload_json, telegram_message_id, aborted_reason, event_id),
+            )
+        else:
+            c.execute(
+                "UPDATE proactive_events SET status = ?, "
+                "telegram_message_id = COALESCE(?, telegram_message_id), "
+                "aborted_reason = ? WHERE id = ?",
+                (status, telegram_message_id, aborted_reason, event_id),
+            )
+
+
+def proactive_event_dedup_hit(
+    source: str, dedup_key: str, window_minutes: int
+) -> bool:
+    """Return True if a status='sent' proactive_events row exists for this
+    source with the exact dedup_key within the window."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM proactive_events "
+            "WHERE source = ? AND dedup_key = ? AND status = 'sent' "
+            "AND sent_at >= datetime('now', ?) LIMIT 1",
+            (source, dedup_key, f"-{window_minutes} minutes"),
+        ).fetchone()
+    return row is not None
 
 
 def proactive_event_record_reaction(telegram_message_id: int, kind: str) -> int:
@@ -2404,14 +2481,14 @@ def proactive_event_record_silence_window(
         if chat_id is not None:
             cur = c.execute(
                 "UPDATE proactive_events SET silenced_within_1h = 1 "
-                "WHERE sent_at >= ? AND chat_id = ?",
+                "WHERE sent_at >= ? AND status = 'sent' AND chat_id = ?",
                 (cutoff, int(chat_id)),
             )
         else:
             # XXX: legacy path — no chat_id; single-user bot only.
             cur = c.execute(
                 "UPDATE proactive_events SET silenced_within_1h = 1 "
-                "WHERE sent_at >= ?",
+                "WHERE sent_at >= ? AND status = 'sent'",
                 (cutoff,),
             )
     return int(cur.rowcount or 0)
@@ -2428,7 +2505,7 @@ def proactive_source_response_rates(days: int = 30) -> dict[str, float]:
         rows = c.execute(
             "SELECT source, SUM(thumbs_up) AS up, SUM(thumbs_down) AS dn "
             "FROM proactive_events "
-            "WHERE sent_at >= ? "
+            "WHERE sent_at >= ? AND status = 'sent' "
             "GROUP BY source",
             (cutoff,),
         ).fetchall()
@@ -2446,7 +2523,7 @@ def proactive_last_send_per_source() -> dict[str, str]:
     with _conn() as c:
         rows = c.execute(
             "SELECT source, MAX(sent_at) AS last_sent "
-            "FROM proactive_events "
+            "FROM proactive_events WHERE status = 'sent' "
             "GROUP BY source",
         ).fetchall()
     return {r["source"]: str(r["last_sent"]) for r in rows if r["last_sent"]}
@@ -2457,7 +2534,7 @@ def proactive_send_count_7d(source: str) -> int:
     with _conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS n FROM proactive_events "
-            "WHERE source = ? AND sent_at >= datetime('now', '-7 days')",
+            "WHERE source = ? AND status = 'sent' AND sent_at >= datetime('now', '-7 days')",
             (str(source),),
         ).fetchone()
     return int(row["n"] or 0) if row else 0
