@@ -261,9 +261,24 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
     async def _monthly_prune_job():
         from storage import db
-        days_msg = int(cfg.get("retention.messages_days", 365))
-        n1 = db.prune_messages_older_than_days(days_msg)
-        logger.info("monthly_prune: messages=%d", n1)
+
+        def _safe_prune(fn, days, label):
+            try:
+                return fn(days)
+            except Exception as exc:
+                logger.error("monthly_prune: %s failed: %s", label, exc)
+                return -1
+
+        n1 = _safe_prune(db.prune_messages_older_than_days,
+                         int(cfg.get("retention.messages_days", 365)), "messages")
+        n2 = _safe_prune(db.prune_oauth_audit_log_older_than_days,
+                         int(cfg.get("retention.oauth_audit_log_days", 365)), "oauth_audit")
+        n3 = _safe_prune(db.prune_drift_probes_older_than_days,
+                         int(cfg.get("retention.drift_probes_days", 180)), "drift_probes")
+        n4 = _safe_prune(db.prune_calendar_notifications_older_than_days,
+                         int(cfg.get("retention.calendar_notifications_days", 90)), "calendar")
+        logger.info("monthly_prune: messages=%d oauth_audit=%d drift_probes=%d calendar=%d",
+                    n1, n2, n3, n4)
 
     scheduler.add_job(
         _monthly_prune_job,

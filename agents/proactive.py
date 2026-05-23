@@ -469,14 +469,11 @@ def _calendar_event_signature(event: dict) -> str:
 
 
 def _calendar_event_already_notified(signature: str) -> bool:
-    return db.runtime_get(f"calendar_notified_{signature}") is not None
+    return db.calendar_notification_exists(signature)
 
 
 def _mark_calendar_event_notified(signature: str) -> None:
-    db.runtime_set(
-        f"calendar_notified_{signature}",
-        datetime.now(UTC).isoformat(),
-    )
+    db.calendar_notification_set(signature)
 
 
 def _event_duration_minutes(event: dict) -> float | None:

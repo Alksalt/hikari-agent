@@ -606,6 +606,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_proactive_events(conn)
     _migrate_proactive_events_feedback(conn)
     _migrate_approvals_gatekeeper(conn)
+    _migrate_calendar_notifications(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -980,6 +981,34 @@ def _migrate_approvals_gatekeeper(conn: sqlite3.Connection) -> None:
     # Python's sqlite3 module (isolation_level='', deferred). Without this,
     # _ensure_schema leaves the connection with an open write transaction that
     # causes SQLITE_LOCKED for concurrent writers even in WAL mode.
+    conn.commit()
+
+
+def _migrate_calendar_notifications(conn: sqlite3.Connection) -> None:
+    """Replace runtime_state `calendar_notified_*` kv keys with a real table.
+    Backfills existing keys; leaves the kv rows to age out separately."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS calendar_notifications ("
+        "signature TEXT PRIMARY KEY, "
+        "notified_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS calendar_notifications_at "
+        "ON calendar_notifications(notified_at)"
+    )
+    # Backfill: scan runtime_state for legacy calendar_notified_ keys.
+    prefix = "calendar_notified_"
+    rows = conn.execute(
+        "SELECT key FROM runtime_state WHERE key LIKE ?",
+        (prefix + "%",),
+    ).fetchall()
+    for row in rows:
+        sig = row["key"][len(prefix):]
+        conn.execute(
+            "INSERT OR IGNORE INTO calendar_notifications (signature) VALUES (?)",
+            (sig,),
+        )
     conn.commit()
 
 
@@ -2359,6 +2388,59 @@ def prune_messages_older_than_days(days: int) -> int:
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM messages WHERE ts < datetime('now', '-' || ? || ' days')",
+            (int(days),),
+        )
+    return int(cur.rowcount or 0)
+
+
+def prune_oauth_audit_log_older_than_days(days: int) -> int:
+    """Delete oauth_audit_log rows older than `days`. Returns rows deleted."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM oauth_audit_log WHERE ts < datetime('now', '-' || ? || ' days')",
+            (int(days),),
+        )
+    return int(cur.rowcount or 0)
+
+
+def prune_drift_probes_older_than_days(days: int) -> int:
+    """Delete persona_drift_probes rows older than `days`. Returns rows deleted."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM persona_drift_probes "
+            "WHERE created_at < datetime('now', '-' || ? || ' days')",
+            (int(days),),
+        )
+    return int(cur.rowcount or 0)
+
+
+# ---------- calendar_notifications ----------
+
+def calendar_notification_set(signature: str) -> None:
+    """Record that a calendar event was notified. Idempotent."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO calendar_notifications (signature) VALUES (?)",
+            (signature,),
+        )
+
+
+def calendar_notification_exists(signature: str) -> bool:
+    """Return True if the signature was previously recorded."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM calendar_notifications WHERE signature = ?",
+            (signature,),
+        ).fetchone()
+    return row is not None
+
+
+def prune_calendar_notifications_older_than_days(days: int) -> int:
+    """Delete calendar_notifications rows older than `days`. Returns rows deleted."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM calendar_notifications "
+            "WHERE notified_at < datetime('now', '-' || ? || ' days')",
             (int(days),),
         )
     return int(cur.rowcount or 0)

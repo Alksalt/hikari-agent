@@ -70,7 +70,9 @@ def test_full_schema_present(tmp_path, monkeypatch):
                 # Phase 2 + Phase 3
                 "background_tasks", "approvals", "audit_log",
                 # Phase 10
-                "reminders"}
+                "reminders",
+                # Sprint 3-A
+                "calendar_notifications"}
     missing = expected - rows
     assert not missing, f"missing tables: {missing}"
     # entities table was dropped
@@ -163,7 +165,7 @@ def test_scheduler_builds(monkeypatch):
         "future_letter",
         # 2026-05-21 Decision-log resolver (weekly Sunday 19:00).
         "decision_resolver",
-        # Phase 3: monthly pruner (messages, audit_log, calendar_kv).
+        # Phase 3 + Sprint 3-A: monthly pruner (messages, oauth_audit_log, drift_probes, calendar_notifications).
         "monthly_prune",
         # Phase 7: wiki_new_file engagement producer (5-min poll).
         "wiki_new_file_tick",
