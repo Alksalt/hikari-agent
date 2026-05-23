@@ -456,6 +456,94 @@ tools:
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__python_run$"]
 
+  - id: "mcp__hikari_utility__receipt_add"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__receipt_set_note"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__receipt_delete"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__decision_log_capture"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__decision_log_resolve"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__link_save"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__link_update"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__link_delete"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__reminder_create"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__reminder_cancel"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
+  - id: "mcp__hikari_utility__reminder_snooze"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
   # for auto-discovered utility tools (calc, reminder_create, receipt_add, etc.).
@@ -560,12 +648,459 @@ tools:
       required: ["https://www.googleapis.com/auth/drive"]
       action: "upload that file"
 
-  # Google Workspace — wildcard catch-all (untrusted read outputs)
-  - id: "mcp__google_workspace__*"
+  - id: "mcp__google_workspace__create_gmail_draft"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "create that draft"
+
+  - id: "mcp__google_workspace__delete_gmail_draft"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "delete that draft"
+
+  - id: "mcp__google_workspace__gmail_send_draft"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "send that draft"
+
+  - id: "mcp__google_workspace__drive_create_folder"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "create that folder"
+
+  - id: "mcp__google_workspace__docs_create_document"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "create that doc"
+
+  - id: "mcp__google_workspace__docs_append_text"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "append to that doc"
+
+  - id: "mcp__google_workspace__docs_insert_text"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "insert into that doc"
+
+  - id: "mcp__google_workspace__docs_prepend_text"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "prepend to that doc"
+
+  - id: "mcp__google_workspace__docs_insert_image"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "insert that image"
+
+  - id: "mcp__google_workspace__docs_batch_update"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "batch-update that doc"
+
+  - id: "mcp__google_workspace__sheets_create_spreadsheet"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "create that spreadsheet"
+
+  - id: "mcp__google_workspace__sheets_add_sheet"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add that sheet"
+
+  - id: "mcp__google_workspace__sheets_delete_sheet"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "delete that sheet"
+
+  - id: "mcp__google_workspace__sheets_append_rows"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "append those rows"
+
+  - id: "mcp__google_workspace__sheets_write_range"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "write that range"
+
+  - id: "mcp__google_workspace__sheets_clear_range"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "clear that range"
+
+  - id: "mcp__google_workspace__create_presentation"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "create that presentation"
+
+  - id: "mcp__google_workspace__create_presentation_from_markdown"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "create that presentation"
+
+  - id: "mcp__google_workspace__create_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add that slide"
+
+  - id: "mcp__google_workspace__delete_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "delete that slide"
+
+  - id: "mcp__google_workspace__duplicate_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "duplicate that slide"
+
+  - id: "mcp__google_workspace__add_text_to_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add text to that slide"
+
+  - id: "mcp__google_workspace__add_formatted_text_to_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add formatted text"
+
+  - id: "mcp__google_workspace__add_bulleted_list_to_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add that list"
+
+  - id: "mcp__google_workspace__add_table_to_slide"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add that table"
+
+  - id: "mcp__google_workspace__add_slide_notes"
+    bucket: 3
+    server: google_workspace
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "add those slide notes"
+
+  # Google Workspace — explicit read tools (13 entries)
+  # Scopes match the granted write scopes — gmail.modify covers read+write,
+  # calendar covers read+write, drive covers read+write.
+  - id: "mcp__google_workspace__query_gmail_emails"
     bucket: 3
     server: google_workspace
     gate: null
     access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "read gmail"
+
+  - id: "mcp__google_workspace__gmail_get_message_details"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "read message details"
+
+  - id: "mcp__google_workspace__gmail_get_attachment_content"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "read attachment"
+
+  - id: "mcp__google_workspace__calendar_get_events"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/calendar"]
+      action: "read calendar events"
+
+  - id: "mcp__google_workspace__calendar_get_event_details"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/calendar"]
+      action: "read event details"
+
+  - id: "mcp__google_workspace__drive_search_files"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "search drive files"
+
+  - id: "mcp__google_workspace__drive_read_file_content"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read file content"
+
+  - id: "mcp__google_workspace__drive_list_shared_drives"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "list shared drives"
+
+  - id: "mcp__google_workspace__docs_get_document_metadata"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read doc metadata"
+
+  - id: "mcp__google_workspace__docs_get_content_as_markdown"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read doc content"
+
+  - id: "mcp__google_workspace__sheets_read_range"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read sheet range"
+
+  - id: "mcp__google_workspace__get_presentation"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read presentation"
+
+  - id: "mcp__google_workspace__get_slides"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "read slides"
+
+  # Google Workspace — wildcard catch-all (fail-closed: unknown tools denied)
+  # access_mode=write so any future upstream tool resolves wildcard+write →
+  # gatekeeper_can_use_tool.py:120 deny fires → safe.
+  - id: "mcp__google_workspace__*"
+    bucket: 3
+    server: google_workspace
+    gate: null
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__google_workspace__"]
 
@@ -625,12 +1160,216 @@ tools:
       required: ["_present"]
       action: "create that notion page"
 
-  # Notion — wildcard catch-all
-  - id: "mcp__notion__*"
+  - id: "mcp__notion__API-create-a-data-source"
+    bucket: 3
+    server: notion
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "create that data source"
+
+  - id: "mcp__notion__API-update-a-data-source"
+    bucket: 3
+    server: notion
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "update that data source"
+
+  - id: "mcp__notion__API-move-page"
+    bucket: 3
+    server: notion
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "move that notion page"
+
+  - id: "mcp__notion__API-create-a-comment"
+    bucket: 3
+    server: notion
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "post that comment"
+
+  # Notion — explicit read tools (13 entries)
+  # Falling back to spec list — notion MCP introspect errors on boot timeout.
+  - id: "mcp__notion__API-get-self"
     bucket: 3
     server: notion
     gate: null
     access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion identity"
+
+  - id: "mcp__notion__API-get-users"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "list notion users"
+
+  - id: "mcp__notion__API-get-user"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion user"
+
+  - id: "mcp__notion__API-retrieve-a-page"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion page"
+
+  - id: "mcp__notion__API-retrieve-a-page-property"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read page property"
+
+  - id: "mcp__notion__API-retrieve-a-database"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion database"
+
+  - id: "mcp__notion__API-retrieve-a-block"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion block"
+
+  - id: "mcp__notion__API-get-block-children"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read block children"
+
+  - id: "mcp__notion__API-post-search"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "search notion"
+
+  - id: "mcp__notion__API-retrieve-a-comment"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read notion comment"
+
+  - id: "mcp__notion__API-retrieve-a-data-source"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "read data source"
+
+  - id: "mcp__notion__API-list-data-source-templates"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "list data source templates"
+
+  - id: "mcp__notion__API-query-data-source"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "query data source"
+
+  # Notion — wildcard catch-all (fail-closed: unknown tools denied)
+  # access_mode=write so any future upstream tool resolves wildcard+write →
+  # gatekeeper_can_use_tool.py:120 deny fires → safe.
+  - id: "mcp__notion__*"
+    bucket: 3
+    server: notion
+    gate: null
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__notion__"]
 
@@ -691,12 +1430,282 @@ tools:
       required: ["_present"]
       action: "delete that repository"
 
-  # GitHub — wildcard catch-all
-  - id: "mcp__github__*"
+  - id: "mcp__github__add_issue_comment"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "post that issue comment"
+
+  - id: "mcp__github__create_branch"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "create that branch"
+
+  - id: "mcp__github__create_or_update_file"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "commit that file"
+
+  - id: "mcp__github__create_pull_request_review"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "submit that PR review"
+
+  - id: "mcp__github__create_repository"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "create that repo"
+
+  - id: "mcp__github__fork_repository"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "fork that repo"
+
+  - id: "mcp__github__push_files"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "push those files"
+
+  - id: "mcp__github__update_issue"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "update that issue"
+
+  - id: "mcp__github__update_pull_request_branch"
+    bucket: 3
+    server: github
+    gate: gatekeeper
+    untrusted_output: false
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "update that PR branch"
+
+  # GitHub — explicit read tools (14 entries)
+  - id: "mcp__github__get_file_contents"
     bucket: 3
     server: github
     gate: null
     access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read file contents"
+
+  - id: "mcp__github__list_commits"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "list commits"
+
+  - id: "mcp__github__get_issue"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read issue"
+
+  - id: "mcp__github__list_issues"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "list issues"
+
+  - id: "mcp__github__search_issues"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "search issues"
+
+  - id: "mcp__github__get_pull_request"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read pull request"
+
+  - id: "mcp__github__list_pull_requests"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "list pull requests"
+
+  - id: "mcp__github__get_pull_request_comments"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read PR comments"
+
+  - id: "mcp__github__get_pull_request_files"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read PR files"
+
+  - id: "mcp__github__get_pull_request_reviews"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read PR reviews"
+
+  - id: "mcp__github__get_pull_request_status"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "read PR status"
+
+  - id: "mcp__github__search_code"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "search code"
+
+  - id: "mcp__github__search_repositories"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "search repositories"
+
+  - id: "mcp__github__search_users"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "search users"
+
+  # GitHub — wildcard catch-all (fail-closed: unknown tools denied)
+  # access_mode=write so any future upstream tool resolves wildcard+write →
+  # gatekeeper_can_use_tool.py:120 deny fires → safe.
+  - id: "mcp__github__*"
+    bucket: 3
+    server: github
+    gate: null
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__github__"]
 

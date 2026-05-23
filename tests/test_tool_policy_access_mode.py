@@ -32,10 +32,12 @@ def registry():
     return _load_yaml(DEFAULT_YAML_PATH)
 
 
-def test_access_mode_read_on_google_workspace(registry):
+def test_access_mode_write_on_google_workspace_wildcard(registry):
+    # Phase 0.2 reviewer-fix: wildcard flipped to write so unknown future tools
+    # resolve wildcard+write → gatekeeper deny fires → fail-closed.
     spec = registry._resolve("mcp__google_workspace__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
 def test_access_mode_write_on_apple_events(registry):
@@ -56,16 +58,18 @@ def test_access_mode_write_on_playwright(registry):
     assert spec.access_mode == "write"
 
 
-def test_access_mode_read_on_notion(registry):
+def test_access_mode_write_on_notion_wildcard(registry):
+    # Phase 0.2 reviewer-fix: wildcard flipped to write → fail-closed.
     spec = registry._resolve("mcp__notion__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
-def test_access_mode_read_on_github(registry):
+def test_access_mode_write_on_github_wildcard(registry):
+    # Phase 0.2 reviewer-fix: wildcard flipped to write → fail-closed.
     spec = registry._resolve("mcp__github__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
 def test_access_mode_read_on_youtube_transcript(registry):
