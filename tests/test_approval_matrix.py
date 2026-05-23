@@ -1,12 +1,14 @@
 """Phase 8 — approval-matrix table tests.
 
+Phase E update: dispatch_claude_session and all other destructive tools are now
+gate: gatekeeper. _is_defer_gated() returns False for every tool; gating happens
+through Gatekeeper.canUseTool instead.
+
 Covers:
-  - regex patterns in ``approvals.defer_gated_tools`` match correctly
-  - ``approvals.defer_when_args_match`` lets dispatch auto-allow when its
-    ``allowed_tools`` arg is read-only, and defer when it includes a write tool
-  - tools not in the gated list always auto-allow
+  - tools not in the defer gated list always auto-allow (all tools after Phase E)
   - malformed args (None, missing key, empty string, case variants) handle
     cleanly without raising
+  - arg-gate conditions still in engagement.yaml are dormant (no-op) after Phase E
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 @pytest.mark.parametrize(
     "tool_name, tool_input, expected",
     [
-        # wiki_append is no longer gated under Phase 8.
+        # wiki_append is not gated.
         ("mcp__hikari_wiki__wiki_append",
          {"path": "p.md", "content": "x"},
          False),
@@ -46,35 +48,35 @@ def _isolated_db(tmp_path: Path, monkeypatch):
         ("mcp__claude_ai_Google_Calendar__create_event",
          {"attendees": ["a@b.com"]},
          False),
-        # Notion: only the real API-* tool names defer-gate; bare names don't match.
+        # Phase E: Notion writes are now gatekeeper-gated, not defer-gated.
+        # _is_defer_gated returns False for all of them.
         ("mcp__notion__create_page", {"title": "x"}, False),
-        ("mcp__notion__API-post-page", {"parent": {}}, True),
-        ("mcp__notion__API-patch-page", {"page_id": "x"}, True),
-        ("mcp__notion__API-patch-block-children", {"block_id": "x"}, True),
-        ("mcp__notion__API-update-a-block", {"block_id": "x"}, True),
-        ("mcp__notion__API-delete-a-block", {"block_id": "x"}, True),
-        # Read-only dispatch auto-runs.
+        ("mcp__notion__API-post-page", {"parent": {}}, False),
+        ("mcp__notion__API-patch-page", {"page_id": "x"}, False),
+        ("mcp__notion__API-patch-block-children", {"block_id": "x"}, False),
+        ("mcp__notion__API-update-a-block", {"block_id": "x"}, False),
+        ("mcp__notion__API-delete-a-block", {"block_id": "x"}, False),
+        # Phase E: dispatch_claude_session is now gatekeeper-gated.
+        # _is_defer_gated returns False regardless of allowed_tools arg.
         ("mcp__hikari_dispatch__dispatch_claude_session",
          {"allowed_tools": "Read,Grep"},
          False),
         ("mcp__hikari_dispatch__dispatch_claude_session",
          {"allowed_tools": "Read,Glob,WebFetch"},
          False),
-        # Write dispatch DEFERS.
         ("mcp__hikari_dispatch__dispatch_claude_session",
          {"allowed_tools": "Read,Edit,Bash"},
-         True),
+         False),
         ("mcp__hikari_dispatch__dispatch_claude_session",
          {"allowed_tools": "Write"},
-         True),
+         False),
         ("mcp__hikari_dispatch__dispatch_claude_session",
-         {"allowed_tools": "bash"},  # case-insensitive
-         True),
+         {"allowed_tools": "bash"},
+         False),
         ("mcp__hikari_dispatch__dispatch_claude_session",
-         {"allowed_tools": "  Edit  "},  # whitespace tolerated
-         True),
-        # Future-proof: a gmail send tool added later would match if/when its
-        # regex is wired. Not in the gated list today.
+         {"allowed_tools": "  Edit  "},
+         False),
+        # gmail send is gatekeeper-gated after Phase E; also not defer-gated.
         ("mcp__claude_ai_Gmail__send_email",
          {"to": "alice@example.com"},
          False),
@@ -85,8 +87,7 @@ def test_is_defer_gated_matrix(tool_name, tool_input, expected):
 
 
 def test_dispatch_with_missing_allowed_tools_arg_auto_allows():
-    """If the dispatch arg is missing entirely, treat as read-only default
-    (the actual tool body will substitute DEFAULT_ALLOWED_TOOLS)."""
+    """Phase E: dispatch_claude_session is gatekeeper-gated. _is_defer_gated always False."""
     assert hooks._is_defer_gated(
         "mcp__hikari_dispatch__dispatch_claude_session",
         {"repo_path": "/Users/alt/work_dir/x", "task": "t"},
@@ -94,11 +95,11 @@ def test_dispatch_with_missing_allowed_tools_arg_auto_allows():
 
 
 def test_dispatch_with_none_tool_input_treated_conservatively():
-    """A None tool_input on a gated tool falls through to defer (we'd rather
-    halt than auto-run when args are unknown)."""
+    """Phase E: dispatch_claude_session is gatekeeper-gated. None tool_input → False
+    (no defer-gated tools remain, so _is_defer_gated always returns False)."""
     assert hooks._is_defer_gated(
         "mcp__hikari_dispatch__dispatch_claude_session", None
-    ) is True
+    ) is False
 
 
 def test_tier_for_tool_always_returns_2():

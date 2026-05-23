@@ -272,7 +272,7 @@ tools:
   - id: "mcp__hikari_dispatch__dispatch_claude_session"
     bucket: 1
     server: hikari_dispatch
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
@@ -414,7 +414,7 @@ tools:
   - id: "mcp__hikari_utility__python_run"
     bucket: 1
     server: hikari_utility
-    gate: defer
+    gate: gatekeeper
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__python_run$"]
 
@@ -426,14 +426,14 @@ tools:
   - id: "mcp__google_workspace__gmail_send_email"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__google_workspace__gmail_reply_to_email"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
@@ -447,35 +447,35 @@ tools:
   - id: "mcp__google_workspace__delete_calendar_event"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__google_workspace__drive_delete_file"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__google_workspace__create_calendar_event"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__google_workspace__drive_delete_folder"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__google_workspace__drive_upload_file"
     bucket: 3
     server: google_workspace
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
@@ -491,35 +491,35 @@ tools:
   - id: "mcp__notion__API-patch-block-children"
     bucket: 3
     server: notion
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__notion__API-update-a-block"
     bucket: 3
     server: notion
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__notion__API-delete-a-block"
     bucket: 3
     server: notion
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__notion__API-patch-page"
     bucket: 3
     server: notion
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__notion__API-post-page"
     bucket: 3
     server: notion
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
@@ -535,35 +535,35 @@ tools:
   - id: "mcp__github__create_issue"
     bucket: 3
     server: github
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__github__create_pull_request"
     bucket: 3
     server: github
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__github__merge_pull_request"
     bucket: 3
     server: github
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__github__delete_file"
     bucket: 3
     server: github
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 
   - id: "mcp__github__delete_repository"
     bucket: 3
     server: github
-    gate: defer
+    gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
 

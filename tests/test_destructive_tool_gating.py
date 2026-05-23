@@ -1,20 +1,13 @@
 """Phase 13.1 (Stream K) — regression: destructive tool gating coverage.
 
-Extends the Google Workspace gating tests (test_google_workspace_send_policy.py)
-to cover Notion write operations, GitHub create_issue / create_pull_request,
-and Apple Events mutating operations.
-
-These tests pin the expected gating decisions for Stream J. If J's changes
-haven't landed in config/engagement.yaml yet, these tests will fail — that is
-intentional (they specify the target behaviour).
-
-Coordinate with Stream J for final Apple Events gating decisions.
+Phase E update: all destructive tools migrated from gate: defer → gate: gatekeeper.
+The old _is_matched_by_patterns / defer hook trigger tests are replaced with
+gatekeeper-gate assertions. The Apple Events ungated section is unchanged.
 """
 
 from __future__ import annotations
 
 import importlib
-import re
 from pathlib import Path
 
 import pytest
@@ -32,29 +25,15 @@ def _reload_config(tmp_path: Path, monkeypatch):
     yield
 
 
-def _is_matched_by_patterns(tool_name: str) -> bool:
-    """Replicate the exact matching logic from agents/hooks.py:_is_defer_gated.
-
-    Phase A (step 9): defer_gated_tools removed from engagement.yaml;
-    patterns now sourced from tools._tools_yaml registry with config fallback.
-    """
-    cfg_patterns = config.get("approvals.defer_gated_tools")
-    if cfg_patterns is not None:
-        patterns = cfg_patterns
-    else:
-        from tools._tools_yaml import load_registry
-        patterns = load_registry().defer_gated_patterns()
-    for pat in patterns:
-        try:
-            if re.fullmatch(str(pat), tool_name):
-                return True
-        except re.error:
-            pass
-    return False
+def _gate_for(tool_name: str) -> str | None:
+    """Return the gate value from the registry for a given tool name."""
+    from tools._tools_yaml import load_registry
+    spec = load_registry()._resolve(tool_name)
+    return spec.gate if spec else None
 
 
 # ---------------------------------------------------------------------------
-# Notion write operations (J-1)
+# Notion write operations — Phase E: all gate: gatekeeper
 # ---------------------------------------------------------------------------
 
 _NOTION_WRITE_TOOLS = [
@@ -67,45 +46,25 @@ _NOTION_WRITE_TOOLS = [
 
 
 @pytest.mark.parametrize("tool_name", _NOTION_WRITE_TOOLS)
-def test_notion_write_tools_are_gated(tool_name):
-    """Notion write operations must be in defer_gated_tools (Stream J)."""
-    assert _is_matched_by_patterns(tool_name), (
-        f"{tool_name!r} must be gated in approvals.defer_gated_tools. "
-        "Stream J should have added Notion write operations to the gating list."
+def test_notion_write_tools_are_gatekeeper_gated(tool_name):
+    """Phase E: Notion write operations must have gate: gatekeeper."""
+    assert _gate_for(tool_name) == "gatekeeper", (
+        f"{tool_name!r} must have gate: gatekeeper after Phase E migration."
     )
 
 
 @pytest.mark.parametrize("tool_name", _NOTION_WRITE_TOOLS)
-@pytest.mark.asyncio
-async def test_notion_write_tools_trigger_defer_hook(tool_name, monkeypatch):
-    """Notion write tools must actually trigger permissionDecision='defer'."""
-    from agents import hooks
-    from tools import approvals as approval_tools
-
-    sent: list = []
-
-    async def fake_send_defer(chat_id, tier, summary):
-        sent.append((chat_id, tier, summary))
-
-    monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send_defer)
-
-    out = await hooks.defer_gated_tools(
-        {
-            "tool_name": tool_name,
-            "tool_use_id": f"tu_{tool_name[:20]}",
-            "tool_input": {"page_id": "abc123", "properties": {}},
-        },
-        None,
-        None,
-    )
-
-    assert out.get("hookSpecificOutput", {}).get("permissionDecision") == "defer", (
-        f"Expected defer for {tool_name!r} but got: {out}"
+def test_notion_write_tools_not_in_defer_patterns(tool_name):
+    """Phase E: Notion write tools must NOT appear in defer_gated_patterns."""
+    from tools._tools_yaml import load_registry
+    defer_patterns = load_registry().defer_gated_patterns()
+    assert not any(tool_name in pat or pat in tool_name for pat in defer_patterns), (
+        f"{tool_name!r} must not be in defer_gated_patterns after Phase E."
     )
 
 
 # ---------------------------------------------------------------------------
-# GitHub create operations (J-1)
+# GitHub operations — Phase E: all gate: gatekeeper
 # ---------------------------------------------------------------------------
 
 _GITHUB_CREATE_TOOLS = [
@@ -118,40 +77,20 @@ _GITHUB_CREATE_TOOLS = [
 
 
 @pytest.mark.parametrize("tool_name", _GITHUB_CREATE_TOOLS)
-def test_github_create_tools_are_gated(tool_name):
-    """GitHub create_issue / create_pull_request must be in defer_gated_tools."""
-    assert _is_matched_by_patterns(tool_name), (
-        f"{tool_name!r} must be gated in approvals.defer_gated_tools. "
-        "Stream J should have added GitHub create operations to the gating list."
+def test_github_create_tools_are_gatekeeper_gated(tool_name):
+    """Phase E: GitHub destructive tools must have gate: gatekeeper."""
+    assert _gate_for(tool_name) == "gatekeeper", (
+        f"{tool_name!r} must have gate: gatekeeper after Phase E migration."
     )
 
 
 @pytest.mark.parametrize("tool_name", _GITHUB_CREATE_TOOLS)
-@pytest.mark.asyncio
-async def test_github_create_tools_trigger_defer_hook(tool_name, monkeypatch):
-    """GitHub create tools must actually trigger permissionDecision='defer'."""
-    from agents import hooks
-    from tools import approvals as approval_tools
-
-    sent: list = []
-
-    async def fake_send_defer(chat_id, tier, summary):
-        sent.append((chat_id, tier, summary))
-
-    monkeypatch.setattr(approval_tools, "send_defer_prompt", fake_send_defer)
-
-    out = await hooks.defer_gated_tools(
-        {
-            "tool_name": tool_name,
-            "tool_use_id": f"tu_{tool_name[:20]}",
-            "tool_input": {"title": "test", "body": "test body"},
-        },
-        None,
-        None,
-    )
-
-    assert out.get("hookSpecificOutput", {}).get("permissionDecision") == "defer", (
-        f"Expected defer for {tool_name!r} but got: {out}"
+def test_github_tools_not_in_defer_patterns(tool_name):
+    """Phase E: GitHub tools must NOT appear in defer_gated_patterns."""
+    from tools._tools_yaml import load_registry
+    defer_patterns = load_registry().defer_gated_patterns()
+    assert not any(tool_name in pat or pat in tool_name for pat in defer_patterns), (
+        f"{tool_name!r} must not be in defer_gated_patterns after Phase E."
     )
 
 
@@ -177,10 +116,11 @@ _APPLE_UNGATED_TOOLS = [
 
 @pytest.mark.parametrize("tool_name", _APPLE_UNGATED_TOOLS)
 def test_apple_events_writes_intentionally_not_gated(tool_name):
-    """Apple Events writes must NOT be in defer_gated_tools (Phase 13.1)."""
-    assert not _is_matched_by_patterns(tool_name), (
-        f"{tool_name!r} appears to be gated, but Phase 13.1 deliberately "
-        "leaves Apple Events writes ungated (see config/engagement.yaml comment "
+    """Apple Events writes must NOT be gatekeeper-gated (Phase 13.1)."""
+    gate = _gate_for(tool_name)
+    assert gate != "gatekeeper" and gate != "defer", (
+        f"{tool_name!r} appears to be gated ({gate!r}), but Phase 13.1 deliberately "
+        "leaves Apple Events writes ungated (see config/tools.yaml comment "
         "near the apple_events block)."
     )
 
@@ -219,28 +159,26 @@ async def test_apple_events_writes_do_not_trigger_defer_hook(tool_name, monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Google Workspace: existing gated tools still work (non-regression)
+# Google Workspace: Phase E — all gatekeeper-gated
 # ---------------------------------------------------------------------------
-# Phase E: gmail_bulk_delete_messages migrated from defer → gatekeeper.
-# The remaining tools stay on the defer path.
 
-_EXISTING_GW_DEFER_GATED_TOOLS = [
+_GW_GATEKEEPER_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
+    "mcp__google_workspace__gmail_reply_to_email",
+    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
+    "mcp__google_workspace__create_calendar_event",
+    "mcp__google_workspace__drive_delete_folder",
+    "mcp__google_workspace__drive_upload_file",
 ]
 
 
-@pytest.mark.parametrize("tool_name", _EXISTING_GW_DEFER_GATED_TOOLS)
-def test_existing_gw_gated_tools_still_gated(tool_name):
-    """Existing Stream A defer-gated tools must not have been accidentally ungated.
-
-    Phase E: gmail_bulk_delete_messages is excluded here — it now has
-    gate: gatekeeper and is tested separately.
-    """
-    assert _is_matched_by_patterns(tool_name), (
-        f"{tool_name!r} was previously gated and must remain so. "
-        "Non-regression check for Stream J changes."
+@pytest.mark.parametrize("tool_name", _GW_GATEKEEPER_TOOLS)
+def test_gw_tools_are_gatekeeper_gated(tool_name):
+    """Phase E: all Google Workspace destructive tools must have gate: gatekeeper."""
+    assert _gate_for(tool_name) == "gatekeeper", (
+        f"{tool_name!r} must have gate: gatekeeper after Phase E migration."
     )
 
 
@@ -252,7 +190,17 @@ def test_gmail_bulk_delete_is_gatekeeper_gated():
     assert spec.gate == "gatekeeper", (
         "gmail_bulk_delete_messages must have gate: gatekeeper after Phase E migration"
     )
-    # Must NOT appear in defer patterns.
-    assert not _is_matched_by_patterns("mcp__google_workspace__gmail_bulk_delete_messages"), (
-        "gmail_bulk_delete_messages must NOT be in defer_gated_patterns after Phase E"
+    from tools._tools_yaml import load_registry as _lr
+    defer_patterns = _lr().defer_gated_patterns()
+    assert not any(
+        "gmail_bulk_delete" in pat for pat in defer_patterns
+    ), "gmail_bulk_delete_messages must NOT be in defer_gated_patterns after Phase E"
+
+
+def test_no_defer_gated_tools_remain():
+    """Phase E: defer_gated_patterns() must return empty — all tools migrated."""
+    from tools._tools_yaml import load_registry
+    patterns = load_registry().defer_gated_patterns()
+    assert patterns == [], (
+        f"Expected no defer-gated tools after Phase E; got: {patterns}"
     )

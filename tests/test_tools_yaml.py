@@ -123,59 +123,55 @@ class TestAllowedToolNames:
 # ---------------------------------------------------------------------------
 
 class TestDeferGatedPatterns:
-    def test_defer_gated_patterns_non_empty(self, registry):
+    def test_defer_gated_patterns_empty_after_phase_e(self, registry):
+        """Phase E: all tools migrated from defer → gatekeeper. No defer patterns remain."""
         patterns = registry.defer_gated_patterns()
-        assert len(patterns) > 0
+        assert patterns == [], (
+            f"Expected no defer-gated tools after Phase E migration; got: {patterns}"
+        )
 
-    def test_dispatch_is_gated(self, registry):
-        import re
-        patterns = registry.defer_gated_patterns()
-        assert any(
-            re.fullmatch(p, "mcp__hikari_dispatch__dispatch_claude_session")
-            for p in patterns
-        ), "dispatch_claude_session must be in defer_gated_patterns"
+    def test_dispatch_is_gatekeeper_gated(self, registry):
+        """Phase E: dispatch_claude_session is now gatekeeper-gated, not defer-gated."""
+        spec = registry._resolve("mcp__hikari_dispatch__dispatch_claude_session")
+        assert spec is not None
+        assert spec.gate == "gatekeeper", (
+            "dispatch_claude_session must have gate: gatekeeper after Phase E"
+        )
 
-    def test_gmail_sends_are_gated(self, registry):
-        """Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
-        gmail_send_email and gmail_reply_to_email remain on the defer path."""
-        import re
-        patterns = registry.defer_gated_patterns()
+    def test_gmail_sends_are_gatekeeper_gated(self, registry):
+        """Phase E: all gmail tools migrated to gatekeeper."""
         for tool in [
             "mcp__google_workspace__gmail_send_email",
             "mcp__google_workspace__gmail_reply_to_email",
+            "mcp__google_workspace__gmail_bulk_delete_messages",
         ]:
-            assert any(re.fullmatch(p, tool) for p in patterns), (
-                f"{tool} must be in defer_gated_patterns"
+            spec = registry._resolve(tool)
+            assert spec is not None and spec.gate == "gatekeeper", (
+                f"{tool} must have gate: gatekeeper after Phase E"
             )
-        # gmail_bulk_delete_messages is now on the gatekeeper path.
-        spec = registry._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
-        assert spec is not None and spec.gate == "gatekeeper", (
-            "gmail_bulk_delete_messages must have gate: gatekeeper (Phase E)"
-        )
 
-    def test_notion_writes_are_gated(self, registry):
-        import re
-        patterns = registry.defer_gated_patterns()
+    def test_notion_writes_are_gatekeeper_gated(self, registry):
+        """Phase E: Notion write tools migrated to gatekeeper."""
         for tool in [
             "mcp__notion__API-patch-block-children",
             "mcp__notion__API-post-page",
         ]:
-            assert any(re.fullmatch(p, tool) for p in patterns), (
-                f"{tool} must be in defer_gated_patterns"
+            spec = registry._resolve(tool)
+            assert spec is not None and spec.gate == "gatekeeper", (
+                f"{tool} must have gate: gatekeeper after Phase E"
             )
 
-    def test_python_run_is_gated(self, registry):
-        import re
-        patterns = registry.defer_gated_patterns()
-        assert any(
-            re.fullmatch(p, "mcp__hikari_utility__python_run")
-            for p in patterns
-        ), "python_run must be in defer_gated_patterns"
+    def test_python_run_is_gatekeeper_gated(self, registry):
+        """Phase E: python_run migrated to gatekeeper."""
+        spec = registry._resolve("mcp__hikari_utility__python_run")
+        assert spec is not None and spec.gate == "gatekeeper", (
+            "python_run must have gate: gatekeeper after Phase E"
+        )
 
     def test_matches_engagement_yaml_gate_list(self):
-        """Registry defer patterns must cover every entry in the old
-        engagement.yaml defer_gated_tools list."""
-        import re
+        """Phase E: engagement.yaml approvals.defer_gated_tools may still list
+        patterns (for config-override compatibility), but the registry has zero
+        defer-gated tools. Both sources should agree."""
         from agents import config as cfg
         old_patterns = cfg.get("approvals.defer_gated_tools") or []
 
@@ -183,17 +179,18 @@ class TestDeferGatedPatterns:
         reg = _load_yaml(DEFAULT_YAML_PATH)
         new_patterns = reg.defer_gated_patterns()
 
-        # For each old pattern, construct a representative tool name that
-        # it would match and verify the new registry also matches it.
-        for old_pat in old_patterns:
-            # Strip anchors to get the tool name
-            name = old_pat.lstrip("^").rstrip("$")
-            if name.endswith(".*"):
-                name = name[:-2] + "_foo"
-            matched_old = bool(re.fullmatch(old_pat, name))
-            matched_new = any(re.fullmatch(p, name) for p in new_patterns)
-            assert matched_old == matched_new, (
-                f"old pattern {old_pat!r} covers {name!r} but new registry does not"
+        # New registry must be empty after Phase E.
+        assert new_patterns == [], (
+            f"Registry defer_gated_patterns() must be empty after Phase E; got: {new_patterns}"
+        )
+        # If the config also has entries, the test environment may have a legacy
+        # engagement.yaml — log but don't fail (config override is intentional).
+        if old_patterns:
+            import warnings
+            warnings.warn(
+                f"engagement.yaml still has approvals.defer_gated_tools: {old_patterns} "
+                "— this is a legacy override; Phase F will clean this up.",
+                stacklevel=1,
             )
 
 

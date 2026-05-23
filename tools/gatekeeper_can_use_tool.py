@@ -57,6 +57,12 @@ def _resolve_chat_id() -> int:
 
 
 def _summarize(tool_name: str, input_args: dict) -> str:
+    # Per-tool readable summary first; fall back to JSON dump if unmapped.
+    try:
+        from tools.gatekeeper import summarize as _per_tool_summary
+        return _per_tool_summary(tool_name, input_args)
+    except (ImportError, NotImplementedError):
+        pass
     try:
         pretty = json.dumps(input_args, ensure_ascii=False)
     except (TypeError, ValueError):

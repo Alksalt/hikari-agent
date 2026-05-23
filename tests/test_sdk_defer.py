@@ -83,10 +83,13 @@ def test_approvals_pending_deferred_returns_only_defer_rows():
 
 @pytest.mark.asyncio
 async def test_defer_hook_returns_defer_for_gated_tool(monkeypatch):
-    """defer_gated_tools returns the SDK defer decision for tools in the gated list."""
+    """Phase E: dispatch_claude_session is now gatekeeper-gated. The defer hook
+    must return {} (pass-through) for it — gating happens in canUseTool instead.
+
+    This test validates the Phase E behavior: no defer for formerly-deferred tools.
+    """
     from agents import hooks
 
-    # Stub the OOB Telegram prompt so we don't actually need a bot.
     sent: list[tuple[int, int, str]] = []
     from tools import approvals as approval_tools
 
@@ -102,13 +105,15 @@ async def test_defer_hook_returns_defer_for_gated_tool(monkeypatch):
                         "allowed_tools": "Read,Edit,Bash"}},
         None, None,
     )
-    assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
-    # Persisted a row.
+    # Phase E: gatekeeper-gated tools pass through the defer hook unchanged.
+    assert out == {}, (
+        f"Expected empty dict for gatekeeper-gated dispatch tool, got: {out}"
+    )
+    # No defer row persisted (gatekeeper handles its own DB rows).
     pending = db.approval_pending_for(12345)
-    assert pending is not None
-    assert pending["deferred_tool_use_id"] == "tu_abc"
-    # Sent a prompt.
-    assert len(sent) == 1
+    assert pending is None
+    # No defer prompt sent.
+    assert len(sent) == 0
 
 
 @pytest.mark.asyncio
@@ -287,10 +292,11 @@ async def test_defer_hook_bypasses_when_in_approval_resume(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_defer_hook_still_defers_other_tools_during_approval_resume(monkeypatch):
-    """Bypass is scoped to the EXACT tool name in IN_APPROVAL_RESUME_TOOL. If
-    the resume turn's model decides to call a *different* gated tool, that
-    tool still defers normally — the user shouldn't lose approval coverage
-    on unrelated destructive operations just because one approval is mid-flight.
+    """Phase E: all destructive tools are gatekeeper-gated. The defer hook
+    returns {} for every tool now, regardless of IN_APPROVAL_RESUME_TOOL state.
+
+    Gating for these tools happens through canUseTool (Gatekeeper), not PreToolUse.
+    The bypass contextvar logic is now dormant for gatekeeper-gated tools.
     """
     from agents import hooks
     from tools import approvals as approval_tools
@@ -303,14 +309,16 @@ async def test_defer_hook_still_defers_other_tools_during_approval_resume(monkey
         "mcp__google_workspace__gmail_bulk_delete_messages",
     )
     try:
-        # Different gated tool — must defer.
+        # Phase E: drive_delete_file is gatekeeper-gated — defer hook passes through.
         out = await hooks.defer_gated_tools(
             {"tool_name": "mcp__google_workspace__drive_delete_file",
              "tool_use_id": "tu_other",
              "tool_input": {"file_id": "xyz"}},
             None, None,
         )
-        assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
+        assert out == {}, (
+            f"Phase E: gatekeeper-gated drive_delete_file must not trigger defer hook; got: {out}"
+        )
     finally:
         hooks.IN_APPROVAL_RESUME_TOOL.reset(token)
 
@@ -491,7 +499,11 @@ async def test_resume_failure_keeps_row_as_rejected_not_approved(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_defer_hook_still_defers_when_oob_send_fails(monkeypatch):
-    """Best-effort guarantee: prompt-send failure does NOT prevent the SDK halt."""
+    """Phase E: dispatch_claude_session is gatekeeper-gated. The defer hook
+    returns {} regardless of whether OOB send would succeed or fail.
+
+    Gating (and the Telegram prompt) now happens through Gatekeeper.canUseTool.
+    """
     from agents import hooks
     from tools import approvals as approval_tools
 
@@ -506,11 +518,12 @@ async def test_defer_hook_still_defers_when_oob_send_fails(monkeypatch):
                         "allowed_tools": "Read,Edit"}},
         None, None,
     )
-    assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
-    # Row persisted despite send failure (we'd rather lose the prompt than the halt).
+    # Phase E: gatekeeper-gated tools pass through unchanged — no defer row.
+    assert out == {}, (
+        f"Phase E: gatekeeper-gated dispatch must not trigger defer hook; got: {out}"
+    )
     pending = db.approval_pending_for(12345)
-    assert pending is not None
-    assert pending["deferred_tool_use_id"] == "tu_no_telegram"
+    assert pending is None
 
 
 # ---------- restart recovery ----------
@@ -633,22 +646,20 @@ def test_queue_cancel_tool_use_appends_and_dedups(tmp_path, monkeypatch):
 
 async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_path):
     """`defer_gated_tools` returns permissionDecision='deny' for a tool_use_id
-    already enqueued in `cancelled_tool_use_ids`. The id is popped (one-shot);
-    a second call with the same id (on a defer-gated tool) would defer again.
+    already enqueued in `cancelled_tool_use_ids`. The id is popped (one-shot).
 
-    Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
-    The cancel-queue deny path fires BEFORE _is_defer_gated so the deny still
-    fires for any tool_use_id in the queue, regardless of gate_kind.
-    For the second call we use gmail_send_email (still defer-gated) to verify
-    the pop-and-defer-again behavior.
+    Phase E: all destructive tools are gatekeeper-gated. The cancel-queue deny
+    path fires BEFORE _is_defer_gated so the deny still fires for any
+    tool_use_id in the queue, regardless of gate_kind — this is intentional.
+
+    After the pop, a fresh call to the same gatekeeper-gated tool with a new
+    tool_use_id passes through with {} (gatekeeper handles the actual gate).
     """
     import json
     from agents import hooks
     from storage import db
     from tools import approvals as approval_tools
 
-    # OWNER_TELEGRAM_ID is required by the legacy defer path; the deny branch
-    # short-circuits before that lookup, but set it to be safe.
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
     db.runtime_set(approval_tools.CANCEL_QUEUE_KEY, json.dumps(["toolu_stuck"]))
 
@@ -662,25 +673,28 @@ async def test_defer_hook_returns_deny_when_id_in_cancel_queue(monkeypatch, tmp_
         None, None,
     )
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    # Queue is now empty.
+    # Queue is now empty (one-shot pop).
     raw = db.runtime_get(approval_tools.CANCEL_QUEUE_KEY)
     assert json.loads(raw or "[]") == []
 
-    # A fresh defer-attempt with the same id (after pop) uses a defer-gated tool
-    # to verify the tool_use_id is no longer in the queue and the hook defers normally.
+    # Phase E: all destructive tools are gatekeeper-gated. A fresh call with a
+    # new tool_use_id (not in queue) passes through the defer hook with {}.
     async def _noop_send(chat_id, tier, summary):
         pass
     monkeypatch.setattr(approval_tools, "send_defer_prompt", _noop_send)
 
     out2 = await hooks.defer_gated_tools(
         {
-            "tool_name": "mcp__google_workspace__gmail_send_email",  # still defer-gated
+            "tool_name": "mcp__google_workspace__gmail_send_email",
             "tool_input": {"to": "a@b.com", "subject": "hi", "body": "hello"},
             "tool_use_id": "toolu_fresh",
         },
         None, None,
     )
-    assert out2["hookSpecificOutput"]["permissionDecision"] == "defer"
+    # Phase E: gatekeeper-gated — passes through the defer hook with {}.
+    assert out2 == {}, (
+        f"Phase E: gatekeeper-gated gmail_send_email must pass through defer hook; got: {out2}"
+    )
 
 
 # ---------- Task 3: timeout watcher enqueues ----------
@@ -862,12 +876,9 @@ async def test_resume_after_defer_enqueues_on_failure(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
-    """When _precheck_scopes returns None (scope satisfied), the defer hook
-    should still defer gated tools normally.
-
-    Phase E: gmail_bulk_delete_messages is now gatekeeper-gated, not defer-gated.
-    This test uses gmail_send_email (still defer-gated) to verify the same
-    precheck-OK → defer behavior.
+    """Phase E: gmail_send_email is now gatekeeper-gated, not defer-gated.
+    When _precheck_scopes returns None (scope OK), the defer hook passes through
+    with {} — the gatekeeper handles the actual gate via canUseTool.
     """
     from agents import hooks
     from auth.providers import ToolSpec, ScopeConfig
@@ -893,7 +904,7 @@ async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
     monkeypatch.setattr(prov_mod, "get_provider", lambda name: _FullProvider())
     monkeypatch.setenv("AUTH_PRECHECK", "enforce")
 
-    # Stub the OOB Telegram prompt
+    # Stub the OOB Telegram prompt (should not be called)
     from tools import approvals as approval_tools
     async def fake_send(chat_id, tier, summary):
         pass
@@ -905,5 +916,9 @@ async def test_defer_still_fires_when_scope_is_ok(monkeypatch):
          "tool_input": {"to": "x@y.com", "subject": "hi", "body": "hello"}},
         None, None,
     )
-    # Scope is OK → precheck passes → tool still defers normally
-    assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
+    # Phase E: gatekeeper-gated tool — defer hook passes through with {}
+    # Scope is OK → precheck returns None → defer hook checks _is_defer_gated
+    # → returns False (gatekeeper-gated, not defer-gated) → returns {}
+    assert out == {}, (
+        f"Phase E: gatekeeper-gated gmail_send_email must not trigger defer hook; got: {out}"
+    )

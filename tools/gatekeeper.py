@@ -259,3 +259,105 @@ class Gatekeeper:
 
 
 GATEKEEPER = Gatekeeper()
+
+
+def summarize(tool_name: str, tool_input: dict) -> str:
+    """Return a one-line human-readable description of a gated tool call.
+
+    Used by can_use_tool handlers to build the approval prompt shown to the
+    owner. Handlers are ordered most-specific first; the fallback at the end
+    catches any unregistered tool and fails loud so coverage gaps surface
+    immediately.
+    """
+    if tool_name == "mcp__google_workspace__gmail_bulk_delete_messages":
+        query = tool_input.get("query", "?")
+        return f"bulk-delete gmail messages matching {query!r}"
+
+    if tool_name == "mcp__google_workspace__gmail_send_email":
+        to = tool_input.get("to", "?")
+        subject = (tool_input.get("subject") or "")[:60]
+        return f"send email to {to}: {subject!r}"
+
+    if tool_name == "mcp__google_workspace__gmail_reply_to_email":
+        msg_id = tool_input.get("message_id", "?")
+        body_preview = (tool_input.get("body") or "")[:80]
+        return f"reply to gmail thread {msg_id}: {body_preview!r}"
+
+    if tool_name == "mcp__google_workspace__delete_calendar_event":
+        event_id = tool_input.get("event_id", "?")
+        cal_id = tool_input.get("calendar_id", "primary")
+        return f"delete calendar event {event_id} from {cal_id}"
+
+    if tool_name == "mcp__google_workspace__drive_delete_file":
+        file_id = tool_input.get("file_id", "?")
+        return f"delete drive file {file_id}"
+
+    if tool_name == "mcp__google_workspace__create_calendar_event":
+        title = (tool_input.get("summary") or tool_input.get("title") or "?")[:60]
+        start = tool_input.get("start_time") or tool_input.get("start", "?")
+        return f"create calendar event {title!r} at {start}"
+
+    if tool_name == "mcp__google_workspace__drive_delete_folder":
+        folder_id = tool_input.get("folder_id", "?")
+        return f"delete drive folder {folder_id}"
+
+    if tool_name == "mcp__google_workspace__drive_upload_file":
+        name = (tool_input.get("file_name") or tool_input.get("name") or "?")[:60]
+        return f"upload to drive: {name!r}"
+
+    if tool_name == "mcp__notion__API-patch-page":
+        page_id = tool_input.get("page_id", "?")
+        return f"patch notion page {page_id}"
+
+    if tool_name == "mcp__notion__API-post-page":
+        parent = (tool_input.get("parent") or {}).get("page_id") or "?"
+        return f"create notion page under {parent}"
+
+    if tool_name == "mcp__notion__API-patch-block-children":
+        block_id = tool_input.get("block_id", "?")
+        return f"add children to notion block {block_id}"
+
+    if tool_name == "mcp__notion__API-update-a-block":
+        block_id = tool_input.get("block_id", "?")
+        return f"update notion block {block_id}"
+
+    if tool_name == "mcp__notion__API-delete-a-block":
+        block_id = tool_input.get("block_id", "?")
+        return f"delete notion block {block_id}"
+
+    if tool_name == "mcp__github__create_issue":
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        title = (tool_input.get("title") or "?")[:60]
+        return f"create issue in {repo}: {title!r}"
+
+    if tool_name == "mcp__github__create_pull_request":
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        title = (tool_input.get("title") or "?")[:60]
+        return f"open PR in {repo}: {title!r}"
+
+    if tool_name == "mcp__github__merge_pull_request":
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        pull = tool_input.get("pullNumber") or tool_input.get("pull_number", "?")
+        return f"merge PR #{pull} in {repo}"
+
+    if tool_name == "mcp__github__delete_file":
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        path = tool_input.get("path", "?")
+        return f"delete {path} from {repo}"
+
+    if tool_name == "mcp__github__delete_repository":
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        return f"DELETE REPO {repo}"
+
+    if tool_name == "mcp__hikari_dispatch__dispatch_claude_session":
+        task_preview = (tool_input.get("task") or tool_input.get("prompt") or "")[:80]
+        return f"dispatch claude session: {task_preview!r}"
+
+    if tool_name == "mcp__hikari_utility__python_run":
+        code_preview = (tool_input.get("code") or "")[:120]
+        return f"run python: {code_preview!r}"
+
+    raise NotImplementedError(
+        f"summarize: no handler for gated tool {tool_name!r} — "
+        "add a case to tools/gatekeeper.py:summarize()"
+    )

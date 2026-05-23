@@ -1,15 +1,13 @@
 """Stream A gating policy regression: Gmail sends, calendar event delete, and
-Drive file delete must all be in the defer_gated_tools list and must actually
-trigger the defer hook on a fake PreToolUse invocation.
+Drive file delete must all be gatekeeper-gated after Phase E.
 
-Phase E: gmail_bulk_delete_messages has been migrated from gate: defer to
-gate: gatekeeper. It is excluded from the defer-path assertions here and
-tested separately in test_gatekeeper_integration.py.
+Phase E: all tools migrated from gate: defer → gate: gatekeeper.
+The defer hook no longer fires for any of these tools — they are gated through
+Gatekeeper.canUseTool instead.
 """
 from __future__ import annotations
 
 import importlib
-import re
 from pathlib import Path
 
 import pytest
@@ -27,64 +25,50 @@ def _reload_config(tmp_path: Path, monkeypatch):
     yield
 
 
-# Phase E: gmail_bulk_delete_messages removed from defer list (now gatekeeper-gated).
-_DEFER_GATED_TOOLS = [
+# Phase E: all previously defer-gated workspace tools are now gatekeeper-gated.
+_GATEKEEPER_GATED_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
     "mcp__google_workspace__gmail_reply_to_email",
+    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
+    "mcp__google_workspace__create_calendar_event",
+    "mcp__google_workspace__drive_delete_folder",
+    "mcp__google_workspace__drive_upload_file",
 ]
 
 
-def _is_matched_by_patterns(tool_name: str) -> bool:
-    """Replicate the exact matching logic from agents/hooks.py:_is_defer_gated.
-
-    Phase A (step 9): defer_gated_tools removed from engagement.yaml;
-    patterns now sourced from tools._tools_yaml registry with config fallback.
-    """
-    cfg_patterns = config.get("approvals.defer_gated_tools")
-    if cfg_patterns is not None:
-        patterns = cfg_patterns
-    else:
-        from tools._tools_yaml import load_registry
-        patterns = load_registry().defer_gated_patterns()
-    for pat in patterns:
-        try:
-            if re.fullmatch(str(pat), tool_name):
-                return True
-        except re.error:
-            pass
-    return False
-
-
-def test_defer_gated_tools_contains_required_patterns():
-    """config/tools.yaml must list patterns that match every Stream A defer-gated tool.
-
-    Phase A (step 9): source is now tools.yaml registry, not engagement.yaml.
-    Phase E: gmail_bulk_delete_messages excluded (now gatekeeper-gated).
-    """
+def test_defer_gated_patterns_empty_after_phase_e():
+    """Phase E: defer_gated_patterns() must be empty — all tools migrated to gatekeeper."""
     from tools._tools_yaml import load_registry
     patterns = load_registry().defer_gated_patterns()
-    assert patterns, "tools.yaml defer_gated_patterns() is empty"
-
-    for tool_name in _DEFER_GATED_TOOLS:
-        assert _is_matched_by_patterns(tool_name), (
-            f"{tool_name!r} is not matched by any pattern in "
-            f"tools.yaml defer_gated_patterns: {patterns}"
-        )
+    assert patterns == [], (
+        f"Expected empty defer_gated_patterns after Phase E migration; got: {patterns}"
+    )
 
 
-@pytest.mark.parametrize("tool_name", _DEFER_GATED_TOOLS)
+@pytest.mark.parametrize("tool_name", _GATEKEEPER_GATED_TOOLS)
+def test_gw_tools_are_gatekeeper_gated(tool_name):
+    """Phase E: Google Workspace destructive tools must have gate: gatekeeper."""
+    from tools._tools_yaml import load_registry
+    spec = load_registry()._resolve(tool_name)
+    assert spec is not None, f"No registry entry for {tool_name}"
+    assert spec.gate == "gatekeeper", (
+        f"{tool_name!r} must have gate: gatekeeper after Phase E migration."
+    )
+
+
+@pytest.mark.parametrize("tool_name", _GATEKEEPER_GATED_TOOLS)
 @pytest.mark.asyncio
-async def test_defer_hook_fires_for_gated_workspace_tool(tool_name, monkeypatch):
-    """A fake PreToolUse event for each defer-gated tool actually triggers defer.
+async def test_defer_hook_does_not_fire_for_gatekeeper_tool(tool_name, monkeypatch):
+    """Phase E: gatekeeper-gated tools must NOT trigger the defer hook.
 
-    Phase E: gmail_bulk_delete_messages excluded (now gatekeeper-gated, not defer).
+    These tools are now gated through Gatekeeper.canUseTool, not PreToolUse defer.
+    The defer hook must return {} (pass-through) for them.
     """
     from agents import hooks
     from tools import approvals as approval_tools
 
-    # Stub OOB telegram prompt so no real network call is made.
     sent: list = []
 
     async def fake_send_defer(chat_id, tier, summary):
@@ -102,9 +86,10 @@ async def test_defer_hook_fires_for_gated_workspace_tool(tool_name, monkeypatch)
         None,
     )
 
-    assert out.get("hookSpecificOutput", {}).get("permissionDecision") == "defer", (
-        f"Expected defer for {tool_name!r} but got: {out}"
+    decision = out.get("hookSpecificOutput", {}).get("permissionDecision")
+    assert decision != "defer", (
+        f"Expected NO defer for gatekeeper-gated tool {tool_name!r} but got: {out}"
     )
-    assert len(sent) == 1, (
-        f"Expected 1 OOB prompt for {tool_name!r} but sent {len(sent)}"
+    assert sent == [], (
+        f"send_defer_prompt should not have fired for gatekeeper tool {tool_name!r}"
     )
