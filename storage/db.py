@@ -605,6 +605,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_tool_calls(conn)
     _migrate_proactive_events(conn)
     _migrate_proactive_events_feedback(conn)
+    _migrate_proactive_events_chat_id(conn)
     _migrate_approvals_gatekeeper(conn)
     _migrate_calendar_notifications(conn)
 
@@ -768,6 +769,21 @@ def _migrate_proactive_events_feedback(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_proactive_events_feedback "
         "ON proactive_events(reaction_received_at) "
         "WHERE reaction_received_at IS NOT NULL"
+    )
+
+
+def _migrate_proactive_events_chat_id(conn: sqlite3.Connection) -> None:
+    """Phase J: add chat_id to proactive_events for multi-user silence scoping."""
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(proactive_events)"
+    ).fetchall()}
+    if "chat_id" not in cols:
+        conn.execute(
+            "ALTER TABLE proactive_events ADD COLUMN chat_id INTEGER"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_events_chat_id_sent "
+        "ON proactive_events(chat_id, sent_at)"
     )
 
 
@@ -2340,13 +2356,14 @@ def tool_calls_insert(
 # ---------- proactive_events ----------
 
 def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
-                           telegram_message_id: int | None = None) -> int:
+                           telegram_message_id: int | None = None,
+                           chat_id: int | None = None) -> int:
     """Insert a row into proactive_events. Returns the new row id."""
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO proactive_events (sent_at, source, pattern, payload_json, "
-            "telegram_message_id) VALUES (?, ?, ?, ?, ?)",
-            (_now(), source, pattern, payload_json, telegram_message_id),
+            "telegram_message_id, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (_now(), source, pattern, payload_json, telegram_message_id, chat_id),
         )
     return int(cur.lastrowid or 0)
 
@@ -2368,12 +2385,14 @@ def proactive_event_record_reaction(telegram_message_id: int, kind: str) -> int:
     return int(cur.rowcount or 0)
 
 
-def proactive_event_record_silence_window(now_iso: str | None = None) -> int:
+def proactive_event_record_silence_window(
+    chat_id: int | None = None,
+    now_iso: str | None = None,
+) -> int:
     """Flip silenced_within_1h=1 for rows sent in the last hour.
 
-    NOTE: no chat_id filter — current bot is single-user, callers are gated by
-    owner-id checks. If multi-tenancy is added (Sprint 3+), add a chat_id
-    column to proactive_events and scope this UPDATE.
+    When ``chat_id`` is provided, only rows matching that chat are updated.
+    When ``chat_id`` is None, the filter is omitted (legacy single-user path).
 
     Called by /silence so the calibration loop can discount sources that tend
     to trigger silence commands.
@@ -2382,11 +2401,19 @@ def proactive_event_record_silence_window(now_iso: str | None = None) -> int:
     from datetime import timedelta
     cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     with _conn() as c:
-        cur = c.execute(
-            "UPDATE proactive_events SET silenced_within_1h = 1 "
-            "WHERE sent_at >= ?",
-            (cutoff,),
-        )
+        if chat_id is not None:
+            cur = c.execute(
+                "UPDATE proactive_events SET silenced_within_1h = 1 "
+                "WHERE sent_at >= ? AND chat_id = ?",
+                (cutoff, int(chat_id)),
+            )
+        else:
+            # XXX: legacy path — no chat_id; single-user bot only.
+            cur = c.execute(
+                "UPDATE proactive_events SET silenced_within_1h = 1 "
+                "WHERE sent_at >= ?",
+                (cutoff,),
+            )
     return int(cur.rowcount or 0)
 
 

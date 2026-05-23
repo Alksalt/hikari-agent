@@ -1,6 +1,24 @@
 version: 1
 
 # ============================================================================
+# Auth Providers
+# (merged from config/scopes.yaml providers: block — Phase J)
+# ============================================================================
+
+auth_providers:
+  google:
+    provider_class: auth.google.GoogleProvider
+    voice_template: "can't {action} — my {provider} grant doesn't cover {missing_scopes}. run `uv run python -m scripts.auth google grant --add {missing_scopes}` and re-launch me."
+
+  notion:
+    provider_class: auth.notion.NotionOAuthProvider
+    voice_template: "can't reach notion — token isn't set."
+
+  github:
+    provider_class: auth.github.GitHubPATProvider
+    voice_template: "can't reach github — token isn't set."
+
+# ============================================================================
 # MCP Servers
 # ============================================================================
 #
@@ -447,6 +465,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "send that email"
 
   - id: "mcp__google_workspace__gmail_reply_to_email"
     bucket: 3
@@ -454,6 +476,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/gmail.modify"]
+      action: "send that reply"
 
   - id: "mcp__google_workspace__gmail_bulk_delete_messages"
     bucket: 3
@@ -461,6 +487,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://mail.google.com/"]
+      action: "nuke them"
 
   - id: "mcp__google_workspace__delete_calendar_event"
     bucket: 3
@@ -468,6 +498,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/calendar"]
+      action: "delete that event"
 
   - id: "mcp__google_workspace__drive_delete_file"
     bucket: 3
@@ -475,6 +509,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "delete that file"
 
   - id: "mcp__google_workspace__create_calendar_event"
     bucket: 3
@@ -482,6 +520,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/calendar"]
+      action: "create that event"
 
   - id: "mcp__google_workspace__drive_delete_folder"
     bucket: 3
@@ -489,6 +531,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "delete that folder"
 
   - id: "mcp__google_workspace__drive_upload_file"
     bucket: 3
@@ -496,6 +542,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: google
+      required: ["https://www.googleapis.com/auth/drive"]
+      action: "upload that file"
 
   # Google Workspace — wildcard catch-all (untrusted read outputs)
   - id: "mcp__google_workspace__*"
@@ -512,6 +562,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "write to notion"
 
   - id: "mcp__notion__API-update-a-block"
     bucket: 3
@@ -519,6 +573,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "update that notion block"
 
   - id: "mcp__notion__API-delete-a-block"
     bucket: 3
@@ -526,6 +584,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "delete that notion block"
 
   - id: "mcp__notion__API-patch-page"
     bucket: 3
@@ -533,6 +595,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "update that notion page"
 
   - id: "mcp__notion__API-post-page"
     bucket: 3
@@ -540,6 +606,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: notion
+      required: ["_present"]
+      action: "create that notion page"
 
   # Notion — wildcard catch-all
   - id: "mcp__notion__*"
@@ -556,6 +626,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "create that issue"
 
   - id: "mcp__github__create_pull_request"
     bucket: 3
@@ -563,6 +637,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "open that pull request"
 
   - id: "mcp__github__merge_pull_request"
     bucket: 3
@@ -570,6 +648,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "merge that pull request"
 
   - id: "mcp__github__delete_file"
     bucket: 3
@@ -577,6 +659,10 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "delete that file"
 
   - id: "mcp__github__delete_repository"
     bucket: 3
@@ -585,6 +671,10 @@ tools:
     gate_timeout_sec: 600
     untrusted_output: false
     wrap_patterns: []
+    scopes:
+      provider: github
+      required: ["_present"]
+      action: "delete that repository"
 
   # GitHub — wildcard catch-all
   - id: "mcp__github__*"

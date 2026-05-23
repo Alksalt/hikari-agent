@@ -150,8 +150,8 @@ def test_scheduler_builds(monkeypatch):
     # Phase 11: reminders_apple_sync is added on macOS only.
     import sys
     expected = {
-        "heartbeat", "reengage", "consolidation",
-        "daily_reflection", "calendar_heartbeat", "memory_prune",
+        "consolidation",
+        "daily_reflection", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
         "morning_brief",
         # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
@@ -167,7 +167,7 @@ def test_scheduler_builds(monkeypatch):
         "decision_resolver",
         # Phase 3 + Sprint 3-A: monthly pruner (messages, oauth_audit_log, drift_probes, calendar_notifications).
         "monthly_prune",
-        # Phase I: unified engagement_tick (60s, all producers).
+        # Phase I: unified engagement_tick (60s, all producers) — replaces heartbeat/reengage/calendar_heartbeat.
         "engagement_tick",
         # Phase H: MCP warm-pool eviction (every 30s).
         "mcp_warm_pool_evict",

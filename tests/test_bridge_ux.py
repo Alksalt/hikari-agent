@@ -219,9 +219,12 @@ def test_build_scheduler_skips_calendar_job_when_unhealthy(monkeypatch):
 
     sched = sched_mod.build_scheduler(send_text)
     ids = {j.id for j in sched.get_jobs()}
+    # Phase J: heartbeat/reengage/calendar_heartbeat jobs deleted; engagement_tick replaces them.
     assert "calendar_heartbeat" not in ids
+    assert "heartbeat" not in ids
+    assert "reengage" not in ids
+    assert "engagement_tick" in ids
     # Other jobs still wired.
-    assert "heartbeat" in ids
     assert "daily_reflection" in ids
     assert "memory_prune" in ids
 
@@ -234,7 +237,9 @@ def test_build_scheduler_includes_calendar_when_healthy(monkeypatch):
         return None
     sched = sched_mod.build_scheduler(send_text)
     ids = {j.id for j in sched.get_jobs()}
-    assert "calendar_heartbeat" in ids
+    # Phase J: calendar_heartbeat deleted; engagement_tick handles calendar events.
+    assert "calendar_heartbeat" not in ids
+    assert "engagement_tick" in ids
 
 
 # ---------- plain-text reaches respond() ----------

@@ -180,33 +180,3 @@ def test_records_are_independent():
     assert len(s_raw) == 2
     assert len(c_raw) == 1
     assert len(u_raw) == 0
-
-
-# ---------- compat shims ----------
-
-def test_can_send_proactive_compat_shim_routes_spontaneous():
-    from agents.cadence import can_send_proactive
-    allowed, reason = can_send_proactive("open_loop")
-    assert allowed is True
-
-
-def test_can_send_proactive_compat_shim_routes_ceremony():
-    from agents.cadence import can_send_proactive
-    allowed, reason = can_send_proactive("daily_checkin")
-    assert allowed is True
-
-
-def test_can_send_proactive_compat_shim_unknown_source():
-    from agents.cadence import can_send_proactive
-    allowed, reason = can_send_proactive("totally_unknown")
-    assert allowed is False
-    assert "source_not_justified" in reason
-
-
-def test_record_proactive_sent_compat_shim_increments_spontaneous():
-    from agents import cadence
-    from storage import db
-    cadence.record_proactive_sent()
-    raw = db.runtime_get("proactive_log_v1")
-    data = json.loads(raw)
-    assert len(data) == 1

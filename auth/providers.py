@@ -65,12 +65,11 @@ class ScopeConfig:
 # Scope config loading
 # ---------------------------------------------------------------------------
 
-_SCOPES_YAML = Path(__file__).parent.parent / "config" / "scopes.yaml"
 _scope_config: ScopeConfig | None = None
 
 
 def load_scope_config() -> ScopeConfig:
-    """Return the cached ScopeConfig; parse from YAML on first call."""
+    """Return the cached ScopeConfig; parse from tools.yaml registry on first call."""
     global _scope_config
     if _scope_config is not None:
         return _scope_config
@@ -79,31 +78,31 @@ def load_scope_config() -> ScopeConfig:
 
 
 def reload_scope_config() -> ScopeConfig:
-    """Force a reload from disk (for tests / config changes)."""
+    """Force a reload (for tests / config changes)."""
     global _scope_config
     _scope_config = None
     return load_scope_config()
 
 
 def _parse_scope_config() -> ScopeConfig:
-    with _SCOPES_YAML.open() as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+    from tools._tools_yaml import load_registry
+    registry = load_registry()
 
     cfg = ScopeConfig()
 
-    # Provider voice templates
-    for prov_name, prov_data in (raw.get("providers") or {}).items():
+    # Provider config from auth_providers block in tools.yaml
+    for prov_name, prov_data in registry.auth_providers().items():
         cfg.provider_config[prov_name] = prov_data
-        tmpl = prov_data.get("voice_template", "")
-        cfg.provider_templates[prov_name] = tmpl
+        cfg.provider_templates[prov_name] = prov_data.get("voice_template", "")
 
-    # Tool specs
-    for tool_id, spec_data in (raw.get("tools") or {}).items():
-        cfg.tool_specs[tool_id] = ToolSpec(
-            provider=spec_data["provider"],
-            required_scopes=list(spec_data.get("required_scopes") or []),
-            action=spec_data.get("action", "do that"),
-        )
+    # Tool scope specs from per-tool scopes blocks
+    for spec in registry.specs():
+        if spec.scopes_provider:
+            cfg.tool_specs[spec.id] = ToolSpec(
+                provider=spec.scopes_provider,
+                required_scopes=list(spec.scopes_required),
+                action=spec.scopes_action or "do that",
+            )
 
     return cfg
 

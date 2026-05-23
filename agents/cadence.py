@@ -165,21 +165,3 @@ def proactive_count_last_7d() -> int:
     return _count_last_7d(Pool.AGENT_SPONTANEOUS)
 
 
-# ---------- compat shims (deleted in Phase F, Sprint 2) ----------
-# DO NOT call from new code. Use can_send(source, pool) directly.
-# Callers: tests/test_proactive_intel.py, tests/test_daily_checkin_cadence.py,
-#          tests/test_proactive_sdk_error_guard.py — update all three in Phase F.
-
-def can_send_proactive(source: str | None) -> tuple[bool, str]:
-    """Backward-compat shim. Resolves pool from source and delegates to can_send."""
-    resolved = _resolve_pool(source or "")
-    if resolved is None:
-        if not _governor_enabled():
-            return True, "governor_disabled"
-        return False, f"source_not_justified ({source!r})"
-    return can_send(source or "", resolved)
-
-
-def record_proactive_sent() -> int:
-    """Backward-compat shim. Appends to the agent_spontaneous pool log."""
-    return _append_now(Pool.AGENT_SPONTANEOUS)

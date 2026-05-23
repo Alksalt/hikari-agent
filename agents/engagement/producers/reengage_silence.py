@@ -2,9 +2,8 @@
 
 Extracts logic from agents/proactive.py:should_send_reengagement so the
 unified engagement_tick can weigh it against other candidates.
-The existing standalone maybe_send_reengagement remains in place for the
-legacy scheduler path. This producer should only be enabled for the
-engagement_tick if the legacy job is disabled, to avoid double-firing.
+Phase J: maybe_send_reengagement was deleted; engagement_tick is now the
+sole driver for reengage nudges.
 """
 from __future__ import annotations
 

@@ -90,8 +90,8 @@ def test_cadence_count_starts_zero():
 
 
 def test_cadence_record_appends_and_caps_window():
-    cadence.record_proactive_sent()
-    cadence.record_proactive_sent()
+    cadence.record_spontaneous_sent("open_loop")
+    cadence.record_spontaneous_sent("open_loop")
     assert cadence.proactive_count_last_7d() == 2
 
 
@@ -123,9 +123,9 @@ def test_cadence_governor_blocks_at_cap(monkeypatch, tmp_path):
     p.write_text(cfg_text, encoding="utf-8")
     monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
     config.reload()
-    cadence.record_proactive_sent()
-    cadence.record_proactive_sent()
-    allowed, reason = cadence.can_send_proactive("open_loop")
+    cadence.record_spontaneous_sent("open_loop")
+    cadence.record_spontaneous_sent("open_loop")
+    allowed, reason = cadence.can_send("open_loop", cadence.Pool.AGENT_SPONTANEOUS)
     assert not allowed
     assert "cap_reached" in reason
 
@@ -150,7 +150,7 @@ def test_cadence_governor_blocks_unjustified_source(monkeypatch, tmp_path):
     p.write_text(cfg_text, encoding="utf-8")
     monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
     config.reload()
-    allowed, reason = cadence.can_send_proactive("recent_episode_callback")
+    allowed, reason = cadence.can_send("recent_episode_callback")
     assert not allowed
     assert "source_not_justified" in reason
 
@@ -174,7 +174,7 @@ def test_cadence_governor_allows_justified_under_cap(monkeypatch, tmp_path):
     p.write_text(cfg_text, encoding="utf-8")
     monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
     config.reload()
-    allowed, reason = cadence.can_send_proactive("open_loop")
+    allowed, reason = cadence.can_send("open_loop", cadence.Pool.AGENT_SPONTANEOUS)
     assert allowed
     assert reason == "ok"
 
@@ -235,296 +235,6 @@ def test_noticing_prune_old():
     deleted = db.prune_noticings_older_than_days(60)
     assert deleted == 1
 
-
-# ---------- integration: cadence governor blocks the real heartbeat path ----------
-
-@pytest.mark.asyncio
-async def test_heartbeat_blocked_when_cap_reached(monkeypatch, tmp_path):
-    """Wires the full maybe_send_heartbeat path against a cap-saturated governor
-    and verifies no message is sent and no LLM call is made."""
-    cfg_text = (
-        "proactive:\n"
-        "  heartbeat_min_interval_hours: 0\n"
-        "  heartbeat_max_interval_hours: 8\n"
-        "  quiet_start_hour: 23\n"
-        "  quiet_end_hour: 8\n"
-        "  user_active_skip_minutes: 60\n"
-        "  reengage_min_hours: 2\n"
-        "  reengage_max_hours: 6\n"
-        "cadence_governor:\n"
-        "  enabled: true\n"
-        "  pools:\n"
-        "    agent_spontaneous:\n"
-        "      max_per_7d: 1\n"
-        "      allowed_sources: [open_loop, pattern_observation, noticed_change,\n"
-        "        reengage_silence, morning]\n"
-        "    scheduled_ceremony:\n"
-        "      max_per_7d: 14\n"
-        "      allowed_sources: [daily_checkin]\n"
-        "    user_anchored:\n"
-        "      max_per_7d: 30\n"
-        "      allowed_sources: [wiki_new_file, lexicon_callback, recent_episode_callback]\n"
-        "soft_scarcity:\n"
-        "  enabled: false\n"
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-
-    # Saturate the cap.
-    cadence.record_proactive_sent()
-
-    # Stub run_proactive so a wiring bug would make a real call (and we'd see it).
-    sent_calls: list[str] = []
-    run_proactive_calls: list[str] = []
-
-    from agents import proactive
-
-    async def fake_run_proactive(prompt: str) -> str:
-        run_proactive_calls.append(prompt)
-        return "should never ship"
-
-    async def fake_send(text: str) -> None:
-        sent_calls.append(text)
-
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
-    # _pick_seed needs templates to exist; provide a minimal stub.
-    monkeypatch.setattr(proactive, "_load_templates", lambda: [(1, "stub seed")])
-
-    # Avoid the quiet-hours and user-active-skip gates by clearing those keys.
-    db.runtime_set("last_user_message", None)
-    db.runtime_set("last_proactive_sent", None)
-
-    sent = await proactive.maybe_send_heartbeat(fake_send)
-    assert not sent, "governor should have blocked"
-    assert sent_calls == []
-    # Crucially: the cap check should run BEFORE the LLM call.
-    assert run_proactive_calls == [], "should not have invoked LLM under cap"
-
-
-# ---------- calendar heartbeat ----------
-
-@pytest.mark.asyncio
-async def test_calendar_heartbeat_disabled_returns_false(monkeypatch, tmp_path):
-    """When calendar_heartbeat.enabled=false, do not call run_proactive at all."""
-    cfg_text = (
-        "calendar_heartbeat:\n"
-        "  enabled: false\n"
-        "  lookahead_minutes: 120\n"
-        "  prep_message_lead_minutes: 30\n"
-        "  lead_window_jitter_minutes: 5\n"
-        "  min_event_duration_minutes: 15\n"
-        "  exclude_calendar_ids: []\n"
-        "  scheduler_interval_minutes: 5\n"
-        "  notified_ttl_hours: 4\n"
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-
-    from agents import proactive
-
-    run_calls: list[str] = []
-
-    async def fake_run_proactive(prompt: str) -> str:
-        run_calls.append(prompt)
-        return ""
-
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
-
-    async def fake_send(text: str) -> None:
-        raise AssertionError("send_text must not be called when disabled")
-
-    sent = await proactive.maybe_send_calendar_heartbeat(fake_send)
-    assert sent is False
-    assert run_calls == []
-
-
-def test_calendar_event_signature_stable():
-    from agents import proactive
-
-    ev = {
-        "id": "abc123",
-        "title": "Standup",
-        "start_iso": "2026-05-19T09:00:00+00:00",
-        "end_iso": "2026-05-19T09:30:00+00:00",
-    }
-    sig_a = proactive._calendar_event_signature(ev)
-    sig_b = proactive._calendar_event_signature(dict(ev))
-    assert sig_a == sig_b
-
-    other = dict(ev)
-    other["start_iso"] = "2026-05-19T10:00:00+00:00"
-    assert proactive._calendar_event_signature(other) != sig_a
-
-    diff_title = dict(ev)
-    diff_title["title"] = "Different"
-    assert proactive._calendar_event_signature(diff_title) != sig_a
-
-    diff_id = dict(ev)
-    diff_id["id"] = "xyz789"
-    assert proactive._calendar_event_signature(diff_id) != sig_a
-
-
-def test_calendar_event_dedup():
-    from agents import proactive
-
-    sig = "abc|2026-05-19T09:00:00+00:00|Standup"
-    assert not proactive._calendar_event_already_notified(sig)
-    proactive._mark_calendar_event_notified(sig)
-    assert proactive._calendar_event_already_notified(sig)
-
-
-@pytest.mark.asyncio
-async def test_calendar_heartbeat_skips_already_notified(monkeypatch, tmp_path):
-    """If an event in the lead window is already in the notified set, skip silently."""
-    cfg_text = (
-        "calendar_heartbeat:\n"
-        "  enabled: true\n"
-        "  lookahead_minutes: 120\n"
-        "  prep_message_lead_minutes: 30\n"
-        "  lead_window_jitter_minutes: 5\n"
-        "  min_event_duration_minutes: 15\n"
-        "  exclude_calendar_ids: []\n"
-        "  scheduler_interval_minutes: 5\n"
-        "  notified_ttl_hours: 4\n"
-        "cadence_governor:\n"
-        "  enabled: true\n"
-        "  pools:\n"
-        "    agent_spontaneous:\n"
-        "      max_per_7d: 10\n"
-        "      allowed_sources: [calendar_event, open_loop, reengage_silence]\n"
-        "    scheduled_ceremony:\n"
-        "      max_per_7d: 14\n"
-        "      allowed_sources: [daily_checkin]\n"
-        "    user_anchored:\n"
-        "      max_per_7d: 30\n"
-        "      allowed_sources: [wiki_new_file]\n"
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-
-    from agents import proactive
-
-    now = datetime.now(UTC)
-    start = now + timedelta(minutes=30)
-    end = start + timedelta(minutes=30)
-    event = {
-        "id": "evt-1",
-        "title": "Standup",
-        "start_iso": start.isoformat(),
-        "end_iso": end.isoformat(),
-    }
-
-    async def fake_fetch(lookahead_minutes: int):
-        return [event]
-
-    monkeypatch.setattr(proactive, "_fetch_upcoming_events", fake_fetch)
-
-    # Pre-mark the event as notified.
-    proactive._mark_calendar_event_notified(
-        proactive._calendar_event_signature(event)
-    )
-
-    run_calls: list[str] = []
-
-    async def fake_run_proactive(prompt: str) -> str:
-        run_calls.append(prompt)
-        return "should not ship"
-
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
-
-    async def fake_send(text: str) -> None:
-        raise AssertionError("send_text must not be called for a dedup'd event")
-
-    sent = await proactive.maybe_send_calendar_heartbeat(fake_send)
-    assert sent is False
-    assert run_calls == [], "no LLM call should fire for an already-notified event"
-
-
-@pytest.mark.asyncio
-async def test_calendar_heartbeat_fires_for_fresh_event(monkeypatch, tmp_path):
-    """A fresh event in the lead window: cadence allows, message sends, dedup marked."""
-    cfg_text = (
-        "calendar_heartbeat:\n"
-        "  enabled: true\n"
-        "  lookahead_minutes: 120\n"
-        "  prep_message_lead_minutes: 30\n"
-        "  lead_window_jitter_minutes: 5\n"
-        "  min_event_duration_minutes: 15\n"
-        "  exclude_calendar_ids: []\n"
-        "  scheduler_interval_minutes: 5\n"
-        "  notified_ttl_hours: 4\n"
-        "cadence_governor:\n"
-        "  enabled: true\n"
-        "  pools:\n"
-        "    agent_spontaneous:\n"
-        "      max_per_7d: 10\n"
-        "      allowed_sources: [calendar_event, open_loop, reengage_silence]\n"
-        "    scheduled_ceremony:\n"
-        "      max_per_7d: 14\n"
-        "      allowed_sources: [daily_checkin]\n"
-        "    user_anchored:\n"
-        "      max_per_7d: 30\n"
-        "      allowed_sources: [wiki_new_file]\n"
-    )
-    p = tmp_path / "engagement.yaml"
-    p.write_text(cfg_text, encoding="utf-8")
-    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
-    config.reload()
-
-    from agents import proactive
-
-    now = datetime.now(UTC)
-    start = now + timedelta(minutes=30)
-    end = start + timedelta(minutes=30)
-    event = {
-        "id": "evt-fresh",
-        "title": "Deep work block",
-        "start_iso": start.isoformat(),
-        "end_iso": end.isoformat(),
-    }
-
-    async def fake_fetch(lookahead_minutes: int):
-        return [event]
-
-    monkeypatch.setattr(proactive, "_fetch_upcoming_events", fake_fetch)
-
-    run_calls: list[str] = []
-
-    async def fake_run_proactive(prompt: str) -> str:
-        run_calls.append(prompt)
-        return "30 in. mic on, lights on. don't make me chase you."
-
-    monkeypatch.setattr(proactive, "run_proactive", fake_run_proactive)
-
-    sent_texts: list[str] = []
-
-    async def fake_send(text: str) -> None:
-        sent_texts.append(text)
-
-    count_before = cadence.proactive_count_last_7d()
-    sent = await proactive.maybe_send_calendar_heartbeat(fake_send)
-    assert sent is True
-    assert len(sent_texts) == 1
-    assert sent_texts[0].startswith("30 in.")
-    # Dedup marker was written.
-    sig = proactive._calendar_event_signature(event)
-    assert proactive._calendar_event_already_notified(sig)
-    # Cadence ledger incremented.
-    assert cadence.proactive_count_last_7d() == count_before + 1
-    # last_proactive_sent stamp updated.
-    assert db.runtime_get("last_proactive_sent")
-    # Generation call did happen (prompt was constructed).
-    assert len(run_calls) == 1
-    # A second call (event still in window, but marker present) is a no-op.
-    sent_again = await proactive.maybe_send_calendar_heartbeat(fake_send)
-    assert sent_again is False
-    assert len(sent_texts) == 1
 
 
 # ---------- T7.2: recurring-location detection ----------

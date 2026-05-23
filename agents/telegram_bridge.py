@@ -1180,7 +1180,8 @@ async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     until = datetime.now(UTC) + timedelta(minutes=minutes)
     db.runtime_set("silence_until", until.isoformat())
     try:
-        db.proactive_event_record_silence_window()
+        chat_id = message.chat_id if message else None
+        db.proactive_event_record_silence_window(chat_id=chat_id)
     except Exception:
         logger.exception("proactive_event_record_silence_window failed (non-fatal)")
     await message.reply_text(f"ok. quiet for {minutes} minutes. don't make me regret it.")

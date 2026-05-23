@@ -19,10 +19,10 @@ Flow:
    Verify state on callback; reject (400) on mismatch.
 6. Exchange code → token; persist access_token in keychain 'hikari-notion'.
 
-Provider class is registered in auth/providers.py and config/scopes.yaml.
+Provider class is registered in auth/providers.py and config/tools.yaml auth_providers block.
 Use NotionOAuthProvider for the full OAuth path.
 The legacy NotionProvider (PAT env-var) remains in auth/providers.py for
-backwards compat; swap by updating config/scopes.yaml provider_class.
+backwards compat; swap by updating config/tools.yaml auth_providers.notion.provider_class.
 """
 from __future__ import annotations
 

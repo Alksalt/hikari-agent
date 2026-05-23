@@ -18,11 +18,6 @@ _DEFAULT_MISFIRE_GRACE_SEC = cfg.get("scheduler.default_misfire_grace_sec") or 3
 
 def build_scheduler(send_text) -> AsyncIOScheduler:
     """Wire up the background jobs. send_text is `async def send_text(s: str)`."""
-    from .proactive import (
-        maybe_send_calendar_heartbeat,
-        maybe_send_heartbeat,
-        maybe_send_reengagement,
-    )
     from .reflection import maybe_run_session_consolidation, run_daily_reflection
 
     tz_name = cfg.get("scheduler.timezone", "UTC")
@@ -32,56 +27,6 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         logger.warning("scheduler: invalid timezone %r, falling back to UTC", tz_name)
         tz = zoneinfo.ZoneInfo("UTC")
     scheduler = AsyncIOScheduler(timezone=tz)
-
-    # Heartbeat check: every 30 min, the function itself respects min/max interval + quiet hours.
-    # APScheduler's iscoroutinefunction() doesn't recognize a lambda wrapping an async fn,
-    # so we use an `async def` wrapper for every async job — otherwise the executor runs the
-    # lambda in a thread pool, gets back an unawaited coroutine, Python warns and the work
-    # never actually happens.
-    async def _heartbeat_job(): return await maybe_send_heartbeat(send_text)
-    scheduler.add_job(
-        _heartbeat_job,
-        IntervalTrigger(minutes=30),
-        id="heartbeat",
-        coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
-    )
-
-    # Calendar-aware heartbeat: polls calendar via the drive_gmail subagent and
-    # fires one prep message when an event falls in the lead-window jitter band.
-    # Phase 8: a startup health flag in runtime_state lets us skip the job when
-    # Google credentials are missing — saves an LLM round-trip every interval
-    # against a guaranteed-failing path.
-    if _calendar_creds_healthy():
-        calendar_interval = int(
-            cfg.get("calendar_heartbeat.scheduler_interval_minutes", 5)
-        )
-        # APScheduler dispatches sync vs async via inspect.iscoroutinefunction.
-        # A lambda wrapping an async fn is not detected as async -> the
-        # executor calls it sync, gets back an un-awaited coroutine,
-        # Python logs "coroutine ... was never awaited". Wrap with an
-        # `async def` so the executor awaits it properly.
-        async def _calendar_job():
-            return await maybe_send_calendar_heartbeat(send_text)
-        scheduler.add_job(
-            _calendar_job,
-            IntervalTrigger(minutes=calendar_interval),
-            id="calendar_heartbeat",
-            coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
-        )
-    else:
-        logger.info(
-            "calendar_heartbeat: skipped — runtime_state.calendar_heartbeat_healthy "
-            "is not '1' (Google creds missing / not wired)."
-        )
-
-    # Re-engagement nudge: every 15 min, fires only when she had last word + user silent 2-6h
-    async def _reengage_job(): return await maybe_send_reengagement(send_text)
-    scheduler.add_job(
-        _reengage_job,
-        IntervalTrigger(minutes=15),
-        id="reengage",
-        coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
-    )
 
     # Session consolidation: every 15 min
     scheduler.add_job(

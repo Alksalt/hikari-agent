@@ -58,6 +58,9 @@ class ToolSpec:
     gate_timeout_sec: int | None       # per-tool approval timeout override
     untrusted_output: bool
     wrap_patterns: tuple[str, ...]
+    scopes_provider: str | None        # e.g. "google", "notion", "github"
+    scopes_required: tuple[str, ...]   # e.g. ["https://...gmail.modify"]
+    scopes_action: str | None          # human-readable action for voice error messages
 
 
 @dataclass(frozen=True)
@@ -86,11 +89,13 @@ class ToolRegistry:
         server_specs: list[McpServerSpec],
         subagent_specs: list[SubagentSpec],
         repo_root: Path,
+        auth_providers_raw: dict[str, Any] | None = None,
     ) -> None:
         self._tools = tool_specs
         self._servers = {s.name: s for s in server_specs}
         self._subagents_spec = {s.id: s for s in subagent_specs}
         self._repo_root = repo_root
+        self._auth_providers: dict[str, Any] = auth_providers_raw or {}
 
         # Separate explicit ids (no wildcard) from wildcard patterns.
         self._explicit: dict[str, ToolSpec] = {}
@@ -219,6 +224,14 @@ class ToolRegistry:
         """Return all server specs keyed by name."""
         return dict(self._servers)
 
+    def auth_providers(self) -> dict[str, Any]:
+        """Return the auth_providers block from tools.yaml (provider name → config dict)."""
+        return dict(self._auth_providers)
+
+    def spec(self, tool_name: str) -> ToolSpec | None:
+        """Return the best-matching ToolSpec for a tool name, or None."""
+        return self._resolve(tool_name)
+
     def specs(self) -> list[ToolSpec]:
         """Return all tool specs (explicit + wildcard, in definition order)."""
         return list(self._tools)
@@ -283,6 +296,7 @@ def _parse_server(name: str, raw: dict) -> McpServerSpec:
 
 def _parse_tool(raw: dict) -> ToolSpec:
     raw_timeout = raw.get("gate_timeout_sec")
+    scopes_block = raw.get("scopes") or {}
     return ToolSpec(
         id=str(raw["id"]),
         bucket=int(raw.get("bucket", 1)),
@@ -291,6 +305,9 @@ def _parse_tool(raw: dict) -> ToolSpec:
         gate_timeout_sec=int(raw_timeout) if raw_timeout is not None else None,
         untrusted_output=bool(raw.get("untrusted_output", False)),
         wrap_patterns=tuple(raw.get("wrap_patterns") or []),
+        scopes_provider=scopes_block.get("provider"),
+        scopes_required=tuple(scopes_block.get("required") or []),
+        scopes_action=scopes_block.get("action"),
     )
 
 
@@ -323,11 +340,14 @@ def _load_yaml(path: Path) -> ToolRegistry:
         for sid, sa in (data.get("subagents") or {}).items()
     ]
 
+    auth_providers_raw = dict(data.get("auth_providers") or {})
+
     return ToolRegistry(
         tool_specs=tool_specs,
         server_specs=server_specs,
         subagent_specs=subagent_specs,
         repo_root=path.parent.parent,
+        auth_providers_raw=auth_providers_raw,
     )
 
 
