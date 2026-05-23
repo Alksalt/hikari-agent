@@ -16,10 +16,12 @@ Schema covers everything memory- and runtime-related:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -610,6 +612,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_proactive_events_status(conn)
     _migrate_approvals_gatekeeper(conn)
     _migrate_calendar_notifications(conn)
+    _migrate_entities_and_provenance(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -1058,6 +1061,57 @@ def _migrate_calendar_notifications(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
+    """5A: fact provenance columns + entities / entity_aliases / fact_entities tables."""
+    # --- facts provenance: only new columns ---
+    fcols = {r["name"] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+    if "source_span_hash" not in fcols:
+        conn.execute("ALTER TABLE facts ADD COLUMN source_span_hash TEXT")
+    if "recorded_at" not in fcols:
+        conn.execute("ALTER TABLE facts ADD COLUMN recorded_at INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS facts_source_msg "
+                 "ON facts(source_message_id) WHERE source_message_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS facts_recorded_at ON facts(recorded_at)")
+
+    # --- entities ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK (kind IN ('person','project','place','app','topic')),
+            canonical_name TEXT NOT NULL CHECK (length(canonical_name) BETWEEN 1 AND 200),
+            created_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            mention_count INTEGER NOT NULL DEFAULT 1
+        )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS entities_kind_lname "
+                 "ON entities(kind, lower(canonical_name))")
+    conn.execute("CREATE INDEX IF NOT EXISTS entities_last_seen ON entities(last_seen_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS entities_kind ON entities(kind)")
+
+    # --- entity_aliases ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            alias TEXT NOT NULL CHECK (length(alias) BETWEEN 1 AND 200),
+            source TEXT NOT NULL DEFAULT 'auto' CHECK (source IN ('auto','user_stated'))
+        )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS entity_aliases_eid_lalias "
+                 "ON entity_aliases(entity_id, lower(alias))")
+    conn.execute("CREATE INDEX IF NOT EXISTS entity_aliases_lalias ON entity_aliases(lower(alias))")
+
+    # --- fact_entities ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fact_entities (
+            fact_id INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+            entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            PRIMARY KEY (fact_id, entity_id)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS fact_entities_entity "
+                 "ON fact_entities(entity_id, fact_id DESC)")
+    conn.commit()
+
+
 @contextmanager
 def _conn():
     c = _get_pooled_conn()
@@ -1126,6 +1180,8 @@ def insert_fact(
     source_message_id: int | None = None,
     source: str | None = None,
     attribution: str | None = None,
+    source_span_hash: str | None = None,
+    recorded_at: int | None = None,
 ) -> int:
     """Insert a new fact. Returns row id. Caller is responsible for any
     contradiction/supersession logic — this function does NOT auto-supersede.
@@ -1136,15 +1192,23 @@ def insert_fact(
 
     ``attribution`` is the structured provenance tag (one of:
     user_stated, user_observed, hikari_inferred, subagent_extracted,
-    external_source) — see _migrate_facts_attribution for semantics."""
+    external_source) — see _migrate_facts_attribution for semantics.
+
+    ``source_span_hash`` is a 16-hex-char SHA-256 of the source text span.
+    ``recorded_at`` is the UTC epoch at which the fact was recorded; defaults
+    to ``_utc_epoch()`` if not supplied."""
+    if recorded_at is None:
+        recorded_at = _utc_epoch()
     now = _now()
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO facts (subject, predicate, object, confidence, importance, "
-            "valid_from, source_message_id, source, attribution, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            "valid_from, source_message_id, source, attribution, status, created_at, "
+            "source_span_hash, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
             (subject, predicate, object_, confidence, importance, now,
-             source_message_id, source, attribution, now),
+             source_message_id, source, attribution, now,
+             source_span_hash, recorded_at),
         )
         fact_id = cur.lastrowid
         c.execute(
@@ -1168,6 +1232,8 @@ def fact_insert(
     source: str | None = None,
     importance: int = 5,
     confidence: float = 0.9,
+    attribution: str | None = None,
+    source_message_id: int | None = None,
 ) -> int:
     """T3.1 — text-shaped fact insert. Thin wrapper over :func:`insert_fact`
     that takes a single free-text statement plus a provenance tag.
@@ -1186,7 +1252,123 @@ def fact_insert(
         importance=importance,
         confidence=confidence,
         source=source,
+        attribution=attribution,
+        source_message_id=source_message_id,
+        source_span_hash=span_hash(body),
     )
+
+
+# ---------- 5A: provenance + entity helpers ----------
+
+def _utc_epoch() -> int:
+    """Current UTC time as integer Unix epoch seconds."""
+    return int(time.time())
+
+
+def span_hash(text: str) -> str:
+    """SHA-256 prefix (16 hex chars) of the stripped text — stable fingerprint for source spans."""
+    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def entity_upsert(kind: str, name: str) -> int:
+    """Insert or update an entity row. Returns the entity id.
+
+    Lookup order: canonical_name exact match → alias exact match → insert new.
+    On any match, bumps last_seen_at and mention_count.
+    Raises ValueError for bad kind or empty name.
+    """
+    kind = kind.strip().lower()
+    if kind not in ("person", "project", "place", "app", "topic"):
+        raise ValueError(f"entity_upsert: bad kind {kind!r}")
+    nm = (name or "").strip()
+    if not nm:
+        raise ValueError("entity_upsert: name required")
+    if len(nm) > 200:
+        raise ValueError("entity_upsert: name exceeds 200 chars")
+    now = _utc_epoch()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id FROM entities WHERE kind=? AND lower(canonical_name)=lower(?)",
+            (kind, nm)).fetchone()
+        if not row:
+            row = c.execute(
+                "SELECT e.id FROM entities e JOIN entity_aliases a ON a.entity_id=e.id "
+                "WHERE e.kind=? AND lower(a.alias)=lower(?)", (kind, nm)).fetchone()
+        if row:
+            eid = row["id"]
+            c.execute("UPDATE entities SET last_seen_at=?, mention_count=mention_count+1 "
+                      "WHERE id=?", (now, eid))
+            return eid
+        cur = c.execute(
+            "INSERT INTO entities (kind, canonical_name, created_at, last_seen_at, mention_count) "
+            "VALUES (?,?,?,?,1)", (kind, nm, now, now))
+        return cur.lastrowid
+
+
+def entity_alias_add(entity_id: int, alias: str, source: str = "auto") -> None:
+    """Add an alias for an entity. Silently ignores blank aliases or duplicates."""
+    a = (alias or "").strip()
+    if not a:
+        return
+    if len(a) > 200:
+        raise ValueError("entity_alias_add: alias exceeds 200 chars")
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO entity_aliases (entity_id, alias, source) "
+                  "VALUES (?,?,?)", (entity_id, a, source))
+
+
+def entity_get(entity_id: int) -> dict | None:
+    """Fetch a single entity row by id. Returns None if not found."""
+    with _conn() as c:
+        r = c.execute("SELECT * FROM entities WHERE id=?", (entity_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def entity_search(kind: str | None, query: str, limit: int = 10) -> list[dict]:
+    """Search entities by canonical_name or alias substring. Ordered by last_seen_at DESC."""
+    q = f"%{(query or '').strip().lower()}%"
+    sql = ("SELECT DISTINCT e.* FROM entities e "
+           "LEFT JOIN entity_aliases a ON a.entity_id=e.id "
+           "WHERE (lower(e.canonical_name) LIKE ? OR lower(a.alias) LIKE ?)")
+    params: list = [q, q]
+    if kind:
+        sql += " AND e.kind = ?"
+        params.append(kind)
+    sql += " ORDER BY e.last_seen_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+
+def fact_entities_link(fact_id: int, entity_ids: list[int]) -> None:
+    """Link a list of entity ids to a fact. Idempotent (INSERT OR IGNORE)."""
+    if not entity_ids:
+        return
+    with _conn() as c:
+        c.executemany("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?,?)",
+                      [(fact_id, eid) for eid in entity_ids])
+
+
+def facts_by_entity(entity_id: int, limit: int = 20, status: str = "active") -> list[dict]:
+    """Return facts linked to an entity, ordered by recorded_at DESC then id DESC."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT f.* FROM facts f JOIN fact_entities fe ON fe.fact_id=f.id "
+            "WHERE fe.entity_id=? AND f.status=? "
+            "ORDER BY COALESCE(f.recorded_at, 0) DESC, f.id DESC LIMIT ?",
+            (entity_id, status, limit)).fetchall()]
+
+
+def fact_provenance(fact_id: int) -> dict | None:
+    """Return provenance fields for a fact joined with its source message row (if any)."""
+    with _conn() as c:
+        r = c.execute(
+            "SELECT f.id AS fact_id, f.source_message_id, f.source_span_hash, "
+            "f.recorded_at, f.attribution, f.source, "
+            "m.id AS message_id, m.role, m.content, m.ts, m.telegram_message_id "
+            "FROM facts f LEFT JOIN messages m ON m.id=f.source_message_id "
+            "WHERE f.id=?", (fact_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def active_facts_matching(subject: str, predicate: str) -> list[dict[str, Any]]:

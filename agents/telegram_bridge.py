@@ -544,8 +544,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             event_text = f"[photo: {rel}]"
             if user_caption:
                 event_text += f" caption: {user_caption!r}"
-            db.append_message("user", event_text, source="event")
+            _photo_mid = db.append_message("user", event_text, source="event")
             db.runtime_set("last_user_message", db._now())
+            db.runtime_set("last_user_message_id", str(_photo_mid))
         except Exception:
             logger.exception("photo event row write failed (non-fatal)")
         try:
@@ -658,8 +659,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             event_text = (
                 f"[voice note {duration_sec:.0f}s] transcript: {transcript!r}"
             )
-            db.append_message("user", event_text, source="event")
+            _voice_mid = db.append_message("user", event_text, source="event")
             db.runtime_set("last_user_message", db._now())
+            db.runtime_set("last_user_message_id", str(_voice_mid))
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
         try:
@@ -1114,8 +1116,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 event += f" caption: {caption!r}"
             if label:
                 event += f" exif_label: {label!r}"
-            db.append_message("user", event, source="event")
+            _doc_mid = db.append_message("user", event, source="event")
             db.runtime_set("last_user_message", db._now())
+            db.runtime_set("last_user_message_id", str(_doc_mid))
         except Exception:
             logger.exception("document event row write failed (non-fatal)")
 
@@ -1146,8 +1149,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Record the actual user event compactly so reflection/handoff/lexicon see
     # "[/start]" — not the bracketed instruction text (codex H-1 fix).
     try:
-        db.append_message("user", "[/start]", source="event")
+        _start_mid = db.append_message("user", "[/start]", source="event")
         db.runtime_set("last_user_message", db._now())
+        db.runtime_set("last_user_message_id", str(_start_mid))
     except Exception:
         logger.exception("cmd_start: event row write failed (non-fatal)")
     # Use run_internal_control — this is a control prompt, not user text.

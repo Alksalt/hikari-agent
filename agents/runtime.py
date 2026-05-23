@@ -669,8 +669,9 @@ async def respond(user_text: str) -> str:
     caller's job (telegram_bridge._send_with_choreography, post-send) so the
     DB row matches what Telegram actually delivered (codex P0 fix).
     """
-    db.append_message("user", user_text)
+    mid = db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
+    db.runtime_set("last_user_message_id", str(mid))
     return await run_user_turn(user_text)
 
 

@@ -39,9 +39,19 @@ async def remember(args: dict[str, Any]) -> dict[str, Any]:
 
     existing = db.active_facts_matching(subject, predicate)
 
+    _raw_mid = db.runtime_get("last_user_message_id")
+    _source_message_id: int | None = None
+    if _raw_mid:
+        try:
+            _source_message_id = int(_raw_mid)
+        except (ValueError, TypeError):
+            pass
+
     new_id = db.insert_fact(
         subject, predicate, object_, importance, confidence,
         attribution="user_stated",
+        source_message_id=_source_message_id,
+        source_span_hash=db.span_hash(f"{subject} {predicate} {object_}"),
     )
 
     try:

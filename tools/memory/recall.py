@@ -24,6 +24,8 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from agents import injection_guard
+from storage import db as _db
 from storage import graph as _graph
 from storage import retrieval
 from tools._response import ok as _ok
@@ -113,6 +115,10 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
         hit_data.append({
             "fact": fact_text, "score": score,
             "valid_at": str(valid_at), "invalid_at": str(invalid_at),
+            "attribution": None,
+            "source_message_id": None,
+            "source_span_hash": None,
+            "recorded_at": None,
         })
 
     if below:
@@ -121,8 +127,9 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
             "may not actually answer the question. tell the lead you're blanking."
         )
 
+    body = injection_guard.wrap_untrusted("recall.graph", "\n".join(lines))
     return _ok(
-        "\n".join(lines),
+        body,
         data={
             "confidence": top_score,
             "below_threshold": below,
@@ -169,26 +176,46 @@ async def _legacy_fallback(query: str, limit: int, threshold: float) -> dict[str
         f"top {len(hits)} matches for {query!r} [legacy sqlite]:"
     )
     lines = [header]
+    hit_data = []
     for h in hits:
         lines.append(
             f"  [{h.kind}#{h.ref_id} score={h.score:.2f} rel={h.relevance:.2f}] {h.text}"
         )
+        prov_fields: dict = {
+            "attribution": None,
+            "source_message_id": None,
+            "source_span_hash": None,
+            "recorded_at": None,
+        }
+        if h.kind == "fact":
+            try:
+                prov = _db.fact_provenance(int(h.ref_id))
+                if prov:
+                    prov_fields["attribution"] = prov.get("attribution")
+                    prov_fields["source_message_id"] = prov.get("source_message_id")
+                    prov_fields["source_span_hash"] = prov.get("source_span_hash")
+                    prov_fields["recorded_at"] = prov.get("recorded_at")
+            except Exception:
+                logger.debug("recall: fact_provenance lookup failed for ref_id=%s", h.ref_id)
+        hit_data.append({
+            "kind": h.kind, "ref_id": h.ref_id, "text": h.text,
+            "score": h.score, "recency": h.recency,
+            "importance": h.importance, "relevance": h.relevance,
+            **prov_fields,
+        })
     if below:
         lines.append(
             "note: confidence is below the calibration threshold — these matches "
             "may not actually answer the question. tell the lead you're blanking."
         )
+    body = injection_guard.wrap_untrusted("recall.legacy", "\n".join(lines))
     return _ok(
-        "\n".join(lines),
+        body,
         data={
             "confidence": confidence,
             "below_threshold": below,
             "threshold": threshold,
             "source": "legacy",
-            "hits": [{
-                "kind": h.kind, "ref_id": h.ref_id, "text": h.text,
-                "score": h.score, "recency": h.recency,
-                "importance": h.importance, "relevance": h.relevance,
-            } for h in hits],
+            "hits": hit_data,
         },
     )

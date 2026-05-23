@@ -72,11 +72,11 @@ def test_full_schema_present(tmp_path, monkeypatch):
                 # Phase 10
                 "reminders",
                 # Sprint 3-A
-                "calendar_notifications"}
+                "calendar_notifications",
+                # Sprint 5A
+                "entities", "entity_aliases", "fact_entities"}
     missing = expected - rows
     assert not missing, f"missing tables: {missing}"
-    # entities table was dropped
-    assert "entities" not in rows
 
 
 def test_memory_round_trip(tmp_path, monkeypatch):
