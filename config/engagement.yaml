@@ -33,6 +33,12 @@ proactive:
   user_active_skip_minutes: 60
   reengage_min_hours: 2
   reengage_max_hours: 6
+  default_enabled_sources:
+    - gmail_unread_threshold
+    - calendar_event_prep
+    - reminder_fire
+    - wiki_new_file
+    - decision_resolve_due
 
 # --- Gap awareness ---
 # Inject `# gap_since_last:` block into inject_memory when the user
@@ -481,6 +487,8 @@ cadence_governor:
         - noticed_change
         - calendar_event
         - reengage_silence
+        - callback_episode
+        - weirdly_good_mood_leak
     scheduled_ceremony:
       max_per_7d: 14
       allowed_sources:
@@ -498,6 +506,17 @@ cadence_governor:
         - recent_episode_callback
         - reaction_followup
         - wiki_new_file
+        - gmail_unread_threshold
+        - gmail_important_thread
+        - calendar_event_prep
+        - calendar_new_invite
+        - reminder_fire
+        - decision_resolve_due
+        - drive_starred_new
+        - notion_recent_edit
+        - weather_alert
+        - location_arrived_recurring
+        - readwise_daily_review
 
 working_memory:
   enabled: true
@@ -889,6 +908,35 @@ engagement:
   wiki_new_file:
     enabled: true
     max_per_24h: 2
+  gmail_unread_threshold:
+    enabled: true
+    min_unread: 5
+  gmail_important_thread:
+    enabled: false
+  calendar_event_prep:
+    enabled: true
+  calendar_new_invite:
+    enabled: false
+  reminder_fire:
+    enabled: true
+  decision_resolve_due:
+    enabled: true
+  callback_episode:
+    enabled: false
+  drive_starred_new:
+    enabled: false
+  notion_recent_edit:
+    enabled: false
+  weather_alert:
+    enabled: false
+  weirdly_good_mood_leak:
+    enabled: false
+  reengage_silence:
+    enabled: false
+  location_arrived_recurring:
+    enabled: false
+  readwise_daily_review:
+    enabled: false
 
 graph:
   # Primary + fallback chain for Graphiti entity extraction (cheap LLM).

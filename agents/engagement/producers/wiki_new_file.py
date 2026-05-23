@@ -105,7 +105,11 @@ def collect() -> list[TriggerCandidate]:
             h1 = _CONTROL_CHARS.sub("", h1)[:80]
             candidates.append(TriggerCandidate(
                 source="wiki_new_file",
+                pool="user_anchored",
                 pattern="question",
+                novelty=0.8,
+                actionability=0.6,
+                confidence=0.9,
                 payload={
                     "filename": md.name,
                     "relative_path": rel,

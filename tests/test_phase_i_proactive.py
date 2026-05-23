@@ -1,0 +1,611 @@
+"""Phase I proactive engagement tests.
+
+Coverage:
+  - One test per producer (15 tests): mock data layer, assert collect() shape.
+  - Selector: highest-score wins, disabled sources excluded, pool cap respected.
+  - Guard: generic opener, missing anchor, well-formed, question-pattern.
+  - /proactive command: status listing, on/off toggle, default count.
+  - Config: default_enabled_sources has exactly 5 entries.
+"""
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from unittest.mock import AsyncMock
+
+from agents.engagement.triggers import TriggerCandidate
+
+
+# ---------- helpers ----------
+
+def _make_candidate(
+    source: str = "wiki_new_file",
+    pool: str = "user_anchored",
+    pattern: str = "notify",
+    payload: dict | None = None,
+    novelty: float = 0.5,
+    actionability: float = 0.5,
+    confidence: float = 0.8,
+) -> TriggerCandidate:
+    return TriggerCandidate(
+        source=source,
+        pool=pool,
+        pattern=pattern,
+        payload=payload or {},
+        dedup_key=f"{source}:test",
+        decay_at=datetime.now(UTC) + timedelta(hours=1),
+        novelty=novelty,
+        actionability=actionability,
+        confidence=confidence,
+    )
+
+
+def _make_ctx(
+    enabled: set[str] | None = None,
+    pool_caps: dict[str, bool] | None = None,
+    mood: str = "focused",
+    response_rate: dict[str, float] | None = None,
+    last_send: dict[str, str] | None = None,
+) -> SimpleNamespace:
+    from zoneinfo import ZoneInfo
+    return SimpleNamespace(
+        now_local=datetime.now(ZoneInfo("UTC")),
+        mood=mood,
+        enabled_sources=enabled or {"wiki_new_file"},
+        pool_caps=pool_caps or {"user_anchored": True, "agent_spontaneous": True},
+        source_response_rate=response_rate or {},
+        last_send_per_source=last_send or {},
+    )
+
+
+# ============================================================================
+# Producer tests (1 per producer)
+# ============================================================================
+
+class TestProducerWikiNewFile:
+    def test_collect_returns_empty_when_no_wiki(self):
+        from agents.engagement.producers import wiki_new_file
+        with patch.object(wiki_new_file, "_wiki_root", return_value=None):
+            assert wiki_new_file.collect() == []
+
+    def test_collect_returns_candidates_for_new_files(self, tmp_path):
+        from agents.engagement.producers import wiki_new_file
+        md = tmp_path / "test-note.md"
+        md.write_text("# Hello\n", encoding="utf-8")
+        with (
+            patch.object(wiki_new_file, "_wiki_root", return_value=tmp_path),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            results = wiki_new_file.collect()
+        assert isinstance(results, list)
+        assert all(c.source == "wiki_new_file" for c in results)
+
+
+class TestProducerGmailUnreadThreshold:
+    def test_collect_returns_empty_when_mcp_cold(self):
+        from agents.engagement.producers import gmail_unread_threshold
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert gmail_unread_threshold.collect() == []
+
+    def test_collect_returns_candidate_when_above_threshold(self):
+        from agents.engagement.producers import gmail_unread_threshold
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: "10" if k == "gmail_unread_count" else None),
+        ):
+            results = gmail_unread_threshold.collect()
+        assert len(results) == 1
+        assert results[0].source == "gmail_unread_threshold"
+        assert results[0].payload["unread_count"] == 10
+
+    def test_collect_returns_empty_below_threshold(self):
+        from agents.engagement.producers import gmail_unread_threshold
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: "2" if k == "gmail_unread_count" else None),
+        ):
+            results = gmail_unread_threshold.collect()
+        assert results == []
+
+
+class TestProducerCalendarEventPrep:
+    def test_collect_empty_when_mcp_cold(self):
+        from agents.engagement.producers import calendar_event_prep
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert calendar_event_prep.collect() == []
+
+    def test_collect_empty_when_no_data(self):
+        from agents.engagement.producers import calendar_event_prep
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            assert calendar_event_prep.collect() == []
+
+    def test_collect_returns_candidate_in_lead_window(self):
+        from agents.engagement.producers import calendar_event_prep
+        # Event starts in 30 minutes (within the ±5 jitter window)
+        start = datetime.now(UTC) + timedelta(minutes=30)
+        events = json.dumps([{"id": "evt1", "title": "Stand-up", "start_iso": start.isoformat()}])
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("storage.db.runtime_get", return_value=events),
+            patch("storage.db.calendar_notification_exists", return_value=False),
+        ):
+            results = calendar_event_prep.collect()
+        assert len(results) == 1
+        assert results[0].source == "calendar_event_prep"
+        assert "Stand-up" in results[0].payload["title"]
+
+
+class TestProducerCalendarNewInvite:
+    def test_collect_empty_when_mcp_cold(self):
+        from agents.engagement.producers import calendar_new_invite
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert calendar_new_invite.collect() == []
+
+    def test_collect_returns_candidate_for_new_invite(self):
+        from agents.engagement.producers import calendar_new_invite
+        invites = json.dumps([{"id": "inv1", "title": "Team sync", "organizer": "alice@example.com"}])
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: invites if k == "calendar_pending_invites" else None),
+        ):
+            results = calendar_new_invite.collect()
+        assert len(results) == 1
+        assert results[0].source == "calendar_new_invite"
+        assert results[0].payload["title"] == "Team sync"
+
+
+class TestProducerReminderFire:
+    def test_collect_empty_when_none_due(self):
+        from agents.engagement.producers import reminder_fire
+        with patch("storage.db.reminder_due", return_value=[]):
+            assert reminder_fire.collect() == []
+
+    def test_collect_returns_candidate_for_due_reminder(self):
+        from agents.engagement.producers import reminder_fire
+        due = [{"id": 1, "text": "call dentist", "fire_at": datetime.now(UTC).isoformat()}]
+        with patch("storage.db.reminder_due", return_value=due):
+            results = reminder_fire.collect()
+        assert len(results) == 1
+        assert results[0].source == "reminder_fire"
+        assert results[0].payload["text"] == "call dentist"
+
+
+class TestProducerDecisionResolveDue:
+    def test_collect_empty_when_none_due(self):
+        from agents.engagement.producers import decision_resolve_due
+        with patch("storage.db.decisions_unresolved_due", return_value=[]):
+            assert decision_resolve_due.collect() == []
+
+    def test_collect_returns_candidate_for_due_decision(self):
+        from agents.engagement.producers import decision_resolve_due
+        rows = [{"id": 5, "statement": "ship by friday at 70%",
+                 "predicted_p": 0.7, "resolve_by": "2026-05-23"}]
+        with patch("storage.db.decisions_unresolved_due", return_value=rows):
+            results = decision_resolve_due.collect()
+        assert len(results) == 1
+        assert results[0].source == "decision_resolve_due"
+        assert results[0].payload["statement"] == "ship by friday at 70%"
+
+
+class TestProducerCallbackEpisode:
+    def test_collect_empty_when_no_candidate(self):
+        from agents.engagement.producers import callback_episode
+        with (
+            patch("agents.callback_surface.pick_callback_candidate", return_value=None),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            assert callback_episode.collect() == []
+
+    def test_collect_returns_candidate(self):
+        from agents.engagement.producers import callback_episode
+        ep = {"id": "ep:42", "text": "talked about moving to oslo", "date": "2026-05-01", "score": 0.4}
+        with (
+            patch("agents.callback_surface.pick_callback_candidate", return_value=ep),
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            results = callback_episode.collect()
+        assert len(results) == 1
+        assert results[0].source == "callback_episode"
+
+
+class TestProducerDriveStarredNew:
+    def test_collect_empty_when_mcp_cold(self):
+        from agents.engagement.producers import drive_starred_new
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert drive_starred_new.collect() == []
+
+    def test_collect_returns_candidate_for_new_starred_file(self):
+        from agents.engagement.producers import drive_starred_new
+        files = json.dumps([{"id": "file1", "name": "Q2 report.pdf"}])
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: files if k == "drive_starred_files" else None),
+        ):
+            results = drive_starred_new.collect()
+        assert len(results) == 1
+        assert results[0].source == "drive_starred_new"
+        assert results[0].payload["name"] == "Q2 report.pdf"
+
+
+class TestProducerNotionRecentEdit:
+    def test_collect_empty_when_mcp_cold(self):
+        from agents.engagement.producers import notion_recent_edit
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert notion_recent_edit.collect() == []
+
+    def test_collect_returns_candidate_for_edited_page(self):
+        from agents.engagement.producers import notion_recent_edit
+        pages = json.dumps([{"id": "pg1", "title": "Sprint notes"}])
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: pages if k == "notion_recent_edits" else None),
+        ):
+            results = notion_recent_edit.collect()
+        assert len(results) == 1
+        assert results[0].source == "notion_recent_edit"
+        assert results[0].payload["page_title"] == "Sprint notes"
+
+
+class TestProducerWeatherAlert:
+    def test_collect_empty_when_no_alert(self):
+        from agents.engagement.producers import weather_alert
+        with patch("storage.db.runtime_get", return_value=None):
+            assert weather_alert.collect() == []
+
+    def test_collect_returns_candidate_for_alert(self):
+        from agents.engagement.producers import weather_alert
+        alert_data = json.dumps({"alert_summary": "wind gusts 25m/s expected"})
+        with (
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: alert_data if k == "weather_alert_pending" else None),
+        ):
+            results = weather_alert.collect()
+        assert len(results) == 1
+        assert results[0].source == "weather_alert"
+        assert "wind gusts" in results[0].payload["alert_summary"]
+
+
+class TestProducerWeirdlyGoodMoodLeak:
+    def test_collect_empty_when_mood_not_weirdly_good(self):
+        from agents.engagement.producers import weirdly_good_mood_leak
+        with patch("storage.db.get_core_block", return_value="focused"):
+            assert weirdly_good_mood_leak.collect() == []
+
+    def test_collect_returns_candidate_when_mood_weirdly_good(self):
+        from agents.engagement.producers import weirdly_good_mood_leak
+        with (
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.get_core_block", return_value="weirdly good"),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            results = weirdly_good_mood_leak.collect()
+        assert len(results) == 1
+        assert results[0].source == "weirdly_good_mood_leak"
+
+
+class TestProducerReengageSilence:
+    def test_collect_empty_when_disabled(self):
+        from agents.engagement.producers import reengage_silence
+        with patch("agents.config.get", return_value=False):
+            assert reengage_silence.collect() == []
+
+    def test_collect_returns_candidate_when_conditions_met(self):
+        from agents.engagement.producers import reengage_silence
+        last_ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        last_msg = {"role": "assistant", "ts": last_ts}
+        with (
+            patch("agents.config.get", return_value=True),
+            patch("agents.config.section", return_value={
+                "reengage_min_hours": 2, "reengage_max_hours": 6,
+                "quiet_start_hour": 23, "quiet_end_hour": 8,
+            }),
+            patch("storage.db.runtime_get", return_value=None),
+            patch("storage.db.recent_messages", return_value=[last_msg]),
+            patch.object(reengage_silence, "_is_quiet_now", return_value=False),
+        ):
+            results = reengage_silence.collect()
+        assert len(results) == 1
+        assert results[0].source == "reengage_silence"
+
+
+class TestProducerLocationArrivedRecurring:
+    def test_collect_empty_when_no_pattern(self):
+        from agents.engagement.producers import location_arrived_recurring
+        with (
+            patch("agents.proactive.detect_recurring_location_pattern", return_value=None),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            assert location_arrived_recurring.collect() == []
+
+    def test_collect_returns_candidate_when_pattern_detected(self):
+        from agents.engagement.producers import location_arrived_recurring
+        pattern = {"lat": 59.913, "lon": 10.752, "label": "Office", "visit_count": 5}
+        with (
+            patch("agents.config.get", return_value=True),
+            patch("agents.proactive.detect_recurring_location_pattern", return_value=pattern),
+            patch("storage.db.runtime_get", return_value=None),
+        ):
+            results = location_arrived_recurring.collect()
+        assert len(results) == 1
+        assert results[0].source == "location_arrived_recurring"
+        assert results[0].payload["place_name"] == "Office"
+
+
+class TestProducerReadwiseDailyReview:
+    def test_collect_always_returns_empty(self):
+        from agents.engagement.producers import readwise_daily_review
+        assert readwise_daily_review.collect() == []
+
+
+class TestProducerGmailImportantThread:
+    def test_collect_empty_when_mcp_cold(self):
+        from agents.engagement.producers import gmail_important_thread
+        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
+            assert gmail_important_thread.collect() == []
+
+    def test_collect_returns_candidate_for_important_thread(self):
+        from agents.engagement.producers import gmail_important_thread
+        threads = json.dumps([{"id": "th1", "subject": "URGENT: server down", "sender": "boss@company.com"}])
+        with (
+            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
+            patch("agents.config.get", return_value=True),
+            patch("storage.db.runtime_get", side_effect=lambda k: threads if k == "gmail_important_threads" else None),
+        ):
+            results = gmail_important_thread.collect()
+        assert len(results) == 1
+        assert results[0].source == "gmail_important_thread"
+        assert results[0].payload["subject"] == "URGENT: server down"
+
+
+# ============================================================================
+# Selector tests
+# ============================================================================
+
+class TestSelector:
+    def test_picks_highest_score(self):
+        from agents.engagement.selector import select
+        low = _make_candidate("reminder_fire", novelty=0.1, actionability=0.1, confidence=0.1)
+        mid = _make_candidate("wiki_new_file", novelty=0.5, actionability=0.5, confidence=0.5)
+        high = _make_candidate("decision_resolve_due", novelty=0.9, actionability=0.9, confidence=0.9)
+        ctx = _make_ctx(enabled={"reminder_fire", "wiki_new_file", "decision_resolve_due"})
+        winner = select([low, mid, high], ctx)
+        assert winner is not None
+        assert winner.source == "decision_resolve_due"
+
+    def test_excludes_disabled_sources(self):
+        from agents.engagement.selector import select
+        high = _make_candidate("gmail_unread_threshold", novelty=0.99, actionability=0.99, confidence=0.99)
+        low = _make_candidate("wiki_new_file", novelty=0.1, actionability=0.1, confidence=0.1)
+        # gmail_unread_threshold is NOT in enabled set
+        ctx = _make_ctx(enabled={"wiki_new_file"})
+        winner = select([high, low], ctx)
+        assert winner is not None
+        assert winner.source == "wiki_new_file"
+
+    def test_excludes_source_not_in_enabled(self):
+        from agents.engagement.selector import select
+        c = _make_candidate("gmail_unread_threshold", novelty=0.9, actionability=0.9, confidence=0.9)
+        ctx = _make_ctx(enabled=set())  # nothing enabled
+        assert select([c], ctx) is None
+
+    def test_respects_pool_cap(self):
+        from agents.engagement.selector import select
+        c = _make_candidate("wiki_new_file", pool="user_anchored",
+                            novelty=0.9, actionability=0.9, confidence=0.9)
+        ctx = _make_ctx(
+            enabled={"wiki_new_file"},
+            pool_caps={"user_anchored": False, "agent_spontaneous": True},
+        )
+        assert select([c], ctx) is None
+
+    def test_returns_none_when_no_candidates(self):
+        from agents.engagement.selector import select
+        ctx = _make_ctx()
+        assert select([], ctx) is None
+
+
+# ============================================================================
+# Guard tests
+# ============================================================================
+
+class TestGuard:
+    def test_rejects_generic_opener(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("reengage_silence")
+        ok, reason = passes("hey, want to chat?", c)
+        assert not ok
+        assert reason == "generic_opener"
+
+    def test_rejects_hi_opener(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("reengage_silence")
+        ok, reason = passes("Hi there, just checking in", c)
+        assert not ok
+        assert reason == "generic_opener"
+
+    def test_rejects_missing_anchor_gmail_unread(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("gmail_unread_threshold", payload={"unread_count": 7})
+        # Text doesn't contain "7" verbatim
+        ok, reason = passes("you have some emails.", c)
+        assert not ok
+        assert reason.startswith("missing_anchor")
+
+    def test_accepts_anchor_present_gmail_unread(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("gmail_unread_threshold", payload={"unread_count": 7})
+        ok, reason = passes("you have 7 unread emails.", c)
+        assert ok
+        assert reason == "ok"
+
+    def test_accepts_well_formed_wiki(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("wiki_new_file", pattern="question",
+                            payload={"filename": "oslo-notes.md"})
+        ok, reason = passes("new page just landed — 'oslo-notes.md'. want me to read it? y/n.", c)
+        assert ok
+
+    def test_rejects_question_pattern_no_question_mark(self):
+        from agents.engagement.guard import passes
+        # Use decision_resolve_due: anchor is "statement" key.
+        # If the anchor IS present the guard returns ok — so use a case
+        # where the anchor key isn't matched to reach the question-mark check.
+        # Easier: use a source with no anchor and pattern=question.
+        # Guard only checks pattern for sources WITH anchors after the anchor
+        # passes, so let's test a wiki_new_file where anchor IS present but
+        # the text doesn't end with the right punctuation.
+        # The guard returns True once the anchor matches — so for wiki_new_file
+        # we can't test the question check via normal flow.
+        # Instead test decision_resolve_due with anchor missing (triggers
+        # missing_anchor) — that's already covered. The question-mark guard
+        # fires for anchor-free sources with pattern=question.
+        # Create a fake source with no anchor paths and pattern=question:
+        c = TriggerCandidate(
+            source="unknown_future_source",
+            pool="user_anchored",
+            pattern="question",
+            payload={},
+            dedup_key="test",
+            decay_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        ok, reason = passes("you might want to check this.", c)
+        assert not ok
+        assert reason == "question_pattern_missing_question_mark"
+
+    def test_accepts_no_anchor_required_sources(self):
+        from agents.engagement.guard import passes
+        for source in ("weirdly_good_mood_leak", "reengage_silence"):
+            c = _make_candidate(source, pattern="notify")
+            ok, reason = passes("you went quiet.", c)
+            assert ok, f"Expected ok for {source}, got {reason}"
+
+    def test_rejects_empty_text(self):
+        from agents.engagement.guard import passes
+        c = _make_candidate("wiki_new_file", payload={"filename": "test.md"})
+        ok, reason = passes("", c)
+        assert not ok
+        assert reason == "empty"
+
+
+# ============================================================================
+# /proactive command tests
+# ============================================================================
+
+class TestProactiveCommand:
+    @pytest.mark.asyncio
+    async def test_status_lists_sources_with_marks(self):
+        from agents.telegram_bridge import cmd_proactive
+        from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
+
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = ["status"]
+
+        with (
+            patch("agents.telegram_bridge.owner_id", return_value=999),
+            patch("storage.db.runtime_get", return_value=None),
+            patch("agents.config.get", return_value=None),
+            patch("storage.db.proactive_send_count_7d", return_value=0),
+        ):
+            await cmd_proactive(update, context)
+
+        call_args = update.message.reply_text.call_args[0][0]
+        assert "proactive sources:" in call_args
+        for src in sorted(DEFAULT_ENABLED_SOURCES):
+            assert f"[✓] {src}" in call_args
+
+    @pytest.mark.asyncio
+    async def test_on_adds_source_to_runtime(self):
+        from agents.telegram_bridge import cmd_proactive
+        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = ["on", "weather_alert"]
+
+        stored = {}
+
+        def fake_runtime_set(k, v):
+            stored[k] = v
+
+        with (
+            patch("agents.telegram_bridge.owner_id", return_value=999),
+            patch("storage.db.runtime_get", return_value=None),
+            patch("storage.db.runtime_set", side_effect=fake_runtime_set),
+            patch("agents.config.get", return_value=list(DEFAULT_ENABLED_SOURCES)),
+        ):
+            await cmd_proactive(update, context)
+
+        assert "proactive_enabled_sources_override" in stored
+        stored_set = set(json.loads(stored["proactive_enabled_sources_override"]))
+        assert "weather_alert" in stored_set
+
+    @pytest.mark.asyncio
+    async def test_off_removes_source_from_runtime(self):
+        from agents.telegram_bridge import cmd_proactive
+        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = ["off", "wiki_new_file"]
+
+        stored = {}
+
+        def fake_runtime_set(k, v):
+            stored[k] = v
+
+        with (
+            patch("agents.telegram_bridge.owner_id", return_value=999),
+            patch("storage.db.runtime_get", return_value=None),
+            patch("storage.db.runtime_set", side_effect=fake_runtime_set),
+            patch("agents.config.get", return_value=list(DEFAULT_ENABLED_SOURCES)),
+        ):
+            await cmd_proactive(update, context)
+
+        stored_set = set(json.loads(stored["proactive_enabled_sources_override"]))
+        assert "wiki_new_file" not in stored_set
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_returns_error(self):
+        from agents.telegram_bridge import cmd_proactive
+
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = ["on", "totally_fake_source_xyz"]
+
+        with patch("agents.telegram_bridge.owner_id", return_value=999):
+            await cmd_proactive(update, context)
+
+        reply = update.message.reply_text.call_args[0][0]
+        assert "unknown source" in reply
+
+
+# ============================================================================
+# Config test
+# ============================================================================
+
+class TestConfig:
+    def test_default_enabled_is_5(self):
+        from agents import config as cfg
+        sources = cfg.get("proactive.default_enabled_sources")
+        assert sources is not None, "proactive.default_enabled_sources missing from config"
+        assert len(list(sources)) == 5

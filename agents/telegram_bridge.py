@@ -1494,6 +1494,66 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/proactive status | on <source> | off <source>"""
+    import json as _json
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+
+    from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
+
+    args = context.args or []
+
+    if not args or args[0] == "status":
+        raw_override = db.runtime_get("proactive_enabled_sources_override")
+        if raw_override:
+            try:
+                enabled = set(_json.loads(raw_override))
+            except (ValueError, TypeError):
+                enabled = set(DEFAULT_ENABLED_SOURCES)
+        else:
+            cfg_sources = cfg.get("proactive.default_enabled_sources")
+            enabled = set(cfg_sources) if cfg_sources else set(DEFAULT_ENABLED_SOURCES)
+
+        lines = ["proactive sources:"]
+        for s in sorted(ALL_PRODUCER_IDS):
+            mark = "✓" if s in enabled else " "
+            count = db.proactive_send_count_7d(s)
+            lines.append(f"  [{mark}] {s}  (7d: {count})")
+        await message.reply_text("\n".join(lines))
+        return
+
+    op = args[0]
+    if op not in ("on", "off") or len(args) < 2:
+        await message.reply_text("usage: /proactive on|off <source> | /proactive status")
+        return
+
+    source = args[1]
+    if source not in ALL_PRODUCER_IDS:
+        await message.reply_text(f"unknown source: {source}")
+        return
+
+    raw_override = db.runtime_get("proactive_enabled_sources_override")
+    if raw_override:
+        try:
+            enabled = set(_json.loads(raw_override))
+        except (ValueError, TypeError):
+            enabled = set(DEFAULT_ENABLED_SOURCES)
+    else:
+        cfg_sources = cfg.get("proactive.default_enabled_sources")
+        enabled = set(cfg_sources) if cfg_sources else set(DEFAULT_ENABLED_SOURCES)
+
+    if op == "on":
+        enabled.add(source)
+    else:
+        enabled.discard(source)
+
+    db.runtime_set("proactive_enabled_sources_override", _json.dumps(sorted(enabled)))
+    await message.reply_text(f"{op} {source}. now enabled: {sorted(enabled)}")
+
+
 _REACTION_TURN_COOLDOWN_KEY = "reaction_turn_last_at"
 _REACTION_TURN_DAILY_KEY = "reaction_turn_count_day"
 _REACTION_TURN_DAY_KEY = "reaction_turn_count_date"
@@ -1812,6 +1872,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
     app.add_handler(CommandHandler("approvals", cmd_approvals))
+    app.add_handler(CommandHandler("proactive", cmd_proactive))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))

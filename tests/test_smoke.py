@@ -167,8 +167,8 @@ def test_scheduler_builds(monkeypatch):
         "decision_resolver",
         # Phase 3 + Sprint 3-A: monthly pruner (messages, oauth_audit_log, drift_probes, calendar_notifications).
         "monthly_prune",
-        # Phase 7: wiki_new_file engagement producer (5-min poll).
-        "wiki_new_file_tick",
+        # Phase I: unified engagement_tick (60s, all producers).
+        "engagement_tick",
         # Phase H: MCP warm-pool eviction (every 30s).
         "mcp_warm_pool_evict",
     }

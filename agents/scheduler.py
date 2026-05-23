@@ -287,36 +287,115 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
-    # wiki_new_file producer: scan for new .md files every 5 min, send one
-    # proactive ping in voice if found. Producer self-handles missing wiki_path.
-    async def _wiki_new_file_tick():
-        from agents.engagement.producers import wiki_new_file as wnf
-        from agents.engagement import composer, guard, sender
+    # Phase I: unified engagement_tick — replaces the per-producer wiki_new_file_tick.
+    # Runs every 60s, collects candidates from all enabled producers, selects the
+    # highest-scoring one, composes + guards + sends it.
+    async def _engagement_tick():
+        import asyncio
+        import json
+        from datetime import datetime
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
 
-        candidates = wnf.collect()
+        from agents import cadence
+        from agents.engagement import composer, guard, producers, selector, sender
+        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+        from storage import db
+
+        # Resolve enabled sources: runtime override wins over config default.
+        raw_override = db.runtime_get("proactive_enabled_sources_override")
+        if raw_override:
+            try:
+                enabled = set(json.loads(raw_override))
+            except (ValueError, TypeError):
+                enabled = set(DEFAULT_ENABLED_SOURCES)
+        else:
+            cfg_sources = cfg.get("proactive.default_enabled_sources")
+            enabled = set(cfg_sources) if cfg_sources else set(DEFAULT_ENABLED_SOURCES)
+
+        # Collect candidates from all enabled producers (sync calls, run in executor).
+        loop = asyncio.get_event_loop()
+        tasks = []
+        source_ids = []
+        for source_id in enabled:
+            mod = producers.get_producer(source_id)
+            if mod is None:
+                continue
+            source_ids.append(source_id)
+            tasks.append(loop.run_in_executor(None, mod.collect))
+
+        if not tasks:
+            return
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        candidates = []
+        for source_id, result in zip(source_ids, results):
+            if isinstance(result, Exception):
+                logger.warning("engagement_tick: producer %r raised %s", source_id, result)
+                continue
+            if isinstance(result, list):
+                candidates.extend(result)
+
         if not candidates:
             return
-        # Process all cap-allowed candidates in order; advance the watermark
-        # ONLY for ones that actually shipped. Guard-rejected and
-        # send-failed candidates stay eligible for the next tick.
-        for candidate in candidates:
-            text = await composer.compose(candidate)
+
+        tz_name = cfg.get("scheduler.timezone", "UTC")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+
+        # Pool caps: ask the governor whether each pool still has headroom.
+        # Use a known valid source per pool — the governor checks the pool's
+        # rolling 7d counter against the cap, not the source itself.
+        pool_caps = {
+            "user_anchored": cadence.can_send("wiki_new_file", cadence.Pool.USER_ANCHORED)[0],
+            "agent_spontaneous": cadence.can_send("reengage_silence", cadence.Pool.AGENT_SPONTANEOUS)[0],
+            "scheduled_ceremony": False,  # ceremony sources have their own dedicated jobs
+        }
+        ctx = SimpleNamespace(
+            now_local=datetime.now(tz),
+            mood=db.runtime_get("mood_today") or "focused",
+            enabled_sources=enabled,
+            pool_caps=pool_caps,
+            source_response_rate=db.proactive_source_response_rates(days=30),
+            last_send_per_source=db.proactive_last_send_per_source(),
+        )
+
+        candidate = selector.select(candidates, ctx)
+        if candidate is None:
+            return
+
+        text = await composer.compose(candidate)
+        if not text:
+            return
+
+        ok, reason = guard.passes(text, candidate)
+        if not ok:
+            text = await composer.compose(candidate, retry_hint=reason)
             if not text:
-                logger.info("wiki_new_file: compose returned NO_MESSAGE or empty")
-                continue
+                return
             ok, reason = guard.passes(text, candidate)
             if not ok:
-                logger.info("wiki_new_file: guard rejected — %s", reason)
-                continue
-            row_id = await sender.send(text, candidate, send_text)
-            if row_id is not None:
-                wnf.mark_consumed(candidate)
+                logger.info("engagement_tick: dropped after 2 guard fails — %s (source=%s)",
+                            reason, candidate.source)
+                return
+
+        row_id = await sender.send(text, candidate, send_text)
+        if row_id is not None:
+            # Call mark_consumed on the producer module if it defines it.
+            mod = producers.get_producer(candidate.source)
+            if mod and hasattr(mod, "mark_consumed"):
+                try:
+                    mod.mark_consumed(candidate)
+                except Exception:
+                    logger.exception("engagement_tick: mark_consumed failed for %s", candidate.source)
 
     scheduler.add_job(
-        _wiki_new_file_tick,
-        IntervalTrigger(minutes=5),
-        id="wiki_new_file_tick",
-        coalesce=True, max_instances=1, misfire_grace_time=120,
+        _engagement_tick,
+        IntervalTrigger(seconds=60),
+        id="engagement_tick",
+        coalesce=True, max_instances=1, misfire_grace_time=60,
     )
 
     # Phase H: periodic MCP warm-pool eviction — runs every 30s to reap stale

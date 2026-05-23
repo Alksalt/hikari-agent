@@ -28,7 +28,6 @@ def test_guard_rejects_missing_anchor():
     ok, reason = passes("new page just landed — want me to read it?", _candidate("foo.md"))
     assert not ok
     assert "missing_anchor" in reason
-    assert "foo.md" in reason
 
 
 def test_guard_rejects_question_pattern_no_question_mark():

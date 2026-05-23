@@ -2390,6 +2390,52 @@ def proactive_event_record_silence_window(now_iso: str | None = None) -> int:
     return int(cur.rowcount or 0)
 
 
+# ---------- proactive engagement analytics ----------
+
+def proactive_source_response_rates(days: int = 30) -> dict[str, float]:
+    """Return thumbs-up response rate per source over the last N days.
+    Rate = thumbs_up / (thumbs_up + thumbs_down), defaulting to 0.5 when
+    no feedback exists. Used by the selector to weight source scores."""
+    cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=int(days))).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT source, SUM(thumbs_up) AS up, SUM(thumbs_down) AS dn "
+            "FROM proactive_events "
+            "WHERE sent_at >= ? "
+            "GROUP BY source",
+            (cutoff,),
+        ).fetchall()
+    result: dict[str, float] = {}
+    for r in rows:
+        up = int(r["up"] or 0)
+        dn = int(r["dn"] or 0)
+        total = up + dn
+        result[r["source"]] = (up / total) if total > 0 else 0.5
+    return result
+
+
+def proactive_last_send_per_source() -> dict[str, str]:
+    """Return the ISO timestamp of the most recent send per source."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT source, MAX(sent_at) AS last_sent "
+            "FROM proactive_events "
+            "GROUP BY source",
+        ).fetchall()
+    return {r["source"]: str(r["last_sent"]) for r in rows if r["last_sent"]}
+
+
+def proactive_send_count_7d(source: str) -> int:
+    """Return the number of sends for a given source in the last 7 days."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM proactive_events "
+            "WHERE source = ? AND sent_at >= datetime('now', '-7 days')",
+            (str(source),),
+        ).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+
 # ---------- pruners ----------
 
 def prune_messages_older_than_days(days: int) -> int:
