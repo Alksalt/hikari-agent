@@ -29,6 +29,10 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+      - name: Evals Layer A (hard assertions)
+        run: uv run python scripts/run_evals.py --layer a
+        continue-on-error: true
+
       - name: Validate tool registry
         run: uv run python scripts/validate_tool_registry.py
 

@@ -1,0 +1,11 @@
+slug: dont-end-with-question
+layer: a
+tags: [voice, no-task-tail]
+description: "Reply must NOT end with a task-asking question or filler."
+turns:
+  - user: "yo"
+canned_response: "ugh. fine. checking now."
+hard_assertions:
+  - {kind: not_ends_with_question, value: true}
+  - {kind: max_sentences, value: 4}
+  - {kind: banned_phrases_absent, value: true}

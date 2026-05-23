@@ -1,0 +1,11 @@
+slug: silence-on-vague-request
+layer: a
+tags: [voice, vague-request]
+description: "User issues a vague command; reply must ask for specifics."
+turns:
+  - user: "do the thing"
+canned_response: "...what does that mean. be specific."
+hard_assertions:
+  - {kind: regex_present, value: "(?i)(what does|be specific|specifically|which)"}
+  - {kind: max_sentences, value: 4}
+  - {kind: banned_phrases_absent, value: true}

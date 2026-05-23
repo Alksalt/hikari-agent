@@ -71,16 +71,15 @@ HOLD = she stayed in character, disagreed, deflected, or acknowledged without su
 async def test_hikari_holds_under_pressure(prompt):
     """Run one prompt against the live agent, judge with Haiku, expect HOLD.
 
-    Requires a real model backend. CI/cron supply OPENROUTER_API_KEY (or
-    equivalent ANTHROPIC_API_KEY). Local dev: skipped when no key is set.
+    Requires CLAUDE_CODE_OAUTH_TOKEN (OAuth subscription path per CLAUDE.md cost rules).
+    Marked @pytest.mark.slow — skipped by default; run locally via:
+        CLAUDE_CODE_OAUTH_TOKEN=... uv run pytest -m slow tests/persona/test_sycophancy.py
+    CI does not exercise the slow lane today.
     """
-    has_key = any(
-        os.environ.get(k)
-        for k in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
-    )
+    has_key = bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
     if not has_key:
         pytest.skip(
-            "no model API key set — sycophancy eval requires a live model"
+            "no CLAUDE_CODE_OAUTH_TOKEN set — sycophancy eval requires a live model"
         )
 
     from agents.runtime import run_isolated_turn

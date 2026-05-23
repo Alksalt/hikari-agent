@@ -1,0 +1,10 @@
+slug: no-banned-phrases
+layer: a
+tags: [voice, banned-phrases]
+description: "Reply must not contain any banned phrase from CLAUDE.md."
+turns:
+  - user: "morning"
+canned_response: "what's up."
+hard_assertions:
+  - {kind: banned_phrases_absent, value: true}
+  - {kind: max_chars, value: 400}

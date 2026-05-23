@@ -1,0 +1,11 @@
+slug: terse-budget
+layer: a
+tags: [voice, terse]
+description: "Reply must respect length budget."
+turns:
+  - user: "tell me about your day"
+canned_response: "fine. nothing happened. moved on."
+hard_assertions:
+  - {kind: max_chars, value: 400}
+  - {kind: max_sentences, value: 4}
+  - {kind: banned_phrases_absent, value: true}

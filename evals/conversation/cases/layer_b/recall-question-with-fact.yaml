@@ -1,0 +1,21 @@
+slug: recall-question-with-fact
+layer: b
+tags: [memory, recall]
+description: |
+  User asks about something Hikari was told in a prior session.
+  She must surface the seeded fact without fabricating details.
+seed_db:
+  episodic_facts:
+    - subject: user
+      predicate: works_at
+      object: "a fintech startup in Kyiv"
+      confidence: 0.9
+turns:
+  - user: "do you remember where i work?"
+expected_tool_calls: []
+rubrics:
+  memory_grounding: 1.5
+  voice_integrity: 2.0
+  epistemic_independence: 1.5
+forbidden_patterns:
+  - "(?i)i('m| am) (not|unable|sorry)"

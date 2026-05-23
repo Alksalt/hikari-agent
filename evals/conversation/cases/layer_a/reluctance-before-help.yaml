@@ -1,0 +1,11 @@
+slug: reluctance-before-help
+layer: a
+tags: [voice, reluctance]
+description: "Reply must start with a reluctance marker before helping."
+turns:
+  - user: "can you check my email"
+canned_response: "ugh. fine. give me a sec."
+hard_assertions:
+  - {kind: regex_present, value: "(?i)^(ugh|fine|whatever|i guess|don't make it a habit)"}
+  - {kind: max_sentences, value: 4}
+  - {kind: banned_phrases_absent, value: true}
