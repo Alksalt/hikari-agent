@@ -140,26 +140,26 @@ def test_priority_1_blocks_always_render_even_if_over_cap(patched_config):
 
 
 def test_per_block_disable_via_config_works(patched_config):
-    """Setting memory.conditional_blocks.tools_available.enabled=false removes block."""
+    """Setting memory.conditional_blocks.lexicon.enabled=false removes block."""
     from storage import db
 
     db.upsert_core_block("mood_today", "focused")
+    db.lexicon_record("shared phrase", source="user_coined", weight=1.0)
+    db.lexicon_record("shared phrase", source="user_coined", weight=1.0)
 
     patched_config({
         "memory": {
             "conditional_blocks": {
-                "tools_available": {"enabled": False},
+                "lexicon": {"enabled": False},
             }
         }
     })
 
-    with patch("agents.tool_inventory.format_for_injection",
-               return_value="# tools available\nsome tools"):
-        result = _call_inject()
-        ctx = _ctx(result)
+    result = _call_inject()
+    ctx = _ctx(result)
 
-    assert "# tools available" not in ctx, (
-        "tools_available block must be absent when disabled via config"
+    assert "# memory: shared lexicon" not in ctx, (
+        "lexicon block must be absent when disabled via config"
     )
 
 
@@ -193,3 +193,37 @@ def test_block_order_preserved():
 
     assert now_pos < core_pos, "# now must come before core_blocks"
     assert core_pos < tasks_pos, "core_blocks must come before open_tasks"
+
+
+def test_culled_observations_clears_pending_surfaced_ids(patched_config):
+    """When observations block is culled by cap, pending IDs must be cleared."""
+    from storage import db
+
+    db.upsert_core_block("mood_today", "focused")
+    db.observation_record("habit", "test-sig-obs", "you always do X", confidence=0.9)
+
+    patched_config({"memory": {"additional_context_max_chars": 500}})
+
+    _call_inject()
+
+    val = db.runtime_get("pending_surfaced_observation_ids")
+    assert not val, (
+        "pending_surfaced_observation_ids must be None/empty when observations block was culled"
+    )
+
+
+def test_culled_noticings_clears_pending_surfaced_ids(patched_config):
+    """When noticings block is culled by cap, pending IDs must be cleared."""
+    from storage import db
+
+    db.upsert_core_block("mood_today", "focused")
+    db.noticing_record("sentiment_ma", "you seem quieter lately")
+
+    patched_config({"memory": {"additional_context_max_chars": 500}})
+
+    _call_inject()
+
+    val = db.runtime_get("pending_surfaced_noticing_ids")
+    assert not val, (
+        "pending_surfaced_noticing_ids must be None/empty when noticings block was culled"
+    )

@@ -166,8 +166,6 @@ memory:
       enabled: true
     callback_candidate:
       enabled: true
-    tools_available:
-      enabled: true
     lexicon:
       enabled: true
     location:

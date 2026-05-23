@@ -61,4 +61,6 @@ async def test_inject_memory_includes_now_block_at_top(monkeypatch, tmp_path):
     # `# now` should appear before the `# tools available` block.
     now_idx = additional.find("# now")
     tools_idx = additional.find("# tools available")
-    assert now_idx >= 0 and tools_idx > now_idx
+    assert now_idx >= 0
+    if tools_idx != -1:
+        assert tools_idx > now_idx

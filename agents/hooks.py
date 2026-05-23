@@ -203,9 +203,9 @@ def _format_open_tasks() -> str:
     for t in tasks:
         due = f" (due {t['due_at']})" if t["due_at"] else ""
         status = t["status"]
-        lines.append(f"- [#{t['id']} {status}{due}] {t['subject']}")
+        lines.append(f"- [#{t['id']} {status}{due}] {t['subject'][:150]}")
         if t.get("description"):
-            lines.append(f"    {t['description']}")
+            lines.append(f"    {t['description'][:100]}")
     return "\n".join(lines)
 
 
@@ -227,7 +227,7 @@ def _format_lexicon() -> str:
         return ""
     lines = ["# memory: shared lexicon (private phrases between you and them)"]
     for e in eligible:
-        lines.append(f"- \"{e['phrase']}\" (source: {e['source']})")
+        lines.append(f"- \"{e['phrase'][:100]}\" (source: {e['source'][:40]})")
     return "\n".join(lines)
 
 
@@ -286,7 +286,7 @@ def _format_observations() -> str:
     lines = ["# noticed patterns (you can raise these sideways, not as diagnoses)"]
     ids: list[int] = []
     for r in rows:
-        lines.append(f"- [{r['kind']}] {r['summary']}")
+        lines.append(f"- [{r['kind']}] {r['summary'][:200]}")
         try:
             ids.append(int(r["id"]))
         except (TypeError, ValueError):
@@ -321,7 +321,7 @@ def _format_noticings() -> str:
     lines = ["# noticed changes about them (surface obliquely, not as a checkup)"]
     ids: list[int] = []
     for r in rows:
-        lines.append(f"- {r['summary']}")
+        lines.append(f"- {r['summary'][:200]}")
         try:
             ids.append(int(r["id"]))
         except (TypeError, ValueError):
@@ -414,7 +414,7 @@ class _Block:
     text: str
 
 
-_ALWAYS_ON = frozenset({"now", "working_memory", "gap_since_last", "core_blocks", "peer_representation", "open_tasks"})
+_ALWAYS_ON = frozenset({"now", "working_memory", "gap_since_last", "core_blocks", "peer_representation", "open_tasks", "tools_available"})
 
 
 def _block_enabled(key: str) -> bool:
@@ -480,7 +480,7 @@ async def inject_memory(
             ("observations",        3, _format_observations()),
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
-            ("tools_available",     2, _format_tools_available()),
+            ("tools_available",     1, _format_tools_available()),
             ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
             ("unresolved_decisions", 2, _format_unresolved_decisions()),
         ]
@@ -506,6 +506,12 @@ async def inject_memory(
                 running += sep_cost + len(b.text)
 
         selected.sort(key=lambda b: b.order)
+
+        selected_keys = {b.key for b in selected}
+        if "observations" not in selected_keys:
+            db.runtime_set("pending_surfaced_observation_ids", None)
+        if "noticings" not in selected_keys:
+            db.runtime_set("pending_surfaced_noticing_ids", None)
 
         logger.debug(
             "inject_memory: %d/%d blocks, %d chars (cap=%d)",
