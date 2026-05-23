@@ -1366,6 +1366,46 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Side-by-side SQLite vs Graphiti recall for a query."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await message.reply_text("usage: /memory_diff <query>")
+        return
+
+    from storage.retrieval import retrieve as legacy_retrieve  # noqa: PLC0415
+    from storage.graph import search as graph_search  # noqa: PLC0415
+
+    sqlite_hits = []
+    try:
+        sqlite_hits = legacy_retrieve(query) or []
+    except Exception:
+        logger.exception("memory_diff: sqlite retrieve failed")
+
+    graph_hits = []
+    try:
+        graph_hits = await graph_search(query) or []
+    except Exception:
+        logger.exception("memory_diff: graph search failed")
+
+    lines = [f"/memory_diff: {query}", "", "SQLite (current):"]
+    for h in sqlite_hits[:5]:
+        lines.append(f"- {str(h)[:120]}")
+    if not sqlite_hits:
+        lines.append("(none)")
+    lines.append("")
+    lines.append("Graphiti:")
+    for h in graph_hits[:5]:
+        lines.append(f"- {str(h)[:120]}")
+    if not graph_hits:
+        lines.append("(none)")
+    await message.reply_text("\n".join(lines))
+
+
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Daily cost summary."""
     user = update.effective_user
@@ -1707,6 +1747,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("cost", cmd_cost))
+    app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
@@ -1889,6 +1930,12 @@ def main() -> None:
         # Phase B: start persistent SDK client pool (live + haiku judge).
         await _sdk_pool.startup()
         logger.info("sdk_pool started")
+
+        try:
+            from storage.graph import get_graph  # noqa: PLC0415
+            await get_graph()
+        except Exception:
+            logger.exception("graph init failed at boot (degrading: dual-writes will retry)")
 
         # Start the long-running dispatch event listener.
         asyncio.create_task(listener_loop(application.bot))

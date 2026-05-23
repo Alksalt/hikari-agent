@@ -1105,6 +1105,15 @@ def insert_fact(
             "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'fact', ?)",
             (f"{subject} {predicate} {object_}", fact_id),
         )
+    try:
+        from storage.graph import schedule_episode
+        schedule_episode(
+            name=f"fact_{fact_id}",
+            episode_body=f"{subject} {predicate} {object_}",
+            source_description=f"attribution={attribution or 'unknown'}",
+        )
+    except Exception:
+        logger.debug("insert_fact: dual-write scheduling failed (non-fatal)", exc_info=True)
     return fact_id
 
 
@@ -2779,6 +2788,7 @@ def ids_without_embedding(table: str) -> list[int]:
 
 def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
     n = 0
+    inserted: list[tuple[int, str, str, str]] = []
     with _conn() as c:
         for r in rows:
             cur = c.execute(
@@ -2792,11 +2802,22 @@ def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
                     r.get("created_at", _now()),
                 ),
             )
+            fid = cur.lastrowid
             c.execute(
                 "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'fact', ?)",
-                (f"{r['subject']} {r['predicate']} {r['object']}", cur.lastrowid),
+                (f"{r['subject']} {r['predicate']} {r['object']}", fid),
             )
+            inserted.append((fid, r["subject"], r["predicate"], r["object"]))
             n += 1
+    try:
+        from storage.graph import schedule_episode
+        for fid, subj, pred, obj in inserted:
+            schedule_episode(
+                name=f"fact_{fid}",
+                episode_body=f"{subj} {pred} {obj}",
+            )
+    except Exception:
+        logger.debug("bulk_insert_facts: dual-write scheduling failed (non-fatal)", exc_info=True)
     return n
 
 

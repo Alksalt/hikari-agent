@@ -29,6 +29,8 @@ dependencies = [
     "itsdangerous>=2.2.0",
     "pillow>=10.0",
     "keyring>=24",
+    "graphiti-core[anthropic,kuzu]==0.29.1",
+    "kuzu==0.11.3",
 ]
 
 [dependency-groups]
@@ -58,6 +60,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "slow: tests that hit live models — skipped by default, run via pytest -m slow",
+    "uses_real_graph: tests that manage their own graph patches; opt out of conftest _block_graphiti",
 ]
 
 [project.scripts]
