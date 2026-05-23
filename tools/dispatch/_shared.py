@@ -1,17 +1,13 @@
-"""Shared helpers + constants for the dispatch tools.
+"""Shared helpers + constants for the dispatch tool.
 
-Both the public/gated ``dispatch_claude_session`` and the post-approval
-``dispatch_claude_session_confirmed`` variants route through the same
-``_do_dispatch`` body — the only difference is whether the SDK's
-PreToolUse arg-gate (config: ``approvals.defer_when_args_match``) fires
-before reaching here. The confirmed sibling lives on a separate MCP
-server attached only during the resume turn, so it inherently skips the
-gate.
+``dispatch_claude_session`` routes through ``_do_dispatch``. Gating
+(CONFIRM-SEND) is handled by the gatekeeper can_use_tool hook, not by
+a PreToolUse arg-gate.
 
 Module-level state (``DISPATCH_EVENTS`` queue, ``_OWNER_CHAT_ID``) lives
-here too because both tools push into the same queue. The queue is
-drained by ``agents/background_listener``; the chat-id slot is populated
-by ``agents/telegram_bridge`` at startup via ``set_owner_chat_id``.
+here. The queue is drained by ``agents/background_listener``; the
+chat-id slot is populated by ``agents/telegram_bridge`` at startup via
+``set_owner_chat_id``.
 """
 
 from __future__ import annotations
@@ -52,12 +48,8 @@ WORK_DIR_ROOT = Path(
     os.environ.get("HIKARI_WORK_DIR")
     or Path(__file__).resolve().parent.parent.parent.parent
 ).expanduser().resolve()
-# Phase 8: default to read-only. If the model passes allowed_tools that
-# includes Edit/Write/Bash, the PreToolUse arg-gate (config:
-# approvals.defer_when_args_match) defers the call until the owner types
-# CONFIRM-SEND. After approval the resume invokes the sibling
-# `dispatch_claude_session_confirmed` which carries the requested allowlist
-# verbatim and skips the gate.
+# Default to read-only. If the model passes allowed_tools that includes
+# Edit/Write/Bash, the gatekeeper can_use_tool gate prompts CONFIRM-SEND.
 DEFAULT_ALLOWED_TOOLS = "Read,Grep,Glob,WebFetch,WebSearch"
 DEFAULT_MAX_TURNS = 80
 DEFAULT_BUDGET_USD = 3.00

@@ -34,17 +34,25 @@ def _gate_for(tool_name: str) -> str | None:
 
 
 def _deadline_for(tool_name: str) -> datetime:
-    """Compute the approval deadline for a tool."""
-    MAX_TIMEOUT_S = 600  # 10-minute hard cap to prevent event-loop task pileup
-    # Per-tool override first, then global default.
+    """Compute the approval deadline for a tool.
+
+    Priority: per-tool gate_timeout_sec in tools.yaml → global
+    gatekeeper.default_timeout_s config → 300s fallback.
+    Hard cap: 600s (10 min) to prevent event-loop task pileup.
+    """
+    MAX_TIMEOUT_S = 600
     per_tool_secs: int | None = None
     try:
         from tools._tools_yaml import load_registry
         reg = load_registry()
-        # gatekeeper_timeout_s is not a ToolSpec field yet; read from cfg as fallback.
+        spec = reg._resolve(tool_name)
+        if spec is not None:
+            per_tool_secs = spec.gate_timeout_sec
     except Exception:
-        pass
-    secs = per_tool_secs or int(cfg.get("gatekeeper.default_timeout_s", 300))
+        logger.debug(
+            "_deadline_for: registry lookup failed for %s", tool_name, exc_info=True
+        )
+    secs = per_tool_secs if per_tool_secs is not None else int(cfg.get("gatekeeper.default_timeout_s", 300))
     secs = min(secs, MAX_TIMEOUT_S)
     return datetime.now(timezone.utc) + timedelta(seconds=secs)
 

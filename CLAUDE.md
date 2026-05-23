@@ -207,15 +207,17 @@ these contracts are MANDATORY when the hint is present. voice rules (short, dry,
 
 ---
 
-## project rule — NO API USE, OAuth/subscription only
+## project rule — cost-aware LLM/embedding routing
 
-Hard rule for the hikari-agent project: **never use direct API keys**. No `ANTHROPIC_API_KEY`. No `OPENAI_API_KEY` for new wiring. Main turns ride on `CLAUDE_CODE_OAUTH_TOKEN` (Max subscription) via `claude-agent-sdk`.
+**Main path** (Hikari turns, drift judge, anything per-turn): `CLAUDE_CODE_OAUTH_TOKEN` via `claude-agent-sdk` only. Never set `ANTHROPIC_API_KEY` — the SDK falls back to it and double-bills on top of the $200/mo Max subscription.
 
-**Allowed exception**: cheap auxiliary ops (entity extraction, classifiers, judges) MAY use **OpenRouter with DeepSeek** (`deepseek/deepseek-chat`) — set `OPENROUTER_API_KEY`. Anthropic models on OpenRouter are forbidden too — they're priced like the direct API.
+**Cheap auxiliary LLM ops** (Graphiti entity extraction, summarizers, classifiers, occasional judges): use **OpenRouter** with a cheap model. Default `deepseek/deepseek-chat` (~$0.14/1M input — structured/JSON). Also allowed: `google/gemini-flash-1.5` (fast), `meta-llama/llama-3.3-70b-instruct` (general), `mistralai/mistral-small`, anything under ~$0.50/1M input on OpenRouter. Pick by use-case. Set `OPENROUTER_API_KEY`.
 
-**Embeddings** are local-only via `tools/embeddings.py` (`fastembed` + `BAAI/bge-small-en-v1.5`). No hosted embedding API. If a library requires a remote embedder and can't be swapped for the local one, flag the cost before wiring.
+**Embeddings**: hosted API is fine (`text-embedding-3-small` via `OPENAI_API_KEY` ≈ $0.02/1M tokens — basically free at Hikari volume). Local `fastembed` (`tools/embeddings.py`, `BAAI/bge-small-en-v1.5`, 384-dim) is also fine. Either works.
 
-Pre-existing exceptions to grandfather (don't migrate as part of unrelated work): Whisper transcription (`OPENAI_API_KEY` for `whisper-1` at `config/engagement.yaml:103`). Migrate when a local STT path lands.
+**Forbidden**: Anthropic models on OpenRouter (priced like the direct API), OpenAI chat completions (use OpenRouter+DeepSeek instead), any LLM costing >$1/1M tokens without flagging the cost first.
+
+Pre-existing exception grandfathered: Whisper transcription (`OPENAI_API_KEY` for `whisper-1` at `config/engagement.yaml:103`). Migrate when a local STT lands.
 
 ## Ship profile
 

@@ -23,7 +23,7 @@ from agents import config as cfg
 
 logger = logging.getLogger(__name__)
 
-Outcome = Literal["approved", "rejected", "expired"]
+Outcome = Literal["approved", "rejected", "expired", "admin_cancel"]
 
 # Map in-process Outcome values to db-valid status strings.
 # The approvals schema CHECK only allows ('pending','approved','rejected','timeout').
@@ -31,6 +31,7 @@ _OUTCOME_TO_DB_STATUS: dict[str, str] = {
     "approved": "approved",
     "rejected": "rejected",
     "expired": "timeout",
+    "admin_cancel": "rejected",
 }
 
 
@@ -85,6 +86,15 @@ class Gatekeeper:
         Idempotent on tool_use_id — a second call with the same id returns
         immediately by joining the existing in-flight event.
         """
+        # per-session per-tool allowlist (Phase F Feature 1)
+        from tools.approvals import _check_always_approve
+        if _check_always_approve(chat_id, tool_name):
+            logger.info(
+                "gatekeeper: always_approve hit for %s (chat_id=%s)",
+                tool_name, chat_id,
+            )
+            return "approved"
+
         is_new = False
         async with self._lock:
             existing = self._by_use_id.get(tool_use_id)

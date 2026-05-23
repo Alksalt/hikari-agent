@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -28,18 +27,6 @@ from . import handoff as handoff_mod
 from . import tool_inventory as tool_inventory_mod
 
 logger = logging.getLogger(__name__)
-
-
-# Set to the qualified tool name currently being resumed after CONFIRM-SEND
-# approval. When set, ``defer_gated_tools`` skips the defer for that specific
-# tool name only — other gated tools called during the same resume turn still
-# defer normally. Set by ``tools.approvals._resume_after_defer`` when it falls
-# back to identity (no separate ``_confirmed`` sibling exists for the gated
-# tool). Without this, the resume turn would re-trigger the defer hook and
-# loop forever.
-IN_APPROVAL_RESUME_TOOL: ContextVar[str | None] = ContextVar(
-    "hikari_in_approval_resume_tool", default=None,
-)
 
 
 def _resolve_local_tz_name() -> str:
@@ -561,8 +548,7 @@ def _is_defer_gated(tool_name: str, tool_input: dict[str, Any] | None = None) ->
     Phase A (step 4): the gated-tool pattern list is sourced from
     ``tools._tools_yaml.load_registry().defer_gated_patterns()`` with
     ``approvals.defer_gated_tools`` from engagement.yaml as fallback.
-    ``defer_when_args_match`` and ``defer_confirmed_tools`` remain in
-    engagement.yaml (they carry more than tool ids).
+    ``defer_when_args_match`` remains in engagement.yaml.
 
     Returns True iff the call should be deferred.
     """
@@ -705,123 +691,33 @@ async def defer_gated_tools(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """PreToolUse hook — if the tool is in ``approvals.defer_gated_tools``,
-    persist a deferred-row + send the Telegram prompt + tell the SDK to halt.
+    """PreToolUse hook — scope precheck + legacy defer-gated observation log.
 
-    Resume happens in ``tools/approvals._resume_after_defer`` when the user
-    replies. See plan ``linked-nibbling-shell.md`` Stage C for the full flow.
+    Phase F: all destructive tools are gatekeeper-gated (gate: gatekeeper in
+    tools.yaml). The defer path no longer fires for any registered tool.
+    This hook runs scope precheck (shadow/enforce mode) and returns {} for
+    everything else so gatekeeper can_use_tool handles the actual gate.
     """
     if not isinstance(input_data, dict):
         return {}
     tool_name = str(input_data.get("tool_name") or "")
     tool_input = input_data.get("tool_input") or {}
-    sdk_tool_use_id = str(input_data.get("tool_use_id") or tool_use_id or "")
-
-    # Approval-resume bypass: when ``tools.approvals._resume_after_defer`` is
-    # running a fresh turn to execute the approved tool by its original name
-    # (identity fallback for tools without a separate ``_confirmed`` sibling),
-    # the hook would otherwise re-defer the same tool and the resume would
-    # loop. Bypass is scoped to the exact tool name — any *other* gated tool
-    # the model decides to call during the resume turn still defers normally.
-    if tool_name and IN_APPROVAL_RESUME_TOOL.get() == tool_name:
-        logger.info(
-            "defer_gated_tools: bypassing defer for %s (approved resume)",
-            tool_name,
-        )
-        return {}
-
-    # Cancel queue: unstick a dangling tool_use whose approval already
-    # terminated (timeout / reject / implicit-cancel / resume-via-side-channel).
-    # Returning ``deny`` here makes the SDK synthesize a deny tool_result for
-    # this tool_use_id, completes the halted turn, and lets the model see the
-    # next user message instead of looping on the same defer. One-shot — the
-    # id is popped after firing.
-    if sdk_tool_use_id:
-        import json as _json
-        from tools.approvals import CANCEL_QUEUE_KEY
-        raw_queue = db.runtime_get(CANCEL_QUEUE_KEY)
-        try:
-            queue = _json.loads(raw_queue) if raw_queue else []
-            if not isinstance(queue, list):
-                queue = []
-        except (ValueError, TypeError):
-            queue = []
-        if sdk_tool_use_id in queue:
-            queue = [q for q in queue if q != sdk_tool_use_id]
-            db.runtime_set(CANCEL_QUEUE_KEY, _json.dumps(queue))
-            logger.info(
-                "defer_gated_tools: denying %s (tool_use_id=%s) — cancel queue hit",
-                tool_name, sdk_tool_use_id,
-            )
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"{tool_name} was resolved out of band "
-                        "(approved + executed elsewhere, rejected, timed out, "
-                        "or abandoned by a new user message)"
-                    ),
-                }
-            }
 
     input_dict = tool_input if isinstance(tool_input, dict) else {}
 
-    # Scope precheck — runs before defer gate (shadow-mode by default).
+    # Scope precheck — runs in shadow-mode by default.
     precheck_result = await _precheck_scopes(tool_name, input_dict)
     if precheck_result is not None:
         return precheck_result
 
-    if not tool_name or not _is_defer_gated(tool_name, input_dict):
-        return {}
-
-    # Persist + prompt are best-effort; if either fails we still defer (we'd
-    # rather lose a confirmation than autorun a gated tool).
-    try:
-        import asyncio as _asyncio
-
-        from tools import approvals as approval_tools
-        tier = _tier_for_tool(tool_name)
-        summary = _summary_for_defer(tool_name, input_dict)
-        chat_id = approval_tools.owner_chat_id()
-        approval_id = db.approval_create_deferred(
-            chat_id=chat_id,
-            tool_name=tool_name,
-            tier=tier,
-            summary=summary,
-            args=input_dict,
-            deferred_tool_use_id=sdk_tool_use_id,
-            deferred_tool_input=input_dict,
-        )
-        logger.info(
-            "defer_gated_tools: deferring %s (tool_use_id=%s, approval_id=%s)",
-            tool_name, sdk_tool_use_id, approval_id,
-        )
-        # Phase 8 — Codex P0 fix: the defer path now schedules its own timeout
-        # watcher (previously only the legacy in-process callback path did,
-        # so the "60s" copy in the prompt was a lie for SDK defer).
-        _asyncio.create_task(
-            approval_tools._timeout_watcher(approval_id, chat_id)
-        )
-        # Best-effort out-of-band Telegram prompt. Wrap in try so the hook
-        # still returns "defer" even if Telegram is unreachable.
-        try:
-            await approval_tools.send_defer_prompt(
-                chat_id=chat_id, tier=tier, summary=summary,
-            )
-        except Exception:
-            logger.exception("defer_gated_tools: prompt send failed (non-fatal)")
-    except Exception:
-        logger.exception(
-            "defer_gated_tools: persistence failed; still deferring to halt run"
+    # Legacy defer gate — returns False for all tools after Phase E/F since
+    # every gated tool has gate: gatekeeper. Kept for observability: a non-zero
+    # result here would indicate a misconfigured tool.
+    if tool_name and _is_defer_gated(tool_name, input_dict):
+        logger.warning(
+            "defer_gated_tools: tool %s is still defer-gated — "
+            "migrate it to gate: gatekeeper in tools.yaml",
+            tool_name,
         )
 
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "defer",
-            "permissionDecisionReason": (
-                f"{tool_name} requires owner approval (tier {tier})"
-            ),
-        }
-    }
+    return {}

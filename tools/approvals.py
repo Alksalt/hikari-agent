@@ -1,47 +1,53 @@
-"""Out-of-band approval framework — single-tier (Phase 8).
+"""Out-of-band approval framework — gatekeeper path only (Phase F).
 
-Pattern: gated tools call `request_approval(...)` which inserts an approval row,
-sends a Telegram prompt, registers an on-approve callback, and returns
-immediately with a "queued for approval" message. When the user replies
-`CONFIRM-SEND`, the bridge calls `resolve_pending_approval(...)` which runs
-the captured callback and writes an audit row.
+Phase F: legacy PreToolUse defer plumbing deleted. This module retains:
+  - resolve_pending_approval: routes inbound text to the gatekeeper or legacy
+    callback path. Gatekeeper rows (gate_kind='gatekeeper') are resolved via
+    GATEKEEPER.resolve; legacy callback rows are auto-cancelled.
+  - send_defer_prompt: kept for backwards compat (dead code after Phase E);
+    the gatekeeper sends its own prompts.
+  - set_bot / _bot / owner_chat_id: wired by the bridge at startup.
+  - _safe_send: canary-leak-filtered send helper.
+  - _redact / _safe_args_dump: used by gatekeeper audit chain.
+  - always_approve / _check_always_approve: per-session per-tool allowlist.
 
-Phase 8 collapsed the prior Tier-1 (`y/yes/ok/go`) path. Per user directive
-"delete as much approval as possible", the gate is now reserved for
-irreversible/outbound operations only — wiki/Notion/draft writes auto-run.
-Everything that defers requires the explicit phrase `CONFIRM-SEND`.
+Gatekeeper approval flow:
+  1. SDK can_use_tool calls GATEKEEPER.request() which writes an approvals row
+     (gate_kind='gatekeeper') and sends a Telegram prompt, then awaits an event.
+  2. Bridge calls resolve_pending_approval on every inbound user text.
+  3. resolve_pending_approval sees gate_kind='gatekeeper', calls
+     GATEKEEPER.resolve(tool_use_id, outcome) which wakes the awaiting event.
+  4. can_use_tool returns Allow or Deny to the SDK.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+import time
+from typing import Any
 
-import httpx
+import httpx  # noqa: F401 — kept for third-party consumers that may import from here
 
 from agents import config as cfg
 from storage import db
-from tools._response import ok as _ok
+from tools._response import ok as _ok  # noqa: F401 — re-exported for legacy callers
 
-if TYPE_CHECKING:
+if __import__("typing").TYPE_CHECKING:
     from telegram import Bot
 
 logger = logging.getLogger(__name__)
 
 # Bridge sets this in post_init so tools can access it without circular imports.
-_BOT_REF: Bot | None = None
+_BOT_REF: "Bot | None" = None
 
 
-def set_bot(bot: Bot) -> None:
+def set_bot(bot: "Bot") -> None:
     global _BOT_REF
     _BOT_REF = bot
 
 
-def _bot() -> Bot:
+def _bot() -> "Bot":
     if _BOT_REF is None:
         raise RuntimeError("approvals.set_bot() not called; bridge not started?")
     return _BOT_REF
@@ -53,46 +59,6 @@ def owner_chat_id() -> int:
     if not raw:
         raise RuntimeError("OWNER_TELEGRAM_ID not set")
     return int(raw)
-
-
-# Single source of truth for the runtime_state key consumed by the defer
-# hook to unstick the live SDK session after an approval terminates without
-# a real tool_result. JSON-encoded list of SDK tool_use_ids.
-CANCEL_QUEUE_KEY = "cancelled_tool_use_ids"
-
-
-def _queue_cancel_tool_use(tool_use_id: str | None) -> None:
-    """Append ``tool_use_id`` to the one-shot cancellation queue read by
-    ``agents.hooks.defer_gated_tools``. Dedup-safe; no-op on falsy input.
-
-    Why this exists: when a PreToolUse hook returns ``defer``, the SDK halts
-    at the assistant ``tool_use`` block and emits no ``tool_result``. Without
-    cleanup, every subsequent ``client.query(...)`` resuming the same
-    session_id re-fires the tool_use → hook defers again → the user's new
-    message never reaches the model. Queueing the tool_use_id here lets the
-    hook return ``deny`` the next time the SDK retries it, which synthesizes
-    a denial result and unsticks the session.
-    """
-    import json as _json
-    if not tool_use_id:
-        return
-    raw = db.runtime_get(CANCEL_QUEUE_KEY)
-    try:
-        existing = _json.loads(raw) if raw else []
-        if not isinstance(existing, list):
-            existing = []
-    except (ValueError, TypeError):
-        existing = []
-    if tool_use_id in existing:
-        return
-    existing.append(str(tool_use_id))
-    db.runtime_set(CANCEL_QUEUE_KEY, _json.dumps(existing))
-
-
-# approval_id -> (event, on_approve callback, captured args)
-PENDING_CALLBACKS: dict[int, tuple[asyncio.Event,
-                                   Callable[[dict[str, Any]], Awaitable[Any]],
-                                   dict[str, Any]]] = {}
 
 
 def _timeout_sec() -> int:
@@ -110,9 +76,7 @@ _tier_2_hint = _confirm_hint
 
 
 async def _safe_send(chat_id: int, text: str) -> None:
-    """Send a Telegram message through the canary-leak filter. Approval-side
-    sends previously bypassed ``filter_outgoing`` and could ship a canary if
-    the LLM was injected into producing one in an approval summary."""
+    """Send a Telegram message through the canary-leak filter."""
     from agents.post_filter import filter_outgoing
     filtered = filter_outgoing(text)
     to_send = filtered.text
@@ -129,59 +93,47 @@ async def _safe_send(chat_id: int, text: str) -> None:
 async def send_defer_prompt(chat_id: int, tier: int, summary: str) -> None:  # noqa: ARG001
     """Compose + send the user-facing approval prompt for a defer event.
 
-    Phase 8: tier is ignored (kept for callsite compatibility); the hint is
-    always the typed-phrase form. Tier-1 (`y`) confirmation no longer exists.
+    Kept for backwards compatibility; Gatekeeper sends its own prompts now.
     """
     prompt = f"⏸️  {summary}\n\n{_confirm_hint()}"
     await _safe_send(chat_id, prompt)
 
 
-async def request_approval(
-    *,
-    chat_id: int,
-    tool_name: str,
-    tier: int = 2,  # noqa: ARG002 — accepted for backwards compatibility, ignored
-    summary: str,
-    args: dict[str, Any],
-    on_approve: Callable[[dict[str, Any]], Awaitable[Any]],
-) -> dict[str, Any]:
-    """Queue an approval request. Returns a result dict for the calling tool.
+# ---------------------------------------------------------------------------
+# alwaysApprove per-session per-tool (Feature 1, Phase F)
+# ---------------------------------------------------------------------------
 
-    Phase 8: ``tier`` is accepted but ignored — every approval uses
-    CONFIRM-SEND. The parameter is preserved so legacy callers don't break.
+_ALWAYS_APPROVE: dict[tuple[int, str], float] = {}  # (chat_id, tool_name) -> expires_at_epoch
+
+
+def always_approve(chat_id: int, tool_name: str, ttl_seconds: int = 3600) -> None:
+    """Whitelist (chat_id, tool_name) for ttl_seconds.
+
+    Gatekeeper.request returns PermissionResultAllow without prompting during
+    the TTL. State is in-process (not durable across restarts).
     """
-    if db.approval_pending_for(chat_id):
-        return _ok(
-            "approval queue is busy — there's already one waiting. "
-            "ask the user to resolve that first, then retry."
-        )
-
-    aid = db.approval_create(chat_id, tool_name, 2, summary, args)
-    prompt = f"⏸️  {summary}\n\n{_confirm_hint()}"
-    await _safe_send(chat_id, prompt)
-
-    PENDING_CALLBACKS[aid] = (asyncio.Event(), on_approve, args)
-    asyncio.create_task(_timeout_watcher(aid, chat_id))
-
-    return _ok(
-        f"approval queued (id {aid}). user has {_timeout_sec()}s to type "
-        f"CONFIRM-SEND. don't repeat the summary back to them — they just "
-        f"saw it. acknowledge briefly in voice if you want, then move on."
+    _ALWAYS_APPROVE[(chat_id, tool_name)] = time.time() + ttl_seconds
+    logger.info(
+        "always_approve: whitelisted %s for chat_id=%s for %ds",
+        tool_name, chat_id, ttl_seconds,
     )
 
 
-async def _timeout_watcher(aid: int, chat_id: int) -> None:
-    await asyncio.sleep(_timeout_sec())
-    # Still pending?
-    pending = db.approval_pending_for(chat_id)
-    if pending and int(pending["id"]) == aid:
-        # Enqueue the deferred tool_use_id BEFORE marking the row terminal,
-        # so a concurrent reader can't race past it.
-        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
-        db.approval_resolve(aid, "timeout")
-        PENDING_CALLBACKS.pop(aid, None)
-        await _safe_send(chat_id, f"⌛ approval {aid} timed out. didn't do it.")
+def _check_always_approve(chat_id: int, tool_name: str) -> bool:
+    """Return True if (chat_id, tool_name) has an active always-approve entry."""
+    key = (chat_id, tool_name)
+    exp = _ALWAYS_APPROVE.get(key)
+    if exp is None:
+        return False
+    if exp < time.time():
+        _ALWAYS_APPROVE.pop(key, None)
+        return False
+    return True
 
+
+# ---------------------------------------------------------------------------
+# Pending approval resolution (gatekeeper path)
+# ---------------------------------------------------------------------------
 
 async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     """Bridge calls this on every inbound text message BEFORE routing to respond().
@@ -189,21 +141,16 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     Returns True if the message was consumed (i.e. the user replied to a pending
     approval) — in which case the bridge should NOT pass it on to the agent.
 
-    Routes to one of two resume paths depending on the row shape:
-    - Legacy (PENDING_CALLBACKS callback): runs ``_run_approval``.
-    - Phase-6 SDK defer (``deferred_tool_use_id`` set): runs
-      ``_resume_after_defer`` which fires a fresh ``_run_query``.
+    Phase F: only the gatekeeper branch is live. Any pending row without
+    gate_kind='gatekeeper' is treated as a stale artefact and left untouched.
 
-    Implicit-cancel: when a deferred approval is pending and the user sends a
-    non-CONFIRM-SEND, non-reject message, the approval is auto-cancelled
-    (enqueue tool_use_id + mark rejected + brief in-voice ack). The original
-    message still routes to the agent (returns False). This is what unsticks
-    the chat path when the user moves on instead of confirming.
+    Implicit-cancel: when a gatekeeper approval is pending and the user sends a
+    non-CONFIRM-SEND, non-reject message, the approval is auto-cancelled and the
+    original message still routes to the agent (returns False).
     """
     pending = db.approval_pending_for(chat_id)
     if not pending:
         return False
-    aid = int(pending["id"])
     text_clean = text.strip()
 
     reject_phrases = [
@@ -215,25 +162,19 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     approved = text_clean == confirm_phrase
     rejected = lower in reject_phrases
 
-    # Phase E: gatekeeper branch — must be checked BEFORE the legacy defer branch.
-    # Gatekeeper rows have gate_kind='gatekeeper' and tool_use_id set (from SDK).
-    # Resolution wakes the asyncio.Event inside GATEKEEPER.request(); the SDK
-    # then receives Allow/Deny directly without a fresh _run_query.
     gate_kind = pending.get("gate_kind")
     tool_use_id_gk = pending.get("tool_use_id")
     if gate_kind == "gatekeeper" and tool_use_id_gk:
         from tools.gatekeeper import GATEKEEPER
         if approved:
             await GATEKEEPER.resolve(str(tool_use_id_gk), "approved")
-            return True  # tool will execute via SDK can_use_tool Allow
+            return True
         else:
-            # rejected phrase OR implicit-cancel (any non-CONFIRM-SEND text)
             await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
             if rejected:
                 await _safe_send(chat_id, "ok. didn't do it.")
                 return True
             else:
-                # Implicit-cancel: drop the gate, let the user's message through.
                 tool_name_gk = str(pending.get("tool_name") or "")
                 short_name = tool_name_gk.rsplit("__", 1)[-1] or "that"
                 await _safe_send(
@@ -241,257 +182,19 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
                 )
                 return False
 
-    if approved:
-        if pending.get("deferred_tool_use_id"):
-            return await _resume_after_defer(aid, pending)
-        return await _run_approval(aid, pending)
-    if rejected:
-        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
-        db.approval_resolve(aid, "rejected")
-        PENDING_CALLBACKS.pop(aid, None)
-        await _safe_send(chat_id, "ok. didn't do it.")
-        return True
-
-    # Implicit-cancel: only for SDK-defer rows. Legacy callback rows
-    # (PENDING_CALLBACKS) don't strand the SDK session, so keep the old
-    # "stay pending" behavior for them.
-    if pending.get("deferred_tool_use_id"):
-        tool_name = str(pending.get("tool_name") or "")
-        short_name = tool_name.rsplit("__", 1)[-1] or "that"
-        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
-        db.approval_resolve(aid, "rejected")
-        PENDING_CALLBACKS.pop(aid, None)
-        await _safe_send(
-            chat_id, f"...dropping the {short_name} thing. moving on.",
-        )
-        # Fall through (return False) — the user's actual message still
-        # routes to the agent.
-
+    # Non-gatekeeper pending row (stale legacy artefact): don't consume the
+    # message; just let it route to the agent normally.
     return False
 
 
-async def _run_approval(aid: int, pending: dict[str, Any]) -> bool:
-    from agents.injection_guard import flag_args_with_untrusted_content
-
-    db.approval_resolve(aid, "approved")
-    entry = PENDING_CALLBACKS.pop(aid, None)
-    chat_id = int(pending["chat_id"])
-
-    if not entry:
-        # Callback already gone (race?) — just ack.
-        await _safe_send(chat_id, f"approval {aid} ok but no callback.")
-        return True
-
-    _, callback, args = entry
-    try:
-        result = await callback(args)
-    except Exception as e:
-        logger.exception("approval callback failed for aid=%s", aid)
-        await _safe_send(chat_id, f"approval ran but the tool fell over: {e}")
-        return True
-
-    # Flag tool calls whose args contain untrusted-origin content (canary token,
-    # known untrusted URLs). Recorded in the audit log even if approved.
-    flag, reason = flag_args_with_untrusted_content(args)
-    audit_summary = (str(result) if result is not None else "")[:500]
-    if flag:
-        audit_summary = f"[UNTRUSTED:{reason}] {audit_summary}"
-        logger.warning(
-            "approval %s: args flagged untrusted-origin (%s)", aid, reason,
-        )
-
-    db.audit_append(
-        tool=pending["tool_name"],
-        args_json_redacted=_redact(pending["args_json"])[:500],
-        result_summary=audit_summary,
-        approved_by="owner",
-    )
-
-    if result is not None:
-        await _safe_send(chat_id, str(result)[:1000])
-    return True
-
-
-async def _resume_after_defer(aid: int, pending: dict[str, Any]) -> bool:
-    """Phase 6/8: resume a deferred SDK tool call after user approval.
-
-    The PreToolUse hook halted the SDK with ``permissionDecision="defer"``;
-    the SDK exited and the original ``_run_query`` returned. We resume by
-    starting a *fresh* ``_run_query`` (same ``session_id``) with a synthetic
-    system-prompt that tells Sonnet to call the post-approval sibling tool
-    (e.g. ``dispatch_claude_session_confirmed``) with the captured args. The
-    sibling tool is added to ``allowed_tools`` for just this turn via
-    ``extra_allowed_tools``.
-
-    The original ``deferred_tool_use_id`` is recorded in the audit log so the
-    chain is traceable.
-    """
-    import json
-    chat_id = int(pending["chat_id"])
-    tool_name = str(pending.get("deferred_tool_name") or pending["tool_name"])
-    tool_use_id = str(pending.get("deferred_tool_use_id") or "")
-    try:
-        tool_input = json.loads(pending.get("deferred_tool_input_json") or "{}")
-    except (ValueError, TypeError):
-        tool_input = {}
-
-    # Look up the post-approval sibling tool from config. The dispatch case
-    # uses a separate `*_confirmed` MCP server attached only during the resume
-    # turn (via `extra_allowed_tools`). For all other gated tools (Gmail,
-    # Drive, Notion, GitHub, python_run...) there is no separate sibling — the
-    # post-approval action is to call the same tool by its original name. In
-    # that case fall through to identity and rely on the `IN_APPROVAL_RESUME_TOOL`
-    # contextvar (set below) to bypass the PreToolUse defer hook for this tool
-    # only, so the resume turn doesn't loop.
-    confirmed_map = cfg.get("approvals.defer_confirmed_tools") or {}
-    confirmed_tool = confirmed_map.get(tool_name)
-    use_identity_fallback = False
-    if not confirmed_tool:
-        confirmed_tool = tool_name
-        use_identity_fallback = True
-        logger.info(
-            "resume_after_defer: identity fallback for %s "
-            "(no defer_confirmed_tools entry)",
-            tool_name,
-        )
-
-    template = cfg.get("approvals.defer_resume_prompt_template") or (
-        "[system: the deferred tool call {tool_use_id} ({tool_name}) was "
-        "approved by the owner. execute it now by calling {confirmed_tool} "
-        "with these args: {tool_input}. do not ask for confirmation; do not "
-        "paraphrase the args.]"
-    )
-    # JSON content can contain literal `{` and `}` which would crash
-    # ``str.format``. Escape both before interpolation.
-    tool_input_str = (
-        json.dumps(tool_input, ensure_ascii=False)
-        .replace("{", "{{")
-        .replace("}", "}}")
-    )
-    try:
-        prompt = template.format(
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            confirmed_tool=confirmed_tool,
-            tool_input=tool_input_str,
-        )
-    except (KeyError, IndexError, ValueError) as fmt_err:
-        # Template references an unknown placeholder OR has its own raw braces.
-        # Fall back to a hardcoded safe prompt rather than dropping the call.
-        logger.warning(
-            "resume_after_defer: prompt template format failed (%s); using fallback",
-            fmt_err,
-        )
-        prompt = (
-            f"[system: the deferred tool call {tool_use_id} ({tool_name}) was "
-            f"approved by the owner. execute it now by calling {confirmed_tool} "
-            f"with these args: {tool_input_str}. do not ask for confirmation; "
-            f"do not paraphrase the args.]"
-        )
-
-    # Lazy import to avoid circular (agents.runtime imports tools.approvals
-    # indirectly via hooks).
-    # Phase 13 (Stream C): approval resume is a stateless control prompt —
-    # never resume the live SDK session, never mutate session_id, never
-    # touch `messages`. The confirmed-tool allowlist still flows through.
-    from agents.hooks import IN_APPROVAL_RESUME_TOOL
-    from agents.runtime import run_internal_control
-
-    # CRITICAL ORDERING: do NOT mark the approval resolved until the SDK
-    # actually completes. If we marked early and execution failed, the row
-    # would be unrecoverable (no longer 'pending' so restart-recovery skips it).
-    reply: str | None = None
-    # Identity-fallback path: set the contextvar so the PreToolUse defer hook
-    # skips defer for *this exact tool name* during the resume turn. Without
-    # this, the hook would re-defer and the resume would loop. The dispatch
-    # case uses a separate `_confirmed` tool name that isn't in the gated
-    # list, so no bypass is needed there; passing the confirmed sibling via
-    # `extra_allowed_tools` is enough.
-    token = (
-        IN_APPROVAL_RESUME_TOOL.set(tool_name)
-        if use_identity_fallback else None
-    )
-    try:
-        try:
-            reply = await run_internal_control(
-                prompt,
-                max_turns=5,
-                max_budget_usd=0.30,
-                # Identity case: tool is already in the base allowlist via the
-                # appropriate wildcard (mcp__google_workspace__*, mcp__notion__*,
-                # mcp__github__*) or the utility registry (python_run). No need
-                # to extend allowed_tools — and we must not, since that would
-                # trigger `_build_options` to attach the `_confirmed` sibling
-                # server based on a name that doesn't live there.
-                extra_allowed_tools=(
-                    None if use_identity_fallback else [confirmed_tool]
-                ),
-            )
-        except Exception as e:
-            logger.exception(
-                "resume_after_defer: run_internal_control failed for aid=%s",
-                aid,
-            )
-            await _safe_send(
-                chat_id, f"approval ran but execution fell over: {e}",
-            )
-            # Mark the row failed so restart-recovery doesn't loop forever on
-            # it, but leave an audit trace explaining what happened.
-            try:
-                _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
-                db.approval_resolve(aid, "rejected")
-                db.audit_append(
-                    tool=tool_name,
-                    args_json_redacted=_redact(json.dumps(tool_input))[:500],
-                    result_summary=(
-                        f"deferred->resume FAILED via {confirmed_tool} "
-                        f"(tu={tool_use_id}): {e}"
-                    )[:500],
-                    approved_by="owner",
-                )
-            except Exception:
-                logger.exception("resume_after_defer: cleanup writes failed")
-            return True
-
-        # Success path: only NOW mark approved + write the audit row.
-        _queue_cancel_tool_use(pending.get("deferred_tool_use_id"))
-        db.approval_resolve(aid, "approved")
-        db.audit_append(
-            tool=tool_name,
-            args_json_redacted=_redact(json.dumps(tool_input))[:500],
-            result_summary=(
-                f"deferred->resumed via {confirmed_tool} (tu={tool_use_id})"
-            ),
-            approved_by="owner",
-        )
-        if reply:
-            # H-4 (Phase 13.1 fixup): the bridge's module-level
-            # ``_send_text_with_choreography`` already does filter → send →
-            # persist (with ``telegram_message_id`` stamped) →
-            # ``postsend.mark_pending_surfaced``.
-            # We feed it the same bot the rest of approvals uses via ``_bot()``.
-            try:
-                from agents.telegram_bridge import (  # noqa: PLC0415
-                    _send_text_with_choreography,
-                )
-                await _send_text_with_choreography(_bot(), chat_id, reply[:1000])
-            except Exception:
-                logger.exception(
-                    "resume_after_defer: bridge choreography failed; "
-                    "falling back to _safe_send (no persist)"
-                )
-                await _safe_send(chat_id, reply[:1000])
-        return True
-    finally:
-        if token is not None:
-            IN_APPROVAL_RESUME_TOOL.reset(token)
-
+# ---------------------------------------------------------------------------
+# Redaction helpers (used by gatekeeper audit chain)
+# ---------------------------------------------------------------------------
 
 _REDACT_PATTERNS = [
     (r"sk-[a-zA-Z0-9_-]{20,}", "[REDACTED-API-KEY]"),
     (r"ya29\.[a-zA-Z0-9_-]+", "[REDACTED-OAUTH-TOKEN]"),
     (r"Bearer [a-zA-Z0-9._-]+", "Bearer [REDACTED]"),
-    # Emails are usually fine to keep in approvals but redact in audit
     (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}", "[REDACTED-EMAIL]"),
 ]
 
@@ -506,5 +209,5 @@ def _redact(text: str) -> str:
 
 def _safe_args_dump(args: dict[str, Any]) -> str:
     """Dump args to JSON, redacting common secret patterns."""
+    import json
     return _redact(json.dumps(args, default=str, ensure_ascii=False))
-

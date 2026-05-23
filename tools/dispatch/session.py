@@ -2,11 +2,8 @@
 
 Spawns a long-running Claude Code session as a nested ClaudeSDKClient
 inside Hikari's process. Default ``allowed_tools`` is read-only; passing
-Edit/Write/Bash triggers the PreToolUse arg-gate, which defers the call
-until the owner types CONFIRM-SEND. After approval the resume codepath
-invokes the sibling ``dispatch_claude_session_confirmed`` (see
-``session_confirmed.py``) which carries the requested allowlist verbatim
-and skips the gate.
+Edit/Write/Bash triggers the gatekeeper can_use_tool gate, which pauses
+the call until the owner types CONFIRM-SEND via Telegram.
 """
 from __future__ import annotations
 

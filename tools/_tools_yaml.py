@@ -54,6 +54,7 @@ class ToolSpec:
     bucket: int
     server: str | None
     gate: str | None                   # null | defer | gatekeeper
+    gate_timeout_sec: int | None       # per-tool approval timeout override
     untrusted_output: bool
     wrap_patterns: tuple[str, ...]
 
@@ -279,11 +280,13 @@ def _parse_server(name: str, raw: dict) -> McpServerSpec:
 
 
 def _parse_tool(raw: dict) -> ToolSpec:
+    raw_timeout = raw.get("gate_timeout_sec")
     return ToolSpec(
         id=str(raw["id"]),
         bucket=int(raw.get("bucket", 1)),
         server=raw.get("server"),
         gate=raw.get("gate"),
+        gate_timeout_sec=int(raw_timeout) if raw_timeout is not None else None,
         untrusted_output=bool(raw.get("untrusted_output", False)),
         wrap_patterns=tuple(raw.get("wrap_patterns") or []),
     )

@@ -22,11 +22,6 @@ mcp_servers:
     runtime_factory: "agents.runtime:_dispatch_server"
     conditional: false
 
-  hikari_dispatch_confirmed:
-    bucket: 1
-    runtime_factory: "agents.runtime:_dispatch_confirmed_server"
-    conditional: true
-
   hikari_utility:
     bucket: 1
     runtime_factory: "agents.runtime:_utility_server"
@@ -276,14 +271,6 @@ tools:
     untrusted_output: false
     wrap_patterns: []
 
-  # hikari_dispatch_confirmed (bucket 1, conditional — attached only on approval-resume turns)
-  - id: "mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"
-    bucket: 1
-    server: hikari_dispatch_confirmed
-    gate: null
-    untrusted_output: false
-    wrap_patterns: []
-
   # --------------------------------------------------------------------------
   # hikari_codex (bucket 1)
   # --------------------------------------------------------------------------
@@ -415,6 +402,7 @@ tools:
     bucket: 1
     server: hikari_utility
     gate: gatekeeper
+    gate_timeout_sec: 120
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__python_run$"]
 
@@ -564,6 +552,7 @@ tools:
     bucket: 3
     server: github
     gate: gatekeeper
+    gate_timeout_sec: 600
     untrusted_output: false
     wrap_patterns: []
 

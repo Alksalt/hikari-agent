@@ -1,11 +1,9 @@
 """dispatch — spawn a long-running Claude Code session as a nested
 ClaudeSDKClient inside Hikari's process.
 
-DEDICATED MCP SERVER (two of them, actually). ``agents/runtime.py`` does
-``from tools import dispatch as dispatch_tools`` and registers:
-  * ``PUBLIC_TOOLS`` against the always-on ``hikari_dispatch`` server,
-  * ``CONFIRMED_TOOLS`` against a conditional ``hikari_dispatch_confirmed``
-    server attached only during a defer-resume turn.
+DEDICATED MCP SERVER. ``agents/runtime.py`` does
+``from tools import dispatch as dispatch_tools`` and registers
+``PUBLIC_TOOLS`` against the always-on ``hikari_dispatch`` server.
 
 The shared registry skips ``dispatch`` on purpose (see
 ``tools/_registry._DEDICATED_SERVER_MODULES``).
@@ -19,7 +17,7 @@ Re-exports:
   * ``DISPATCH_EVENTS`` — the queue ``agents/background_listener``
     drains.
   * ``set_owner_chat_id`` — called once by ``telegram_bridge`` post_init.
-  * The two tool callables themselves so ``tests/test_smoke.py`` can
+  * The tool callable itself so ``tests/test_smoke.py`` can
     invoke ``dispatch.dispatch_claude_session.handler`` directly after
     ``importlib.reload(dispatch)``.
 """
@@ -40,15 +38,9 @@ from tools.dispatch._shared import (  # noqa: F401 — back-compat re-exports
     set_owner_chat_id,
 )
 from tools.dispatch.session import dispatch_claude_session
-from tools.dispatch.session_confirmed import dispatch_claude_session_confirmed
 
 # Public tools — registered on the always-on `hikari_dispatch` MCP server.
 PUBLIC_TOOLS = [dispatch_claude_session]
-
-# Phase 8: confirmed-sibling for the dispatch arg-gate. Lives on a separate
-# `hikari_dispatch_confirmed` MCP server attached only during the resume turn
-# (see agents/runtime._dispatch_confirmed_server).
-CONFIRMED_TOOLS = [dispatch_claude_session_confirmed]
 
 # Backwards-compat alias.
 ALL_TOOLS = PUBLIC_TOOLS

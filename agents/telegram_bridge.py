@@ -46,7 +46,7 @@ from . import reactions as reactions_mod
 from . import stickers as stickers_mod
 from .background_listener import (
     listener_loop,
-    recover_deferred_approvals,
+    recover_gatekeeper_approvals,
     recover_running_tasks,
 )
 from .bridge_ux import (
@@ -1406,6 +1406,69 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await message.reply_text("\n".join(lines))
 
 
+async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List pending gatekeeper approvals, or cancel one by id.
+
+    Usage:
+      /approvals                — list pending approvals for this chat
+      /approvals cancel <id>   — admin-cancel a pending approval by row id
+    """
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+
+    arg = " ".join(context.args).strip() if context.args else ""
+
+    if arg.startswith("cancel "):
+        try:
+            row_id = int(arg.split(maxsplit=1)[1])
+        except (IndexError, ValueError):
+            await message.reply_text("usage: /approvals cancel <id>")
+            return
+        from tools.gatekeeper import GATEKEEPER
+        # Look up the tool_use_id for this row so we can resolve via the
+        # in-memory pending slot (which is keyed by tool_use_id, not row id).
+        tool_use_id_for_cancel: str | None = None
+        with db._conn() as _c:
+            _row = _c.execute(
+                "SELECT tool_use_id FROM approvals WHERE id = ? AND status = 'pending'",
+                (row_id,),
+            ).fetchone()
+        if _row:
+            tool_use_id_for_cancel = str(_row["tool_use_id"] or "")
+        if not tool_use_id_for_cancel:
+            await message.reply_text(f"approval {row_id}: not found or already resolved.")
+            return
+        resolved = await GATEKEEPER.resolve(tool_use_id_for_cancel, "admin_cancel")
+        if resolved:
+            await message.reply_text(f"approval {row_id}: cancelled.")
+        else:
+            await message.reply_text(f"approval {row_id}: not found or already resolved.")
+        return
+
+    chat_id = update.effective_chat.id
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT id, tool_name, summary, created_at, deadline_iso "
+            "FROM approvals "
+            "WHERE chat_id = ? AND status = 'pending' AND gate_kind = 'gatekeeper' "
+            "ORDER BY id DESC",
+            (chat_id,),
+        ).fetchall()
+    if not rows:
+        await message.reply_text("nothing pending.")
+        return
+    lines = [f"pending approvals ({len(rows)}):"]
+    for r in rows:
+        summary = (r["summary"] or "")[:80]
+        lines.append(f"  #{r['id']}: {summary}")
+        lines.append(f"     deadline: {r['deadline_iso']}")
+    lines.append("")
+    lines.append("CONFIRM-SEND <id> | REJECT <id> | /approvals cancel <id>")
+    await message.reply_text("\n".join(lines))
+
+
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Daily cost summary."""
     user = update.effective_user
@@ -1748,6 +1811,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
+    app.add_handler(CommandHandler("approvals", cmd_approvals))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
@@ -1923,9 +1987,8 @@ def main() -> None:
 
         # Tell the user about any tasks that were running mid-restart.
         await recover_running_tasks(application.bot)
-        # Phase 6: resurface any deferred approval that was pending pre-restart.
-        # Phase E: gatekeeper restart_recovery is called inside this function.
-        await recover_deferred_approvals(application.bot)
+        # Phase F: gatekeeper restart_recovery — expire stale rows + nudge survivors.
+        await recover_gatekeeper_approvals(application.bot)
 
         # Phase B: start persistent SDK client pool (live + haiku judge).
         await _sdk_pool.startup()

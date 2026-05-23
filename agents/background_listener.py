@@ -193,55 +193,11 @@ async def recover_running_tasks(bot: Bot) -> None:
         )
 
 
-async def recover_deferred_approvals(bot: Bot) -> None:
-    """Phase 6: on startup, resurface any approval that was pending when the
-    bot died. The deferred-row carries enough state (tool_use_id, args) for
-    the resume path to work once the user replies.
-
-    We use the same prompt format as the original defer prompt + a config-
-    driven suffix so the user knows it's a resurrection, not a duplicate.
-
-    Also seeds each row's ``deferred_tool_use_id`` into the cancel queue. If
-    the same SDK session ever retries the halted tool_use_id (e.g. session
-    resume rolling forward), ``defer_gated_tools`` returns deny immediately
-    instead of double-deferring and waiting 60s for a fresh timeout watcher.
+async def recover_gatekeeper_approvals(bot: Bot) -> None:
+    """Phase F: on startup, run gatekeeper restart_recovery to expire stale rows
+    and nudge the user for any very-recent survivors. The gatekeeper owns
+    recovery for all pending approval rows.
     """
-    from agents import config as cfg
-    from tools import approvals as approval_tools
-
-    pending = db.approvals_pending_deferred()
-    if not pending:
-        return
-    suffix = cfg.get(
-        "approvals.defer_restart_resurface_suffix",
-        " (still waiting on this from before the restart.)",
-    )
-    for row in pending:
-        chat_id = int(row["chat_id"])
-        tier = int(row["tier"])
-        summary = str(row["summary"]) + suffix
-        # Seed first — if send fails, we still want the queue primed so the
-        # next session retry of this tool_use_id terminates cleanly.
-        approval_tools._queue_cancel_tool_use(row.get("deferred_tool_use_id"))
-        try:
-            await approval_tools.send_defer_prompt(
-                chat_id=chat_id, tier=tier, summary=summary,
-            )
-        except Exception:
-            logger.exception(
-                "recover_deferred_approvals: send failed for approval %s",
-                row.get("id"),
-            )
-        else:
-            logger.info(
-                "recover_deferred_approvals: resurfaced approval %s (tool=%s)",
-                row.get("id"), row.get("tool_name"),
-            )
-
-    # Phase E: gatekeeper restart recovery — expire stale rows + nudge survivors.
-    # Runs here (before sdk_pool.startup) intentionally: recovery only uses
-    # db.* and send_text (Telegram bot), not the SDK client pool. The send_text
-    # fn was set in post_init before recover_deferred_approvals was called.
     try:
         from tools.gatekeeper import GATEKEEPER
         gk_count = await GATEKEEPER.restart_recovery(bot)

@@ -148,15 +148,6 @@ def _utility_server():
     return create_sdk_mcp_server(name="hikari_utility", tools=_utility_index.ALL_TOOLS)
 
 
-@cache
-def _dispatch_confirmed_server():
-    """The post-approval execution tool for the dispatch arg-gate
-    (`dispatch_claude_session_confirmed`). Attached to ``mcp_servers`` only
-    during a defer-resume turn so its schema isn't in the manifest otherwise."""
-    return create_sdk_mcp_server(
-        name="hikari_dispatch_confirmed", tools=dispatch_tools.CONFIRMED_TOOLS,
-    )
-
 
 # _DEDICATED_AND_EXTERNAL_TOOLS was deleted in Phase A (step 5).
 # The single source of truth is now config/tools.yaml, loaded via
