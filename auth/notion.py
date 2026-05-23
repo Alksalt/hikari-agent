@@ -86,7 +86,9 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         if not received_state or received_state != expected:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(b"<html><body>state mismatch - possible CSRF. try again.</body></html>")
+            self.wfile.write(
+                b"<html><body>state mismatch - possible CSRF. try again.</body></html>"
+            )
             return
 
         code_list = params.get("code")

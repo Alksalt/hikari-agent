@@ -125,7 +125,9 @@ def test_record_reaction_stamps_received_at_once():
         row2 = c.execute(
             "SELECT reaction_received_at FROM proactive_events WHERE telegram_message_id = 444"
         ).fetchone()
-    assert row2["reaction_received_at"] == first_ts, "reaction_received_at should not be overwritten"
+    assert row2["reaction_received_at"] == first_ts, (
+        "reaction_received_at should not be overwritten"
+    )
 
 
 def test_record_reaction_no_matching_row_returns_zero():

@@ -31,7 +31,7 @@ _INDEX: dict[str, Any] = {
 def rebuild_index() -> None:
     """Rebuild the BM25 corpus from the current registry. Call at boot
     and whenever the registry reloads."""
-    from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+    from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
     reg = _load_yaml(DEFAULT_YAML_PATH)
     docs: list[str] = []
     ids: list[str] = []
@@ -45,7 +45,9 @@ def rebuild_index() -> None:
         tool_id = spec.id
         # Build a searchable doc: expanded id tokens only (no external description
         # field exists on ToolSpec; the model's tool definitions carry the prose).
-        doc_text = tool_id.replace("mcp__", "").replace("__", " ").replace("_", " ").replace("-", " ")
+        doc_text = (
+            tool_id.replace("mcp__", "").replace("__", " ").replace("_", " ").replace("-", " ")
+        )
         ids.append(tool_id)
         descs.append(doc_text)
         tags_all.append([])

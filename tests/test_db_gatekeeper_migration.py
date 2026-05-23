@@ -86,7 +86,8 @@ def test_backfill_from_deferred_tool_use_id():
 # ---------- partial unique index: one pending per chat ----------
 
 def test_partial_unique_index_one_pending_per_chat():
-    """approvals_one_pending_per_chat: two GATEKEEPER pending rows with same chat_id → IntegrityError.
+    """approvals_one_pending_per_chat: two GATEKEEPER pending rows with same chat_id
+    → IntegrityError.
 
     The index is scoped to gate_kind='gatekeeper' so the legacy defer path
     (which has always allowed multiple pending rows) is unaffected.

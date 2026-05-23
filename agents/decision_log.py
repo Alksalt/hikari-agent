@@ -7,7 +7,8 @@ from __future__ import annotations
 import json
 import logging
 
-from agents import cadence, config as cfg
+from agents import cadence
+from agents import config as cfg
 from agents.cadence import Pool
 from storage import db
 

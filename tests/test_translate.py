@@ -1,10 +1,14 @@
 """Phase 10: translation tool (DeepL + LibreTranslate fallback + romaji)."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):
@@ -23,27 +27,39 @@ class _FakeResponse:
     def __init__(self, status_code, json_data=None):
         self.status_code = status_code
         self._json = json_data or {}
-    def json(self): return self._json
+    def json(self):
+        return self._json
+
     def raise_for_status(self):
-        if self.status_code >= 400: raise Exception(f"HTTP {self.status_code}")
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
 
 
 class _FakeAsyncClient:
-    def __init__(self, *a, **k): self.responses = {}; self.posts = []
-    async def __aenter__(self): return self
-    async def __aexit__(self, *a): return False
+    def __init__(self, *a, **k):
+        self.responses = {}
+        self.posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
     async def post(self, url, **kwargs):
         self.posts.append((url, kwargs))
         for prefix, resp in self.responses.items():
-            if url.startswith(prefix): return resp
+            if url.startswith(prefix):
+                return resp
         raise Exception(f"no mock for {url}")
 
 
 @pytest.mark.asyncio
 async def test_translate_via_deepl_when_key_set(monkeypatch):
     monkeypatch.setenv("DEEPL_API_KEY", "test-key")
-    from tools import translate
     import httpx
+
+    from tools import translate
     client = _FakeAsyncClient()
     client.responses["https://api-free.deepl.com"] = _FakeResponse(200, {
         "translations": [{"text": "Привет", "detected_source_language": "EN"}],
@@ -71,8 +87,9 @@ async def test_translate_falls_back_to_libretranslate_when_no_key(monkeypatch):
 @pytest.mark.asyncio
 async def test_translate_japanese_with_romaji(monkeypatch):
     monkeypatch.setenv("DEEPL_API_KEY", "test-key")
-    from tools import translate
     import httpx
+
+    from tools import translate
     client = _FakeAsyncClient()
     client.responses["https://api-free.deepl.com"] = _FakeResponse(200, {
         "translations": [{"text": "こんにちは", "detected_source_language": "EN"}],

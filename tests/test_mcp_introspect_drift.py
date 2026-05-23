@@ -2,8 +2,8 @@
 import asyncio
 import pathlib
 import sys
-import pytest
 
+import pytest
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
 

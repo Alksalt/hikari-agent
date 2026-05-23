@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Literal
+from datetime import UTC, datetime
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 _PROACTIVE_LOCK = asyncio.Lock()
@@ -51,8 +52,8 @@ def _silence_active(db) -> bool:
         )
         return True
     if until.tzinfo is None:
-        until = until.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) < until
+        until = until.replace(tzinfo=UTC)
+    return datetime.now(UTC) < until
 
 
 async def reserve_and_send(

@@ -77,6 +77,7 @@ def test_remember_tool_tags_user_stated():
     """The remember tool stores facts with attribution='user_stated'.
     Uses the autouse _isolated fixture above."""
     import asyncio
+
     from tools.memory.remember import remember
     # The @tool decorator wraps the fn as SdkMcpTool; call via .handler.
     handler = getattr(remember, "handler", remember)
@@ -106,7 +107,8 @@ def test_reflection_call_sites_pass_attribution():
         depth = 0
         i = start + len("db.insert_fact")
         while i < len(src):
-            if src[i] == "(": depth += 1
+            if src[i] == "(":
+                depth += 1
             elif src[i] == ")":
                 depth -= 1
                 if depth == 0:

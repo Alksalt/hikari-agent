@@ -36,7 +36,7 @@ def test_working_memory_returns_last_k_turns():
 
     result = _format_working_memory(k=6)
     assert result.startswith("# working_memory")
-    lines = [l for l in result.splitlines() if l.startswith("you:") or l.startswith("hikari:")]
+    lines = [ln for ln in result.splitlines() if ln.startswith("you:") or ln.startswith("hikari:")]
     # 10 inserted, last dropped (current user turn), take last 6 of remaining 9 → 6 lines
     assert len(lines) == 6
     assert "you:" in result or "hikari:" in result
@@ -50,7 +50,7 @@ def test_working_memory_truncates_long_snippets():
     _insert_chat("assistant", "reply")
 
     result = _format_working_memory(k=6)
-    lines = [l for l in result.splitlines() if l.startswith("you:")]
+    lines = [ln for ln in result.splitlines() if ln.startswith("you:")]
     assert lines, "expected at least one 'you:' line"
     content_part = lines[0][len("you: "):]
     assert len(content_part) == 400

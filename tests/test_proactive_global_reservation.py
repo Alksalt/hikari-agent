@@ -2,7 +2,7 @@
 import asyncio
 import importlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -60,10 +60,11 @@ async def test_lock_serializes_concurrent_producers(_isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_silence_window_aborts(_isolated_db, monkeypatch):
     import importlib
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
-    until = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    until = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
     _isolated_db.runtime_set("silence_until", until)
 
     called = []
@@ -89,6 +90,7 @@ async def test_silence_window_aborts(_isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_quiet_hours_aborts(_isolated_db, monkeypatch):
     import importlib
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: True)
@@ -103,6 +105,7 @@ async def test_quiet_hours_aborts(_isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_send_failure_aborts(_isolated_db, monkeypatch):
     import importlib
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
@@ -121,6 +124,7 @@ async def test_send_failure_aborts(_isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_dedup_hit_aborts_second(_isolated_db, monkeypatch):
     import importlib
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
@@ -145,6 +149,7 @@ async def test_dedup_hit_aborts_second(_isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_text_short_circuits(_isolated_db, monkeypatch):
     import importlib
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     result = await proactive_gate.reserve_and_send(

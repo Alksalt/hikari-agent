@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 import importlib
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 

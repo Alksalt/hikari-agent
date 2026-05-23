@@ -15,11 +15,11 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from storage import db
 from agents import config as cfg
+from storage import db
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +130,13 @@ class Gatekeeper:
                 logger.exception("gatekeeper: send_text failed for tool_use_id=%s", tool_use_id)
 
         # Await resolution or deadline.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=timezone.utc)
+            deadline = deadline.replace(tzinfo=UTC)
         timeout_s = max(1.0, (deadline - now).total_seconds())
         try:
             await asyncio.wait_for(pending_obj.event.wait(), timeout=timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.info("gatekeeper: timeout for tool_use_id=%s", tool_use_id)
             # Only expire if not already resolved by a concurrent approve/reject.
             async with self._lock:
@@ -194,7 +194,7 @@ class Gatekeeper:
         """
         max_age_h = float(cfg.get("gatekeeper.recovery_max_age_h", 1.0))
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=max_age_h)
+            datetime.now(UTC) - timedelta(hours=max_age_h)
         ).isoformat()
         expired_count = db.approval_expire_stale(cutoff)
         logger.info(
@@ -227,7 +227,7 @@ class Gatekeeper:
 
         return expired_count + len(survivors)
 
-    def _write_audit_row(self, p: "_Pending") -> None:
+    def _write_audit_row(self, p: _Pending) -> None:
         """Write a hash-chained audit row for an approved gatekeeper call.
 
         Called inside _resolve_internal (under lock) after approval_mark_executed.
@@ -239,8 +239,9 @@ class Gatekeeper:
                 row = _c.execute(
                     "SELECT args_json FROM approvals WHERE id=?", (p.aid,)
                 ).fetchone()
-            from tools.approvals import _redact  # noqa: PLC0415
             import json as _json  # noqa: PLC0415
+
+            from tools.approvals import _redact  # noqa: PLC0415
             args_redacted = _redact(row["args_json"] or "")[:500] if row else ""
             try:
                 from agents.injection_guard import flag_args_with_untrusted_content  # noqa: PLC0415

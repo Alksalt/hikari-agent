@@ -17,9 +17,9 @@ All 15 producers:
     (stub — Readwise MCP removed 2026-05-21), gmail_important_thread
 """
 from agents.engagement.producers import (  # noqa: F401
-    callback_episode,
     calendar_event_prep,
     calendar_new_invite,
+    callback_episode,
     decision_resolve_due,
     drive_starred_new,
     gmail_important_thread,

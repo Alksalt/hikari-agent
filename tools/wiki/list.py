@@ -134,7 +134,9 @@ async def wiki_tree(args: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"{prefix}{name}{'/' if is_dir else ''}")
     notes = []
     if truncated:
-        notes.append(f"truncated — {truncated} entries dropped (cap {_MAX_ENTRIES}); ask for a subtree")
+        notes.append(
+            f"truncated — {truncated} entries dropped (cap {_MAX_ENTRIES}); ask for a subtree"
+        )
     return _ok(
         "\n".join(lines),
         data={"path": rel, "max_depth": max_depth,

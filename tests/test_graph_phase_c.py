@@ -134,6 +134,7 @@ async def test_remember_dual_writes_to_graph(tmp_path: Path, monkeypatch):
     mock_g = _make_mock_graphiti()
 
     import sys
+
     import tools.memory.remember  # noqa: F401 — ensure it's in sys.modules
     _remember_module = sys.modules["tools.memory.remember"]
     # The @tool decorator wraps the function into an SdkMcpTool; the handler
@@ -172,7 +173,6 @@ async def test_post_init_graph_failure_is_non_fatal():
     raised = False
     log_called = False
 
-    import logging
 
     class _FakeLogger:
         def exception(self, *a, **kw):
@@ -206,6 +206,7 @@ async def test_post_init_graph_failure_is_non_fatal():
 @pytest.mark.uses_real_graph
 async def test_memory_diff_command_returns_both_result_sets():
     from unittest.mock import AsyncMock, MagicMock, patch
+
     from agents.telegram_bridge import cmd_memory_diff
 
     fake_update = MagicMock()

@@ -1,11 +1,10 @@
 """Sprint 4 Phase 4C — python_run sandbox deny-default + input_files allowlist."""
-import asyncio
 import importlib
-import os
 import pathlib
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -16,8 +15,8 @@ pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec i
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):
     """Match the isolation fixture from test_calc.py."""
-    from storage import db
     from agents import config
+    from storage import db
 
     db_path = tmp_path / "hikari.db"
     monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
@@ -32,8 +31,9 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_deny_home_env():
-    from tools import calc
     import os as _os
+
+    from tools import calc
     home = _os.path.expanduser("~")
     code = f"print(open('{home}/.env').read()[:50])"
     result = await calc.python_run.handler({"code": code})
@@ -51,8 +51,9 @@ async def test_deny_home_env():
 
 @pytest.mark.asyncio
 async def test_deny_home_library():
-    from tools import calc
     import os as _os
+
+    from tools import calc
     home = _os.path.expanduser("~")
     code = f"import pathlib; print(list(pathlib.Path('{home}/Library').iterdir())[:1])"
     result = await calc.python_run.handler({"code": code})

@@ -178,7 +178,7 @@ async def test_reaction_turn_writes_compact_event_row(monkeypatch):
     sends = []
     async def fake_send_text_choreo(bot, chat_id, text, *, elapsed_real=0.0):
         sends.append(text)
-    monkeypatch.setattr(telegram_bridge, "_send_text_with_choreography", fake_send_choreo := fake_send_text_choreo)
+    monkeypatch.setattr(telegram_bridge, "_send_text_with_choreography", fake_send_text_choreo)
 
     _seed_prev_assistant("hikari said something here", 600)
     update = _make_reaction_update("🌙", 600)

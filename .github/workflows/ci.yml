@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: Validate tool registry
+        run: uv run python scripts/validate_tool_registry.py
+
+      - name: Regenerate .mcp.json check
+        run: uv run python scripts/regen_mcp_json.py --check
+
+      - name: Validate MCP servers (skip cred-dependent ones)
+        # continue-on-error: credentials for apple_events, apple_shortcuts,
+        # google_workspace, notion, github, playwright are not available in CI
+        run: uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts,google_workspace,notion,github,playwright
+        continue-on-error: true

@@ -22,7 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from tools._tools_yaml import load_registry
+from tools._tools_yaml import load_registry  # noqa: E402  # needs sys.path insert above
 
 _GENERATED_SENTINEL = "tools/_tools_yaml.py via scripts/regen_mcp_json.py"
 
@@ -111,7 +111,9 @@ def main() -> None:
             import difflib
             a = json.dumps(current_data.get("mcpServers"), indent=2).splitlines()
             b = json.dumps(generated_data.get("mcpServers"), indent=2).splitlines()
-            for line in difflib.unified_diff(a, b, fromfile="current", tofile="generated", lineterm=""):
+            for line in difflib.unified_diff(
+                a, b, fromfile="current", tofile="generated", lineterm=""
+            ):
                 print(line)
             sys.exit(1)
         print(".mcp.json is up to date.")

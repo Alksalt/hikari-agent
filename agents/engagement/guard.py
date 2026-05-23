@@ -45,12 +45,10 @@ def passes(text: str, candidate: TriggerCandidate) -> tuple[bool, str]:
     if anchor_paths:
         # Find the first anchor value that appears verbatim in the text.
         anchor_found: bool = False
-        found_anchor_value: str | None = None
         for path in anchor_paths:
             anchor = candidate.payload.get(path)
             if anchor is not None and str(anchor) in text:
                 anchor_found = True
-                found_anchor_value = str(anchor)
                 break
         if not anchor_found:
             # Include one representative value in the reason for debugging.

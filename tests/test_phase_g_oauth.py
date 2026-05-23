@@ -13,16 +13,12 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from auth.store import MemoryStore
-
 
 # ---------------------------------------------------------------------------
 # Shared store fixture — one MemoryStore instance per test, injected into
@@ -40,10 +36,10 @@ def _patch_default_store(mem_store, monkeypatch, tmp_path):
     """Patch default_store everywhere so no OS keychain is touched."""
     _ds = lambda: mem_store  # noqa: E731
 
-    import auth.store as store_mod
+    import auth.github as github_mod
     import auth.google as google_mod
     import auth.notion as notion_mod
-    import auth.github as github_mod
+    import auth.store as store_mod
 
     monkeypatch.setattr(store_mod, "default_store", _ds)
     monkeypatch.setattr(google_mod, "default_store", _ds)
@@ -79,7 +75,7 @@ def _patch_default_store(mem_store, monkeypatch, tmp_path):
 
 class TestGoogleKeychainRoundTrip:
     def test_write_then_read_returns_same_payload(self, mem_store):
-        from auth.google import write_grant_to_keychain, read_grant_from_keychain
+        from auth.google import read_grant_from_keychain, write_grant_to_keychain
 
         payload = {
             "client_id": "cid123",
@@ -138,6 +134,7 @@ class TestGoogleRuntimeSpawnUsesKeychainToken:
         })
 
         import os
+
         import agents.runtime as runtime_mod
         runtime_mod._inject_keychain_tokens_to_env()
 
@@ -160,6 +157,7 @@ class TestGoogleRuntimeSpawnUsesKeychainToken:
         })
 
         import os
+
         import agents.runtime as runtime_mod
         runtime_mod._inject_keychain_tokens_to_env()
 
@@ -175,6 +173,7 @@ class TestNotionPKCEChallenge:
     def test_challenge_is_s256_of_verifier(self):
         import base64
         import hashlib
+
         from auth.notion import generate_pkce_pair
 
         verifier, challenge = generate_pkce_pair()
@@ -204,8 +203,9 @@ class TestNotionPKCEChallenge:
 
 class TestNotionDCRRegisterFlow:
     def test_dcr_register_persists_client_to_keychain(self, monkeypatch, mem_store):
-        import auth.notion as notion_mod
         import httpx
+
+        import auth.notion as notion_mod
 
         fake_response_data = {
             "client_id": "notion-cid-abc",
@@ -236,6 +236,7 @@ class TestNotionAccessTokenPersistence:
     @pytest.mark.asyncio
     async def test_current_scopes_present_when_access_token_in_keychain(self, mem_store):
         import json
+
         import auth.notion as notion_mod
 
         token_blob = {
@@ -262,6 +263,7 @@ class TestNotionAccessTokenPersistence:
     @pytest.mark.asyncio
     async def test_refresh_is_noop_returns_stored_token(self, mem_store):
         import json
+
         import auth.notion as notion_mod
 
         token_blob = {
@@ -284,6 +286,7 @@ class TestNotionAccessTokenPersistence:
 class TestGitHubClassicPAT:
     def test_classic_pat_detects_scopes_from_header(self, monkeypatch, mem_store):
         import httpx
+
         from auth.github import paste_and_persist
 
         class _FakeResp:
@@ -303,6 +306,7 @@ class TestGitHubClassicPAT:
 
     def test_classic_pat_persisted_to_keychain(self, monkeypatch, mem_store):
         import httpx
+
         from auth.github import paste_and_persist
 
         class _FakeResp:
@@ -327,6 +331,7 @@ class TestGitHubClassicPAT:
 class TestGitHubFineGrainedPAT:
     def test_fine_grained_pat_marks_wildcard_when_no_header(self, monkeypatch, mem_store):
         import httpx
+
         from auth.github import paste_and_persist
 
         class _FakeResp:
@@ -343,7 +348,8 @@ class TestGitHubFineGrainedPAT:
     @pytest.mark.asyncio
     async def test_fine_grained_current_scopes_returns_wildcard(self, monkeypatch, mem_store):
         import httpx
-        from auth.github import paste_and_persist, GitHubPATProvider
+
+        from auth.github import GitHubPATProvider, paste_and_persist
 
         class _FakeResp:
             headers = {}
@@ -364,7 +370,7 @@ class TestGitHubFineGrainedPAT:
 
 class TestScopePrecheckEnforce:
     def _patch_scope_config_and_provider(self, monkeypatch, granted_scopes: set[str]):
-        from auth.providers import ToolSpec, ScopeConfig
+        from auth.providers import ScopeConfig, ToolSpec
 
         cfg_obj = ScopeConfig(
             tool_specs={
@@ -402,7 +408,6 @@ class TestScopePrecheckEnforce:
         monkeypatch.delenv("AUTH_PRECHECK_OVERRIDE", raising=False)
         # Config says enforce via engagement.yaml (now set there).
         # Monkeypatch _load to inject auth.precheck=enforce.
-        from agents import config as agent_config
         import agents.config as cfg_mod
         original_load = cfg_mod._load
         cfg_mod._load.cache_clear()
@@ -454,7 +459,8 @@ class TestAuthPrecheckOverrideShadow:
     @pytest.mark.asyncio
     async def test_override_shadow_env_disables_deny(self, monkeypatch, caplog):
         import logging
-        from auth.providers import ToolSpec, ScopeConfig
+
+        from auth.providers import ScopeConfig, ToolSpec
 
         cfg_obj = ScopeConfig(
             tool_specs={
@@ -469,7 +475,8 @@ class TestAuthPrecheckOverrideShadow:
 
         class _FakeProvider:
             async def current_scopes(self):
-                return {"https://www.googleapis.com/auth/gmail.modify"}  # missing the required scope
+                # missing the required scope
+                return {"https://www.googleapis.com/auth/gmail.modify"}
 
         import auth.providers as prov_mod
         monkeypatch.setattr(prov_mod, "load_scope_config", lambda: cfg_obj)

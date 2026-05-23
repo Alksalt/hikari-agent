@@ -1,8 +1,6 @@
 """Tests for _build_ingest_block — unsupported mime types."""
 from __future__ import annotations
 
-import pytest
-
 from agents.telegram_bridge import _build_ingest_block
 
 

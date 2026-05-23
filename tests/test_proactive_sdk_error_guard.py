@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,6 +46,7 @@ def test_research_subagent_can_call_web_tools(monkeypatch):
     so the research subagent can invoke them when spawned via Agent."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     import importlib
+
     from agents import runtime
     importlib.reload(runtime)
 

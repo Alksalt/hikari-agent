@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 from agents.telegram_bridge import _build_ingest_block
 
 # Minimal valid JPEG: SOI + EOI markers

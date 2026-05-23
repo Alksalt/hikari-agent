@@ -47,7 +47,7 @@ def _gate_open(monkeypatch):
 async def test_daily_checkin_proactive_event_has_tg_id(monkeypatch):
     """maybe_run_daily_checkin must write the Telegram message_id into
     proactive_events so reaction joins work."""
-    from agents import daily_checkin, cadence
+    from agents import cadence, daily_checkin
 
     fake_tg_id = 7777
 
@@ -91,7 +91,7 @@ async def test_daily_checkin_proactive_event_has_tg_id(monkeypatch):
 async def test_decision_log_proactive_event_has_tg_id(monkeypatch):
     """run_decision_resolver must write the Telegram message_id into
     proactive_events so reaction joins work."""
-    from agents import decision_log, cadence
+    from agents import cadence, decision_log
 
     fake_tg_id = 8888
 
@@ -129,7 +129,7 @@ async def test_decision_log_proactive_event_has_tg_id(monkeypatch):
 async def test_future_letter_proactive_event_has_tg_id(monkeypatch):
     """run_future_letter must write the Telegram message_id from the last
     chunk into proactive_events so reaction joins work."""
-    from agents import future_letter, cadence
+    from agents import cadence, future_letter
 
     fake_tg_id = 9999
     fake_body = "dear you, it's been a while."

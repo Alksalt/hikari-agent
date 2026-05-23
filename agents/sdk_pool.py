@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _Handle:
-    client: "ClaudeSDKClient | None" = None
+    client: ClaudeSDKClient | None = None
     connect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     counter: int = 0          # turn_count (live) or call_count (judge)
 
@@ -73,7 +73,7 @@ def is_live_persistent_path_enabled() -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def _build_live_options(resume: str | None) -> "ClaudeAgentOptions":
+def _build_live_options(resume: str | None) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for the persistent live client.
 
     Named shim — delegates to agents.runtime._build_options so the two
@@ -93,15 +93,16 @@ def _build_live_options(resume: str | None) -> "ClaudeAgentOptions":
     )
 
 
-def judge_options() -> "ClaudeAgentOptions":
+def judge_options() -> ClaudeAgentOptions:
     """ClaudeAgentOptions for the persistent Haiku judge.
 
     Extracted from drift_judge.judge_outbound so sdk_pool can build the
     same client without duplicating the option values.
     """
     from claude_agent_sdk import ClaudeAgentOptions
-    from agents.runtime import MODEL_FALLBACK
+
     from agents import config as cfg
+    from agents.runtime import MODEL_FALLBACK
 
     rubric = str(cfg.get("drift_telemetry.rubric") or "")
     return ClaudeAgentOptions(
@@ -131,22 +132,22 @@ def _judge_recycle_after() -> int:
 # --------------------------------------------------------------------------- #
 
 
-async def _connect_live(resume: str | None) -> "ClaudeSDKClient":
+async def _connect_live(resume: str | None) -> ClaudeSDKClient:
     from claude_agent_sdk import ClaudeSDKClient
     options = _build_live_options(resume)
-    client: "ClaudeSDKClient" = ClaudeSDKClient(options=options)
+    client: ClaudeSDKClient = ClaudeSDKClient(options=options)
     await client.connect()
     return client
 
 
-async def _connect_judge() -> "ClaudeSDKClient":
+async def _connect_judge() -> ClaudeSDKClient:
     from claude_agent_sdk import ClaudeSDKClient
-    client: "ClaudeSDKClient" = ClaudeSDKClient(options=judge_options())
+    client: ClaudeSDKClient = ClaudeSDKClient(options=judge_options())
     await client.connect()
     return client
 
 
-async def _disconnect(client: "ClaudeSDKClient | None") -> None:
+async def _disconnect(client: ClaudeSDKClient | None) -> None:
     if client is None:
         return
     try:
@@ -179,14 +180,18 @@ async def startup() -> None:
             _live.client = await _connect_live(resume)
             logger.info("sdk_pool: live client connected")
         except Exception:
-            logger.exception("sdk_pool: live client failed to connect — persistent path disabled until restart")
+            logger.exception(
+                "sdk_pool: live client failed to connect — persistent path disabled until restart"
+            )
             _live.client = None
 
         try:
             _judge.client = await _connect_judge()
             logger.info("sdk_pool: judge client connected")
         except Exception:
-            logger.exception("sdk_pool: judge client failed to connect — drift judging disabled until restart")
+            logger.exception(
+                "sdk_pool: judge client failed to connect — drift judging disabled until restart"
+            )
             _judge.client = None
 
         _started = True
@@ -223,7 +228,9 @@ async def _reconnect_live(reason: str) -> None:
         try:
             _live.client = await _connect_live(resume)
             _live.counter = 0
-            logger.info("sdk_pool: live client reconnected (resume=%s)", "present" if resume else "none")
+            logger.info(
+                "sdk_pool: live client reconnected (resume=%s)", "present" if resume else "none"
+            )
         except Exception:
             logger.exception("sdk_pool: live client reconnect failed")
             _live.client = None
@@ -251,7 +258,7 @@ async def _reconnect_judge(reason: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def get_live_client() -> "ClaudeSDKClient":
+async def get_live_client() -> ClaudeSDKClient:
     """Return the live client, reconnecting if dead or over recycle threshold."""
     if _live.client is None:
         await _reconnect_live("client is None")
@@ -259,7 +266,7 @@ async def get_live_client() -> "ClaudeSDKClient":
     return _live.client
 
 
-async def get_haiku_judge() -> "ClaudeSDKClient":
+async def get_haiku_judge() -> ClaudeSDKClient:
     """Return the judge client, reconnecting if dead or over recycle threshold."""
     if _judge.client is None:
         await _reconnect_judge("client is None")

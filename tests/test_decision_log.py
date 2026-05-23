@@ -150,6 +150,7 @@ async def test_resolver_disabled_by_config(monkeypatch):
 def test_capture_tool_args_validation():
     """decision_log_capture rejects missing required fields."""
     import asyncio
+
     from tools.decision_log.capture import decision_log_capture
     # Empty statement → friendly error.
     r = asyncio.run(decision_log_capture.handler(

@@ -6,6 +6,7 @@ to point at the reengage's own row, breaking dedup. The anchor is now
 runtime_state['last_user_message']. This test pins that contract.
 """
 import importlib
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,8 +28,8 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_reengage_dedup_holds_after_proactive_send():
     # Seed user last-seen at 4 hours ago.
-    from datetime import datetime, timedelta, timezone
-    four_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    from datetime import datetime, timedelta
+    four_hours_ago = (datetime.now(UTC) - timedelta(hours=4)).isoformat()
     db_mod.runtime_set("last_user_message", four_hours_ago)
 
     from agents.engagement.producers import reengage_silence

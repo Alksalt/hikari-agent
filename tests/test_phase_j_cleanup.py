@@ -12,14 +12,12 @@ Confirms that every deletion and structural change from Phase J is complete:
 from __future__ import annotations
 
 import importlib
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from agents import config
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # Shared isolated-DB fixture

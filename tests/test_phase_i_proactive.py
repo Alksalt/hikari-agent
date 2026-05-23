@@ -12,13 +12,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock
 
 from agents.engagement.triggers import TriggerCandidate
-
 
 # ---------- helpers ----------
 
@@ -509,8 +507,8 @@ class TestGuard:
 class TestProactiveCommand:
     @pytest.mark.asyncio
     async def test_status_lists_sources_with_marks(self):
+        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
         from agents.telegram_bridge import cmd_proactive
-        from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
 
         update = MagicMock()
         update.effective_user.id = 999
@@ -533,8 +531,8 @@ class TestProactiveCommand:
 
     @pytest.mark.asyncio
     async def test_on_adds_source_to_runtime(self):
-        from agents.telegram_bridge import cmd_proactive
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+        from agents.telegram_bridge import cmd_proactive
 
         update = MagicMock()
         update.effective_user.id = 999
@@ -561,8 +559,8 @@ class TestProactiveCommand:
 
     @pytest.mark.asyncio
     async def test_off_removes_source_from_runtime(self):
-        from agents.telegram_bridge import cmd_proactive
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+        from agents.telegram_bridge import cmd_proactive
 
         update = MagicMock()
         update.effective_user.id = 999

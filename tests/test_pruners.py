@@ -200,6 +200,7 @@ def test_monthly_prune_job_calls_all_pruners(monkeypatch):
     monkeypatch.setattr(db, "prune_calendar_notifications_older_than_days", _track("calendar"))
 
     import asyncio
+
     from agents import config as cfg
     cfg.reload()
 

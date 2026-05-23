@@ -60,9 +60,18 @@ def _slice_window(hourly: dict, start_hour: int, end_hour: int) -> dict[str, Any
             rows.append({
                 "temp": hourly["temp_c"][i] if i < len(hourly.get("temp_c") or []) else None,
                 "feels": hourly["feels_c"][i] if i < len(hourly.get("feels_c") or []) else None,
-                "precip": hourly["precip_prob_pct"][i] if i < len(hourly.get("precip_prob_pct") or []) else None,
-                "wcode": hourly["weather_code"][i] if i < len(hourly.get("weather_code") or []) else None,
-                "cloud": hourly["cloud_cover_pct"][i] if i < len(hourly.get("cloud_cover_pct") or []) else None,
+                "precip": (
+                    hourly["precip_prob_pct"][i]
+                    if i < len(hourly.get("precip_prob_pct") or []) else None
+                ),
+                "wcode": (
+                    hourly["weather_code"][i]
+                    if i < len(hourly.get("weather_code") or []) else None
+                ),
+                "cloud": (
+                    hourly["cloud_cover_pct"][i]
+                    if i < len(hourly.get("cloud_cover_pct") or []) else None
+                ),
             })
     rows = [r for r in rows if all(v is not None for v in r.values())]
     if not rows:

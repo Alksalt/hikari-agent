@@ -4,6 +4,7 @@ Used by CI/preflight (scripts/validate_mcp_servers.py). NOT invoked at
 agent runtime -- too costly + depends on external server liveness.
 """
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -69,7 +70,7 @@ async def list_server_tools(
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except (asyncio.TimeoutError, ProcessLookupError):
+        except (TimeoutError, ProcessLookupError):
             try:
                 proc.kill()
             except ProcessLookupError:

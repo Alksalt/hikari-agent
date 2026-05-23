@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -33,7 +32,7 @@ def _isolated(tmp_path, monkeypatch):
 @pytest.fixture()
 def registry():
     """Return a fresh (uncached) ToolRegistry from the production yaml."""
-    from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+    from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
     return _load_yaml(DEFAULT_YAML_PATH)
 
 
@@ -175,7 +174,7 @@ class TestDeferGatedPatterns:
         from agents import config as cfg
         old_patterns = cfg.get("approvals.defer_gated_tools") or []
 
-        from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+        from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
         reg = _load_yaml(DEFAULT_YAML_PATH)
         new_patterns = reg.defer_gated_patterns()
 
@@ -217,7 +216,7 @@ class TestWrapPatterns:
         from agents import config as cfg
         old_patterns = set(cfg.get("prompt_injection.wrap_patterns") or [])
 
-        from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+        from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
         reg = _load_yaml(DEFAULT_YAML_PATH)
         new_patterns = set(reg.wrap_patterns())
 
@@ -244,7 +243,7 @@ class TestUntrustedTools:
         from agents import config as cfg
         old_entries = set(cfg.get("prompt_injection.untrusted_tools") or [])
 
-        from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+        from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
         reg = _load_yaml(DEFAULT_YAML_PATH)
         new_entries = set(reg.untrusted_tools())
 
@@ -351,14 +350,14 @@ class TestMcpServers:
 
 class TestLoadRegistry:
     def test_same_instance_returned(self):
-        from tools._tools_yaml import load_registry, DEFAULT_YAML_PATH
+        from tools._tools_yaml import DEFAULT_YAML_PATH, load_registry
         r1 = load_registry(DEFAULT_YAML_PATH)
         r2 = load_registry(DEFAULT_YAML_PATH)
         assert r1 is r2
 
     def test_different_path_different_instance(self, tmp_path):
         """A test yaml at a different path should produce a different instance."""
-        from tools._tools_yaml import load_registry, DEFAULT_YAML_PATH
+        from tools._tools_yaml import DEFAULT_YAML_PATH, load_registry
         r1 = load_registry(DEFAULT_YAML_PATH)
         # Create a minimal valid yaml
         mini = tmp_path / "mini.yaml"

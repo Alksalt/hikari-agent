@@ -1,10 +1,14 @@
 """Phase 10: YouTube Music tools."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):

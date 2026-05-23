@@ -48,8 +48,9 @@ def _make_is_quiet_now(quiet_start: int, quiet_end: int, utc_now: datetime,
     proactive._is_quiet_now reads _p() for quiet_start_hour / quiet_end_hour.
     We override _p via monkeypatch.
     """
-    import agents.proactive as pmod
     from datetime import datetime as real_datetime
+
+    import agents.proactive as pmod
 
     # _resolve_local_tz_name is imported into proactive from hooks; patch
     # the name in the proactive module namespace directly.

@@ -127,7 +127,9 @@ def _normalize_tags(tags: Any) -> list[str]:
     return []
 
 
-def _fts_text(title: str | None, snippet: str | None, tags: list[str], note: str | None) -> tuple[str, str, str, str]:
+def _fts_text(
+    title: str | None, snippet: str | None, tags: list[str], note: str | None
+) -> tuple[str, str, str, str]:
     return (
         title or "",
         snippet or "",

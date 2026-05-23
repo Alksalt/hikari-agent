@@ -13,6 +13,7 @@ import os as _os
 _os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
 import os
+from datetime import UTC
 from pathlib import Path
 
 from graphiti_core import Graphiti
@@ -56,7 +57,9 @@ async def get_graph() -> Graphiti:
             pass
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY required for graphiti (cheap LLM via openrouter)")
+            raise RuntimeError(
+                "OPENROUTER_API_KEY required for graphiti (cheap LLM via openrouter)"
+            )
         model = str(_cfg.get("graph.llm_model", "deepseek/deepseek-v4-flash"))
         llm_config = LLMConfig(
             api_key=api_key,
@@ -115,9 +118,9 @@ async def add_episode_safe(
 ) -> bool:
     """Dual-write helper: add_episode wrapped in try/except. Returns True on
     success, False on failure (logged). Never raises."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     if reference_time is None:
-        reference_time = datetime.now(timezone.utc)
+        reference_time = datetime.now(UTC)
     try:
         g = await get_graph()
         await g.add_episode(

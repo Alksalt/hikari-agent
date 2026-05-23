@@ -39,15 +39,15 @@ if __import__("typing").TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Bridge sets this in post_init so tools can access it without circular imports.
-_BOT_REF: "Bot | None" = None
+_BOT_REF: Bot | None = None
 
 
-def set_bot(bot: "Bot") -> None:
+def set_bot(bot: Bot) -> None:
     global _BOT_REF
     _BOT_REF = bot
 
 
-def _bot() -> "Bot":
+def _bot() -> Bot:
     if _BOT_REF is None:
         raise RuntimeError("approvals.set_bot() not called; bridge not started?")
     return _BOT_REF

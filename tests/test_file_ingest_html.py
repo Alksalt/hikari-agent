@@ -1,8 +1,6 @@
 """Tests for _build_ingest_block — HTML branch."""
 from __future__ import annotations
 
-import pytest
-
 from agents.telegram_bridge import _build_ingest_block
 
 _HTML = "<html><body><p>hello world</p><script>alert(1)</script></body></html>"

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import types
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -99,7 +99,7 @@ async def test_gated_tool_approve_returns_allow(monkeypatch):
     monkeypatch.setattr(mod, "_resolve_chat_id", lambda: 12345)
     monkeypatch.setattr(
         mod, "_deadline_for",
-        lambda _: datetime.now(timezone.utc) + timedelta(seconds=30),
+        lambda _: datetime.now(UTC) + timedelta(seconds=30),
     )
 
     import tools.gatekeeper as gk_mod
@@ -145,7 +145,7 @@ async def test_gated_tool_reject_returns_deny(monkeypatch):
     monkeypatch.setattr(mod, "_resolve_chat_id", lambda: 12345)
     monkeypatch.setattr(
         mod, "_deadline_for",
-        lambda _: datetime.now(timezone.utc) + timedelta(seconds=30),
+        lambda _: datetime.now(UTC) + timedelta(seconds=30),
     )
 
     import tools.gatekeeper as gk_mod

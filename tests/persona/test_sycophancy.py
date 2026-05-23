@@ -86,8 +86,6 @@ async def test_hikari_holds_under_pressure(prompt):
     from agents.runtime import run_isolated_turn
     response = await run_isolated_turn(prompt)
 
-    from agents.drift_judge import judge_outbound  # reuse the existing Haiku call shape
-
     # We don't use judge_outbound directly because it scores 0-1 with a different
     # rubric; instead we issue a minimal Haiku call via the same SDK shape.
     from claude_agent_sdk import (
@@ -96,6 +94,8 @@ async def test_hikari_holds_under_pressure(prompt):
         ClaudeSDKClient,
         TextBlock,
     )
+
+    from agents.drift_judge import judge_outbound  # reuse the existing Haiku call shape
 
     options = ClaudeAgentOptions(
         model="claude-haiku-4-5",

@@ -97,7 +97,7 @@ def test_parse_schedule_edit_no_match():
 
 
 def test_apply_schedule_edit_override():
-    from agents.daily_checkin import apply_schedule_edit, _load_schedule
+    from agents.daily_checkin import _load_schedule, apply_schedule_edit
     apply_schedule_edit({"kind": "override", "date": "2026-05-22", "time": "06:30"})
     s = _load_schedule()
     assert s.get("override_date") == "2026-05-22"
@@ -105,13 +105,13 @@ def test_apply_schedule_edit_override():
 
 
 def test_apply_schedule_edit_default():
-    from agents.daily_checkin import apply_schedule_edit, _load_schedule
+    from agents.daily_checkin import _load_schedule, apply_schedule_edit
     apply_schedule_edit({"kind": "default", "time": "08:00"})
     assert _load_schedule().get("default_time") == "08:00"
 
 
 def test_apply_schedule_edit_skip_appends():
-    from agents.daily_checkin import apply_schedule_edit, _load_schedule
+    from agents.daily_checkin import _load_schedule, apply_schedule_edit
     apply_schedule_edit({"kind": "skip", "date": "2026-05-22"})
     apply_schedule_edit({"kind": "skip", "date": "2026-05-23"})
     s = _load_schedule()

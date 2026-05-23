@@ -1,10 +1,14 @@
 """Phase 10: places_search + place_open_now via OSM Overpass."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):
@@ -21,10 +25,15 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 class _FakeResponse:
     def __init__(self, status_code, json_data=None):
-        self.status_code = status_code; self._json = json_data or {}
-    def json(self): return self._json
+        self.status_code = status_code
+        self._json = json_data or {}
+
+    def json(self):
+        return self._json
+
     def raise_for_status(self):
-        if self.status_code >= 400: raise Exception(f"HTTP {self.status_code}")
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
 
 
 class _FakeAsyncClient:
@@ -33,7 +42,8 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a): return False
     async def post(self, url, **kwargs):
         for prefix, resp in self.responses.items():
-            if url.startswith(prefix): return resp
+            if url.startswith(prefix):
+                return resp
         raise Exception(f"no mock for {url}")
 
 
@@ -42,8 +52,9 @@ async def test_places_search_rejects_overpass_qli_chars(monkeypatch):
     """R1 finding: user-supplied query was interpolated raw into Overpass QL.
     Sanitizer must strip ", ], ;, \\, newlines so an attacker can't escape
     the regex literal and inject arbitrary QL."""
-    from tools import places
     import httpx
+
+    from tools import places
     captured: dict = {}
 
     class _CapturedClient:
@@ -75,8 +86,9 @@ async def test_places_search_rejects_overpass_qli_chars(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_places_search_returns_named_pois(monkeypatch):
-    from tools import places
     import httpx
+
+    from tools import places
     client = _FakeAsyncClient()
     client.responses["https://overpass-api.de"] = _FakeResponse(200, {
         "elements": [

@@ -1,8 +1,6 @@
 """Tests for auth.scope_match.scope_satisfies."""
 from __future__ import annotations
 
-import pytest
-
 from auth.scope_match import scope_satisfies
 
 

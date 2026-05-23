@@ -52,9 +52,24 @@ packages = ["agents", "storage", "tools"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [
+    "codex/",                # research docs (markdown)
+    "data/",                 # runtime data (DB, photos, cache)
+    "secrets/",              # never lint secrets
+    ".claude/worktrees/",    # git worktree scratch dirs
+    "mcp_external/",         # vendored MCP servers
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Data ingest script: long string literals are prose/URLs in data tuples — wrapping breaks readability
+"scripts/ingest_to_memory.py" = ["E501"]
+# Tests routinely embed long fixture strings, expected-output literals, and
+# parametrize args — wrapping them harms readability vs. the cost of a
+# one-line overflow.
+"tests/**/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

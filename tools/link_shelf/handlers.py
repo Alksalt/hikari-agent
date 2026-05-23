@@ -29,7 +29,8 @@ _META_OG_DESC_RE = re.compile(
 )
 
 _FETCH_TIMEOUT_SEC = cfg.get("link_shelf.fetch_timeout_sec") or 5.0
-_FETCH_MAX_BYTES = cfg.get("link_shelf.fetch_max_bytes") or 200_000  # plenty for <head>, refuses huge pages
+# plenty for <head>, refuses huge pages
+_FETCH_MAX_BYTES = cfg.get("link_shelf.fetch_max_bytes") or 200_000
 _USER_AGENT = cfg.get("link_shelf.user_agent") \
     or "hikari-agent link-shelf/1.0 (+https://github.com/hikari-agent)"
 

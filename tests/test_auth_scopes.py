@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents import config as agent_config
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture — isolated DB per test
@@ -35,8 +34,8 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     agent_config.reload()
 
     # Reset auth singletons so each test starts clean
-    import auth.store as store_mod
     import auth.providers as providers_mod
+    import auth.store as store_mod
     store_mod._reset_store()
     providers_mod._reset_providers()
     providers_mod._scope_config = None
@@ -131,7 +130,6 @@ class TestKeychainStore:
             assert s.get("google", "refresh_token") == "rtok"
 
     def test_clear_removes_keys(self):
-        import auth.store as store_mod
         fake_keyring = self._mock_keyring()
         from auth.store import KeychainStore
         s = KeychainStore.__new__(KeychainStore)
@@ -151,7 +149,10 @@ class TestDefaultStore:
         store_mod._reset_store()
         monkeypatch.delenv("HIKARI_REQUIRE_KEYCHAIN", raising=False)
 
-        original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__  # noqa: F821
+        # noqa: F821 — __builtins__ is implementation-defined
+        original_import = (
+            __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+        )
 
         def _import_fail(name, *args, **kwargs):
             if name == "keyring":
@@ -185,8 +186,8 @@ class TestDefaultStore:
 
 class TestGoogleProviderCurrentScopes:
     def _make_provider(self):
-        from auth.store import MemoryStore
         from auth.google import GoogleProvider
+        from auth.store import MemoryStore
         store = MemoryStore()
         store.set("google", "client_id", "cid")
         store.set("google", "client_secret", "csec")
@@ -229,8 +230,9 @@ class TestGoogleProviderCurrentScopes:
     @pytest.mark.asyncio
     async def test_cache_hit_skips_network(self, monkeypatch):
         from datetime import UTC, datetime
-        from storage import db
+
         import auth.google as google_mod
+        from storage import db
 
         db.runtime_set("auth.google.scopes", "https://mail.google.com/")
         db.runtime_set("auth.google.scopes_checked_at", datetime.now(UTC).isoformat())
@@ -258,8 +260,8 @@ class TestGoogleProviderCurrentScopes:
 
     @pytest.mark.asyncio
     async def test_network_fail_returns_empty_no_cache(self, monkeypatch):
-        from storage import db
         import auth.google as google_mod
+        from storage import db
 
         db.runtime_set("auth.google.scopes", None)
         db.runtime_set("auth.google.scopes_checked_at", None)
@@ -291,7 +293,7 @@ class TestPrecheckScopes:
     def _patch_scope_config_and_provider(self, monkeypatch, missing_scopes: list[str]):
         """Patch load_scope_config and get_provider so GoogleProvider returns
         a controlled set of scopes."""
-        from auth.providers import ToolSpec, ScopeConfig
+        from auth.providers import ScopeConfig, ToolSpec
 
         cfg = ScopeConfig(
             tool_specs={
@@ -325,8 +327,9 @@ class TestPrecheckScopes:
         self._patch_scope_config_and_provider(monkeypatch, missing_scopes=["https://mail.google.com/"])
         monkeypatch.setenv("AUTH_PRECHECK", "shadow")
 
-        from agents import hooks
         import importlib
+
+        from agents import hooks
         importlib.reload(hooks)
 
         with caplog.at_level(logging.WARNING, logger="agents.hooks"):
@@ -342,8 +345,9 @@ class TestPrecheckScopes:
         self._patch_scope_config_and_provider(monkeypatch, missing_scopes=["https://mail.google.com/"])
         monkeypatch.setenv("AUTH_PRECHECK", "enforce")
 
-        from agents import hooks
         import importlib
+
+        from agents import hooks
         importlib.reload(hooks)
 
         result = await hooks._precheck_scopes(
@@ -364,8 +368,9 @@ class TestPrecheckScopes:
         self._patch_scope_config_and_provider(monkeypatch, missing_scopes=["https://mail.google.com/"])
         monkeypatch.setenv("AUTH_PRECHECK", "off")
 
-        from agents import hooks
         import importlib
+
+        from agents import hooks
         importlib.reload(hooks)
 
         result = await hooks._precheck_scopes(
@@ -376,7 +381,7 @@ class TestPrecheckScopes:
     @pytest.mark.asyncio
     async def test_returns_none_when_scopes_satisfied(self, monkeypatch):
         """When the provider has the required scope, precheck returns None."""
-        from auth.providers import ToolSpec, ScopeConfig
+        from auth.providers import ScopeConfig, ToolSpec
 
         cfg = ScopeConfig(
             tool_specs={
@@ -398,8 +403,9 @@ class TestPrecheckScopes:
         monkeypatch.setattr(prov_mod, "get_provider", lambda name: _FullProvider())
         monkeypatch.setenv("AUTH_PRECHECK", "enforce")
 
-        from agents import hooks
         import importlib
+
+        from agents import hooks
         importlib.reload(hooks)
 
         result = await hooks._precheck_scopes(
@@ -410,13 +416,14 @@ class TestPrecheckScopes:
     @pytest.mark.asyncio
     async def test_returns_none_for_unregistered_tool(self, monkeypatch):
         """Unknown tool names pass through (no spec → no precheck)."""
-        from auth.providers import ScopeConfig
         import auth.providers as prov_mod
+        from auth.providers import ScopeConfig
         monkeypatch.setattr(prov_mod, "load_scope_config", lambda: ScopeConfig())
         monkeypatch.setenv("AUTH_PRECHECK", "enforce")
 
-        from agents import hooks
         import importlib
+
+        from agents import hooks
         importlib.reload(hooks)
 
         result = await hooks._precheck_scopes("mcp__some_unknown__tool", {})

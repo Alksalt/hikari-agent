@@ -6,10 +6,8 @@ a temporary SQLite DB and a mocked add_episode_safe.
 from __future__ import annotations
 
 import importlib
-from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -192,7 +190,6 @@ async def test_backfill_idempotency_after_success(tmp_path: Path, monkeypatch):
     add_mock = AsyncMock(return_value=True)
     monkeypatch.setattr("storage.graph.add_episode_safe", add_mock)
 
-    from scripts.backfill_facts_to_graph import main
     # Need to reload the module so it picks up the new db env
     import scripts.backfill_facts_to_graph as bf_mod
     importlib.reload(bf_mod)

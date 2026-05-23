@@ -21,7 +21,6 @@ import json
 import sys
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -111,7 +110,10 @@ def _google_grant(extra_scopes: list[str]) -> int:
     from auth.google import write_grant_to_keychain
     write_grant_to_keychain(payload)
 
-    _ok("google grant: keychain item 'hikari-google' updated. you can delete the GOOGLE_* lines from .env.")
+    _ok(
+        "google grant: keychain item 'hikari-google' updated."
+        " you can delete the GOOGLE_* lines from .env."
+    )
     return 0
 
 
@@ -131,8 +133,8 @@ def _google_status() -> int:
 
 
 def _google_revoke() -> int:
-    from auth.store import default_store
     from auth.google import GoogleProvider
+    from auth.store import default_store
     store = default_store()
     provider = GoogleProvider(store)
     provider.revoke()
@@ -160,7 +162,7 @@ def _notion_grant() -> int:
 
 
 def _notion_status() -> int:
-    from auth.notion import _load_token, _load_client
+    from auth.notion import _load_client, _load_token
     client = _load_client()
     token = _load_token()
     if not token:

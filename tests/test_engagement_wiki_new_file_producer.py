@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import importlib
-import time
 from pathlib import Path
-
-import pytest
 
 
 def _reload_all(monkeypatch, tmp_path, wiki_root: Path | None = None):

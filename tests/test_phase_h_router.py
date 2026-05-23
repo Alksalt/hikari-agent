@@ -36,7 +36,7 @@ def _isolated(tmp_path, monkeypatch):
 @pytest.fixture()
 def fresh_registry():
     """Uncached ToolRegistry from the real tools.yaml."""
-    from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+    from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
     return _load_yaml(DEFAULT_YAML_PATH)
 
 

@@ -34,7 +34,9 @@ def test_busy_timeout_applied_default():
 
 def test_busy_timeout_from_config(monkeypatch, tmp_path: Path):
     """Config override respected: set sqlite.busy_timeout_ms=2000."""
-    monkeypatch.setattr(db, "_cfg_get", lambda key, default: 2000 if key == "sqlite.busy_timeout_ms" else default)
+    monkeypatch.setattr(
+        db, "_cfg_get", lambda key, default: 2000 if key == "sqlite.busy_timeout_ms" else default
+    )
     db._reset_schema_sentinel()
     new_path = tmp_path / "custom.db"
     monkeypatch.setattr(db, "_DB_PATH", new_path)

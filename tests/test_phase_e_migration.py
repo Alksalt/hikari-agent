@@ -1,9 +1,9 @@
 """Phase E migration: every destructive tool routes through Gatekeeper."""
 from __future__ import annotations
+
 import pytest
 
 from tools._tools_yaml import load_registry
-
 
 _EXPECTED_GATEKEEPER_TOOLS = {
     "mcp__hikari_dispatch__dispatch_claude_session",

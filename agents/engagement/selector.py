@@ -10,9 +10,8 @@ Scoring per architect spec §9.5:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
 
 from agents.engagement.triggers import TriggerCandidate
 

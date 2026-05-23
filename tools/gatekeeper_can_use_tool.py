@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from agents import config as cfg
 
@@ -29,7 +29,9 @@ def _gate_for(tool_name: str) -> str | None:
         spec = reg._resolve(tool_name)
         return spec.gate if spec else None
     except Exception:
-        logger.debug("gatekeeper_can_use_tool: registry lookup failed for %s", tool_name, exc_info=True)
+        logger.debug(
+            "gatekeeper_can_use_tool: registry lookup failed for %s", tool_name, exc_info=True
+        )
         return None
 
 
@@ -65,9 +67,11 @@ def _deadline_for(tool_name: str) -> datetime:
         logger.debug(
             "_deadline_for: registry lookup failed for %s", tool_name, exc_info=True
         )
-    secs = per_tool_secs if per_tool_secs is not None else int(cfg.get("gatekeeper.default_timeout_s", 300))
+    secs = per_tool_secs if per_tool_secs is not None else int(
+        cfg.get("gatekeeper.default_timeout_s", 300)
+    )
     secs = min(secs, MAX_TIMEOUT_S)
-    return datetime.now(timezone.utc) + timedelta(seconds=secs)
+    return datetime.now(UTC) + timedelta(seconds=secs)
 
 
 def _resolve_chat_id() -> int:

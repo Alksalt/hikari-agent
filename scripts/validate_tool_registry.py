@@ -50,8 +50,7 @@ def run() -> list[str]:
     # (a) Discover actual tool handlers in tools/**/*.py via _registry
     # and check they're covered by explicit id or wildcard in yaml.
     try:
-        from tools._registry import discover_utility_tool_names
-        from tools._registry import clear_cache
+        from tools._registry import clear_cache, discover_utility_tool_names
         clear_cache()
         utility_names = set(discover_utility_tool_names())
     except Exception as exc:

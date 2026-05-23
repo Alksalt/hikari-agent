@@ -213,7 +213,6 @@ def test_recall_confidence_scales_with_hit_count(monkeypatch):
     from unittest.mock import AsyncMock
 
     import tools.memory as mem_mod
-
     from storage.retrieval import Hit
 
     fake_hit = Hit(

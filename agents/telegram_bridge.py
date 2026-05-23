@@ -43,6 +43,7 @@ from . import handoff as handoff_mod
 from . import post_filter
 from . import postsend as postsend_mod
 from . import reactions as reactions_mod
+from . import sdk_pool as _sdk_pool
 from . import stickers as stickers_mod
 from .background_listener import (
     listener_loop,
@@ -60,7 +61,6 @@ from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
 from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_user_turn
 from .scheduler import build_scheduler
-from . import sdk_pool as _sdk_pool
 
 logger = logging.getLogger(__name__)
 
@@ -857,7 +857,8 @@ async def _reverse_geocode_label(lat: float, lon: float) -> str | None:
     it. Returns ``display_name`` or ``None`` on any failure."""
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=cfg.get("telegram.http_timeout_sec") or 10.0) as client:
+        timeout = cfg.get("telegram.http_timeout_sec") or 10.0
+        async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": lat, "lon": lon, "format": "json", "zoom": 16},
@@ -1380,8 +1381,8 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("usage: /memory_diff <query>")
         return
 
-    from storage.retrieval import legacy_retrieve  # noqa: PLC0415
     from storage.graph import search as graph_search  # noqa: PLC0415
+    from storage.retrieval import legacy_retrieve  # noqa: PLC0415
 
     sqlite_hits = []
     try:

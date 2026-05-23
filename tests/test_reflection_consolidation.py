@@ -227,7 +227,7 @@ async def test_consolidation_failure_does_not_break_reflection(monkeypatch):
 def test_episode_summary_insert_handles_non_int_ids():
     """Garbage in episode_ids gets filtered, not raised."""
     db.insert_episode("2026-05-18", "test")
-    sid = db.episode_summary_insert(
+    db.episode_summary_insert(
         topic="other",
         episode_ids=[1, "not an int", 3.14, "5"],
         summary_text="mixed ids",

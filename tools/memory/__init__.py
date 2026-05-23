@@ -17,7 +17,6 @@ package's namespace.
 from __future__ import annotations
 
 from storage import retrieval  # noqa: F401 — re-exported for test monkey-patching
-
 from tools.memory.mark_fact_invalid import mark_fact_invalid
 from tools.memory.recall import recall
 from tools.memory.remember import remember

@@ -18,7 +18,6 @@ import pytest
 
 from agents.reflection_sanitize import MemoryInstructionShape, sanitize
 
-
 # ---------------------------------------------------------------------------
 # 1. core_block — instruction-shaped text raises MemoryInstructionShape
 # ---------------------------------------------------------------------------

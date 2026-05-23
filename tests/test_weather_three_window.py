@@ -16,8 +16,9 @@ def _make_hourly(n_hours: int = 24, base_temp: float = 15.0) -> dict:
 
 
 def test_slice_window_returns_medians():
-    from tools.weather._shared import _slice_window
     import statistics
+
+    from tools.weather._shared import _slice_window
 
     hourly = _make_hourly()
 
@@ -42,8 +43,9 @@ def test_slice_window_returns_medians():
 
 
 def test_slice_window_midday():
-    from tools.weather._shared import _slice_window
     import statistics
+
+    from tools.weather._shared import _slice_window
 
     hourly = _make_hourly()
     midday = _slice_window(hourly, 12, 15)
@@ -105,8 +107,9 @@ def test_consensus_no_disagreement_when_close():
 
 
 def test_consensus_median_not_mean():
-    from tools.weather._sources import _consensus
     import statistics
+
+    from tools.weather._sources import _consensus
 
     sources = {
         "a": {"temp_high_c": 10.0, "temp_low_c": 5.0,

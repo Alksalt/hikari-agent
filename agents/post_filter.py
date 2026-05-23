@@ -410,7 +410,7 @@ def fallback_short() -> str:
 
 async def rewrite_or_fallback(
     original: str,
-    filtered: "FilterResult",
+    filtered: FilterResult,
     mood: str | None,
     where: str = "bridge",
 ) -> str:

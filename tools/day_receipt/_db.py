@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Iterator
 
 from tools.day_receipt._shared import CATEGORIES, Category, db_path
 
@@ -202,7 +202,8 @@ def set_note(receipt_date: date, note: str, *, db: Path | None = None) -> None:
             return
         conn.execute(
             "INSERT INTO notes(receipt_date, note, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(receipt_date) DO UPDATE SET note=excluded.note, updated_at=excluded.updated_at",
+            "ON CONFLICT(receipt_date) DO UPDATE SET"
+            " note=excluded.note, updated_at=excluded.updated_at",
             (receipt_date.isoformat(), note, now),
         )
 

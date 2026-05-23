@@ -16,7 +16,6 @@ from agents.post_filter import (
 )
 from agents.runtime import LAST_TURN_TOOL_NAMES
 
-
 # The live failure mode + variants.
 INBOX_FABRICATIONS = [
     "5 unread, all from Google",

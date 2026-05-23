@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import time
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -70,7 +71,8 @@ def test_always_approve_expires_after_ttl():
 async def test_gatekeeper_request_skips_prompt_when_always_approve(monkeypatch, tmp_path):
     """When always_approve is active, Gatekeeper.request returns 'approved'
     without calling send_text (no Telegram prompt)."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
+
     from tools.approvals import _ALWAYS_APPROVE, always_approve
     from tools.gatekeeper import GATEKEEPER
 
@@ -90,7 +92,7 @@ async def test_gatekeeper_request_skips_prompt_when_always_approve(monkeypatch, 
         chat_id=12345,
         args={},
         summary="test tool",
-        deadline=datetime.now(timezone.utc) + timedelta(seconds=10),
+        deadline=datetime.now(UTC) + timedelta(seconds=10),
     )
 
     assert outcome == "approved"
@@ -169,9 +171,8 @@ async def test_approvals_command_lists_pending(monkeypatch):
 @pytest.mark.asyncio
 async def test_approvals_cancel_resolves_via_gatekeeper(monkeypatch):
     """/approvals cancel <id> resolves the gatekeeper row as admin_cancel."""
-    import asyncio
-    from tools.gatekeeper import GATEKEEPER, _Pending
     from agents.telegram_bridge import cmd_approvals
+    from tools.gatekeeper import GATEKEEPER, _Pending
 
     # Seed a pending approval row in the DB.
     aid = db.approval_create_gatekeeper(
@@ -259,7 +260,7 @@ def test_per_tool_timeout_override_applies(tmp_path, monkeypatch):
     logic in gatekeeper_can_use_tool._deadline_for by monkeypatching the
     registry inside that module's local import scope.
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime
 
     # Create a minimal tools.yaml fixture with gate_timeout_sec=120.
     yaml_text = """
@@ -291,7 +292,7 @@ subagents: {}
 
     from tools.gatekeeper_can_use_tool import _deadline_for
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     deadline = _deadline_for("mcp__test__timed_tool")
     delta = (deadline - before).total_seconds()
 
@@ -301,7 +302,7 @@ subagents: {}
 
 def test_per_tool_timeout_falls_back_to_default(tmp_path, monkeypatch):
     """When gate_timeout_sec is absent, _deadline_for falls back to config default."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     yaml_text = """
 mcp_servers: {}
@@ -326,7 +327,7 @@ subagents: {}
 
     from tools.gatekeeper_can_use_tool import _deadline_for
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     deadline = _deadline_for("mcp__test__no_timeout_tool")
     delta = (deadline - before).total_seconds()
 

@@ -12,7 +12,6 @@ import pytest
 
 from storage import db
 
-
 # ---------------------------------------------------------------------------
 # DB isolation fixture (pattern from test_final_sent_text_is_persisted.py)
 # ---------------------------------------------------------------------------
@@ -219,7 +218,8 @@ async def test_send_failure_no_row(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_filter_rewrite_applied(monkeypatch, tmp_path):
     """filter_outgoing flags → rewrite_or_fallback called → REWRITTEN persisted."""
-    import types, sys
+    import sys
+    import types
 
     mod = types.ModuleType("agents.post_filter")
 

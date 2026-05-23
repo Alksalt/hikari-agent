@@ -17,14 +17,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib
-import json
 from pathlib import Path
 
 import pytest
 
 from agents import config
 from storage import db
-
 
 # ---------- shared fixtures ----------
 
@@ -296,7 +294,7 @@ def _full_dance_to_code(c) -> tuple[str, str, str]:
                follow_redirects=False)
     loc = r.headers["location"]
     # extract code= from the redirect URL
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
     code = parse_qs(urlparse(loc).query)["code"][0]
     return cid, code, verifier
 

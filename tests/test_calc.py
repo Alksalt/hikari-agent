@@ -1,10 +1,14 @@
 """Phase 10: calc + python_run sandbox."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):
@@ -42,7 +46,9 @@ async def test_calc_blocks_import():
     """R1 finding: asteval's Interpreter(minimal=False) exposed __import__.
     The strip-list must include it so __import__('os').system(...) fails."""
     from tools import calc
-    out = await calc.calc.handler({"expr": "__import__('os').system('echo escaped > /tmp/_calc_pwn')"})
+    out = await calc.calc.handler(
+        {"expr": "__import__('os').system('echo escaped > /tmp/_calc_pwn')"}
+    )
     assert out["data"].get("result") is None or "err" in out["content"][0]["text"].lower()
     import os.path
     assert not os.path.exists("/tmp/_calc_pwn"), "calc sandbox escape: __import__ executed"
@@ -85,6 +91,7 @@ async def test_calc_works_from_thread_pool():
     thread with `ValueError: signal only works in main thread`. Calling calc
     from a worker thread must now succeed."""
     import asyncio
+
     from tools import calc
 
     # asyncio.to_thread runs the body on a default-pool worker thread.

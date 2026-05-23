@@ -13,7 +13,12 @@ def _block_graphiti(request):
     if request.node.get_closest_marker("uses_real_graph"):
         yield
         return
-    with patch("storage.graph.get_graph", new=AsyncMock(side_effect=RuntimeError("graph blocked in tests"))), \
-         patch("storage.graph.add_episode_safe", new=AsyncMock(return_value=False)), \
-         patch("storage.graph.schedule_episode", new=lambda *a, **kw: False):
+    with (
+        patch(
+            "storage.graph.get_graph",
+            new=AsyncMock(side_effect=RuntimeError("graph blocked in tests")),
+        ),
+        patch("storage.graph.add_episode_safe", new=AsyncMock(return_value=False)),
+        patch("storage.graph.schedule_episode", new=lambda *a, **kw: False),
+    ):
         yield

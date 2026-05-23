@@ -1,9 +1,9 @@
 """Phase 11: click-Allow UI hallucination backstop."""
 from __future__ import annotations
+
 import pytest
 
 from agents.post_filter import _CLICK_ALLOW_RE, _CLICK_ALLOW_REPLACEMENT, _strip_click_allow
-
 
 # Real strings Hikari sent on 2026-05-19 (verbatim from the db)
 HALLUCINATIONS = [

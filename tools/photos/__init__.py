@@ -20,14 +20,14 @@ from __future__ import annotations
 import httpx  # noqa: F401 — re-exported for tests that patch ``photos.httpx``
 
 from tools.photos._shared import (  # noqa: F401 — back-compat re-exports
+    _FALLBACK_SCENES,
+    _SCENES_BY_MOOD,
     APPEARANCE_MD,
     DAILY_CAP,
     DEFAULT_MODEL,
     OPENROUTER_IMG_URL,
     OUTBOX,
     REPO_ROOT,
-    _FALLBACK_SCENES,
-    _SCENES_BY_MOOD,
     _call_flux,
     _photos_sent_today,
     _read_appearance_base,

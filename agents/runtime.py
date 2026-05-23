@@ -30,12 +30,6 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
-# Re-exported for backwards compatibility — the contextvar itself lives in
-# ``agents._turn_state`` so importlib.reload(agents.runtime) (used by
-# allowlist tests) doesn't create a new ContextVar object and silently break
-# the chat-path fabrication backstop.
-from ._turn_state import LAST_TURN_TOOL_NAMES  # noqa: F401
-
 from agents import config as cfg
 from storage import db
 from tools import codex as codex_tools
@@ -45,9 +39,15 @@ from tools import photos as photo_tools
 from tools import router as router_tools
 from tools import wiki as wiki_tools
 
+from . import sdk_pool
+
+# Re-exported for backwards compatibility — the contextvar itself lives in
+# ``agents._turn_state`` so importlib.reload(agents.runtime) (used by
+# allowlist tests) doesn't create a new ContextVar object and silently break
+# the chat-path fabrication backstop.
+from ._turn_state import LAST_TURN_TOOL_NAMES  # noqa: F401
 from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
-from . import sdk_pool
 
 REPO_ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -72,8 +72,14 @@ def looks_like_sdk_error(text: str) -> bool:
         return False
     return any(p.search(text) for p in _SDK_ERROR_PATTERNS)
 
-MODEL_PRIMARY = os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
-MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK") or cfg.get("runtime.model_fallback") or "claude-haiku-4-5"
+MODEL_PRIMARY = (
+    os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
+)
+MODEL_FALLBACK = (
+    os.environ.get("HIKARI_MODEL_FALLBACK")
+    or cfg.get("runtime.model_fallback")
+    or "claude-haiku-4-5"
+)
 
 
 def _inject_keychain_tokens_to_env() -> None:
@@ -279,8 +285,9 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     # Bucket-1 servers are attached by calling their runtime_factory function.
     # Conditional servers are attached only when extra_allowed_tools intersects
     # the set of tool names that live on that server.
-    from tools._tools_yaml import load_registry
     import importlib
+
+    from tools._tools_yaml import load_registry
 
     registry = load_registry()
     mcp_servers: dict = {}
@@ -405,13 +412,14 @@ async def _invoke_sdk_persistent_live(
 
     try:
         result = await _run_one()
-    except (ProcessError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, ProcessError) as exc:
         reason = type(exc).__name__
         # If a stored session_id was involved, clear it (suspect session).
         stored = db.get_session_id()
         if stored:
             logger.warning(
-                "_invoke_sdk_persistent_live: %s — clearing suspect session_id (present=True) and reconnecting",
+                "_invoke_sdk_persistent_live: %s"
+                " — clearing suspect session_id (present=True) and reconnecting",
                 reason,
             )
             db.set_session_id("")
@@ -584,7 +592,8 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     subprocess stdin; injecting a content-block list would corrupt the
     transcript format.  This call goes through the standard ephemeral
     (cold-start) path which handles arbitrary prompt shapes correctly.
-    log_session_id is False so the ephemeral fallback's session_id never overwrites the persistent live session pointer (Sprint 4 4A fix).
+    log_session_id is False so the ephemeral fallback's session_id never overwrites
+    the persistent live session pointer (Sprint 4 4A fix).
     """
     async with _RUN_LOCK:
         return await _invoke_sdk(

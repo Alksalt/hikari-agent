@@ -21,7 +21,6 @@ import pytest
 from agents import config
 from storage import db
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                     #
 # --------------------------------------------------------------------------- #
@@ -105,8 +104,6 @@ async def test_startup_idempotent(fresh_pool, monkeypatch):
 async def test_shutdown_idempotent(fresh_pool, monkeypatch):
     """Double shutdown() is safe."""
     pool = fresh_pool
-    disconnects = {"live": 0, "judge": 0}
-
     live_client = _make_fake_client("live")
     judge_client = _make_fake_client("judge")
 

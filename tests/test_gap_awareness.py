@@ -6,7 +6,9 @@ voice line).
 The gap is computed from runtime_state.last_user_message vs now."""
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -55,10 +57,6 @@ def test_gap_missing_ts_returns_empty():
     """No runtime_state row → no injection."""
     out = hooks._format_gap_since_last(None)
     assert out == ""
-
-
-import importlib
-from pathlib import Path
 
 
 @pytest.fixture

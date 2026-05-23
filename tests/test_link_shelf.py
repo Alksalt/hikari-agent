@@ -49,7 +49,7 @@ def no_network(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_save_then_list(no_network):
-    from tools.link_shelf import link_save, link_list
+    from tools.link_shelf import link_list, link_save
 
     r = await link_save.handler({
         "url": "https://anthropic.com/news/skills",
@@ -129,7 +129,7 @@ async def test_search_kind_filter(no_network):
 
 @pytest.mark.asyncio
 async def test_list_kind_and_tag_filters(no_network):
-    from tools.link_shelf import link_save, link_list
+    from tools.link_shelf import link_list, link_save
 
     await link_save.handler({
         "url": "https://a.example.com/x",
@@ -157,7 +157,7 @@ async def test_list_kind_and_tag_filters(no_network):
 
 @pytest.mark.asyncio
 async def test_update_changes_kind_and_tags(no_network):
-    from tools.link_shelf import link_save, link_update, link_list
+    from tools.link_shelf import link_list, link_save, link_update
 
     saved = await link_save.handler({
         "url": "https://example.com/article",
@@ -181,7 +181,7 @@ async def test_update_changes_kind_and_tags(no_network):
 
 @pytest.mark.asyncio
 async def test_delete_removes_link(no_network):
-    from tools.link_shelf import link_save, link_delete, link_list
+    from tools.link_shelf import link_delete, link_list, link_save
 
     saved = await link_save.handler({"url": "https://example.com/gone"})
     link_id = saved["data"]["id"]
@@ -198,7 +198,7 @@ async def test_save_same_url_twice_updates_in_place(no_network):
     """The url unique-index means re-saving the same URL is an update,
     not a duplicate. Useful when the user shares a link again with a
     different tag or note."""
-    from tools.link_shelf import link_save, link_list
+    from tools.link_shelf import link_list, link_save
 
     first = await link_save.handler({
         "url": "https://example.com/same",
@@ -255,7 +255,6 @@ async def test_like_fallback_escapes_sql_wildcards(no_network, monkeypatch):
     """Bug #1: LIKE fallback used to interpret `%` and `_` in user input
     as SQL wildcards, so a query of `"50%"` matched every row. After the
     fix the user query is escaped and the LIKE clauses use ESCAPE."""
-    import sqlite3
 
     from tools.link_shelf import db as shelf_db
     from tools.link_shelf import link_save, link_search
@@ -271,8 +270,6 @@ async def test_like_fallback_escapes_sql_wildcards(no_network, monkeypatch):
     # The real fallback only fires on OperationalError; we simulate it
     # so the LIKE escape logic is actually exercised regardless of FTS5
     # being lenient or strict about the input phrase.
-    real_search = shelf_db.search
-
     def _forced_like_search(*, query, kind=None, limit=10):
         # Re-implement just enough of the LIKE branch to verify escaping.
         with shelf_db._conn() as c:
@@ -392,7 +389,6 @@ async def test_delete_respects_archived_filter(no_network):
     and get() respected it. Fix: delete() now also requires archived=0.
     Regression: archive a row, then delete() should refuse it."""
     from storage.db import _conn
-
     from tools.link_shelf import db as shelf_db
     from tools.link_shelf import link_delete, link_save
 

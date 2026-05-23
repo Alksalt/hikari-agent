@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -49,7 +49,7 @@ async def test_request_approved(gatekeeper):
     # Trigger schema before writing.
     db.upsert_core_block("ping", "pong")
 
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+    deadline = datetime.now(UTC) + timedelta(seconds=30)
 
     async def _resolve_soon():
         await asyncio.sleep(0.05)
@@ -84,7 +84,7 @@ async def test_request_rejected(gatekeeper):
     gatekeeper.set_send_text(AsyncMock())
     db.upsert_core_block("ping", "pong")
 
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+    deadline = datetime.now(UTC) + timedelta(seconds=30)
 
     async def _reject_soon():
         await asyncio.sleep(0.05)
@@ -116,7 +116,7 @@ async def test_request_expires_on_deadline(gatekeeper):
     db.upsert_core_block("ping", "pong")
 
     # Very short deadline.
-    deadline = datetime.now(timezone.utc) + timedelta(milliseconds=50)
+    deadline = datetime.now(UTC) + timedelta(milliseconds=50)
     outcome = await gatekeeper.request(
         tool_use_id="tu_expire_001",
         tool_name="some_tool",
@@ -142,7 +142,7 @@ async def test_request_idempotent_same_use_id(gatekeeper):
     gatekeeper.set_send_text(AsyncMock())
     db.upsert_core_block("ping", "pong")
 
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+    deadline = datetime.now(UTC) + timedelta(seconds=30)
 
     async def _approve():
         await asyncio.sleep(0.05)
@@ -264,7 +264,6 @@ async def test_timeout_does_not_overwrite_concurrent_approve(gatekeeper):
     )
 
     # Manually inject a _Pending with outcome already set to 'approved'.
-    import asyncio as _asyncio
     pending = _Pending(
         aid=aid,
         chat_id=12345,
@@ -300,7 +299,7 @@ async def test_gatekeeper_approve_writes_audit_row(gatekeeper):
     gatekeeper.set_send_text(AsyncMock())
     db.upsert_core_block("ping", "pong")
 
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+    deadline = datetime.now(UTC) + timedelta(seconds=30)
 
     async def _approve():
         await asyncio.sleep(0.05)

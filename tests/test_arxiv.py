@@ -1,10 +1,14 @@
 """Phase 10: arxiv ML/DL paper search."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch):
@@ -21,9 +25,11 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_arxiv_search_mocked(monkeypatch):
-    import arxiv
-    from tools.arxiv_search import arxiv_search
     from types import SimpleNamespace
+
+    import arxiv
+
+    from tools.arxiv_search import arxiv_search
     fake_papers = [
         SimpleNamespace(
             title="Attention Is All You Need 2",

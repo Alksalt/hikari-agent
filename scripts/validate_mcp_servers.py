@@ -8,6 +8,7 @@ Run from CI:
     uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts
 """
 from __future__ import annotations
+
 import argparse
 import asyncio
 import json

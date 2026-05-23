@@ -1,10 +1,14 @@
 """Phase 10: multi-source weather forecast merge."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
-from storage import db
+
 from agents import config
+from storage import db
+
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path: Path, monkeypatch):
@@ -35,14 +39,16 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a): return False
     async def get(self, url, **kwargs):
         for prefix, resp in self.responses.items():
-            if url.startswith(prefix): return resp
+            if url.startswith(prefix):
+                return resp
         raise Exception(f"no mock for {url}")
 
 
 @pytest.mark.asyncio
 async def test_fetch_forecast_merges_two_sources(monkeypatch):
-    from tools import weather
     import httpx
+
+    from tools import weather
     client = _FakeAsyncClient()
     client.responses["https://api.open-meteo.com"] = _FakeResponse(200, {
         "daily": {
@@ -70,8 +76,9 @@ async def test_fetch_forecast_merges_two_sources(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_forecast_partial_failure_still_returns(monkeypatch):
-    from tools import weather
     import httpx
+
+    from tools import weather
     client = _FakeAsyncClient()
     client.responses["https://api.open-meteo.com"] = _FakeResponse(200, {
         "daily": {"time": ["2026-05-19"], "temperature_2m_max": [18.0],

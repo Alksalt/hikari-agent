@@ -31,7 +31,8 @@ payload:
   filename: {filename}
   folder: {folder}
   h1: {h1}
-example shape: "new wiki page just landed — '{filename}'. want me to read it back at you in 3 sentences?"
+example shape: "new wiki page just landed — '{filename}'.
+want me to read it back at you in 3 sentences?"
 """,
 
     "gmail_unread_threshold": """\

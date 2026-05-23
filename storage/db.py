@@ -334,7 +334,8 @@ CREATE TABLE IF NOT EXISTS weekly_consolidations_archive (
     episode_count INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week ON weekly_consolidations_archive(week_ending);
+CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week
+    ON weekly_consolidations_archive(week_ending);
 
 -- Phase 11: per-session scratch memory shared by subagents (recall + wiki etc.).
 -- Hindsight pattern (May 2026). 24h TTL enforced by scratch_cleanup_old (daily
@@ -726,7 +727,9 @@ def _migrate_proactive_events(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX idx_proactive_events_sent_at ON proactive_events(sent_at)")
-    conn.execute("CREATE INDEX idx_proactive_events_source_sent ON proactive_events(source, sent_at)")
+    conn.execute(
+        "CREATE INDEX idx_proactive_events_source_sent ON proactive_events(source, sent_at)"
+    )
     # Sprint 2's reaction-handler joins on telegram_message_id; partial index
     # keeps it small (NULL rows excluded) and avoids a full table scan.
     conn.execute(
@@ -2397,7 +2400,10 @@ def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
         cur = c.execute(
             "INSERT INTO proactive_events (sent_at, source, pattern, payload_json, "
             "telegram_message_id, chat_id, status, dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (_now(), source, pattern, payload_json, telegram_message_id, chat_id, status, dedup_key),
+            (
+                _now(), source, pattern, payload_json,
+                telegram_message_id, chat_id, status, dedup_key,
+            ),
         )
     return int(cur.lastrowid or 0)
 

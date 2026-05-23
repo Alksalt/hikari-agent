@@ -26,7 +26,9 @@ async def test_compose_email_returns_voice_text(monkeypatch):
     mock = AsyncMock(return_value="three actual emails. 28 promos. want me to nuke them?")
     monkeypatch.setattr(daily_checkin, "run_visible_proactive", mock)
     data = {
-        "unread_personal": [{"id": "1", "from": "mom@x.com", "subject": "call me", "snippet": "..."}],
+        "unread_personal": [
+            {"id": "1", "from": "mom@x.com", "subject": "call me", "snippet": "..."},
+        ],
         "calendar_invites": [],
         "deletable": {"count": 28, "top_senders": ["linkedin.com"], "sample_ids": ["a", "b"]},
     }

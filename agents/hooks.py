@@ -190,7 +190,8 @@ def _format_core_blocks() -> str:
             pass
         lines.append(f"## {label}")
         lines.append(
-            f'<remembered name="core_block:{label}">{escape_remembered_tags(raw_content)}</remembered>'
+            f'<remembered name="core_block:{label}">'
+            f"{escape_remembered_tags(raw_content)}</remembered>"
         )
         lines.append("")
     if len(lines) == 1:
@@ -365,7 +366,8 @@ def _format_observations() -> str:
             )
             continue
         lines.append(
-            f'- <remembered name="observation" kind="{escape_remembered_tags(raw_kind)}">{escape_remembered_tags(raw_summary)}</remembered>'
+            f'- <remembered name="observation" kind="{escape_remembered_tags(raw_kind)}">'
+            f"{escape_remembered_tags(raw_summary)}</remembered>"
         )
         try:
             ids.append(int(r["id"]))
@@ -513,7 +515,10 @@ class _Block:
     text: str
 
 
-_ALWAYS_ON = frozenset({"now", "working_memory", "gap_since_last", "core_blocks", "peer_representation", "open_tasks", "tools_available"})
+_ALWAYS_ON = frozenset({
+    "now", "working_memory", "gap_since_last", "core_blocks",
+    "peer_representation", "open_tasks", "tools_available",
+})
 
 
 def _block_enabled(key: str) -> bool:

@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import importlib
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -46,7 +46,10 @@ def test_writes_markdown_at_expected_path(_isolated):
         today=today, drift_avg=None, drift_below=0,
     )
     assert target is not None
-    expected = vault / "projects" / "hikari-agent" / "morning_dispatch" / f"morning_dispatch_{today.isoformat()}.md"
+    expected = (
+        vault / "projects" / "hikari-agent" / "morning_dispatch"
+        / f"morning_dispatch_{today.isoformat()}.md"
+    )
     assert target == expected
     assert expected.exists()
     body = expected.read_text(encoding="utf-8")

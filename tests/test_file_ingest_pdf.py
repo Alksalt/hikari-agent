@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 from agents.telegram_bridge import _build_ingest_block
 
 
@@ -32,6 +30,7 @@ def test_pdf_inline_block_shape(tmp_path):
 def test_mz_guard_exists_in_source():
     """The MZ-prefix guard is a string in handle_document source — verify it's present."""
     import inspect
+
     from agents import telegram_bridge
     src = inspect.getsource(telegram_bridge.handle_document)
     assert "MZ" in src, "Magic-byte guard for MZ (PE executable) missing from handle_document"

@@ -28,7 +28,7 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 @pytest.fixture()
 def registry():
-    from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+    from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
     return _load_yaml(DEFAULT_YAML_PATH)
 
 

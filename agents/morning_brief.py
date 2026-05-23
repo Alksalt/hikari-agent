@@ -109,7 +109,9 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
             t = w.get("temp_c")
             cond = wmo_label(w.get("weather_code")) if w.get("weather_code") is not None else ""
             precip = w.get("precip_prob_pct")
-            return f"  {name}: {t}°C{' ' + cond if cond else ''}{' rain ' + str(precip) + '%' if precip else ''}"
+            cond_part = f" {cond}" if cond else ""
+            precip_part = f" rain {precip}%" if precip else ""
+            return f"  {name}: {t}°C{cond_part}{precip_part}"
         window_text = (
             "\n  windows:\n"
             + _win(morning, "morning") + "\n"

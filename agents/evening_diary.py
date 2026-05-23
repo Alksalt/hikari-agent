@@ -166,7 +166,9 @@ def build_prompt(data: dict[str, Any]) -> str:
         reminder_bullets = "\n".join(
             f"  - {r.get('text', '')}" for r in reminders_fired
         )
-        reminders_block = f"reminders that fired today ({len(reminders_fired)}):\n{reminder_bullets}"
+        reminders_block = (
+            f"reminders that fired today ({len(reminders_fired)}):\n{reminder_bullets}"
+        )
     else:
         reminders_block = "reminders that fired today: (none)"
 

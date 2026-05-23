@@ -17,7 +17,6 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -61,13 +60,6 @@ async def test_send_text_returns_filtered_text_and_message_id(monkeypatch, tmp_p
         post_filter_mod,
         "filter_outgoing",
         lambda text: _make_filter_result("FILTERED_TEXT" if text == "DRAFT_TEXT" else text),
-    )
-
-    # Build a fake bot that returns a message with message_id=42
-    fake_message = SimpleNamespace(message_id=42)
-    fake_bot = SimpleNamespace(
-        send_message=AsyncMock(return_value=fake_message),
-        send_chat_action=AsyncMock(),
     )
 
     # Verify _unpack_send_result handles the (filtered_text, message_id, ok) tuple:

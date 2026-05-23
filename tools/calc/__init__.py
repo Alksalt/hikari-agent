@@ -8,7 +8,9 @@ Shared defensive constants live in ``_shared.py``.
 """
 from __future__ import annotations
 
-from tools.calc._shared import _run_asteval  # noqa: F401 — internal helper, re-exported for direct test access
+from tools.calc._shared import (
+    _run_asteval,  # noqa: F401 — internal helper, re-exported for direct test access
+)
 from tools.calc.calc import calc
 from tools.calc.python_run import python_run
 

@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from agents import config, scheduler as scheduler_mod
+from agents import config
+from agents import scheduler as scheduler_mod
 from storage import db
 
 

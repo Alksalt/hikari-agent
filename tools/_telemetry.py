@@ -4,8 +4,9 @@ to the tool_calls table on every invocation."""
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from storage import db
 

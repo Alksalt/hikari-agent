@@ -18,7 +18,6 @@ import yaml
 
 from storage import db
 
-from . import cadence
 from . import config as cfg
 from .hooks import _resolve_local_tz_name
 from .proactive_gate import reserve_and_send

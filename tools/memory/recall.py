@@ -110,7 +110,10 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
 
         b_label, _ = _score_to_bucket(score)
         lines.append(f"  [graph score={score:.2f} conf={b_label}]{time_note} {fact_text}")
-        hit_data.append({"fact": fact_text, "score": score, "valid_at": str(valid_at), "invalid_at": str(invalid_at)})
+        hit_data.append({
+            "fact": fact_text, "score": score,
+            "valid_at": str(valid_at), "invalid_at": str(invalid_at),
+        })
 
     if below:
         lines.append(
@@ -154,7 +157,12 @@ async def _legacy_fallback(query: str, limit: int, threshold: float) -> dict[str
     confidence = float(top.relevance) * hit_factor
     below = confidence < threshold
     bucket = "low" if confidence < 0.4 else "medium" if confidence < 0.7 else "high"
-    prefix = "HIGH_CONFIDENCE" if bucket == "high" else "MEDIUM_CONFIDENCE" if bucket == "medium" else "LOW_CONFIDENCE"
+    if bucket == "high":
+        prefix = "HIGH_CONFIDENCE"
+    elif bucket == "medium":
+        prefix = "MEDIUM_CONFIDENCE"
+    else:
+        prefix = "LOW_CONFIDENCE"
     header = (
         f"{prefix}: {confidence:.2f} ({bucket}"
         f"{'; BELOW THRESHOLD' if below else ''}). "

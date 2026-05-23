@@ -30,7 +30,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agents import cadence, config as cfg
+from agents import cadence
+from agents import config as cfg
 from agents.runtime import looks_like_sdk_error, run_internal_control
 from storage import db
 
@@ -569,6 +570,7 @@ async def run_future_letter(
     # Deliver. Preamble is a single Hikari-voice line so the user knows what's
     # arriving without breaking the letter's first-person frame.
     import json
+
     from agents.proactive_gate import reserve_and_send
 
     chunk_chars = int(cfg.get("future_letter.telegram_chunk_chars", 3800))

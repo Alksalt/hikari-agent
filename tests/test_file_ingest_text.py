@@ -1,8 +1,6 @@
 """Tests for _build_ingest_block — plain text / csv / md branch."""
 from __future__ import annotations
 
-import pytest
-
 from agents.telegram_bridge import _build_ingest_block
 
 

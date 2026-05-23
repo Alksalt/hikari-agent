@@ -11,7 +11,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
-from tools.dispatch._shared import _do_dispatch, WORK_DIR_ROOT
+from tools.dispatch._shared import WORK_DIR_ROOT, _do_dispatch
 
 
 @tool(

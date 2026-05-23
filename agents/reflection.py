@@ -1028,7 +1028,8 @@ async def _consolidate_yesterday() -> dict[str, int]:
 # 200-word "what i noticed about him this week" doc, and parks it in
 # core_blocks so it flows into every system-prompt build for the next week.
 WEEKLY_WINDOW_DAYS = cfg.get("reflection.weekly_window_days") or 7
-WEEKLY_SUMMARY_WORD_CAP = cfg.get("reflection.weekly_summary_word_cap") or 220  # ~200 target + small overrun tolerance
+# ~200 target + small overrun tolerance
+WEEKLY_SUMMARY_WORD_CAP = cfg.get("reflection.weekly_summary_word_cap") or 220
 
 
 def _read_week_window() -> dict[str, list[dict]]:
