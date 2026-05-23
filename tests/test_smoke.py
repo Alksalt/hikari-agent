@@ -171,6 +171,8 @@ def test_scheduler_builds(monkeypatch):
         "engagement_tick",
         # Phase H: MCP warm-pool eviction (every 30s).
         "mcp_warm_pool_evict",
+        # Phase 5D: Graphiti outbox drain (every 30s, when GRAPHITI_ENABLED != 'false').
+        "graph_outbox_drain",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

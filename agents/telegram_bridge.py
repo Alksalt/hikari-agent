@@ -1398,7 +1398,18 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception:
         logger.exception("memory_diff: graph search failed")
 
-    lines = [f"/memory_diff: {query}", "", "SQLite (current):"]
+    try:
+        outbox_stats = db.graph_outbox_stats()
+        header = (
+            f"outbox: pending={outbox_stats['pending']} "
+            f"sent={outbox_stats['sent']} "
+            f"failed={outbox_stats['failed']} "
+            f"skipped={outbox_stats['skipped']}"
+        )
+    except Exception:
+        header = "outbox: stats unavailable"
+
+    lines = [f"/memory_diff: {query}", "", header, "", "SQLite (current):"]
     for h in sqlite_hits[:5]:
         lines.append(f"- {str(h)[:120]}")
     if not sqlite_hits:

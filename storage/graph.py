@@ -121,6 +121,11 @@ async def add_episode_safe(
     from datetime import datetime
     if reference_time is None:
         reference_time = datetime.now(UTC)
+    elif isinstance(reference_time, str):
+        try:
+            reference_time = datetime.fromisoformat(reference_time)
+        except ValueError:
+            reference_time = datetime.now(UTC)
     try:
         g = await get_graph()
         await g.add_episode(
@@ -140,26 +145,78 @@ async def add_episode_safe(
 def schedule_episode(
     name: str,
     episode_body: str,
+    source_id: int,
     *,
     source_description: str = "",
-    group_id: str = "hikari_chat",
-) -> bool:
-    """Fire-and-forget schedule of add_episode_safe. Safe to call from sync
-    contexts: if no event loop is running, silently no-ops (logged). Returns
-    True if a task was scheduled."""
+) -> int | None:
+    """Write an outbox row for this episode. Returns outbox row id or None on dedup.
+
+    Replaces the old fire-and-forget pattern: instead of scheduling an async
+    task, we insert a pending row into graph_outbox (same SQLite DB). The
+    scheduler's process_outbox worker picks it up every 30s and calls Graphiti.
+    source_id is required — it is the facts.id that owns this episode.
+    """
+    import json as _json
+    from datetime import UTC, datetime
+
+    from storage import db
+
+    payload = {
+        "v": 1,
+        "name": name,
+        "episode_body": episode_body,
+        "source": "text",
+        "source_description": source_description or "fact",
+        "group_id": "hikari_chat",
+        "reference_time": datetime.now(UTC).isoformat(),
+    }
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        logger.debug("schedule_episode: no running loop (sync caller %s); skipping", name)
-        return False
-    loop.create_task(add_episode_safe(
-        name=name,
-        episode_body=episode_body,
-        source=EpisodeType.text,
-        source_description=source_description,
-        group_id=group_id,
-    ))
-    return True
+        return db.graph_outbox_insert("facts", source_id, _json.dumps(payload))
+    except Exception:
+        logger.debug("schedule_episode: outbox insert failed (non-fatal)", exc_info=True)
+        return None
+
+
+async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:
+    """Drain pending outbox rows by calling Graphiti's add_episode.
+
+    Returns {"polled": N, "sent": s, "failed": f, "skipped": 0}.
+    Never raises — Graphiti failures mark rows failed and continue.
+    """
+    import json as _json
+
+    from storage import db
+
+    rows = db.graph_outbox_pending(limit=limit)
+    rows = rows[:max_per_call]
+    out = {"polled": len(rows), "sent": 0, "failed": 0, "skipped": 0}
+    if not rows:
+        return out
+    for row in rows:
+        try:
+            payload = _json.loads(row["payload_json"])
+        except (ValueError, TypeError) as e:
+            db.graph_outbox_mark_failed(row["id"], f"payload_json invalid: {e}")
+            out["failed"] += 1
+            continue
+        try:
+            ok = await add_episode_safe(
+                name=payload.get("name", f"fact_{row['source_id']}"),
+                episode_body=payload.get("episode_body", ""),
+                source_description=payload.get("source_description", "fact"),
+                reference_time=payload.get("reference_time"),
+            )
+        except Exception as e:
+            db.graph_outbox_mark_failed(row["id"], f"add_episode_safe raised: {e}")
+            out["failed"] += 1
+            continue
+        if ok:
+            db.graph_outbox_mark_sent(row["id"])
+            out["sent"] += 1
+        else:
+            db.graph_outbox_mark_failed(row["id"], "add_episode_safe returned False")
+            out["failed"] += 1
+    return out
 
 
 async def search(query: str, *, group_id: str = "hikari_chat", num_results: int = 8) -> list:

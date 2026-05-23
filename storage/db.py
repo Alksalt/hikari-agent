@@ -614,6 +614,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_calendar_notifications(conn)
     _migrate_entities_and_provenance(conn)
     _migrate_messages_fts(conn)
+    _migrate_graph_outbox(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -1218,15 +1219,18 @@ def insert_fact(
             "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'fact', ?)",
             (f"{subject} {predicate} {object_}", fact_id),
         )
-    try:
-        from storage.graph import schedule_episode
-        schedule_episode(
-            name=f"fact_{fact_id}",
-            episode_body=f"{subject} {predicate} {object_}",
-            source_description=f"attribution={attribution or 'unknown'}",
-        )
-    except Exception:
-        logger.debug("insert_fact: dual-write scheduling failed (non-fatal)", exc_info=True)
+        # Build outbox payload and insert in the same transaction as the fact.
+        import json as _json
+        _payload = {
+            "v": 1,
+            "name": f"fact_{fact_id}",
+            "episode_body": f"{subject} {predicate} {object_}",
+            "source": "text",
+            "source_description": f"fact ({attribution or 'unknown'})",
+            "group_id": "hikari_chat",
+            "reference_time": datetime.now(UTC).isoformat(),
+        }
+        graph_outbox_insert("facts", fact_id, _json.dumps(_payload), conn=c)
     return fact_id
 
 
@@ -3128,8 +3132,8 @@ def ids_without_embedding(table: str) -> list[int]:
 # ---------- bulk helpers (for migration) ----------
 
 def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
+    import json as _json
     n = 0
-    inserted: list[tuple[int, str, str, str]] = []
     with _conn() as c:
         for r in rows:
             cur = c.execute(
@@ -3148,17 +3152,18 @@ def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
                 "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'fact', ?)",
                 (f"{r['subject']} {r['predicate']} {r['object']}", fid),
             )
-            inserted.append((fid, r["subject"], r["predicate"], r["object"]))
+            # Write outbox row in the same transaction.
+            _payload = {
+                "v": 1,
+                "name": f"fact_{fid}",
+                "episode_body": f"{r['subject']} {r['predicate']} {r['object']}",
+                "source": "text",
+                "source_description": "fact (unknown)",
+                "group_id": "hikari_chat",
+                "reference_time": datetime.now(UTC).isoformat(),
+            }
+            graph_outbox_insert("facts", fid, _json.dumps(_payload), conn=c)
             n += 1
-    try:
-        from storage.graph import schedule_episode
-        for fid, subj, pred, obj in inserted:
-            schedule_episode(
-                name=f"fact_{fid}",
-                episode_body=f"{subj} {pred} {obj}",
-            )
-    except Exception:
-        logger.debug("bulk_insert_facts: dual-write scheduling failed (non-fatal)", exc_info=True)
     return n
 
 
@@ -3859,6 +3864,109 @@ def messages_fts_search(
     except sqlite3.OperationalError:
         logger.debug("messages_fts_search: FTS5 query error for %r", query)
         return []
+
+
+def _migrate_graph_outbox(conn: sqlite3.Connection) -> None:
+    """5D: durable Graphiti outbox table.
+
+    All facts write a pending row here in the same transaction as the fact
+    INSERT. The scheduler's process_outbox worker drains the queue by calling
+    Graphiti's add_episode, marking rows 'sent' on success and 'failed' after 5
+    attempts. Idempotent — returns immediately if table already exists.
+    Per MEMORY.md schema-migration-ordering rule: indexes live inside migration fn.
+    """
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='graph_outbox'"
+    ).fetchall()}
+    if "graph_outbox" in existing:
+        return
+    conn.execute("""
+        CREATE TABLE graph_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_table TEXT NOT NULL,
+            source_id INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','sent','failed','skipped')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            processed_at INTEGER
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX idx_graph_outbox_status_created "
+        "ON graph_outbox(status, created_at)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_graph_outbox_source "
+        "ON graph_outbox(source_table, source_id)"
+    )
+
+
+def graph_outbox_insert(source_table: str, source_id: int, payload_json: str,
+                        conn=None) -> int | None:
+    """Insert pending outbox row. Returns row id, or None on unique conflict (dedup).
+
+    If conn is provided, uses it (caller's transaction). Otherwise opens fresh _conn().
+    """
+    sql = ("INSERT OR IGNORE INTO graph_outbox "
+           "(source_table, source_id, payload_json, created_at) "
+           "VALUES (?, ?, ?, strftime('%s','now'))")
+    if conn is not None:
+        cur = conn.execute(sql, (source_table, int(source_id), payload_json))
+        return cur.lastrowid if cur.rowcount else None
+    with _conn() as c:
+        cur = c.execute(sql, (source_table, int(source_id), payload_json))
+        return cur.lastrowid if cur.rowcount else None
+
+
+def graph_outbox_pending(limit: int = 50) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM graph_outbox WHERE status='pending' "
+            "ORDER BY created_at ASC, id ASC LIMIT ?", (int(limit),)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def graph_outbox_mark_sent(row_id: int, processed_at_epoch: int | None = None) -> None:
+    with _conn() as c:
+        if processed_at_epoch is not None:
+            c.execute(
+                "UPDATE graph_outbox SET status='sent', processed_at=? WHERE id=?",
+                (int(processed_at_epoch), int(row_id))
+            )
+        else:
+            c.execute(
+                "UPDATE graph_outbox SET status='sent', "
+                "processed_at=CAST(strftime('%s','now') AS INTEGER) WHERE id=?",
+                (int(row_id),)
+            )
+
+
+def graph_outbox_mark_failed(row_id: int, error: str) -> None:
+    """Increment attempts; flip to status='failed' if attempts+1 >= 5."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE graph_outbox SET "
+            "attempts = attempts + 1, "
+            "last_error = ?, "
+            "status = CASE WHEN attempts + 1 >= 5 THEN 'failed' ELSE status END "
+            "WHERE id = ?",
+            (str(error)[:500], int(row_id))
+        )
+
+
+def graph_outbox_stats() -> dict:
+    """Return counts by status, zero-filling missing statuses."""
+    stats = {"pending": 0, "sent": 0, "failed": 0, "skipped": 0}
+    with _conn() as c:
+        for row in c.execute(
+            "SELECT status, COUNT(*) AS n FROM graph_outbox GROUP BY status"
+        ).fetchall():
+            stats[row["status"]] = row["n"]
+    return stats
 
 
 def fact_by_id(fact_id: int) -> dict[str, Any] | None:

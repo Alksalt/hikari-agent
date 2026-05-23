@@ -359,6 +359,27 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=30,
     )
 
+    # Phase 5D: Graphiti outbox drain — runs every 30s if GRAPHITI_ENABLED != 'false'.
+    import os as _os
+    graphiti_enabled = _os.environ.get("GRAPHITI_ENABLED", "true").strip().lower() != "false"
+    if graphiti_enabled:
+        from storage.graph import process_outbox
+
+        async def _graph_outbox_drain_job():
+            try:
+                stats = await process_outbox(limit=50, max_per_call=10)
+                if stats.get("sent") or stats.get("failed"):
+                    logger.info("graph_outbox_drain: %s", stats)
+            except Exception:
+                logger.exception("graph_outbox_drain: unexpected failure")
+
+        scheduler.add_job(
+            _graph_outbox_drain_job,
+            IntervalTrigger(seconds=30),
+            id="graph_outbox_drain",
+            coalesce=True, max_instances=1, misfire_grace_time=60,
+        )
+
     return scheduler
 
 

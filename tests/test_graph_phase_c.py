@@ -154,13 +154,20 @@ async def test_remember_dual_writes_to_graph(tmp_path: Path, monkeypatch):
             "confidence": 0.9,
             "on_conflict": "coexist",
         })
-        # Let the background task run.
-        await asyncio.sleep(0.15)
 
     assert result.get("ok") or "fact_id" in str(result)
-    mock_g.add_episode.assert_called()
-    call_body = str(mock_g.add_episode.call_args)
-    assert "user" in call_body and "coffee" in call_body
+    # Phase 5D: dual-write now goes via the outbox (pending row in graph_outbox)
+    # rather than a fire-and-forget async task. Verify the outbox got a row.
+    import importlib as _importlib
+
+    from storage import db as _db  # noqa: F401
+
+    # Re-import the reloaded module to pick up the tmp_path DB.
+    _db_mod = _importlib.import_module("storage.db")
+    pending = _db_mod.graph_outbox_pending()
+    assert len(pending) >= 1, "insert_fact must write a pending outbox row"
+    bodies = [row["payload_json"] for row in pending]
+    assert any("coffee" in b for b in bodies), "outbox payload must contain 'coffee'"
 
 
 # ---------------------------------------------------------------------------
