@@ -368,21 +368,6 @@ CREATE TABLE IF NOT EXISTS photo_locations (
 );
 CREATE INDEX IF NOT EXISTS idx_photo_locations_received ON photo_locations(received_at);
 
--- T8.2: voice_critic Haiku verdicts on outbound drafts (Silicon Mirror
--- Generator-Critic pattern, arxiv 2604.00478). One row per outbound message.
--- final_text reflects what was actually shipped (after possible rewrite).
-CREATE TABLE IF NOT EXISTS voice_critic_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    draft TEXT NOT NULL,
-    verdict TEXT NOT NULL,
-    reason TEXT,
-    rewritten BOOLEAN NOT NULL DEFAULT 0,
-    final_text TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_voice_critic_log_created
-    ON voice_critic_log(created_at DESC);
-
 -- Phase 14: OAuth 2.1 + PKCE + DCR for the external MCP server. Tables are
 -- brand-new (no ALTER ADD COLUMN), so indexes live in _SCHEMA directly — the
 -- "indexes in migration fn" rule only applies to ALTER-added columns.

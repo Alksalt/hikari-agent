@@ -158,10 +158,4 @@ def record_user_anchored_sent(source: str) -> int:
     return _append_now(Pool.USER_ANCHORED)
 
 
-# ---------- legacy 7d count (compat) ----------
-
-def proactive_count_last_7d() -> int:
-    """Legacy helper — returns count for the agent_spontaneous pool only."""
-    return _count_last_7d(Pool.AGENT_SPONTANEOUS)
-
 

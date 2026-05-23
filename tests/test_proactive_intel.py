@@ -86,13 +86,13 @@ def test_affect_inject_block_renders_when_fresh():
 # ---------- cadence governor ----------
 
 def test_cadence_count_starts_zero():
-    assert cadence.proactive_count_last_7d() == 0
+    assert cadence._count_last_7d(cadence.Pool.AGENT_SPONTANEOUS) == 0
 
 
 def test_cadence_record_appends_and_caps_window():
     cadence.record_spontaneous_sent("open_loop")
     cadence.record_spontaneous_sent("open_loop")
-    assert cadence.proactive_count_last_7d() == 2
+    assert cadence._count_last_7d(cadence.Pool.AGENT_SPONTANEOUS) == 2
 
 
 def test_cadence_prunes_old_entries_outside_window():
@@ -100,7 +100,7 @@ def test_cadence_prunes_old_entries_outside_window():
     old_iso = (datetime.now(UTC) - timedelta(days=14)).isoformat()
     fresh_iso = datetime.now(UTC).isoformat()
     db.runtime_set("proactive_log_v1", json.dumps([old_iso, fresh_iso]))
-    assert cadence.proactive_count_last_7d() == 1  # old one dropped
+    assert cadence._count_last_7d(cadence.Pool.AGENT_SPONTANEOUS) == 1  # old one dropped
 
 
 def test_cadence_governor_blocks_at_cap(monkeypatch, tmp_path):

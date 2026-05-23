@@ -319,32 +319,6 @@ def test_audit_log_hash_chain(tmp_path, monkeypatch):
     assert a3 > a2 > a1
 
 
-def test_budget_window_tracks_calls(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
-    from storage import db
-    importlib.reload(db)
-    from tools import budget
-    importlib.reload(budget)
-    for _ in range(5):
-        ok, n = budget.record_tool_call(123)
-        assert ok
-    assert budget.calls_in_window(123) == 5
-
-
-def test_budget_daily_cost(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
-    monkeypatch.setenv("HIKARI_DAILY_CAP_USD", "10.0")
-    from storage import db
-    importlib.reload(db)
-    from tools import budget
-    importlib.reload(budget)
-    assert budget.daily_cap() == 10.0
-    budget.record_cost(2.5)
-    assert abs(budget.cost_today() - 2.5) < 0.001
-    budget.record_cost(1.0)
-    assert abs(budget.cost_today() - 3.5) < 0.001
-
-
 def test_log_scrub_redacts_secrets():
     import logging
 

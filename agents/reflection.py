@@ -519,6 +519,14 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("morning_dispatch write failed (non-fatal)")
 
+    # Phase 14: sweep expired OAuth codes/tokens (non-blocking).
+    try:
+        oauth_removed = db.oauth_cleanup_expired()
+        if oauth_removed:
+            logger.info("oauth_cleanup_expired: removed %d rows", oauth_removed)
+    except Exception:
+        logger.exception("oauth_cleanup_expired failed (non-blocking)")
+
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
