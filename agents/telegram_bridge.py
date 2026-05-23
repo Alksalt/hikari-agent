@@ -1412,6 +1412,214 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await message.reply_text("\n".join(lines))
 
 
+async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/memory subcommand suite.
+
+    Subcommands:
+      recent [N=10]        — most recently recorded facts
+      search <query>       — FTS over facts text
+      fact <id>            — full fact + provenance + linked entities
+      forget <id>          — invalidate a fact (soft delete)
+      correct <id> <new>   — invalidate + insert replacement
+      tasks                — alias for /tasks
+      session <query>      — search message history (FTS5)
+      why <id>             — provenance: source message, attribution, when
+      debug <query>        — SQLite vs Graphiti diff (operator only)
+    """
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+
+    # ---- /memory (no args) → usage ----
+    if not sub:
+        await message.reply_text(
+            "/memory: recent [N] | search <q> | fact <id> | forget <id> | "
+            "correct <id> <new> | tasks | session <q> | why <id> | debug <q>"
+        )
+        return
+
+    # ---- recent ----
+    if sub == "recent":
+        try:
+            n = int(args[1]) if len(args) > 1 else 10
+        except ValueError:
+            n = 10
+        facts = db.active_facts(limit=max(1, min(50, n)))
+        if not facts:
+            await message.reply_text("no facts yet.")
+            return
+        lines = [f"recent {len(facts)} facts:"]
+        for f in facts:
+            obj_short = f['object'][:80]
+            lines.append(f"  #{f['id']}: {f['predicate']} — {obj_short}  [{f['valid_from'][:10]}]")
+        text = "\n".join(lines)
+        await message.reply_text(text[:3900])
+        return
+
+    # ---- search ----
+    if sub == "search":
+        q = " ".join(args[1:]).strip()
+        if not q:
+            await message.reply_text("usage: /memory search <query>")
+            return
+        hits = db.facts_text_search(q, limit=10)
+        if not hits:
+            await message.reply_text(f"no fact matches for {q!r}.")
+            return
+        lines = [f"{len(hits)} matches for {q!r}:"]
+        for f in hits:
+            lines.append(f"  #{f['id']}: {f['predicate']} — {f['object'][:80]}")
+        await message.reply_text("\n".join(lines)[:3900])
+        return
+
+    # ---- fact ----
+    if sub == "fact":
+        if len(args) < 2:
+            await message.reply_text("usage: /memory fact <id>")
+            return
+        try:
+            fid = int(args[1])
+        except ValueError:
+            await message.reply_text("id must be an integer.")
+            return
+        fact = db.fact_by_id(fid)
+        if not fact:
+            await message.reply_text(f"fact {fid}: not found.")
+            return
+        prov = db.fact_provenance(fid)
+        with db._conn() as c:
+            entity_rows = c.execute(
+                "SELECT e.kind, e.canonical_name FROM entities e "
+                "JOIN fact_entities fe ON fe.entity_id = e.id "
+                "WHERE fe.fact_id = ?", (fid,)
+            ).fetchall()
+        lines = [
+            f"fact #{fid}",
+            f"  subject:   {fact['subject']}",
+            f"  predicate: {fact['predicate']}",
+            f"  object:    {fact['object']}",
+            f"  status:    {fact.get('status', 'active')}",
+            f"  valid_from: {fact.get('valid_from', '')}",
+        ]
+        if fact.get("valid_to"):
+            lines.append(f"  valid_to:  {fact['valid_to']}")
+        if fact.get("attribution"):
+            lines.append(f"  attribution: {fact['attribution']}")
+        if fact.get("confidence") is not None:
+            lines.append(f"  confidence: {fact['confidence']}")
+        if prov and prov.get("source_message_id"):
+            _ts = prov.get('ts') or ''
+            lines.append(f"  source_msg: #{prov['source_message_id']} @ {_ts[:19]}")
+        if entity_rows:
+            ent_str = ", ".join(f"{r['kind']}:{r['canonical_name']}" for r in entity_rows)
+            lines.append(f"  entities: {ent_str}")
+        await message.reply_text("\n".join(lines)[:3900])
+        return
+
+    # ---- forget ----
+    if sub == "forget":
+        if len(args) < 2:
+            await message.reply_text("usage: /memory forget <id>")
+            return
+        try:
+            fid = int(args[1])
+        except ValueError:
+            await message.reply_text("id must be an integer.")
+            return
+        from tools.memory.forget_fact import forget_fact
+        ok = forget_fact(fid)
+        if ok:
+            await message.reply_text(f"forgot {fid}.")
+        else:
+            await message.reply_text(f"fact {fid}: not found.")
+        return
+
+    # ---- correct ----
+    if sub == "correct":
+        if len(args) < 3:
+            await message.reply_text("usage: /memory correct <id> <new object>")
+            return
+        try:
+            fid = int(args[1])
+        except ValueError:
+            await message.reply_text("id must be an integer.")
+            return
+        new_obj = " ".join(args[2:]).strip()
+        from tools.memory.correct_fact import correct_fact
+        try:
+            new_id = correct_fact(fid, new_obj)
+        except ValueError as exc:
+            await message.reply_text(str(exc))
+            return
+        await message.reply_text(f"corrected {fid} → new fact #{new_id}.")
+        return
+
+    # ---- tasks ----
+    if sub == "tasks":
+        await cmd_tasks(update, context)
+        return
+
+    # ---- session ----
+    if sub == "session":
+        q = " ".join(args[1:]).strip()
+        if not q:
+            await message.reply_text("usage: /memory session <query>")
+            return
+        rows = db.messages_fts_search(q, limit=10)
+        if not rows:
+            await message.reply_text(f"no message matches for {q!r}.")
+            return
+        lines = [f"{len(rows)} message matches for {q!r}:"]
+        for r in rows:
+            snippet = (r["content"] or "")[:100].replace("\n", " ")
+            lines.append(f"  [{r['role']} #{r['id']} @ {r['ts'][:19]}] {snippet}")
+        await message.reply_text("\n".join(lines)[:3900])
+        return
+
+    # ---- why ----
+    if sub == "why":
+        if len(args) < 2:
+            await message.reply_text("usage: /memory why <id>")
+            return
+        try:
+            fid = int(args[1])
+        except ValueError:
+            await message.reply_text("id must be an integer.")
+            return
+        prov = db.fact_provenance(fid)
+        if not prov:
+            await message.reply_text(f"fact {fid}: not found.")
+            return
+        lines = [f"provenance for fact #{fid}:"]
+        lines.append(f"  attribution: {prov.get('attribution') or 'unknown'}")
+        if prov.get("recorded_at"):
+            lines.append(f"  recorded_at: {prov['recorded_at']}")
+        if prov.get("source_span_hash"):
+            lines.append(f"  span_hash:   {prov['source_span_hash']}")
+        if prov.get("source_message_id"):
+            _ts = prov.get('ts') or ''
+            lines.append(f"  source_msg:  #{prov['source_message_id']} @ {_ts[:19]}")
+            if prov.get("content"):
+                snippet = (prov["content"] or "")[:200].replace("\n", " ")
+                lines.append(f"  text:        {snippet}")
+        await message.reply_text("\n".join(lines)[:3900])
+        return
+
+    # ---- debug ----
+    if sub == "debug":
+        # Route to cmd_memory_diff — pass the remaining args as context.args
+        context.args = args[1:]
+        await cmd_memory_diff(update, context)
+        return
+
+    # ---- unknown ----
+    await message.reply_text(f"unknown subcommand: {sub!r}.")
+
+
 async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """List pending gatekeeper approvals, or cancel one by id.
 
@@ -1869,6 +2077,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
+    app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("approvals", cmd_approvals))
     app.add_handler(CommandHandler("proactive", cmd_proactive))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode

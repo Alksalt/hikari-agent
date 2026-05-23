@@ -20,8 +20,10 @@ from storage import retrieval  # noqa: F401 — re-exported for test monkey-patc
 from tools.memory.mark_fact_invalid import mark_fact_invalid
 from tools.memory.recall import recall
 from tools.memory.remember import remember
+from tools.memory.session_search import session_search
 from tools.memory.task_create import task_create
 from tools.memory.task_update import task_update
 from tools.memory.update_core_block import update_core_block
 
-ALL_TOOLS = [recall, remember, mark_fact_invalid, update_core_block, task_create, task_update]
+ALL_TOOLS = [recall, remember, mark_fact_invalid, update_core_block, task_create, task_update,
+             session_search]

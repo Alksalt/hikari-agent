@@ -613,6 +613,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     _migrate_approvals_gatekeeper(conn)
     _migrate_calendar_notifications(conn)
     _migrate_entities_and_provenance(conn)
+    _migrate_messages_fts(conn)
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
@@ -840,6 +841,7 @@ def _migrate_facts_attribution(conn: sqlite3.Connection) -> None:
     Documented values (not enforced at DB level):
       user_stated         — user told Hikari directly
       user_observed       — inferred from user's actions, not stated
+      user_corrected      — user replaced a prior fact via /memory correct
       hikari_inferred     — Hikari's own reflection extracted from chat
       subagent_extracted  — an explorer/research subagent surfaced it
       external_source     — came from a tool result (email, wiki, MCP)
@@ -1191,8 +1193,9 @@ def insert_fact(
     free-text provenance tag (e.g. ``'user_message'``, ``'reflection'``).
 
     ``attribution`` is the structured provenance tag (one of:
-    user_stated, user_observed, hikari_inferred, subagent_extracted,
-    external_source) — see _migrate_facts_attribution for semantics.
+    user_stated, user_observed, user_corrected, hikari_inferred,
+    subagent_extracted, external_source) — see _migrate_facts_attribution
+    for semantics.
 
     ``source_span_hash`` is a 16-hex-char SHA-256 of the source text span.
     ``recorded_at`` is the UTC epoch at which the fact was recorded; defaults
@@ -3769,3 +3772,115 @@ def decision_brier_score(window_days: int = 90) -> dict[str, Any]:
         "mean_predicted": round(mean_p, 4),
         "mean_outcome": round(mean_o, 4),
     }
+
+
+# ---------- 5B: messages FTS + fact helpers ----------
+
+def _migrate_messages_fts(conn: sqlite3.Connection) -> None:
+    """5B: FTS5 virtual table over the messages table (final sent text).
+
+    Idempotent — returns immediately if messages_fts already exists.
+    Per MEMORY.md schema-migration-ordering rule: indexes and triggers for
+    ALTER-added columns live inside migration fns, never in _SCHEMA.
+    """
+    existing_tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'shadow')"
+    ).fetchall()}
+    if "messages_fts" in existing_tables:
+        return
+    conn.execute("""
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='id',
+            tokenize='porter unicode61'
+        )
+    """)
+    # Backfill existing messages.
+    conn.execute(
+        "INSERT INTO messages_fts(rowid, content) "
+        "SELECT id, content FROM messages"
+    )
+    # Keep mirror in sync.
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai
+        AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad
+        AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au
+        AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    conn.commit()
+
+
+def messages_fts_search(
+    query: str,
+    limit: int = 10,
+    since_iso: str | None = None,
+    role: str | None = None,
+) -> list[dict[str, Any]]:
+    """BM25 FTS5 search over the messages table.
+
+    Returns up to ``limit`` rows ordered by relevance (bm25 ascending, i.e. most
+    relevant first) then ts descending. Filters by ``since_iso`` (messages.ts >=)
+    and ``role`` when supplied. Returns [] on FTS5 query syntax errors.
+    """
+    sql = (
+        "SELECT m.id, m.role, m.content, m.ts "
+        "FROM messages_fts f JOIN messages m ON m.id = f.rowid "
+        "WHERE messages_fts MATCH ?"
+    )
+    params: list[Any] = [query]
+    if since_iso:
+        sql += " AND m.ts >= ?"
+        params.append(since_iso)
+    if role:
+        sql += " AND m.role = ?"
+        params.append(role)
+    sql += " ORDER BY bm25(messages_fts), m.ts DESC LIMIT ?"
+    params.append(int(limit))
+    try:
+        with _conn() as c:
+            rows = c.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        logger.debug("messages_fts_search: FTS5 query error for %r", query)
+        return []
+
+
+def fact_by_id(fact_id: int) -> dict[str, Any] | None:
+    """Fetch a single fact row by id. Returns None if not found."""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM facts WHERE id = ?", (int(fact_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def facts_text_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Substring search over active facts (subject / predicate / object).
+
+    Returns up to ``limit`` rows ordered by id DESC (most recently inserted first).
+    Only returns facts with valid_to IS NULL (active facts).
+    """
+    q = f"%{(query or '').strip()}%"
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM facts "
+            "WHERE valid_to IS NULL "
+            "AND (subject LIKE ? OR predicate LIKE ? OR object LIKE ?) "
+            "ORDER BY id DESC LIMIT ?",
+            (q, q, q, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
