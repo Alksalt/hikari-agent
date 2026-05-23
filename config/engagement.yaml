@@ -886,3 +886,8 @@ engagement:
   wiki_new_file:
     enabled: true
     max_per_24h: 2
+
+graph:
+  llm_model: deepseek/deepseek-chat      # cheap; ~$0.14/M input via openrouter
+  # Embeddings: local-only via tools/embeddings.py (fastembed + BAAI/bge-small-en-v1.5).
+  # No hosted embedding API — project rule (NO direct API; OAuth/subscription only).

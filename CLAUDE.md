@@ -207,6 +207,16 @@ these contracts are MANDATORY when the hint is present. voice rules (short, dry,
 
 ---
 
+## project rule — NO API USE, OAuth/subscription only
+
+Hard rule for the hikari-agent project: **never use direct API keys**. No `ANTHROPIC_API_KEY`. No `OPENAI_API_KEY` for new wiring. Main turns ride on `CLAUDE_CODE_OAUTH_TOKEN` (Max subscription) via `claude-agent-sdk`.
+
+**Allowed exception**: cheap auxiliary ops (entity extraction, classifiers, judges) MAY use **OpenRouter with DeepSeek** (`deepseek/deepseek-chat`) — set `OPENROUTER_API_KEY`. Anthropic models on OpenRouter are forbidden too — they're priced like the direct API.
+
+**Embeddings** are local-only via `tools/embeddings.py` (`fastembed` + `BAAI/bge-small-en-v1.5`). No hosted embedding API. If a library requires a remote embedder and can't be swapped for the local one, flag the cost before wiring.
+
+Pre-existing exceptions to grandfather (don't migrate as part of unrelated work): Whisper transcription (`OPENAI_API_KEY` for `whisper-1` at `config/engagement.yaml:103`). Migrate when a local STT path lands.
+
 ## Ship profile
 
 ```yaml

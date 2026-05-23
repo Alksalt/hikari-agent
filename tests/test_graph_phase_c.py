@@ -47,13 +47,13 @@ def _reset_graph_singleton():
 @pytest.mark.asyncio
 async def test_get_graph_creates_kuzu_parent_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HIKARI_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     mock_g = _make_mock_graphiti()
 
     with patch("storage.graph.Graphiti", return_value=mock_g), \
          patch("storage.graph.KuzuDriver"), \
-         patch("storage.graph.AnthropicClient"), \
+         patch("storage.graph.OpenAIGenericClient"), \
          patch("storage.graph.LLMConfig"):
         await graph_mod.get_graph()
 
@@ -71,13 +71,13 @@ async def test_get_graph_creates_kuzu_parent_dir(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_add_episode_safe_round_trip(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HIKARI_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     mock_g = _make_mock_graphiti()
 
     with patch("storage.graph.Graphiti", return_value=mock_g), \
          patch("storage.graph.KuzuDriver"), \
-         patch("storage.graph.AnthropicClient"), \
+         patch("storage.graph.OpenAIGenericClient"), \
          patch("storage.graph.LLMConfig"):
         ok = await graph_mod.add_episode_safe(
             name="fact_42",
@@ -98,7 +98,7 @@ async def test_add_episode_safe_round_trip(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_add_episode_safe_swallows_errors(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     async def _boom():
         raise RuntimeError("kuzu exploded")
@@ -119,7 +119,7 @@ async def test_add_episode_safe_swallows_errors(monkeypatch):
 @pytest.mark.asyncio
 async def test_remember_dual_writes_to_graph(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HIKARI_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     # Isolate the SQLite DB.
     db_path = tmp_path / "hikari.db"
@@ -142,7 +142,7 @@ async def test_remember_dual_writes_to_graph(tmp_path: Path, monkeypatch):
 
     with patch("storage.graph.Graphiti", return_value=mock_g), \
          patch("storage.graph.KuzuDriver"), \
-         patch("storage.graph.AnthropicClient"), \
+         patch("storage.graph.OpenAIGenericClient"), \
          patch("storage.graph.LLMConfig"), \
          patch("tools.embeddings.aembed", new=AsyncMock(return_value=[0.1] * 384)):
         result = await handler({

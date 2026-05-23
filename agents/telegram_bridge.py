@@ -1934,8 +1934,13 @@ def main() -> None:
         try:
             from storage.graph import get_graph  # noqa: PLC0415
             await get_graph()
+        except RuntimeError as e:
+            if "OPENROUTER_API_KEY" in str(e):
+                logger.warning("graph: degraded (no OPENROUTER_API_KEY) — set it in .env to enable")
+            else:
+                logger.exception("graph init failed (degrading: dual-writes will retry)")
         except Exception:
-            logger.exception("graph init failed at boot (degrading: dual-writes will retry)")
+            logger.exception("graph init failed (degrading: dual-writes will retry)")
 
         # Start the long-running dispatch event listener.
         asyncio.create_task(listener_loop(application.bot))

@@ -17,11 +17,13 @@ from pathlib import Path
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.kuzu_driver import KuzuDriver
-from graphiti_core.llm_client.anthropic_client import AnthropicClient
+from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EpisodeType
 
 from agents import config as _cfg
+from tools import embeddings as _embed
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +54,19 @@ async def get_graph() -> Graphiti:
             graph_path.parent.chmod(0o700)
         except OSError:
             pass
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY required for graphiti")
-        model = str(_cfg.get("runtime.model_primary", "claude-sonnet-4-6"))
-        llm_config = LLMConfig(api_key=api_key, model=model)
-        client = AnthropicClient(config=llm_config)
+            raise RuntimeError("OPENROUTER_API_KEY required for graphiti (cheap LLM via openrouter)")
+        model = str(_cfg.get("graph.llm_model", "deepseek/deepseek-chat"))
+        llm_config = LLMConfig(
+            api_key=api_key,
+            model=model,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        client = OpenAIGenericClient(config=llm_config)
+        embedder = FastembedAdapter()
         driver = KuzuDriver(db=str(graph_path))
-        g = Graphiti(graph_driver=driver, llm_client=client)
+        g = Graphiti(graph_driver=driver, llm_client=client, embedder=embedder)
         await g.build_indices_and_constraints()
         # Lock down the kuzu file once Kuzu has created it.
         try:
@@ -70,6 +77,23 @@ async def get_graph() -> Graphiti:
         _GRAPH = g
         logger.info("graph: ready (kuzu@%s) at %s", _kuzu_version(), graph_path)
         return g
+
+
+class FastembedAdapter(EmbedderClient):
+    """Local-only embedder satisfying graphiti's EmbedderClient interface.
+    Wraps tools.embeddings (fastembed + BAAI/bge-small-en-v1.5, 384-dim).
+    Keeps Hikari off any hosted embeddings API."""
+
+    async def create(self, input_data):
+        if isinstance(input_data, str):
+            return await _embed.aembed(input_data)
+        if isinstance(input_data, list) and input_data and isinstance(input_data[0], str):
+            batch = await _embed.aembed_batch(input_data)
+            return batch[0] if batch else [0.0] * _embed.EMBEDDING_DIM
+        raise TypeError(f"FastembedAdapter: unsupported input type {type(input_data).__name__}")
+
+    async def create_batch(self, input_data_list):
+        return await _embed.aembed_batch(input_data_list)
 
 
 def _kuzu_version() -> str:
