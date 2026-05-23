@@ -154,7 +154,13 @@ def _format_core_blocks() -> str:
     has been migrated into the new ``peer_representation`` table (see
     ``_format_peer_representation``). Filtering here is defensive: even if
     a legacy ``user_profile`` row lingers, it doesn't double-inject.
+
+    Content is wrapped in <remembered> tags so the model treats DB-stored
+    values as data, not instructions. Rows that fail the defensive
+    re-sanitization check are skipped.
     """
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
+
     blocks = db.all_core_blocks()
     if not blocks:
         return ""
@@ -164,16 +170,45 @@ def _format_core_blocks() -> str:
         return ""
     lines = ["# memory: core (always-on)"]
     for b in blocks:
-        lines.append(f"## {b['label']}")
-        lines.append(b["content"].strip())
+        label = b["label"]
+        raw_content = b["content"].strip()
+        # Defensive re-sanitize — skip rows that carry injection payloads from
+        # before this sprint.  We pass the stored label too so the allowlist
+        # check is enforced, but catch ValueError so unknown-but-benign legacy
+        # labels don't silently disappear (they just skip the tag wrapping).
+        try:
+            sanitize(raw_content, kind="core_block", label=label)
+        except MemoryInstructionShape as exc:
+            logger.warning(
+                "_format_core_blocks: skipping label=%r — instruction-like "
+                "content in DB matched %r",
+                label, str(exc),
+            )
+            continue
+        except ValueError:
+            # Label not in allowlist (legacy row) — inject as-is but still wrap.
+            pass
+        lines.append(f"## {label}")
+        lines.append(
+            f'<remembered name="core_block:{label}">{escape_remembered_tags(raw_content)}</remembered>'
+        )
         lines.append("")
+    if len(lines) == 1:
+        # All blocks were skipped.
+        return ""
     return "\n".join(lines).rstrip()
 
 
 def _format_peer_representation() -> str:
     """Phase 7: structured user model. Replaces the flat ``user_profile``
     block with communication_style / values / domain_expertise /
-    current_concerns / blindspots / summary."""
+    current_concerns / blindspots / summary.
+
+    Rendered block is wrapped in <remembered name="peer_model"> so the
+    model treats stored user observations as data, not instructions.
+    """
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
+
     try:
         from agents import peer_model
         model = db.get_peer_representation()
@@ -182,7 +217,40 @@ def _format_peer_representation() -> str:
         return ""
     if not model:
         return ""
-    return peer_model.format_for_injection(model)
+    rendered = peer_model.format_for_injection(model)
+    if not rendered:
+        return ""
+    # Defensive re-sanitize string fields in the raw model.  If any field
+    # carries an injection payload, skip the entire block. List-valued fields
+    # are checked item by item.
+    if isinstance(model, dict):
+        for _k, _v in model.items():
+            if isinstance(_v, str):
+                if not _v.strip():
+                    continue
+                try:
+                    sanitize(_v, kind="peer")
+                except MemoryInstructionShape as exc:
+                    logger.warning(
+                        "_format_peer_representation: skipping peer model — "
+                        "field=%r matched instruction pattern %r",
+                        _k, str(exc),
+                    )
+                    return ""
+            elif isinstance(_v, list):
+                for _item in _v:
+                    if not isinstance(_item, str) or not _item.strip():
+                        continue
+                    try:
+                        sanitize(_item, kind="peer")
+                    except MemoryInstructionShape as exc:
+                        logger.warning(
+                            "_format_peer_representation: skipping peer model — "
+                            "field=%r item matched instruction pattern %r",
+                            _k, str(exc),
+                        )
+                        return ""
+    return f'<remembered name="peer_model">{escape_remembered_tags(rendered)}</remembered>'
 
 
 def _format_open_tasks() -> str:
@@ -273,10 +341,32 @@ def _format_observations() -> str:
         return ""
     if not rows:
         return ""
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
     lines = ["# noticed patterns (you can raise these sideways, not as diagnoses)"]
     ids: list[int] = []
     for r in rows:
-        lines.append(f"- [{r['kind']}] {r['summary'][:200]}")
+        raw_summary = r["summary"][:200]
+        try:
+            sanitize(raw_summary, kind="observation")
+        except MemoryInstructionShape as exc:
+            logger.warning(
+                "_format_observations: skipping row id=%r — instruction-like "
+                "content matched %r",
+                r.get("id"), str(exc),
+            )
+            continue
+        raw_kind = str(r.get("kind") or "topic_pattern")[:40]
+        try:
+            sanitize(raw_kind, kind="observation")
+        except MemoryInstructionShape as exc:
+            logger.warning(
+                "_format_observations: skipping row id=%r — kind matched %r",
+                r.get("id"), str(exc),
+            )
+            continue
+        lines.append(
+            f'- <remembered name="observation" kind="{escape_remembered_tags(raw_kind)}">{escape_remembered_tags(raw_summary)}</remembered>'
+        )
         try:
             ids.append(int(r["id"]))
         except (TypeError, ValueError):
@@ -286,6 +376,9 @@ def _format_observations() -> str:
             "pending_surfaced_observation_ids",
             _json.dumps(ids),
         )
+    if len(lines) == 1:
+        # All rows were skipped — nothing safe to inject.
+        return ""
     return "\n".join(lines)
 
 
@@ -308,10 +401,23 @@ def _format_noticings() -> str:
         return ""
     if not rows:
         return ""
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
     lines = ["# noticed changes about them (surface obliquely, not as a checkup)"]
     ids: list[int] = []
     for r in rows:
-        lines.append(f"- {r['summary'][:200]}")
+        raw_summary = r["summary"][:200]
+        try:
+            sanitize(raw_summary, kind="noticing")
+        except MemoryInstructionShape as exc:
+            logger.warning(
+                "_format_noticings: skipping row id=%r — instruction-like "
+                "content matched %r",
+                r.get("id"), str(exc),
+            )
+            continue
+        lines.append(
+            f'- <remembered name="noticing">{escape_remembered_tags(raw_summary)}</remembered>'
+        )
         try:
             ids.append(int(r["id"]))
         except (TypeError, ValueError):
@@ -321,6 +427,9 @@ def _format_noticings() -> str:
             "pending_surfaced_noticing_ids",
             _json.dumps(ids),
         )
+    if len(lines) == 1:
+        # All rows were skipped — nothing safe to inject.
+        return ""
     return "\n".join(lines)
 
 

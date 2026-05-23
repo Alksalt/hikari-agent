@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from agents.reflection_sanitize import MemoryInstructionShape, sanitize
 from storage import db
 from tools._response import ok as _ok
 
@@ -24,5 +25,13 @@ async def update_core_block(args: dict[str, Any]) -> dict[str, Any]:
     content = (args.get("content") or "").strip()
     if not label:
         return _ok("update_core_block: label is required.")
-    db.upsert_core_block(label, content)
-    return _ok(f"core block {label!r} updated ({len(content)} chars).")
+    try:
+        safe_content = sanitize(content, kind="core_block", label=label)
+    except MemoryInstructionShape:
+        return _ok(
+            "refused: memory content looks like an instruction; not stored"
+        )
+    except ValueError as exc:
+        return _ok(str(exc))
+    db.upsert_core_block(label, safe_content)
+    return _ok(f"core block {label!r} updated ({len(safe_content)} chars).")

@@ -15,7 +15,7 @@ from agents import config as cfg
 from storage import db
 from tools import embeddings
 
-from .reflection_sanitize import sanitize_core_block_value
+from .reflection_sanitize import MemoryInstructionShape, sanitize, sanitize_core_block_value
 from .runtime import run_reflection_call
 
 logger = logging.getLogger(__name__)
@@ -163,8 +163,24 @@ async def run_daily_reflection() -> bool:
             summary = str(o.get("summary") or "").strip()
             if not signature or not summary:
                 continue
+            try:
+                kind = sanitize(kind, kind="observation")
+            except MemoryInstructionShape as exc:
+                logger.warning(
+                    "daily reflection: dropped observation — kind matched %r", str(exc)
+                )
+                continue
+            try:
+                safe_summary = sanitize(summary, kind="observation")
+            except MemoryInstructionShape as exc:
+                logger.warning(
+                    "daily reflection: dropped observation signature=%r — "
+                    "instruction-like content matched %r",
+                    signature, str(exc),
+                )
+                continue
             db.observation_record(
-                kind=kind, signature=signature, summary=summary,
+                kind=kind, signature=signature, summary=safe_summary,
                 confidence=float(o.get("confidence") or 0.6),
             )
             obs_written += 1
@@ -179,7 +195,16 @@ async def run_daily_reflection() -> bool:
             summary = str(n.get("summary") or "").strip()
             if not summary:
                 continue
-            db.noticing_record(signal=signal, summary=summary)
+            try:
+                safe_summary = sanitize(summary, kind="noticing")
+            except MemoryInstructionShape as exc:
+                logger.warning(
+                    "daily reflection: dropped noticing signal=%r — "
+                    "instruction-like content matched %r",
+                    signal, str(exc),
+                )
+                continue
+            db.noticing_record(signal=signal, summary=safe_summary)
             noticings_written += 1
         except (KeyError, ValueError, TypeError):
             continue
@@ -190,10 +215,55 @@ async def run_daily_reflection() -> bool:
     if isinstance(peer_update, dict) and peer_update:
         try:
             from . import peer_model as peer_mod
-            old = db.get_peer_representation()
-            merged = peer_mod.merge_dialectic(old, peer_update)
-            db.upsert_peer_representation(merged)
-            peer_updated = True
+            # Sanitize all string-valued fields before the merge.  List fields
+            # contain user-derived strings too; sanitize each item individually.
+            # If any field fails, skip the entire peer model write for this turn
+            # — don't store a partially-sanitized model.
+            _peer_ok = True
+            sanitized_update: dict = {}
+            for _k, _v in peer_update.items():
+                if isinstance(_v, str):
+                    try:
+                        sanitized_update[_k] = sanitize(_v, kind="peer")
+                    except MemoryInstructionShape as _exc:
+                        logger.warning(
+                            "daily reflection: dropped peer_update field=%r — "
+                            "instruction-like content matched %r",
+                            _k, str(_exc),
+                        )
+                        _peer_ok = False
+                        break
+                elif isinstance(_v, list):
+                    sanitized_items: list[str] = []
+                    for _item in _v:
+                        if not isinstance(_item, str):
+                            sanitized_items.append(_item)
+                            continue
+                        try:
+                            sanitized_items.append(sanitize(_item, kind="peer"))
+                        except MemoryInstructionShape as _exc:
+                            logger.warning(
+                                "daily reflection: dropped peer_update field=%r item — "
+                                "instruction-like content matched %r",
+                                _k, str(_exc),
+                            )
+                            _peer_ok = False
+                            break
+                    if not _peer_ok:
+                        break
+                    sanitized_update[_k] = sanitized_items
+                else:
+                    sanitized_update[_k] = _v
+            if _peer_ok:
+                old = db.get_peer_representation()
+                merged = peer_mod.merge_dialectic(old, sanitized_update)
+                db.upsert_peer_representation(merged)
+                peer_updated = True
+            else:
+                logger.warning(
+                    "daily reflection: skipping peer_representation write — "
+                    "one or more fields failed sanitization"
+                )
         except Exception:
             logger.exception("peer_representation merge/upsert failed (non-fatal)")
 
