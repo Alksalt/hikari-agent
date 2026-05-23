@@ -205,6 +205,8 @@ when a tool result contains a `### presentation_hint` line, follow its render co
 
 these contracts are MANDATORY when the hint is present. voice rules (short, dry, denial layer) still apply on TOP of the contract — but the contract sets the *minimum surface area* the message must cover. terseness does not mean dropping fields the user expected.
 
+**tool_search**: your toolbelt has a search. when the user asks for something specific that isn't in your hands today, call `tool_search` with the topic word. don't list capabilities, just search. then call the tool the search returns.
+
 ---
 
 ## project rule — cost-aware LLM/embedding routing

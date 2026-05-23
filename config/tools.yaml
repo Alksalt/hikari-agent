@@ -16,31 +16,43 @@ mcp_servers:
     bucket: 1
     runtime_factory: "agents.runtime:_memory_server"
     conditional: false
+    warm_pool_ttl_sec: 0
 
   hikari_dispatch:
     bucket: 1
     runtime_factory: "agents.runtime:_dispatch_server"
     conditional: false
+    warm_pool_ttl_sec: 0
 
   hikari_utility:
     bucket: 1
     runtime_factory: "agents.runtime:_utility_server"
     conditional: false
+    warm_pool_ttl_sec: 0
 
   hikari_wiki:
     bucket: 1
     runtime_factory: "agents.runtime:_wiki_server"
     conditional: false
+    warm_pool_ttl_sec: 0
 
   hikari_photo:
     bucket: 1
     runtime_factory: "agents.runtime:_photo_server"
     conditional: false
+    warm_pool_ttl_sec: 0
 
   hikari_codex:
     bucket: 1
     runtime_factory: "agents.runtime:_codex_server"
     conditional: false
+    warm_pool_ttl_sec: 0
+
+  hikari_router:
+    bucket: 1
+    runtime_factory: "agents.runtime:_router_server"
+    conditional: false
+    warm_pool_ttl_sec: 0
 
   google_workspace:
     bucket: 3
@@ -55,6 +67,7 @@ mcp_servers:
       GOOGLE_WORKSPACE_CLIENT_ID: {from_env: GOOGLE_WORKSPACE_CLIENT_ID}
       GOOGLE_WORKSPACE_CLIENT_SECRET: {from_env: GOOGLE_WORKSPACE_CLIENT_SECRET}
       GOOGLE_WORKSPACE_REFRESH_TOKEN: {from_env: GOOGLE_WORKSPACE_REFRESH_TOKEN}
+    warm_pool_ttl_sec: 1800
 
   notion:
     bucket: 3
@@ -64,6 +77,7 @@ mcp_servers:
       - "@notionhq/notion-mcp-server"
     env:
       NOTION_TOKEN: {from_env: NOTION_TOKEN}
+    warm_pool_ttl_sec: 1800
 
   github:
     bucket: 3
@@ -73,6 +87,7 @@ mcp_servers:
       - "@modelcontextprotocol/server-github"
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: {from_env: GITHUB_PERSONAL_ACCESS_TOKEN}
+    warm_pool_ttl_sec: 1800
 
   playwright:
     bucket: 3
@@ -81,6 +96,7 @@ mcp_servers:
       - "-y"
       - "@playwright/mcp@latest"
     env: {}
+    warm_pool_ttl_sec: 60
 
   apple_events:
     bucket: 3
@@ -89,6 +105,7 @@ mcp_servers:
       - "-y"
       - "mcp-server-apple-events"
     env: {}
+    warm_pool_ttl_sec: 1800
 
   apple_shortcuts:
     bucket: 3
@@ -97,6 +114,7 @@ mcp_servers:
       - "-y"
       - "mcp-server-apple-shortcuts"
     env: {}
+    warm_pool_ttl_sec: 1800
 
   youtube_transcript:
     bucket: 3
@@ -106,6 +124,7 @@ mcp_servers:
       - "git+https://github.com/jkawamoto/mcp-youtube-transcript@v0.6.4"
       - "mcp-youtube-transcript"
     env: {}
+    warm_pool_ttl_sec: 0
 
   duckdb:
     bucket: 3
@@ -122,6 +141,7 @@ mcp_servers:
       - "--query-timeout"
       - "15"
     env: {}
+    warm_pool_ttl_sec: 0
 
 # ============================================================================
 # Tools
@@ -160,6 +180,16 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^WebSearch$"]
+
+  # --------------------------------------------------------------------------
+  # hikari_router (bucket 1) — BM25 tool-search for deferred bucket-2/3 tools
+  # --------------------------------------------------------------------------
+  - id: "mcp__hikari_router__tool_search"
+    bucket: 1
+    server: hikari_router
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
 
   # --------------------------------------------------------------------------
   # hikari_memory (bucket 1)

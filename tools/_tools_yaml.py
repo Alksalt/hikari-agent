@@ -46,6 +46,7 @@ class McpServerSpec:
     args: tuple[str, ...]              # for bucket-3
     env: dict[str, str]               # from_env refs kept as raw strings
     allowlist: tuple[str, ...]         # not used yet; reserved for validator
+    warm_pool_ttl_sec: int             # Phase H: idle eviction TTL in seconds (0 = no eviction)
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,7 @@ def _parse_server(name: str, raw: dict) -> McpServerSpec:
         args=tuple(raw.get("args") or []),
         env=_parse_env(raw.get("env")),
         allowlist=tuple(raw.get("allowlist") or []),
+        warm_pool_ttl_sec=int(raw.get("warm_pool_ttl_sec", 60)),
     )
 
 

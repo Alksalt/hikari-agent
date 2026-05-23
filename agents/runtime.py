@@ -42,6 +42,7 @@ from tools import codex as codex_tools
 from tools import dispatch as dispatch_tools
 from tools import memory as memory_tools
 from tools import photos as photo_tools
+from tools import router as router_tools
 from tools import wiki as wiki_tools
 
 from .external_wrap_hook import make_post_tool_use_hook
@@ -146,6 +147,21 @@ def _inject_keychain_tokens_to_env() -> None:
 
 _inject_keychain_tokens_to_env()
 
+# Phase H: boot-time BM25 index + TTL config. Both are fast (no I/O beyond
+# reading tools.yaml once) and must be ready before the first user turn so
+# tool_search never hits a cold index mid-conversation.
+try:
+    from tools.router.tool_search import rebuild_index as _rebuild_router_index
+    _rebuild_router_index()
+except Exception:
+    logger.exception("runtime: failed to pre-build BM25 router index (non-fatal)")
+
+try:
+    from agents.mcp_manager import configure_from_registry as _configure_mcp_manager
+    _configure_mcp_manager()
+except Exception:
+    logger.exception("runtime: failed to configure mcp_manager TTLs (non-fatal)")
+
 # Per-turn budget for chat-path SDK calls. Used by _build_options /
 # run_user_turn / respond defaults AND substituted into the persona prompt
 # via _persona().format(max_turns=...). Keep this constant and the
@@ -219,6 +235,12 @@ def _utility_server():
     from tools import _utility_index
     return create_sdk_mcp_server(name="hikari_utility", tools=_utility_index.ALL_TOOLS)
 
+
+@cache
+def _router_server():
+    """Phase H: BM25 tool-search server. Exposes tool_search so the model can
+    find bucket-2/3 tools without having all their definitions in context."""
+    return create_sdk_mcp_server(name="hikari_router", tools=router_tools.ALL_TOOLS)
 
 
 # _DEDICATED_AND_EXTERNAL_TOOLS was deleted in Phase A (step 5).

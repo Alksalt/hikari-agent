@@ -169,6 +169,8 @@ def test_scheduler_builds(monkeypatch):
         "monthly_prune",
         # Phase 7: wiki_new_file engagement producer (5-min poll).
         "wiki_new_file_tick",
+        # Phase H: MCP warm-pool eviction (every 30s).
+        "mcp_warm_pool_evict",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

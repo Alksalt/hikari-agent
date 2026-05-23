@@ -319,6 +319,18 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=120,
     )
 
+    # Phase H: periodic MCP warm-pool eviction — runs every 30s to reap stale
+    # server entries so the warm_servers() view stays accurate.
+    from agents.mcp_manager import MANAGER as _mcp_manager
+    async def _mcp_evict_job():
+        await _mcp_manager.evict_stale()
+    scheduler.add_job(
+        _mcp_evict_job,
+        IntervalTrigger(seconds=30),
+        id="mcp_warm_pool_evict",
+        coalesce=True, max_instances=1, misfire_grace_time=30,
+    )
+
     return scheduler
 
 

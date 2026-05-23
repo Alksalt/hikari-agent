@@ -50,6 +50,7 @@ _DEDICATED_SERVER_MODULES: set[str] = {
     "wiki",
     "dispatch",
     "codex",
+    "router",
 }
 
 
