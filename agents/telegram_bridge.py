@@ -36,11 +36,11 @@ from tools.photos import OUTBOX as PHOTO_OUTBOX
 
 from . import affect as affect_mod
 from . import belief_frame as belief_mod
+from . import cockpit, injection_guard, post_filter
 from . import config as cfg
 from . import daily_checkin as daily_checkin_mod
 from . import drift_judge as drift_mod
 from . import handoff as handoff_mod
-from . import injection_guard, post_filter
 from . import postsend as postsend_mod
 from . import reactions as reactions_mod
 from . import sdk_pool as _sdk_pool
@@ -63,6 +63,8 @@ from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_use
 from .scheduler import build_scheduler
 
 logger = logging.getLogger(__name__)
+
+_BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
 
 USER_PHOTO_DIR = REPO_ROOT / "data" / "user_photos"
 
@@ -1176,7 +1178,13 @@ async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.message
     if not user or not message or user.id != owner_id():
         return
-    minutes = int(cfg.get("silence.default_minutes", 120))
+    override = db.runtime_get("settings.silence.default_minutes")
+    _cfg_default = int(cfg.get("silence.default_minutes", 120))
+    try:
+        default_minutes = int(override) if override else _cfg_default
+    except (ValueError, TypeError):
+        default_minutes = _cfg_default
+    minutes = default_minutes
     if context.args:
         try:
             minutes = max(1, int(context.args[0]))
@@ -1731,6 +1739,41 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     args = context.args or []
 
+    # Phase 6A: new subcommands — recent, why, snooze
+    if args and args[0] == "recent":
+        days = 7
+        if len(args) > 1:
+            try:
+                days = int(args[1])
+            except ValueError:
+                pass
+        text = cockpit.format_proactive_recent(days=days)
+        await message.reply_text(text)
+        return
+
+    if args and args[0] == "why":
+        if len(args) < 2:
+            await message.reply_text("usage: /proactive why <event_id>")
+            return
+        try:
+            event_id = int(args[1])
+        except ValueError:
+            await message.reply_text(f"invalid id: {args[1]}")
+            return
+        text = cockpit.format_proactive_why(event_id)
+        await message.reply_text(text)
+        return
+
+    if args and args[0] == "snooze":
+        if len(args) < 3:
+            await message.reply_text("usage: /proactive snooze <source> <duration>  e.g. 2h")
+            return
+        source = args[1]
+        duration_str = args[2]
+        text = cockpit.format_proactive_snooze(source, duration_str)
+        await message.reply_text(text)
+        return
+
     if not args or args[0] == "status":
         raw_override = db.runtime_get("proactive_enabled_sources_override")
         if raw_override:
@@ -1777,6 +1820,65 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     db.runtime_set("proactive_enabled_sources_override", _json.dumps(sorted(enabled)))
     await message.reply_text(f"{op} {source}. now enabled: {sorted(enabled)}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6A cockpit commands
+# ---------------------------------------------------------------------------
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/help — list all registered commands with one-line descriptions."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    await message.reply_text(cockpit.format_help())
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/status — system status dashboard."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    text = await cockpit.format_status(context.application)
+    await message.reply_text(text)
+
+
+async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/tools [policy|recent] — list tool registry or recent tool calls."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = context.args or []
+    subcmd = args[0].lower() if args else "policy"
+    rest = args[1:] if len(args) > 1 else []
+    await message.reply_text(cockpit.format_tools(subcmd, rest))
+
+
+async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/audit [recent [N]|tools|approvals|id <id>] — paginate audit_log."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = context.args or []
+    subcmd = args[0].lower() if args else "recent"
+    rest = args[1:] if len(args) > 1 else []
+    await message.reply_text(cockpit.format_audit(subcmd, rest))
+
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/settings [get <key>|set <key> <value>] — allowlisted runtime settings."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = context.args or []
+    subcmd = args[0].lower() if args else "list"
+    rest = args[1:] if len(args) > 1 else []
+    await message.reply_text(cockpit.format_settings(subcmd, rest))
 
 
 _REACTION_TURN_COOLDOWN_KEY = "reaction_turn_last_at"
@@ -2091,6 +2193,11 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("approvals", cmd_approvals))
     app.add_handler(CommandHandler("proactive", cmd_proactive))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("tools", cmd_tools))
+    app.add_handler(CommandHandler("audit", cmd_audit))
+    app.add_handler(CommandHandler("settings", cmd_settings))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
@@ -2193,6 +2300,7 @@ def main() -> None:
         scheduler = build_scheduler(send_text)
         scheduler.start()
         logger.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
+        application.bot_data["scheduler"] = scheduler  # Phase 6A: /status can read jobs
 
         # Wire owner chat into dispatch tool so it can resolve where to send results.
         dispatch_tools.set_owner_chat_id(owner_id())

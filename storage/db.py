@@ -3039,6 +3039,93 @@ def audit_append(tool: str, args_json_redacted: str,
     return cur.lastrowid
 
 
+# ---------- audit_log query helpers (Phase 6A cockpit) ----------
+
+def audit_recent(limit: int = 20) -> list[dict]:
+    """Return the most recent audit_log rows, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by, "
+            "hash_prev, hash_self "
+            "FROM audit_log ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit_by_id(row_id: int) -> dict | None:
+    """Return a single audit_log row by primary key, or None."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by, "
+            "hash_prev, hash_self "
+            "FROM audit_log WHERE id = ?",
+            (int(row_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def audit_by_tool(tool_pattern: str, limit: int = 20) -> list[dict]:
+    """Return audit_log rows whose tool column matches a LIKE pattern."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by "
+            "FROM audit_log WHERE tool LIKE ? ORDER BY id DESC LIMIT ?",
+            (tool_pattern, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit_tool_counts_7d() -> list[dict]:
+    """Return (tool, count, last_ts) grouped by tool for the last 7 days, ordered by count desc."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT tool, COUNT(*) AS cnt, MAX(ts) AS last_ts "
+            "FROM audit_log "
+            "WHERE ts >= datetime('now', '-7 days') "
+            "GROUP BY tool ORDER BY cnt DESC",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit_approvals_recent(limit: int = 20) -> list[dict]:
+    """Return the most recent audit_log rows that were explicitly approved."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by "
+            "FROM audit_log WHERE approved_by IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def proactive_events_recent(days: int = 7, limit: int = 50) -> list[dict]:
+    """Return recent proactive_events rows within the last N days."""
+    cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=int(days))).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, source, sent_at, payload_json, status, "
+            "thumbs_up, thumbs_down, telegram_message_id "
+            "FROM proactive_events "
+            "WHERE sent_at >= ? ORDER BY id DESC LIMIT ?",
+            (cutoff, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def proactive_event_by_id(event_id: int) -> dict | None:
+    """Return a single proactive_events row by id, or None."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, source, sent_at, payload_json, status, "
+            "thumbs_up, thumbs_down, telegram_message_id, aborted_reason "
+            "FROM proactive_events WHERE id = ?",
+            (int(event_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 # ---------- FTS5 BM25 search ----------
 
 def fts_search(query: str, limit: int = 30) -> list[dict[str, Any]]:

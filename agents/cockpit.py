@@ -1,0 +1,600 @@
+"""Telegram cockpit — pure formatting helpers for operator commands.
+
+All public functions return plain strings ≤3900 chars (enforced via
+_truncate_3900).  No telegram objects; no DB writes except settings.set.
+This separation makes every formatter unit-testable without telegram mocks.
+
+Phase 6A — text MVP.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import UTC, datetime
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Command registry — source of truth for /help AND /tools list
+# ---------------------------------------------------------------------------
+
+_COMMANDS: dict[str, str] = {
+    "start":        "wake up / confirm i'm here",
+    "silence":      "mute proactives for N minutes (default 120)",
+    "unsilence":    "cancel active silence window",
+    "tasks":        "list open background tasks",
+    "cancel":       "cancel a running background task by id",
+    "cost":         "show today's LLM spend vs daily cap",
+    "memory":       "query / edit the fact + message memory",
+    "memory_diff":  "diff two memory snapshots",
+    "approvals":    "list / cancel pending gatekeeper approvals",
+    "proactive":    "manage proactive sources, see recent sends, snooze a source",
+    "grab_stickers": "import sticker pack urls you pasted",
+    "help":         "show this command list",
+    "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
+    "tools":        "list tool registry by capability group",
+    "audit":        "paginate audit_log (recent / tools / approvals / id <id>)",
+    "settings":     "get or set allowlisted runtime settings",
+}
+
+# ---------------------------------------------------------------------------
+# Settings allowlist
+# ---------------------------------------------------------------------------
+
+def _read_silence_default_minutes() -> str:
+    from storage import db as _db
+    override = _db.runtime_get("settings.silence.default_minutes")
+    if override is not None:
+        return override
+    from agents import config as _cfg
+    return str(_cfg.get("silence.default_minutes", 120))
+
+
+def _write_silence_default_minutes(value: str) -> None:
+    n = int(value)
+    if n <= 0:
+        raise ValueError(f"silence.default_minutes must be > 0, got {value!r}")
+    from storage import db as _db
+    _db.runtime_set("settings.silence.default_minutes", str(n))
+
+
+def _read_graphiti_enabled() -> str:
+    return os.environ.get("GRAPHITI_ENABLED", "true")
+
+
+def _write_graphiti_enabled(value: str) -> None:
+    # Persisted as env override via runtime_state so it survives to the
+    # scheduler's next tick without a restart.
+    from storage import db as _db
+    v = value.strip().lower()
+    if v not in ("true", "false", "1", "0"):
+        raise ValueError(f"GRAPHITI_ENABLED must be true/false, got {value!r}")
+    _db.runtime_set("settings.GRAPHITI_ENABLED", v)
+    os.environ["GRAPHITI_ENABLED"] = v
+
+
+def _read_auth_precheck() -> str:
+    return os.environ.get("AUTH_PRECHECK", os.environ.get("AUTH_PRECHECK_OVERRIDE", "shadow"))
+
+
+def _write_auth_precheck(value: str) -> None:
+    v = value.strip().lower()
+    if v not in ("enforce", "shadow", "off"):
+        raise ValueError(f"AUTH_PRECHECK must be enforce/shadow/off, got {value!r}")
+    os.environ["AUTH_PRECHECK"] = v
+    os.environ["AUTH_PRECHECK_OVERRIDE"] = v
+
+
+def _read_proactive_enabled() -> str:
+    from storage import db as _db
+    raw = _db.runtime_get("proactive_enabled_sources_override")
+    if raw is None:
+        from agents import config as _cfg
+        sources = _cfg.get("proactive.default_enabled_sources")
+        return str(sorted(sources) if sources else [])
+    return raw
+
+
+def _write_proactive_enabled(value: str) -> None:
+    # Accepts "true"/"false" (global toggle) or JSON list
+    from storage import db as _db
+    v = value.strip()
+    if v.lower() in ("true", "false"):
+        # global on/off: load current list, or reset to default
+        if v.lower() == "true":
+            _db.runtime_set("proactive_enabled_sources_override", None)
+        else:
+            _db.runtime_set("proactive_enabled_sources_override", "[]")
+    else:
+        # treat as JSON list
+        sources = json.loads(v)
+        _db.runtime_set("proactive_enabled_sources_override", json.dumps(sorted(sources)))
+
+
+_SETTINGS_ALLOWLIST: dict[str, dict] = {
+    "silence.default_minutes": {
+        "type": "int",
+        "validate": lambda v: int(v) > 0,
+        "reader": _read_silence_default_minutes,
+        "writer": _write_silence_default_minutes,
+        "doc": "default silence duration in minutes when /silence is called with no arg",
+    },
+    "GRAPHITI_ENABLED": {
+        "type": "bool",
+        "validate": lambda v: v.strip().lower() in ("true", "false", "1", "0"),
+        "reader": _read_graphiti_enabled,
+        "writer": _write_graphiti_enabled,
+        "doc": "enable/disable Graphiti knowledge-graph outbox drain (true/false)",
+    },
+    "AUTH_PRECHECK": {
+        "type": "enum[enforce,shadow,off]",
+        "validate": lambda v: v.strip().lower() in ("enforce", "shadow", "off"),
+        "reader": _read_auth_precheck,
+        "writer": _write_auth_precheck,
+        "doc": "auth pre-check mode: enforce (block), shadow (log only), off",
+    },
+    "proactive.enabled": {
+        "type": "bool|json_list",
+        "validate": lambda v: True,  # writer validates
+        "reader": _read_proactive_enabled,
+        "writer": _write_proactive_enabled,
+        "doc": "true/false (global toggle) or JSON list of enabled source ids",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _truncate_3900(text: str) -> str:
+    """Single chokepoint — all public formatters pipe through here."""
+    limit = 3900
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n…[truncated]"
+
+
+def _uptime_str() -> str:
+    try:
+        from agents.telegram_bridge import _BOOT_TIME  # type: ignore[attr-defined]
+        elapsed = time.time() - _BOOT_TIME
+    except (ImportError, AttributeError):
+        return "unknown"
+    h = int(elapsed // 3600)
+    m = int((elapsed % 3600) // 60)
+    s = int(elapsed % 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _silence_state() -> tuple[bool, str]:
+    """Returns (is_silenced, human_readable_until_or_empty)."""
+    from storage import db as _db
+    raw = _db.runtime_get("silence_until")
+    if not raw:
+        return False, ""
+    try:
+        until = datetime.fromisoformat(raw)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+        if datetime.now(UTC) >= until:
+            return False, ""
+        return True, until.strftime("%H:%M UTC")
+    except (ValueError, TypeError):
+        return False, ""
+
+
+def _oauth_states() -> dict[str, str]:
+    results: dict[str, str] = {}
+    try:
+        from auth.google import read_grant_from_keychain  # type: ignore[import]
+        grant = read_grant_from_keychain()
+        results["google"] = "ok (grant cached)" if grant else "no grant"
+    except Exception as exc:
+        results["google"] = f"keychain error: {exc}"
+    return results
+
+
+def _parse_duration(s: str) -> int | None:
+    """Parse '30m', '2h', '1d' → seconds.  Returns None on bad input."""
+    s = s.strip().lower()
+    if not s:
+        return None
+    if s.endswith("d"):
+        try:
+            return int(s[:-1]) * 86400
+        except ValueError:
+            return None
+    if s.endswith("h"):
+        try:
+            return int(s[:-1]) * 3600
+        except ValueError:
+            return None
+    if s.endswith("m"):
+        try:
+            return int(s[:-1]) * 60
+        except ValueError:
+            return None
+    # bare integer → assume minutes
+    try:
+        return int(s) * 60
+    except ValueError:
+        return None
+
+# ---------------------------------------------------------------------------
+# Public formatters
+# ---------------------------------------------------------------------------
+
+def format_help() -> str:
+    lines = ["commands:"]
+    for cmd, desc in _COMMANDS.items():
+        lines.append(f"  /{cmd} — {desc}")
+    return _truncate_3900("\n".join(lines))
+
+
+async def format_status(app) -> str:
+    from storage import db as _db
+
+    lines: list[str] = []
+
+    # uptime
+    lines.append(f"uptime: {_uptime_str()}")
+
+    # silence
+    silenced, until_str = _silence_state()
+    if silenced:
+        lines.append(f"silence: on until {until_str}")
+    else:
+        lines.append("silence: off")
+
+    # scheduler jobs
+    try:
+        scheduler = app.bot_data.get("scheduler") if app.bot_data else None
+        if scheduler is not None:
+            jobs = scheduler.get_jobs()
+            job_ids = [j.id for j in jobs]
+            lines.append(f"scheduler: {len(jobs)} job(s) — {', '.join(job_ids)}")
+        else:
+            lines.append("scheduler: not started")
+    except Exception as exc:
+        lines.append(f"scheduler: error ({exc})")
+
+    # MCP warm pool
+    try:
+        from agents.mcp_manager import MANAGER as _mcp_mgr
+        warm = _mcp_mgr.warm_servers()
+        lines.append(f"mcp warm: {sorted(warm) if warm else 'none'}")
+    except Exception as exc:
+        lines.append(f"mcp: error ({exc})")
+
+    # OAuth
+    for provider, state in _oauth_states().items():
+        lines.append(f"oauth.{provider}: {state}")
+
+    # DB row counts
+    try:
+        with _db._conn() as c:
+            n_facts = c.execute(
+                "SELECT COUNT(*) FROM facts WHERE valid_to IS NULL"
+            ).fetchone()[0]
+            n_msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            n_tasks = c.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status='open'"
+            ).fetchone()[0]
+            n_eps = c.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+            n_pending_approvals = c.execute(
+                "SELECT COUNT(*) FROM approvals WHERE status='pending'"
+            ).fetchone()[0]
+        lines.append(
+            f"db: {n_facts} facts, {n_msgs} msgs, {n_eps} episodes, "
+            f"{n_tasks} open tasks"
+        )
+        lines.append(f"pending approvals: {n_pending_approvals}")
+    except Exception as exc:
+        lines.append(f"db: error ({exc})")
+
+    # cost today
+    try:
+        chat_today = float(_db.runtime_get("cost_today") or 0.0)
+        today_iso = datetime.now(UTC).date().isoformat()
+        with _db._conn() as c:
+            row = c.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS bg FROM background_tasks "
+                "WHERE substr(started_at, 1, 10) = ?",
+                (today_iso,),
+            ).fetchone()
+        bg_cost = float(row["bg"] or 0.0)
+        from tools import budget as _budget
+        cap = _budget.daily_cap()
+        lines.append(
+            f"cost today: ~${chat_today + bg_cost:.3f} "
+            f"(chat ${chat_today:.3f} + dispatch ${bg_cost:.3f}) / cap ${cap:.2f}"
+        )
+    except Exception as exc:
+        lines.append(f"cost: error ({exc})")
+
+    # proactive 7d count
+    try:
+        rows_7d = _db.proactive_events_recent(days=7)
+        sent_7d = sum(1 for r in rows_7d if r.get("status") == "sent")
+        lines.append(f"proactive 7d sends: {sent_7d}")
+    except Exception as exc:
+        lines.append(f"proactive: error ({exc})")
+
+    # graph_outbox pending
+    try:
+        pending_graph = len(_db.graph_outbox_pending(limit=500))
+        lines.append(f"graph outbox pending: {pending_graph}")
+    except Exception as exc:
+        lines.append(f"graph outbox: error ({exc})")
+
+    return _truncate_3900("\n".join(lines))
+
+
+def format_tools(subcmd: str, args: list[str]) -> str:
+    subcmd = (subcmd or "policy").lower()
+
+    if subcmd == "recent":
+        from storage import db as _db
+        rows = _db.audit_recent(20)
+        if not rows:
+            return "no tool calls in audit log yet."
+        lines = [f"recent tool calls ({len(rows)}):"]
+        for r in rows:
+            ts = (r.get("ts") or "")[:16]
+            tool = r.get("tool") or "?"
+            lines.append(f"  {ts}  {tool}")
+        return _truncate_3900("\n".join(lines))
+
+    # default: policy — group by access_mode
+    try:
+        from tools._tools_yaml import load_registry
+        reg = load_registry()
+        tools_list = reg.tools()
+    except Exception as exc:
+        return f"error loading tool registry: {exc}"
+
+    groups: dict[str, list[str]] = {}
+    for spec in tools_list:
+        mode = spec.access_mode or "unset"
+        groups.setdefault(mode, []).append(spec.id)
+
+    lines = ["tool registry by access_mode:"]
+    for mode in sorted(groups):
+        ids = sorted(groups[mode])
+        lines.append(f"\n[{mode}] ({len(ids)} tools)")
+        for tid in ids:
+            lines.append(f"  {tid}")
+
+    return _truncate_3900("\n".join(lines))
+
+
+def format_audit(subcmd: str, args: list[str]) -> str:
+    from storage import db as _db
+    subcmd = (subcmd or "recent").lower()
+
+    def _render_row(r: dict) -> str:
+        ts = (r.get("ts") or "")[:16]
+        tool = r.get("tool") or "?"
+        approved_by = r.get("approved_by") or ""
+        summary = (r.get("result_summary") or "")[:60]
+        approval_note = f" [approved by {approved_by}]" if approved_by else ""
+        return f"  #{r['id']} {ts} {tool}{approval_note}" + (
+            f"\n    {summary}" if summary else ""
+        )
+
+    if subcmd == "recent":
+        try:
+            n = int(args[0]) if args else 20
+        except (ValueError, IndexError):
+            n = 20
+        rows = _db.audit_recent(n)
+        if not rows:
+            return "audit log is empty."
+        lines = [f"audit log — last {len(rows)} entries:"]
+        for r in rows:
+            lines.append(_render_row(r))
+        # hash-chain verify line
+        if rows:
+            latest = rows[0]
+            lines.append(
+                f"\nlatest hash: {(latest.get('hash_self') or '')[:12]}…"
+            )
+        return _truncate_3900("\n".join(lines))
+
+    if subcmd == "tools":
+        counts = _db.audit_tool_counts_7d()
+        if not counts:
+            return "no tool activity in the last 7 days."
+        lines = ["tool call counts (7d):"]
+        for r in counts:
+            lines.append(f"  {r['tool']:40s} {r['cnt']:>5}  last {(r.get('last_ts') or '')[:16]}")
+        return _truncate_3900("\n".join(lines))
+
+    if subcmd == "approvals":
+        rows = _db.audit_approvals_recent(20)
+        if not rows:
+            return "no approved tool calls in audit log."
+        lines = [f"approved tool calls — last {len(rows)}:"]
+        for r in rows:
+            lines.append(_render_row(r))
+        return _truncate_3900("\n".join(lines))
+
+    if subcmd == "id":
+        if not args:
+            return "usage: /audit id <row_id>"
+        try:
+            row_id = int(args[0])
+        except ValueError:
+            return f"invalid id: {args[0]}"
+        row = _db.audit_by_id(row_id)
+        if row is None:
+            return f"audit row #{row_id} not found."
+        lines = [
+            f"audit #{row['id']}",
+            f"  ts:          {row.get('ts') or '?'}",
+            f"  tool:        {row.get('tool') or '?'}",
+            f"  approved_by: {row.get('approved_by') or '—'}",
+            f"  summary:     {row.get('result_summary') or '—'}",
+            f"  hash_self:   {(row.get('hash_self') or '')[:24]}…",
+            f"  hash_prev:   {(row.get('hash_prev') or '')[:24]}…",
+        ]
+        args_raw = row.get("args_json_redacted") or ""
+        if args_raw:
+            lines.append(f"  args:        {args_raw[:200]}")
+        try:
+            from tools.approvals import _redact as _approvals_redact
+            body = _approvals_redact("\n".join(lines))
+        except Exception:
+            body = "\n".join(lines)
+        return _truncate_3900(body)
+
+    return f"unknown audit subcommand: {subcmd!r}. try: recent [N] | tools | approvals | id <id>"
+
+
+def format_settings(subcmd: str, args: list[str]) -> str:
+    from storage import db as _db
+
+    # /settings — list all
+    if not subcmd or subcmd == "list":
+        lines = ["settings:"]
+        for key, spec in _SETTINGS_ALLOWLIST.items():
+            try:
+                val = spec["reader"]()
+            except Exception as exc:
+                val = f"[error: {exc}]"
+            lines.append(f"  {key} = {val}")
+            lines.append(f"    {spec['doc']}")
+        return _truncate_3900("\n".join(lines))
+
+    if subcmd == "get":
+        if not args:
+            return "usage: /settings get <key>"
+        key = args[0]
+        spec = _SETTINGS_ALLOWLIST.get(key)
+        if spec is None:
+            return f"unknown key: {key!r}. allowed: {list(_SETTINGS_ALLOWLIST)}"
+        try:
+            val = spec["reader"]()
+        except Exception as exc:
+            return f"error reading {key}: {exc}"
+        return f"{key} = {val}\n{spec['doc']}"
+
+    if subcmd == "set":
+        if len(args) < 2:
+            return "usage: /settings set <key> <value>"
+        key, value = args[0], " ".join(args[1:])
+        spec = _SETTINGS_ALLOWLIST.get(key)
+        if spec is None:
+            return f"unknown key: {key!r}. allowed: {list(_SETTINGS_ALLOWLIST)}"
+        try:
+            if not spec["validate"](value):
+                return f"invalid value {value!r} for {key} (type: {spec['type']})"
+            spec["writer"](value)
+        except Exception as exc:
+            return f"error setting {key}: {exc}"
+        # audit trail
+        try:
+            _db.audit_append(
+                "settings.set",
+                json.dumps({"key": key, "value": "REDACTED"}),
+                f"set {key} (value redacted)",
+                approved_by="owner",
+            )
+        except Exception:
+            logger.exception("settings.set: audit_append failed (non-fatal)")
+        return f"ok. {key} = {value}"
+
+    return f"unknown subcommand: {subcmd!r}. try: /settings | get <key> | set <key> <value>"
+
+
+def _payload_preview(payload_json: str | None, max_len: int = 50) -> str:
+    """Extract a short human-readable preview from payload_json."""
+    if not payload_json:
+        return ""
+    try:
+        data = json.loads(payload_json)
+        # prefer a 'text' or 'body' or 'content' key
+        for key in ("text", "body", "content", "message"):
+            if key in data and isinstance(data[key], str):
+                return data[key][:max_len]
+        # fall back to first string value
+        for v in data.values():
+            if isinstance(v, str) and v:
+                return v[:max_len]
+    except (ValueError, TypeError, AttributeError):
+        return payload_json[:max_len]
+    return ""
+
+
+def format_proactive_recent(days: int = 7) -> str:
+    from storage import db as _db
+    rows = _db.proactive_events_recent(days=days, limit=50)
+    if not rows:
+        return f"no proactive events in the last {days}d."
+    lines = [f"proactive sends — last {days}d ({len(rows)} rows):"]
+    for r in rows:
+        ts = (r.get("sent_at") or "")[:16]
+        source = r.get("source") or "?"
+        status = r.get("status") or "?"
+        up = r.get("thumbs_up") or 0
+        dn = r.get("thumbs_down") or 0
+        preview = _payload_preview(r.get("payload_json"))
+        reaction = f" 👍{up}👎{dn}" if (up or dn) else ""
+        lines.append(f"  #{r['id']} {ts} [{source}] {status}{reaction}")
+        if preview:
+            lines.append(f"    {preview}")
+    return _truncate_3900("\n".join(lines))
+
+
+def format_proactive_why(event_id: int) -> str:
+    from storage import db as _db
+    row = _db.proactive_event_by_id(event_id)
+    if row is None:
+        return f"proactive event #{event_id} not found."
+    lines = [
+        f"proactive event #{row['id']}",
+        f"  source:   {row.get('source') or '?'}",
+        f"  sent_at:  {row.get('sent_at') or '?'}",
+        f"  status:   {row.get('status') or '?'}",
+    ]
+    aborted = row.get("aborted_reason")
+    if aborted:
+        lines.append(f"  aborted:  {aborted}")
+    preview = _payload_preview(row.get("payload_json"), max_len=200)
+    if preview:
+        lines.append(f"  preview:  {preview}")
+    up = row.get("thumbs_up") or 0
+    dn = row.get("thumbs_down") or 0
+    lines.append(f"  feedback: 👍{up} 👎{dn}")
+    tg_id = row.get("telegram_message_id")
+    if tg_id:
+        lines.append(f"  tg_msg_id: {tg_id}")
+    return _truncate_3900("\n".join(lines))
+
+
+def format_proactive_snooze(source: str, duration_str: str) -> str:
+    from storage import db as _db
+    secs = _parse_duration(duration_str)
+    if secs is None:
+        return f"can't parse duration {duration_str!r}. use e.g. 30m / 2h / 1d"
+
+    # Read existing snooze map
+    raw = _db.runtime_get("proactive_snooze_until")
+    try:
+        snooze_map: dict[str, str] = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        snooze_map = {}
+
+    until_epoch = time.time() + secs
+    until_iso = datetime.fromtimestamp(until_epoch, tz=UTC).isoformat()
+    snooze_map[source] = until_iso
+    _db.runtime_set("proactive_snooze_until", json.dumps(snooze_map))
+
+    human = duration_str.strip()
+    return f"snoozed {source} for {human} (until {until_iso[:16]} UTC)."

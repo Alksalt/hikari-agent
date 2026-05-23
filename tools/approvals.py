@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -193,15 +194,33 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
 
 _REDACT_PATTERNS = [
     (r"sk-[a-zA-Z0-9_-]{20,}", "[REDACTED-API-KEY]"),
+    (r"sk-ant-[a-zA-Z0-9_-]{20,}", "[REDACTED-ANTHROPIC]"),
+    (r"sk-or-[a-zA-Z0-9_-]{20,}", "[REDACTED-OPENROUTER]"),
     (r"ya29\.[a-zA-Z0-9_-]+", "[REDACTED-OAUTH-TOKEN]"),
-    (r"Bearer [a-zA-Z0-9._-]+", "Bearer [REDACTED]"),
+    (r"Bearer\s+[a-zA-Z0-9._\-+/=]+", "Bearer [REDACTED]"),
+    (r"ghp_[A-Za-z0-9]{30,}", "[REDACTED-GH-PAT]"),
+    (r"github_pat_[A-Za-z0-9_]{60,}", "[REDACTED-GH-PAT]"),
+    (r"gh[oprs]_[A-Za-z0-9]{30,}", "[REDACTED-GH-TOKEN]"),
+    (r"xox[abprs]-[A-Za-z0-9-]{10,}", "[REDACTED-SLACK]"),
+    (r"secret_[A-Za-z0-9]{40,}", "[REDACTED-NOTION]"),
+    (r"\b\d{9,10}:[A-Za-z0-9_-]{35}\b", "[REDACTED-TG-BOT]"),
+    (r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_\-+/=]+", "[REDACTED-JWT]"),
     (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}", "[REDACTED-EMAIL]"),
 ]
 
+_SENSITIVE_KEY_NAMES = re.compile(
+    r'"(authorization|api[_-]?key|apikey|secret|password|passwd|pwd|token|access[_-]?token|'
+    r'refresh[_-]?token|client[_-]?secret|webhook[_-]?url|private[_-]?key)"\s*:\s*"[^"]*"',
+    re.IGNORECASE,
+)
+
 
 def _redact(text: str) -> str:
-    import re
-    out = text
+    if not text:
+        return text
+    out = _SENSITIVE_KEY_NAMES.sub(
+        lambda m: m.group(0).split('":')[0] + '": "[REDACTED]"', text
+    )
     for pattern, replacement in _REDACT_PATTERNS:
         out = re.sub(pattern, replacement, out)
     return out

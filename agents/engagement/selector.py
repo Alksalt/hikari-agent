@@ -9,6 +9,7 @@ Scoring per architect spec §9.5:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -16,6 +17,36 @@ from types import SimpleNamespace
 from agents.engagement.triggers import TriggerCandidate
 
 logger = logging.getLogger(__name__)
+
+
+def _snoozed_sources() -> set[str]:
+    """Return the set of source ids that are currently snoozed.
+
+    Reads ``proactive_snooze_until`` from runtime_state — a JSON map of
+    {source: iso_timestamp}.  Entries whose timestamp is in the past are
+    considered expired and excluded from the returned set.
+    """
+    try:
+        from storage import db as _db
+        raw = _db.runtime_get("proactive_snooze_until")
+        if not raw:
+            return set()
+        snooze_map: dict[str, str] = json.loads(raw)
+        now = datetime.now(UTC)
+        snoozed: set[str] = set()
+        for source, iso in snooze_map.items():
+            try:
+                until = datetime.fromisoformat(iso)
+                if until.tzinfo is None:
+                    until = until.replace(tzinfo=UTC)
+                if now < until:
+                    snoozed.add(source)
+            except (ValueError, TypeError):
+                continue
+        return snoozed
+    except Exception:
+        logger.exception("_snoozed_sources: error reading snooze map (returning empty)")
+        return set()
 
 
 # Sources that should be dampened after quiet hours vs preferred in the
@@ -104,11 +135,14 @@ def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerC
     if not candidates:
         return None
     enabled_sources: set[str] = ctx.enabled_sources
+    snoozed: set[str] = _snoozed_sources()
     pool_caps: dict[str, bool] = ctx.pool_caps  # pool_name -> bool (can send)
 
     scored: list[tuple[float, TriggerCandidate]] = []
     for c in candidates:
         if c.source not in enabled_sources:
+            continue
+        if c.source in snoozed:
             continue
         if not pool_caps.get(c.pool, False):
             continue
