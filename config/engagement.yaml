@@ -155,6 +155,29 @@ memory:
   # 1.5^hit_count so frequently-touched facts decay slower — rehearsal
   # effect. Lower values = harsher forgetting; 0 disables the decay.
   recall_decay_tau_seconds: 604800
+  # Phase B: prompt prefix cap. Priority-2 and priority-3 blocks are dropped
+  # (lowest first) when additionalContext would exceed this char count.
+  # Priority-1 (always-on) blocks always render even if they alone exceed it.
+  additional_context_max_chars: 4096
+  conditional_blocks:
+    affect:
+      enabled: true
+    unresolved_decisions:
+      enabled: true
+    callback_candidate:
+      enabled: true
+    tools_available:
+      enabled: true
+    lexicon:
+      enabled: true
+    location:
+      enabled: true
+    observations:
+      enabled: true
+    noticings:
+      enabled: true
+    session_handoff:
+      enabled: true
 
 codex:
   # Phase 8: directory containing the codex/ review reports. Relative paths

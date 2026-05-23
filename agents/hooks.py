@@ -14,6 +14,7 @@ import logging
 import os
 import re
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -405,6 +406,55 @@ def _format_gap_since_last(
     )
 
 
+@dataclass
+class _Block:
+    key: str
+    priority: int
+    order: int
+    text: str
+
+
+_ALWAYS_ON = frozenset({"now", "working_memory", "gap_since_last", "core_blocks", "peer_representation", "open_tasks"})
+
+
+def _block_enabled(key: str) -> bool:
+    overrides = cfg.get("memory.conditional_blocks", {}) or {}
+    entry = overrides.get(key) or {}
+    return bool(entry.get("enabled", True))
+
+
+def _format_callback_candidate(user_prompt: str) -> str | None:
+    try:
+        from agents.callback_surface import pick_callback_candidate
+        candidate = pick_callback_candidate(user_prompt)
+        if not candidate:
+            return None
+        return (
+            f"# callback candidate (score {candidate['score']}):\n"
+            f"  [{candidate['date']}] {candidate['text'][:200]}\n"
+            "(surface sideways if it fits — your one-notice-per-session "
+            "rule still applies.)"
+        )
+    except Exception:
+        logger.exception("inject_memory: callback_surface failed (non-fatal)")
+        return None
+
+
+def _format_unresolved_decisions() -> str | None:
+    try:
+        n_overdue = db.decisions_unresolved_overdue_count()
+        if n_overdue <= 0:
+            return None
+        return (
+            f"\n# memory: unresolved decisions ({n_overdue})\n"
+            "(brier-style calibration log — when natural, ask whether "
+            "one of these resolved.)"
+        )
+    except Exception:
+        logger.exception("inject_memory: decisions count failed (non-fatal)")
+        return None
+
+
 async def inject_memory(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -414,98 +464,62 @@ async def inject_memory(
     user_prompt = ""
     if isinstance(input_data, dict):
         user_prompt = str(input_data.get("prompt") or input_data.get("user_prompt") or "")
-    parts: list[str] = []
     try:
-        # `# now` goes first so the model has a clock for reminder_create
-        # and any other time-relative reasoning.
-        now_block = _format_now()
-        if now_block:
-            parts.append(now_block)
-        wm = _format_working_memory()
-        if wm:
-            parts.append(wm)
         last_msg = db.runtime_get("last_user_message")
-        gap_block = _format_gap_since_last(last_msg)
-        if gap_block:
-            parts.append(gap_block)
-        block = _format_core_blocks()
-        if block:
-            parts.append(block)
-        # Phase 7: structured peer model goes right after the fast-path
-        # core_blocks (mood, preoccupation). It's the "who they are" frame
-        # Hikari needs before everything else.
-        peer = _format_peer_representation()
-        if peer:
-            parts.append(peer)
-        # Affect goes right after core_blocks so the "you're still in [state]"
-        # framing has primacy over the other blocks. Hooks aren't strictly
-        # ordered by Claude but earlier blocks read first.
-        affect = _format_affect()
-        if affect:
-            parts.append(affect)
-        tasks = _format_open_tasks()
-        if tasks:
-            parts.append(tasks)
-        lex = _format_lexicon()
-        if lex:
-            parts.append(lex)
-        loc = _format_location()
-        if loc:
-            parts.append(loc)
-        obs = _format_observations()
-        if obs:
-            parts.append(obs)
-        notc = _format_noticings()
-        if notc:
-            parts.append(notc)
-        ho = _format_session_handoff()
-        if ho:
-            parts.append(ho)
-        # Live tool surface — kept at the bottom so it doesn't crowd
-        # higher-priority blocks, but always present so Hikari stops
-        # confabulating her capabilities.
-        tools_block = _format_tools_available()
-        if tools_block:
-            parts.append(tools_block)
-        # Callback surfacer (2026-05-21): one rememberable moment, topically
-        # scored. Lands after everything else so it doesn't crowd higher-
-        # priority blocks. Her one-notice-per-session rule still applies.
-        try:
-            from agents.callback_surface import pick_callback_candidate
-            candidate = pick_callback_candidate(user_prompt)
-            if candidate:
-                parts.append(
-                    f"# callback candidate (score {candidate['score']}):\n"
-                    f"  [{candidate['date']}] {candidate['text'][:200]}\n"
-                    "(surface sideways if it fits — your one-notice-per-session "
-                    "rule still applies.)"
-                )
-        except Exception:
-            logger.exception("inject_memory: callback_surface failed (non-fatal)")
-        # Decision log mirror: surface count of overdue-unresolved decisions
-        # so Hikari can naturally ask about them. The actual ask is a
-        # scheduled job (run_decision_resolver) but if the user is
-        # mid-conversation, she has the awareness.
-        try:
-            n_overdue = db.decisions_unresolved_overdue_count()
-            if n_overdue > 0:
-                parts.append(
-                    f"\n# memory: unresolved decisions ({n_overdue})\n"
-                    "(brier-style calibration log — when natural, ask whether "
-                    "one of these resolved.)"
-                )
-        except Exception:
-            logger.exception("inject_memory: decisions count failed (non-fatal)")
-        # Retrieval moved to the recall subagent — Hikari calls it on demand.
-        _ = user_prompt
+
+        raw: list[tuple[str, int, Any]] = [
+            ("now",                 1, _format_now()),
+            ("working_memory",      1, _format_working_memory()),
+            ("gap_since_last",      1, _format_gap_since_last(last_msg)),
+            ("core_blocks",         1, _format_core_blocks()),
+            ("peer_representation", 1, _format_peer_representation()),
+            ("affect",              2, _format_affect()),
+            ("open_tasks",          1, _format_open_tasks()),
+            ("lexicon",             3, _format_lexicon()),
+            ("location",            3, _format_location()),
+            ("observations",        3, _format_observations()),
+            ("noticings",           3, _format_noticings()),
+            ("session_handoff",     3, _format_session_handoff()),
+            ("tools_available",     2, _format_tools_available()),
+            ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
+            ("unresolved_decisions", 2, _format_unresolved_decisions()),
+        ]
+
+        candidates: list[_Block] = []
+        for order, (key, priority, text) in enumerate(raw):
+            if not text:
+                continue
+            if key not in _ALWAYS_ON and not _block_enabled(key):
+                continue
+            candidates.append(_Block(key=key, priority=priority, order=order, text=text))
+
+        max_chars = int(cfg.get("memory.additional_context_max_chars", 4096))
+        sep = "\n\n"
+        selected: list[_Block] = []
+        running = 0
+        for prio in (1, 2, 3):
+            for b in [x for x in candidates if x.priority == prio]:
+                sep_cost = len(sep) if selected else 0
+                if b.priority > 1 and running + sep_cost + len(b.text) > max_chars:
+                    continue
+                selected.append(b)
+                running += sep_cost + len(b.text)
+
+        selected.sort(key=lambda b: b.order)
+
+        logger.debug(
+            "inject_memory: %d/%d blocks, %d chars (cap=%d)",
+            len(selected), len(candidates), running, max_chars,
+        )
+
     except Exception:
         logger.exception("inject_memory hook failed; continuing with empty context")
         return {}
 
-    if not parts:
+    if not selected:
         return {}
 
-    additional = "\n\n".join(parts)
+    additional = sep.join(b.text for b in selected)
     return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
