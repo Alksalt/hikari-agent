@@ -11,9 +11,16 @@ Credentials are read from TokenStore first; env vars (GOOGLE_WORKSPACE_*) are
 the fallback. On first successful env-var read, write-through to store.
 
 Network-failure policy: return empty set, do NOT write cache, so next call retries.
+
+Keychain grant helpers:
+  write_grant_to_keychain(payload) — persist full OAuth response to keychain item 'hikari-google'.
+  read_grant_from_keychain()       — inverse; returns dict or None.
+  get_access_token()               — refresh and return a fresh access_token (used by runtime to
+                                     inject into MCP subprocess env).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -21,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from auth.providers import Provider
-from auth.store import TokenStore
+from auth.store import TokenStore, default_store
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,54 @@ _SCOPES_CACHE_TTL_HOURS = 24
 
 _TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _TOKENINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v1/tokeninfo"
+_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
+
+# Keychain key name for the full grant blob.
+_GRANT_KEY = "grant"
+
+
+def write_grant_to_keychain(token_payload: dict) -> None:
+    """Persist a full OAuth response dict to keychain item 'hikari-google'.
+
+    Expected keys: access_token, refresh_token, scope, expires_at (ISO string).
+    Any extra keys in the payload are preserved round-trip.
+    """
+    store = default_store()
+    store.set("google", _GRANT_KEY, json.dumps(token_payload))
+    # Also write individual credential keys so GoogleProvider._creds() finds them.
+    if "client_id" in token_payload:
+        store.set("google", "client_id", str(token_payload["client_id"]))
+    if "client_secret" in token_payload:
+        store.set("google", "client_secret", str(token_payload["client_secret"]))
+    if "refresh_token" in token_payload:
+        store.set("google", "refresh_token", str(token_payload["refresh_token"]))
+
+
+def read_grant_from_keychain() -> dict | None:
+    """Read the grant blob from keychain.  Returns None when not present or corrupt."""
+    store = default_store()
+    raw = store.get("google", _GRANT_KEY)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("read_grant_from_keychain: corrupt JSON in keychain item 'hikari-google'")
+        return None
+
+
+async def get_access_token() -> str:
+    """Return a fresh Google access_token by running the refresh flow.
+
+    Reads credentials from keychain via GoogleProvider. Returns "" on failure.
+    Used by agents/runtime.py to inject into MCP subprocess env.
+    """
+    store = default_store()
+    provider = GoogleProvider(store)
+    return await provider.refresh()
 
 
 class GoogleProvider(Provider):
@@ -175,8 +230,20 @@ class GoogleProvider(Provider):
             return ""
 
     def revoke(self) -> None:
-        """Clear stored Google credentials from the store."""
+        """Hit Google's revoke endpoint and clear stored credentials."""
+        creds = self._creds()
+        if creds:
+            _, _, refresh_token = creds
+            try:
+                import httpx as _httpx
+                _httpx.post(
+                    _REVOKE_ENDPOINT,
+                    params={"token": refresh_token},
+                    timeout=10.0,
+                )
+            except Exception as exc:
+                logger.debug("GoogleProvider.revoke: revoke endpoint failed: %r", exc)
         try:
             self._store.clear("google")
         except Exception as exc:
-            logger.debug("GoogleProvider.revoke: %r", exc)
+            logger.debug("GoogleProvider.revoke: store clear failed: %r", exc)

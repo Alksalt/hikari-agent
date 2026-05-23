@@ -9,11 +9,11 @@ providers:
     voice_template: "can't {action} — my {provider} grant doesn't cover {missing_scopes}. run `uv run python -m scripts.auth google grant --add {missing_scopes}` and re-launch me."
 
   notion:
-    provider_class: auth.providers.NotionProvider
+    provider_class: auth.notion.NotionOAuthProvider
     voice_template: "can't reach notion — token isn't set."
 
   github:
-    provider_class: auth.providers.GitHubProvider
+    provider_class: auth.github.GitHubPATProvider
     voice_template: "can't reach github — token isn't set."
 
 # ---------------------------------------------------------------------------

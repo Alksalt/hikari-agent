@@ -57,7 +57,7 @@ async def get_graph() -> Graphiti:
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError("OPENROUTER_API_KEY required for graphiti (cheap LLM via openrouter)")
-        model = str(_cfg.get("graph.llm_model", "deepseek/deepseek-chat"))
+        model = str(_cfg.get("graph.llm_model", "deepseek/deepseek-v4-flash"))
         llm_config = LLMConfig(
             api_key=api_key,
             model=model,

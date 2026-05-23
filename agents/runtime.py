@@ -74,6 +74,78 @@ def looks_like_sdk_error(text: str) -> bool:
 MODEL_PRIMARY = os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
 MODEL_FALLBACK = os.environ.get("HIKARI_MODEL_FALLBACK") or cfg.get("runtime.model_fallback") or "claude-haiku-4-5"
 
+
+def _inject_keychain_tokens_to_env() -> None:
+    """Read provider tokens from keychain and inject into os.environ.
+
+    The .mcp.json uses ${ENV_VAR} substitution resolved from the process
+    environment when the SDK spawns MCP subprocesses. Injecting here (once
+    at startup) means keychain tokens flow into all subsequent MCP spawns
+    without polluting the global env on .env-only deployments.
+
+    Only writes env vars whose current value is empty/unset, so explicit
+    .env values always win (backwards-compat).
+
+    Called once at module import time; safe to call again (idempotent via
+    the env-var presence check).
+    """
+    try:
+        from auth.google import read_grant_from_keychain
+        grant = read_grant_from_keychain()
+        if grant:
+            for env_var, key in [
+                ("GOOGLE_WORKSPACE_CLIENT_ID", "client_id"),
+                ("GOOGLE_WORKSPACE_CLIENT_SECRET", "client_secret"),
+                ("GOOGLE_WORKSPACE_REFRESH_TOKEN", "refresh_token"),
+            ]:
+                kc_val = grant.get(key)
+                if kc_val:
+                    if os.environ.get(env_var):
+                        logger.warning(
+                            "auth: both keychain and env set for %s — env wins. "
+                            "Delete %s from .env after migration to use the keychain value.",
+                            env_var, env_var,
+                        )
+                    else:
+                        os.environ[env_var] = str(kc_val)
+    except Exception:
+        logger.debug("_inject_keychain_tokens_to_env: google read failed (non-fatal)")
+
+    try:
+        from auth.notion import _load_token
+        token = _load_token()
+        kc_notion = token.get("access_token") if token else None
+        if kc_notion:
+            if os.environ.get("NOTION_TOKEN"):
+                logger.warning(
+                    "auth: both keychain and env set for %s — env wins. "
+                    "Delete %s from .env after migration to use the keychain value.",
+                    "NOTION_TOKEN", "NOTION_TOKEN",
+                )
+            else:
+                os.environ["NOTION_TOKEN"] = str(kc_notion)
+    except Exception:
+        logger.debug("_inject_keychain_tokens_to_env: notion read failed (non-fatal)")
+
+    try:
+        from auth.github import _load_pat
+        blob = _load_pat()
+        kc_gh = blob.get("token") if blob else None
+        if kc_gh:
+            if os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN"):
+                logger.warning(
+                    "auth: both keychain and env set for %s — env wins. "
+                    "Delete %s from .env after migration to use the keychain value.",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN",
+                )
+            else:
+                os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = str(kc_gh)
+    except Exception:
+        logger.debug("_inject_keychain_tokens_to_env: github read failed (non-fatal)")
+
+
+_inject_keychain_tokens_to_env()
+
 # Per-turn budget for chat-path SDK calls. Used by _build_options /
 # run_user_turn / respond defaults AND substituted into the persona prompt
 # via _persona().format(max_turns=...). Keep this constant and the

@@ -211,7 +211,7 @@ these contracts are MANDATORY when the hint is present. voice rules (short, dry,
 
 **Main path** (Hikari turns, drift judge, anything per-turn): `CLAUDE_CODE_OAUTH_TOKEN` via `claude-agent-sdk` only. Never set `ANTHROPIC_API_KEY` — the SDK falls back to it and double-bills on top of the $200/mo Max subscription.
 
-**Cheap auxiliary LLM ops** (Graphiti entity extraction, summarizers, classifiers, occasional judges): use **OpenRouter** with a cheap model. Default `deepseek/deepseek-chat` (~$0.14/1M input — structured/JSON). Also allowed: `google/gemini-flash-1.5` (fast), `meta-llama/llama-3.3-70b-instruct` (general), `mistralai/mistral-small`, anything under ~$0.50/1M input on OpenRouter. Pick by use-case. Set `OPENROUTER_API_KEY`.
+**Cheap auxiliary LLM ops** (Graphiti entity extraction, summarizers, classifiers, occasional judges): use **OpenRouter** with a current cheap model — see `MODELS.md` (verified 2026-05-23) for the canonical list. Default `deepseek/deepseek-v4-flash` ($0.14/$0.28, 1M ctx, 384K out — memory-extraction workhorse). Fallback chain: `mistralai/mistral-small-2603` → `google/gemini-2.5-flash-lite` → `z-ai/glm-4.7-flash`. **Do NOT use `deepseek/deepseek-chat`** — that alias retires 2026-07-24. Set `OPENROUTER_API_KEY`. When MODELS.md is updated, prefer it over training-data memory.
 
 **Embeddings**: hosted API is fine (`text-embedding-3-small` via `OPENAI_API_KEY` ≈ $0.02/1M tokens — basically free at Hikari volume). Local `fastembed` (`tools/embeddings.py`, `BAAI/bge-small-en-v1.5`, 384-dim) is also fine. Either works.
 

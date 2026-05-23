@@ -28,6 +28,9 @@ from . import tool_inventory as tool_inventory_mod
 
 logger = logging.getLogger(__name__)
 
+# Boot-log flag: emit the effective scope-precheck mode once on first call.
+_precheck_mode_logged = False
+
 
 def _resolve_local_tz_name() -> str:
     """Pick the local tz the model should reason about.
@@ -648,21 +651,47 @@ async def _precheck_scopes(
     mode is off/shadow). Returns a deny hook output dict when mode="enforce"
     and a scope deficit is found.
     """
-    mode = os.environ.get("AUTH_PRECHECK", "shadow").lower()
+    global _precheck_mode_logged
+
+    _VALID_MODES = {"off", "shadow", "enforce"}
+
+    # Priority: AUTH_PRECHECK_OVERRIDE env (escape hatch) > AUTH_PRECHECK env >
+    # auth.precheck config > "shadow" default.
+    override_env = os.environ.get("AUTH_PRECHECK_OVERRIDE", "").strip().lower()
+    if override_env:
+        if override_env not in _VALID_MODES:
+            logger.warning(
+                "auth: unknown AUTH_PRECHECK_OVERRIDE=%r — falling back to shadow",
+                override_env,
+            )
+            mode = "shadow"
+        else:
+            mode = override_env
+    elif os.environ.get("AUTH_PRECHECK"):
+        mode = os.environ.get("AUTH_PRECHECK", "shadow").strip().lower()
+    else:
+        mode = str(cfg.get("auth.precheck") or "shadow").strip().lower()
+
+    if not _precheck_mode_logged:
+        logger.info("auth: scope precheck mode = %s", mode)
+        _precheck_mode_logged = True
+
     if mode == "off":
         return None
     try:
         from auth.providers import get_provider, load_scope_config
-        cfg = load_scope_config()
-        spec = cfg.tool_specs.get(tool_name)
+        from auth.scope_match import scope_satisfies
+        scope_cfg = load_scope_config()
+        spec = scope_cfg.tool_specs.get(tool_name)
         if not spec:
             return None
         provider = get_provider(spec.provider)
         have = await provider.current_scopes()
-        missing = [s for s in spec.required_scopes if s not in have]
+        have_set = set(have)
+        missing = [s for s in spec.required_scopes if not scope_satisfies(s, have_set)]
         if not missing:
             return None
-        voice = cfg.provider_templates.get(spec.provider, "scope missing").format(
+        voice = scope_cfg.provider_templates.get(spec.provider, "scope missing").format(
             action=spec.action,
             provider=spec.provider,
             missing_scopes=" ".join(missing),

@@ -871,6 +871,9 @@ decision_log:
   # Days to wait before re-asking about the same decision after a check.
   reask_cooldown_days: 14
 
+auth:
+  precheck: enforce              # was shadow in Sprint 2; set AUTH_PRECHECK_OVERRIDE=shadow to revert at runtime
+
 retention:
   messages_days: 365
   oauth_audit_log_days: 365
@@ -888,8 +891,16 @@ engagement:
     max_per_24h: 2
 
 graph:
-  llm_model: deepseek/deepseek-chat      # cheap; ~$0.14/M input via openrouter
+  # Primary + fallback chain for Graphiti entity extraction (cheap LLM).
+  # Pinned per MODELS.md (verified 2026-05-23). All under $0.50/1M output.
+  # `deepseek/deepseek-chat` alias retires 2026-07-24 — do NOT use it.
+  llm_model: deepseek/deepseek-v4-flash  # $0.14/$0.28, 1M ctx, 384K out — memory-extraction default
+  llm_fallbacks:                         # tried in order if primary errors
+    - mistralai/mistral-small-2603       # $0.15/$0.60, symmetric-ish, multimodal
+    - google/gemini-2.5-flash-lite       # $0.10/$0.40, fast TTFT, production-proven
+    - z-ai/glm-4.7-flash                 # $0.06/$0.40, cheapest input, 16K out cap
   # Embeddings: local-only via tools/embeddings.py (fastembed + BAAI/bge-small-en-v1.5).
-  # No hosted embedding API — project rule (NO direct API; OAuth/subscription only).
+  # Hosted embeddings (e.g. text-embedding-3-small via OPENAI_API_KEY) also fine per
+  # CLAUDE.md cost-aware routing rule — cheap enough at Hikari volume.
   backfill_min_interval_s: 0.5           # throttle between episodes
   backfill_max_episodes: 500             # hard cap; raise + re-run for larger DBs
