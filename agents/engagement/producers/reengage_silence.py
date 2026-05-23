@@ -55,13 +55,13 @@ def collect() -> list[TriggerCandidate]:
     if silence_until and now < silence_until:
         return []
 
-    rows = db.recent_messages(limit=1)
-    if not rows:
+    # Anchor the silence gap on the last inbound user message — proactive
+    # assistant rows now persist (Phase 4A) and would otherwise reset the
+    # anchor every time we fire, breaking dedup.
+    last_user_ts_iso = db.runtime_get("last_user_message")
+    if not last_user_ts_iso:
         return []
-    last = rows[0]
-    if last["role"] != "assistant":
-        return []
-    last_ts = _parse_dt(last["ts"])
+    last_ts = _parse_dt(last_user_ts_iso)
     if not last_ts:
         return []
 

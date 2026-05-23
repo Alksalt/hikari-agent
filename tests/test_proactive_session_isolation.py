@@ -125,3 +125,32 @@ async def test_concurrent_internal_control_does_not_race_session_id(monkeypatch)
         f"session_id was mutated to {db.get_session_id()!r} by concurrent internal calls"
     )
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_blocks_does_not_overwrite_session_id(monkeypatch):
+    """run_user_turn_blocks (multimodal ephemeral path) must NOT overwrite the
+    live session_id, even if the stubbed SDK returns a different session_id."""
+    db.set_session_id("live-session-multimodal")
+
+    import agents.runtime as runtime_mod
+
+    async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
+                               max_budget_usd, retry_on_process_error=True,
+                               **kwargs):
+        assert not log_session_id, (
+            "run_user_turn_blocks violated session contract: log_session_id=True"
+        )
+        return "blocks reply"
+
+    monkeypatch.setattr(runtime_mod, "_invoke_sdk", fake_invoke_sdk)
+    monkeypatch.setattr(runtime_mod, "_RUN_LOCK", asyncio.Lock())
+
+    from agents.runtime import run_user_turn_blocks
+    result = await run_user_turn_blocks([{"type": "text", "text": "hi"}])
+
+    assert result == "blocks reply"
+    assert db.get_session_id() == "live-session-multimodal", (
+        f"session_id was overwritten to {db.get_session_id()!r}; "
+        "run_user_turn_blocks must not mutate the live session"
+    )

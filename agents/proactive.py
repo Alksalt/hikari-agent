@@ -217,28 +217,13 @@ async def fire_due_reminders(send_text) -> int:
         except Exception:
             logger.exception("fire_due_reminders: send_text failed for #%s", row["id"])
             continue
-        final, tg_id, ok = _unpack_send_result(result, text)
+        _, _, ok = _unpack_send_result(result, text)
         if not ok:
             logger.warning(
                 "fire_due_reminders: send_text reported failure for #%s; not persisting",
                 row["id"],
             )
             continue
-        # Phase 13.1 (Stream G — codex P0 fix): persist FINAL filtered text +
-        # Telegram message_id. Reminders are visible proactive events — record
-        # so reflection / handoff see them.
-        try:
-            if tg_id is not None:
-                db.append_message_with_telegram_id(
-                    "assistant", final, tg_id, source="proactive",
-                )
-            else:
-                db.append_message("assistant", final, source="proactive")
-        except Exception:
-            logger.exception(
-                "fire_due_reminders: append_message post-send failed for #%s",
-                row["id"],
-            )
         db.reminder_mark_fired(row["id"])
         fired += 1
         nxt = _next_occurrence(row["fire_at"], row.get("repeat") or "")

@@ -667,8 +667,8 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     except Exception:
         logger.exception("daily_checkin: proactive_event_insert failed (non-fatal)")
     cadence.record_ceremony_sent("daily_checkin")
-    # Mark fired + start pending-reply window. Choreography helper persisted
-    # the assistant row with source='daily_checkin' already.
+    # Mark fired + start pending-reply window. The send_text closure (Phase 4A)
+    # persists the assistant row via send_and_persist with source='proactive'.
     mark_fired_today(now_local)
     clear_expired_overrides(now_local)
     db.runtime_set(PENDING_KEY, datetime.now(UTC).isoformat())

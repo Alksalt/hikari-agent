@@ -16,21 +16,22 @@ async def test_run_user_turn_blocks_passes_blocks_to_sdk(monkeypatch):
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, retry_on_process_error, **kw):
         captured["prompt"] = prompt
+        captured["log_session_id"] = log_session_id
         return "ok"
 
     monkeypatch.setattr(runtime_mod, "_invoke_sdk", fake_invoke_sdk)
-    # Patch the lock so we don't need a real event loop lock context
     monkeypatch.setattr(runtime_mod, "_RUN_LOCK", asyncio.Lock())
 
-    # Patch db.get_session_id to avoid hitting real DB
     with patch("agents.runtime.db") as mock_db:
         mock_db.get_session_id.return_value = None
-
         blocks = [{"type": "text", "text": "hi"}]
         result = await runtime_mod.run_user_turn_blocks(blocks)
 
     assert result == "ok"
-    assert isinstance(captured["prompt"], list), (
-        "run_user_turn_blocks must pass a list to _invoke_sdk, not a string"
-    )
+    assert isinstance(captured["prompt"], list)
     assert captured["prompt"] == blocks
+    assert captured["log_session_id"] is False, (
+        "run_user_turn_blocks must call _invoke_sdk with log_session_id=False "
+        "so the ephemeral fallback never overwrites the persistent-live session "
+        "(Sprint 4 4A contract)."
+    )

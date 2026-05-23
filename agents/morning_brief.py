@@ -186,23 +186,10 @@ async def maybe_send_morning_brief(send_text) -> bool:
     # Reuse the proactive helper to keep one canonical unpacker (handles
     # both the production 3-tuple and the legacy None-returning fakes).
     from agents.proactive import _unpack_send_result
-    final, tg_id, ok = _unpack_send_result(result, text)
+    _, tg_id, ok = _unpack_send_result(result, text)
     if not ok:
         logger.warning("morning_brief: send_text reported failure; not persisting")
         return False
-    # Phase 13.1 (Stream G — codex P0 fix): persist the FINAL filtered text +
-    # Telegram message_id post-send.
-    try:
-        if tg_id is not None:
-            db.append_message_with_telegram_id(
-                "assistant", final, tg_id, source="proactive",
-            )
-        else:
-            db.append_message("assistant", final, source="proactive")
-    except Exception:
-        logger.exception(
-            "morning_brief: append_message post-send failed (non-fatal)",
-        )
     try:
         db.proactive_event_insert(
             source="morning_brief",

@@ -584,12 +584,13 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     subprocess stdin; injecting a content-block list would corrupt the
     transcript format.  This call goes through the standard ephemeral
     (cold-start) path which handles arbitrary prompt shapes correctly.
+    log_session_id is False so the ephemeral fallback's session_id never overwrites the persistent live session pointer (Sprint 4 4A fix).
     """
     async with _RUN_LOCK:
         return await _invoke_sdk(
             content_blocks,
             resume=db.get_session_id(),
-            log_session_id=True,
+            log_session_id=False,
             max_turns=DEFAULT_MAX_TURNS,
             max_budget_usd=0.50,
             retry_on_process_error=True,

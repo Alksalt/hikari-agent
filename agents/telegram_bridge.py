@@ -163,8 +163,20 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
         if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
             continue
         try:
-            with path.open("rb") as f:
-                await bot.send_photo(chat_id=chat_id, photo=f)
+            from agents.messaging import send_and_persist  # noqa: PLC0415
+            result = await send_and_persist(
+                bot=bot,
+                chat_id=chat_id,
+                text="",                # photo has no caption text
+                source="proactive",
+                photo_path=path,
+                persist=False,          # photos don't write a messages row
+                run_hooks=False,
+                skip_choreography=True,
+            )
+            if not result.ok:
+                logger.warning("failed to send photo %s (send_and_persist not ok)", path.name)
+                continue
             sent += 1
         except Exception:
             logger.exception("failed to send photo %s", path.name)
@@ -244,35 +256,25 @@ async def _send_with_choreography(
     elif remaining > 0:
         await asyncio.sleep(remaining)
 
-    try:
-        sent_msg = await message.reply_text(text_to_send)
-    except Exception:
-        logger.exception(
-            "telegram send failed; NOT appending assistant row "
-            "(text would be unsent)",
-        )
-        return
+    # Step 3+persist: delegate send + DB write to the unified helper.
+    # skip_choreography=True because we already computed and applied the delay
+    # above. run_hooks=False because the bridge runs its own post-send hooks below.
+    from agents.messaging import send_and_persist  # noqa: PLC0415
+    result = await send_and_persist(
+        bot=bot,
+        chat_id=chat_id,
+        text=text_to_send,
+        source="chat",
+        reply_to=message,
+        elapsed_real=elapsed_real,
+        skip_choreography=True,
+        run_hooks=False,
+    )
+    sent_ok = result.ok
+    text_to_send = result.final_text
 
-    # Step 3: persist the FINAL sent text + Telegram id in one insert.
-    try:
-        tg_msg_id = (
-            int(sent_msg.message_id)
-            if sent_msg is not None and getattr(sent_msg, "message_id", None)
-            else 0
-        )
-        if tg_msg_id:
-            db.append_message_with_telegram_id(
-                "assistant", text_to_send, tg_msg_id, source="chat",
-            )
-        else:
-            # Send returned no message_id (shouldn't happen with PTB but
-            # defend against it) — still persist the content so the
-            # next-turn handoff sees what was delivered.
-            db.append_message("assistant", text_to_send, source="chat")
-    except Exception:
-        logger.exception(
-            "post_send: append_message_with_telegram_id failed (non-fatal)",
-        )
+    if not sent_ok:
+        return
 
     # Step 4: write handoff snapshot AFTER the final assistant row is committed,
     # so cold-open replay shows what the user actually saw.
@@ -1675,34 +1677,26 @@ async def _send_text_with_choreography(
     elif remaining > 0:
         await asyncio.sleep(remaining)
 
-    try:
-        sent = await bot.send_message(chat_id=chat_id, text=text_to_send)
-    except Exception:
-        logger.exception(
-            "reaction-turn: send_message failed; NOT appending assistant row"
-        )
-        return
+    # Delegate send + persist to the unified helper.
+    # reply_to=None (reaction sends go to chat, not as a reply to a specific msg).
+    # skip_choreography=True because we already computed and applied the delay above.
+    # run_hooks=False because the bridge runs its own post-send hooks below.
+    from agents.messaging import send_and_persist  # noqa: PLC0415
+    result = await send_and_persist(
+        bot=bot,
+        chat_id=chat_id,
+        text=text_to_send,
+        source=source,
+        reply_to=None,
+        elapsed_real=elapsed_real,
+        skip_choreography=True,
+        run_hooks=False,
+    )
+    sent_ok = result.ok
+    text_to_send = result.final_text
 
-    # Phase 13 (Stream C): persist the FINAL sent text post-send. Reaction
-    # turns are still real visible assistant outbound — default source='chat'
-    # so reflection/handoff treat them like normal replies; callers can
-    # override (daily_checkin uses 'daily_checkin').
-    try:
-        tg_msg_id = (
-            int(sent.message_id)
-            if sent is not None and getattr(sent, "message_id", None)
-            else 0
-        )
-        if tg_msg_id:
-            db.append_message_with_telegram_id(
-                "assistant", text_to_send, tg_msg_id, source=source,
-            )
-        else:
-            db.append_message("assistant", text_to_send, source=source)
-    except Exception:
-        logger.exception(
-            "reaction-turn: append_message_with_telegram_id failed (non-fatal)"
-        )
+    if not sent_ok:
+        return
 
     # Reaction turns inject the same observation/noticing block via the hook,
     # so commit the markers here too.
@@ -1950,48 +1944,28 @@ def main() -> None:
 
     async def post_init(application: Application) -> None:
         async def send_text(text: str) -> tuple[str, int | None, bool]:
-            """Filter + send a proactive text outbound.
+            """Filter + send a proactive text outbound, persisting to DB.
 
-            Phase 13.1 (Stream G — codex P0 fix): returns
-            ``(final_text_after_filtering, telegram_message_id, sent_ok)``
-            so callers persist the FINAL delivered text (not the pre-filter
-            draft) plus the Telegram message_id needed for 👍/👎 joins.
+            Phase 4A: delegates to send_and_persist so every proactive send
+            (heartbeat, daily_checkin, morning_brief, decision_log, etc.)
+            writes a ``messages`` row with the final delivered text and the
+            Telegram message_id. This closes the gap where proactive sends
+            were not persisted and therefore invisible to handoff/reflection.
 
-            On send failure returns ``(text, None, False)`` — caller MUST
-            NOT persist (no phantom rows for messages that never reached
-            the wire).
+            Returns ``(final_text, telegram_message_id, sent_ok)`` for
+            back-compat with existing callers.
             """
-            # Run outgoing filter so proactive heartbeats can't leak
-            # safety-voice patter either. Phase 8: when the filter flags a
-            # rewrite-worthy hit, attempt one bounded Haiku rewrite before
-            # falling back to a deterministic short reply.
-            filtered = filter_outgoing(text)
-            to_send = filtered.text
-            if filtered.refusal_short_replaced:
-                db.append_thought(
-                    "proactive: short-replaced safety-voice. "
-                    f"hits={filtered.refusal_hits[:3]}"
-                )
-            elif filtered.needs_llm_rewrite:
-                to_send = await post_filter.rewrite_or_fallback(
-                    text, filtered, mood=_mood(), where="proactive",
-                )
-            try:
-                sent = await application.bot.send_message(
-                    chat_id=owner_id(), text=to_send,
-                )
-            except Exception:
-                logger.exception(
-                    "send_text: bot.send_message failed; caller will skip persist",
-                )
-                return text, None, False
-            tg_msg_id: int | None = None
-            if sent is not None and getattr(sent, "message_id", None):
-                try:
-                    tg_msg_id = int(sent.message_id)
-                except (TypeError, ValueError):
-                    tg_msg_id = None
-            return to_send, tg_msg_id, True
+            from agents.messaging import send_and_persist  # noqa: PLC0415
+            result = await send_and_persist(
+                bot=application.bot,
+                chat_id=owner_id(),
+                text=text,
+                source="proactive",
+                persist=True,       # proactive sends WRITE to messages table now
+                run_hooks=False,
+                skip_choreography=True,
+            )
+            return result.final_text, result.telegram_message_id, result.ok
 
         scheduler = build_scheduler(send_text)
         scheduler.start()

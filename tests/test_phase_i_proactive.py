@@ -303,15 +303,19 @@ class TestProducerReengageSilence:
     def test_collect_returns_candidate_when_conditions_met(self):
         from agents.engagement.producers import reengage_silence
         last_ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
-        last_msg = {"role": "assistant", "ts": last_ts}
+
+        def _runtime_get_side_effect(key):
+            if key == "last_user_message":
+                return last_ts
+            return None  # silence_until, reengage_sent_for_gap → not set
+
         with (
             patch("agents.config.get", return_value=True),
             patch("agents.config.section", return_value={
                 "reengage_min_hours": 2, "reengage_max_hours": 6,
                 "quiet_start_hour": 23, "quiet_end_hour": 8,
             }),
-            patch("storage.db.runtime_get", return_value=None),
-            patch("storage.db.recent_messages", return_value=[last_msg]),
+            patch("storage.db.runtime_get", side_effect=_runtime_get_side_effect),
             patch.object(reengage_silence, "_is_quiet_now", return_value=False),
         ):
             results = reengage_silence.collect()
