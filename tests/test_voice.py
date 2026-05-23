@@ -182,8 +182,9 @@ def test_no_stages_md():
     assert not f.exists()
 
 
-# ---------- live LLM (skipped without auth) ----------
+# ---------- live LLM (skipped by default; run with `pytest -m slow`) ----------
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
     reason="live test requires CLAUDE_CODE_OAUTH_TOKEN",
