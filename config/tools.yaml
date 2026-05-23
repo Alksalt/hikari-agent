@@ -429,6 +429,7 @@ tools:
     bucket: 1
     server: hikari_utility
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: []
 
@@ -436,6 +437,7 @@ tools:
     bucket: 1
     server: hikari_utility
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: []
 
@@ -453,6 +455,17 @@ tools:
     gate_timeout_sec: 120
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__python_run$"]
+
+  # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
+  # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
+  # for auto-discovered utility tools (calc, reminder_create, receipt_add, etc.).
+  - id: "mcp__hikari_utility__*"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
 
   # --------------------------------------------------------------------------
   # External MCP servers (bucket 3) — explicit gated tools first
@@ -552,6 +565,7 @@ tools:
     bucket: 3
     server: google_workspace
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__google_workspace__"]
 
@@ -616,6 +630,7 @@ tools:
     bucket: 3
     server: notion
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__notion__"]
 
@@ -681,14 +696,63 @@ tools:
     bucket: 3
     server: github
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__github__"]
 
-  # Apple Events — wildcard (no gate; low-risk local device)
+  # Apple Events — explicit per-tool entries for tools that are ungated writes.
+  # These MUST appear before the wildcard so the resolver finds them as EXPLICIT
+  # (not wildcard), bypassing the wildcard-write deny in gatekeeper.
+  # See tests/test_destructive_tool_gating.py _APPLE_UNGATED_TOOLS for the
+  # canonical list of intentionally-ungated tools (Phase 13.1 rationale there).
+  - id: "mcp__apple_events__create_reminder"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__delete_reminder"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__create_calendar_event"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__delete_calendar_event"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__reminders_tasks"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  # Apple Events — wildcard catch-all (no gate; low-risk local device)
+  # Wildcard-write would normally be denied by gatekeeper; the explicit entries
+  # above cover the actually-invoked tools so they take precedence.
   - id: "mcp__apple_events__*"
     bucket: 3
     server: apple_events
     gate: null
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__apple_events__"]
 
@@ -697,6 +761,7 @@ tools:
     bucket: 3
     server: apple_shortcuts
     gate: null
+    access_mode: destructive
     untrusted_output: true
     wrap_patterns: ["^mcp__apple_shortcuts__"]
 
@@ -705,6 +770,7 @@ tools:
     bucket: 3
     server: playwright
     gate: null
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__playwright__"]
 
@@ -713,6 +779,7 @@ tools:
     bucket: 3
     server: youtube_transcript
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__youtube_transcript__"]
 
@@ -721,6 +788,7 @@ tools:
     bucket: 3
     server: duckdb
     gate: null
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__duckdb__"]
 

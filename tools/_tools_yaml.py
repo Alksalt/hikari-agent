@@ -61,6 +61,7 @@ class ToolSpec:
     scopes_provider: str | None        # e.g. "google", "notion", "github"
     scopes_required: tuple[str, ...]   # e.g. ["https://...gmail.modify"]
     scopes_action: str | None          # human-readable action for voice error messages
+    access_mode: str | None            # read | write | destructive (for wildcard policy)
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,22 @@ class ToolRegistry:
             if tool_name.startswith(wc_prefix):
                 return wc
         return None
+
+    def _resolve_with_kind(self, tool_name: str) -> tuple[ToolSpec | None, str | None]:
+        """Resolve a tool_name to (ToolSpec, match_kind).
+
+        match_kind is 'explicit' when the tool has its own entry, or 'wildcard'
+        when it matched a wildcard prefix pattern.  Returns (None, None) when
+        nothing matches.  Explicit wins over wildcard; longest-prefix wildcard
+        wins among wildcards (mirrors _resolve).
+        """
+        if tool_name in self._explicit:
+            return self._explicit[tool_name], "explicit"
+        for wc in self._wildcards:
+            wc_prefix = wc.id[:-1]  # strip trailing "*"
+            if tool_name.startswith(wc_prefix):
+                return wc, "wildcard"
+        return None, None
 
     # ------------------------------------------------------------------
     # Public query methods
@@ -297,8 +314,16 @@ def _parse_server(name: str, raw: dict) -> McpServerSpec:
 def _parse_tool(raw: dict) -> ToolSpec:
     raw_timeout = raw.get("gate_timeout_sec")
     scopes_block = raw.get("scopes") or {}
+    tool_id = str(raw["id"])
+    access_mode = raw.get("access_mode")
+    if access_mode is None and tool_id.endswith("*"):
+        raise ValueError(
+            f"wildcard tool {tool_id!r} requires explicit access_mode "
+            "(read | write | destructive) so the gatekeeper deny-on-wildcard-write "
+            "check fails closed"
+        )
     return ToolSpec(
-        id=str(raw["id"]),
+        id=tool_id,
         bucket=int(raw.get("bucket", 1)),
         server=raw.get("server"),
         gate=raw.get("gate"),
@@ -308,6 +333,7 @@ def _parse_tool(raw: dict) -> ToolSpec:
         scopes_provider=scopes_block.get("provider"),
         scopes_required=tuple(scopes_block.get("required") or []),
         scopes_action=scopes_block.get("action"),
+        access_mode=access_mode,
     )
 
 

@@ -15,11 +15,14 @@ from __future__ import annotations
 import ast
 import datetime as _datetime
 import os
+import pathlib
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 # Matches python dunder names (e.g. __class__, __mro__, __subclasses__).
@@ -119,66 +122,148 @@ def _run_asteval(expr: str, timeout_sec: float) -> tuple[Any, str | None]:
         pool.shutdown(wait=False)
 
 
-def _sandbox_exec_profile(tmpdir: str, python_exec: str) -> str:
-    """sandbox-exec SBPL profile for python_run.
+def _sandbox_exec_profile(
+    tmpdir: str,
+    python_exec: str,
+    input_files: tuple[str, ...] = (),
+) -> str:
+    """sandbox-exec SBPL profile for python_run — deny-default edition.
 
-    Locks down four classes of escape:
-      - ``network*``: no sockets at all.
-      - ``file-write*``: only writes inside ``tmpdir`` are allowed.
-      - ``process-exec*`` / ``process-fork``: blocks ``subprocess.run(...)``
-        and the like. Without this, LLM code could shell out to
-        ``/usr/bin/curl`` and have curl open its own network socket —
-        outside the sandboxed Python process — bypassing the network deny
-        entirely. The initial ``sandbox-exec -> python`` hop is explicitly
-        whitelisted so the interpreter can still start.
-      - sensitive ``file-read*`` paths (ssh keys, passwd, app credential
-        dirs) — selective deny rather than deny-by-default because Python's
-        own startup reads a sprawling set of stdlib + frameworks paths and
-        whitelisting them all is brittle. The exec+fork+network locks make
-        info-disclosure-only reads hard to weaponize anyway.
+    Security model (SBPL rules are last-match-wins):
+
+      1. ``(deny default)`` — block everything not explicitly allowed.
+      2. ``(deny network*)`` — belt-and-suspenders network block (no sockets).
+      3. ``(deny process-fork)`` + ``(deny process-exec*)`` — block child
+         spawn. Re-allow added next so the initial sandbox-exec → python hop
+         can proceed.
+      4. ``(allow process-exec* (subpath home))`` — Python itself lives inside
+         the user home on uv-managed installs, so we must allow exec from home.
+         Combined with the fork+network deny, an attacker can't spawn curl or
+         sh from user code even though exec is permitted for the interpreter.
+      5. ``(allow file-read*)`` — Python's startup reads a sprawling set of
+         system dylibs, frameworks, and locale data. The only practical way to
+         cover all of that without maintaining a brittle per-machine whitelist
+         is a broad read allow narrowed by targeted denies (step 6).
+      6. Targeted ``(deny file-read* ...)`` for high-value secrets inside the
+         home directory:  ``~/.ssh``, ``~/.aws``, ``~/.gnupg``, ``~/.config``,
+         ``~/Library``, ``~/.env``, the repo's ``secrets/`` directory, and
+         the standard ``/etc/passwd`` / ``/private/etc/passwd`` pair.
+      7. ``(allow file-write* (subpath tmpdir))`` — the only writable location
+         (both the ``/var/folders/...`` form and its ``/private/var/...``
+         realpath, since macOS creates tmpfiles under the symlinked path).
+
+    Why ``(allow file-read*)`` instead of explicit subpaths?
+    On this machine's Python stack (uv + cpython-3.12, aarch64, macOS 15)
+    the deny-default + explicit-subpath approach causes SIGABRT during
+    Python startup — the interpreter needs to read paths that vary per
+    machine (dyld caches, framework versions, locale data) and are
+    impractical to enumerate statically. Broad read + targeted secret-deny
+    achieves the actual security goal (protect secrets) without fragility.
+
+    Why not ``(deny file-read* (subpath home))``?
+    The exec itself needs to read the interpreter binary (which lives inside
+    home on uv installs). SBPL's ``deny file-read*`` blocks the read that
+    ``execvp`` performs before the process-exec allow takes effect, so a
+    home-wide deny prevents the interpreter from starting at all.
     """
-    # Enumerate every path the bootstrap exec might use. ``python_exec`` is
-    # typically the venv shim (a thin C wrapper), which in turn execs the
-    # underlying CPython binary that ``sys.base_prefix`` points to. Both
-    # need to be whitelisted; on macOS sandbox-exec, ``(literal ...)`` must
-    # match the literal argv[0] passed to execvp, not its realpath.
-    exec_paths: list[str] = [python_exec]
-    real_python = os.path.realpath(python_exec)
-    if real_python not in exec_paths:
-        exec_paths.append(real_python)
-    base_python = os.path.join(
-        sys.base_prefix, "bin", f"python{sys.version_info[0]}.{sys.version_info[1]}"
+    home = str(pathlib.Path.home())
+    real_tmpdir = os.path.realpath(tmpdir)
+
+    # Per-input-file re-allows: both literal and realpath so SBPL matches
+    # regardless of whether the caller used the /var or /private/var form.
+    input_file_rules: list[str] = []
+    for p in input_files:
+        input_file_rules.append(f'(allow file-read* (literal "{p}"))')
+        real_p = os.path.realpath(p)
+        if real_p != p:
+            input_file_rules.append(f'(allow file-read* (literal "{real_p}"))')
+    input_file_block = "".join(input_file_rules)
+
+    # Tmpdir: the /var/folders/... form is returned by tempfile.mkdtemp();
+    # the /private/var/... realpath may differ and both need write + read.
+    tmpdir_allows = (
+        f'(allow file-read* (subpath "{tmpdir}"))'
+        f'(allow file-write* (subpath "{tmpdir}"))'
     )
-    if base_python not in exec_paths:
-        exec_paths.append(base_python)
-    real_base = os.path.realpath(base_python)
-    if real_base not in exec_paths:
-        exec_paths.append(real_base)
-    exec_allow = " ".join(f'(literal "{p}")' for p in exec_paths)
+    if real_tmpdir != tmpdir:
+        tmpdir_allows += (
+            f'(allow file-read* (subpath "{real_tmpdir}"))'
+            f'(allow file-write* (subpath "{real_tmpdir}"))'
+        )
 
     return (
         "(version 1)"
-        "(allow default)"
+        # 1. Deny everything by default.
+        "(deny default)"
+        # 2. Belt-and-suspenders network block.
         "(deny network*)"
-        # Block child exec + fork so LLM code can't shell out via subprocess
-        # to a binary that opens its own network socket.
+        # 3. Block child processes.
         "(deny process-fork)"
         "(deny process-exec*)"
-        f"(allow process-exec* {exec_allow})"
-        # Write deny + tmpdir-only allow (unchanged behavior).
-        "(deny file-write*)"
-        f'(allow file-write* (subpath "{tmpdir}"))'
-        # Selective read deny for high-value targets. Both /etc and
-        # /private/etc forms because macOS resolves /etc through a symlink.
-        "(deny file-read*"
-        f'  (subpath "{os.path.expanduser("~/.ssh")}")'
-        f'  (subpath "{os.path.expanduser("~/.aws")}")'
-        f'  (subpath "{os.path.expanduser("~/.config")}")'
-        '  (literal "/etc/passwd")'
-        '  (literal "/private/etc/passwd")'
-        '  (literal "/etc/master.passwd")'
-        '  (literal "/private/etc/master.passwd")'
-        '  (subpath "/etc/ssh")'
-        '  (subpath "/private/etc/ssh")'
-        ')'
+        # 4. Allow exec only for known interpreter/toolchain paths.
+        #    Narrowed from (subpath home) to avoid allowing arbitrary home binaries.
+        #    If Python startup SIGABRTs, add the offending path here incrementally.
+        f'(allow process-exec* (subpath "{os.path.join(home, ".local/share/uv")}"))'
+        f'(allow process-exec* (subpath "{os.path.join(home, ".pyenv")}"))'
+        f'(allow process-exec* (subpath "{sys.base_prefix}"))'
+        f'(allow process-exec* (subpath "{sys.prefix}"))'
+        # 5. Broad file-read allow (narrowed by targeted denies below).
+        "(allow file-read*)"
+        # 6. Targeted secret denies — these MUST come after (allow file-read*)
+        #    because SBPL is last-match-wins.
+        # --- Home-dir credential/config dirs ---
+        f'(deny file-read* (subpath "{os.path.join(home, ".ssh")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".aws")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".gnupg")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".config")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, "Library")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".env")}"))'
+        # --- Home-dir credential dotfiles ---
+        f'(deny file-read* (literal "{os.path.join(home, ".netrc")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".npmrc")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".pypirc")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".gitconfig")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".git-credentials")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".docker")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".kube")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, ".cargo")}"))'
+        # --- Home-dir shell/tool history files (pasted secrets) ---
+        f'(deny file-read* (literal "{os.path.join(home, ".zsh_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".bash_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".python_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".node_repl_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".sqlite_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".psql_history")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".lesshst")}"))'
+        f'(deny file-read* (literal "{os.path.join(home, ".viminfo")}"))'
+        # --- Home-dir user-content directories ---
+        f'(deny file-read* (subpath "{os.path.join(home, "Documents")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, "Desktop")}"))'
+        f'(deny file-read* (subpath "{os.path.join(home, "Downloads")}"))'
+        # --- Repo-internal secrets ---
+        f'(deny file-read* (literal "{REPO_ROOT}/.env"))'
+        f'(deny file-read* (literal "{REPO_ROOT}/.env.local"))'
+        f'(deny file-read* (literal "{REPO_ROOT}/.mcp.json"))'
+        f'(deny file-read* (subpath "{REPO_ROOT}/.git"))'
+        f'(deny file-read* (subpath "{REPO_ROOT}/data"))'
+        f'(deny file-read* (subpath "{REPO_ROOT}/secrets"))'
+        # --- System credential / shared ---
+        '(deny file-read* (literal "/etc/passwd") (literal "/private/etc/passwd"))'
+        '(deny file-read* (literal "/etc/master.passwd")'
+        ' (literal "/private/etc/master.passwd"))'
+        '(deny file-read* (subpath "/etc/ssh") (subpath "/private/etc/ssh"))'
+        '(deny file-read* (subpath "/Volumes"))'
+        '(deny file-read* (subpath "/var/db"))'
+        '(deny file-read* (subpath "/private/var/db"))'
+        '(deny file-read* (subpath "/tmp"))'
+        '(deny file-read* (subpath "/private/tmp"))'
+        # 7. Re-allow opt-in data subpaths (last-match-wins overrides the
+        #    broad data/ deny above). Tmpdir is the only writable location;
+        #    input_files are re-allowed after the denies.
+        # Note: tmpdir lives under /private/var/folders/, NOT /private/tmp,
+        #       so the (deny /private/tmp) above does NOT block it.
+        f'(allow file-read* (subpath "{REPO_ROOT}/data/user_photos"))'
+        f'(allow file-read* (subpath "{REPO_ROOT}/data/user_documents"))'
+        + tmpdir_allows
+        + input_file_block
     )

@@ -1,0 +1,157 @@
+"""Sprint 4 Phase 4C-3b — registry access_mode + wildcard write deny."""
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from storage import db
+
+
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "hikari.db"
+    monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
+    monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
+    import storage.db as _db_mod
+    importlib.reload(_db_mod)
+    monkeypatch.setattr(db, "_DB_PATH", db_path)
+    db._reset_schema_sentinel()
+    yield
+
+
+# ---------------------------------------------------------------------------
+# access_mode field round-trips through the registry
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def registry():
+    from tools._tools_yaml import _load_yaml, DEFAULT_YAML_PATH
+    return _load_yaml(DEFAULT_YAML_PATH)
+
+
+def test_access_mode_read_on_google_workspace(registry):
+    spec = registry._resolve("mcp__google_workspace__*")
+    assert spec is not None
+    assert spec.access_mode == "read"
+
+
+def test_access_mode_write_on_apple_events(registry):
+    spec = registry._resolve("mcp__apple_events__*")
+    assert spec is not None
+    assert spec.access_mode == "write"
+
+
+def test_access_mode_destructive_on_apple_shortcuts(registry):
+    spec = registry._resolve("mcp__apple_shortcuts__*")
+    assert spec is not None
+    assert spec.access_mode == "destructive"
+
+
+def test_access_mode_write_on_playwright(registry):
+    spec = registry._resolve("mcp__playwright__*")
+    assert spec is not None
+    assert spec.access_mode == "write"
+
+
+def test_access_mode_read_on_notion(registry):
+    spec = registry._resolve("mcp__notion__*")
+    assert spec is not None
+    assert spec.access_mode == "read"
+
+
+def test_access_mode_read_on_github(registry):
+    spec = registry._resolve("mcp__github__*")
+    assert spec is not None
+    assert spec.access_mode == "read"
+
+
+def test_access_mode_read_on_youtube_transcript(registry):
+    spec = registry._resolve("mcp__youtube_transcript__*")
+    assert spec is not None
+    assert spec.access_mode == "read"
+
+
+def test_access_mode_read_on_duckdb(registry):
+    spec = registry._resolve("mcp__duckdb__*")
+    assert spec is not None
+    assert spec.access_mode == "read"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_with_kind
+# ---------------------------------------------------------------------------
+
+def test_resolve_with_kind_explicit(registry):
+    spec, kind = registry._resolve_with_kind("mcp__google_workspace__gmail_send_email")
+    assert spec is not None
+    assert kind == "explicit"
+
+
+def test_resolve_with_kind_wildcard(registry):
+    spec, kind = registry._resolve_with_kind("mcp__google_workspace__some_future_tool")
+    assert spec is not None
+    assert kind == "wildcard"
+    assert spec.id == "mcp__google_workspace__*"
+
+
+def test_resolve_with_kind_unknown(registry):
+    spec, kind = registry._resolve_with_kind("mcp__totally_unknown__tool")
+    assert spec is None
+    assert kind is None
+
+
+# ---------------------------------------------------------------------------
+# gatekeeper_can_use_tool — wildcard write/destructive → deny
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_destructive_wildcard_denied():
+    """A tool that resolves only via a destructive wildcard must be denied."""
+    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
+    ns = SimpleNamespace(tool_use_id="t1")
+    result = await gatekeeper_can_use_tool("mcp__apple_shortcuts__run_arbitrary_shortcut", {}, ns)
+    msg = getattr(result, "message", "") or ""
+    behavior = getattr(result, "behavior", "")
+    assert "destructive" in msg or behavior == "deny", (
+        f"expected deny for destructive wildcard, got behavior={behavior!r} msg={msg!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_wildcard_denied():
+    """A tool that resolves only via a write wildcard must be denied."""
+    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
+    ns = SimpleNamespace(tool_use_id="t1")
+    result = await gatekeeper_can_use_tool("mcp__playwright__delete_session", {}, ns)
+    msg = getattr(result, "message", "") or ""
+    behavior = getattr(result, "behavior", "")
+    assert "write" in msg or behavior == "deny", (
+        f"expected deny for write wildcard, got behavior={behavior!r} msg={msg!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_wildcard_allowed():
+    """Read-mode wildcards stay allowed (no gate, no write/destructive)."""
+    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
+    ns = SimpleNamespace(tool_use_id="t1")
+    result = await gatekeeper_can_use_tool("mcp__google_workspace__query_gmail_emails", {}, ns)
+    behavior = getattr(result, "behavior", "")
+    # PermissionResultAllow has no 'behavior' attribute in the SDK — absence of deny is fine
+    assert behavior in ("allow", ""), f"read wildcard should allow, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_apple_events_write_wildcard_denied():
+    """apple_events wildcard (write) must be denied for unknown tools."""
+    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
+    ns = SimpleNamespace(tool_use_id="t1")
+    result = await gatekeeper_can_use_tool("mcp__apple_events__do_something_new", {}, ns)
+    msg = getattr(result, "message", "") or ""
+    behavior = getattr(result, "behavior", "")
+    assert "write" in msg or behavior == "deny", (
+        f"expected deny for write wildcard, got behavior={behavior!r} msg={msg!r}"
+    )

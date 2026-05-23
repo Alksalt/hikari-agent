@@ -33,6 +33,19 @@ def _gate_for(tool_name: str) -> str | None:
         return None
 
 
+def _resolve_spec_and_kind(tool_name: str):
+    """Return (spec, match_kind) from the registry, or (None, None) on failure."""
+    try:
+        from tools._tools_yaml import load_registry
+        reg = load_registry()
+        return reg._resolve_with_kind(tool_name)
+    except Exception:
+        logger.debug(
+            "gatekeeper_can_use_tool: _resolve_with_kind failed for %s", tool_name, exc_info=True
+        )
+        return None, None
+
+
 def _deadline_for(tool_name: str) -> datetime:
     """Compute the approval deadline for a tool.
 
@@ -92,7 +105,26 @@ async def gatekeeper_can_use_tool(
     """
     from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
-    gate = _gate_for(tool_name)
+    spec, match_kind = _resolve_spec_and_kind(tool_name)
+    if spec is None:
+        # Unknown tool — fall through to deny-safe default.
+        return PermissionResultDeny(message=f"refused: {tool_name} not found in tool registry")
+
+    gate = spec.gate
+    access_mode = spec.access_mode
+
+    if gate is None and match_kind == "wildcard" and access_mode in {"write", "destructive"}:
+        logger.warning(
+            "wildcard write/destructive without gate: %s (mode=%s)",
+            tool_name, access_mode,
+        )
+        return PermissionResultDeny(
+            message=(
+                f"refused: {tool_name} resolves via wildcard with "
+                f"access_mode={access_mode}; add an explicit gated entry"
+            )
+        )
+
     if gate != "gatekeeper":
         return PermissionResultAllow(updated_input=input)
 
