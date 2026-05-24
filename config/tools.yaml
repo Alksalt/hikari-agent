@@ -562,6 +562,15 @@ tools:
     untrusted_output: false
     wrap_patterns: []
 
+  - id: "mcp__hikari_utility__calendar_get_events"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__calendar_get_events$"]
+    description: "Fetch Google Calendar events (typed adapter; direct MCP call)"
+
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
   # for auto-discovered utility tools (calc, reminder_create, receipt_add, etc.).

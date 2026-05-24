@@ -89,6 +89,8 @@ async def test_overdue_daily_repeat_advances_to_future_not_past():
 
 @pytest.mark.asyncio
 async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
+    from unittest.mock import patch
+
     monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake-client-secret")
     monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake-refresh-token")
@@ -98,10 +100,14 @@ async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
         gcal_sync_pending=True,
     )
     from agents import proactive
-    async def fake_run_internal_control(prompt, **kwargs):
-        return "event_id: 'abc123xyz'\n"
-    monkeypatch.setattr(proactive, "run_internal_control", fake_run_internal_control)
-    n = await proactive.sync_pending_gcal_reminders()
+    from tools.reminders.sync_gcal import GCalReminderResult
+
+    async def fake_sync_gcal(reminder_id, title, start_iso, calendar_id="primary"):
+        db.reminder_update_gcal_event(reminder_id, "abc123xyz")
+        return GCalReminderResult(reminder_id=reminder_id, gcal_event_id="abc123xyz")
+
+    with patch("tools.reminders.sync_gcal._sync_gcal_reminder", side_effect=fake_sync_gcal):
+        n = await proactive.sync_pending_gcal_reminders()
     assert n == 1
     row = db.reminder_get(rid)
     assert row["gcal_sync_pending"] == 0
@@ -110,6 +116,8 @@ async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
+    from unittest.mock import patch
+
     fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     rid = db.reminder_insert(
         fire_at=fire, text="grocery list", lead_minutes=0, repeat=None,
@@ -120,13 +128,17 @@ async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
     with _conn() as conn:
         conn.execute("UPDATE reminders SET apple_sync_pending=1 WHERE id=?", (rid,))
     from agents import proactive
-    async def fake_run_internal_control(prompt, **kwargs):
-        return "event_id: 'ABC-EVENT-123'\n"
-    monkeypatch.setattr(proactive, "run_internal_control", fake_run_internal_control)
+    from tools.reminders.sync_apple import AppleReminderResult
+
+    async def fake_sync_apple(reminder_id, title, due_iso, list_name="Reminders"):
+        db.reminder_update_apple_event(reminder_id, "ABC-EVENT-123")
+        return AppleReminderResult(reminder_id=reminder_id, apple_event_id="ABC-EVENT-123")
+
     # Patch sys.platform to darwin so the guard passes regardless of test host
     import sys
     monkeypatch.setattr(sys, "platform", "darwin")
-    n = await proactive.sync_pending_apple_reminders()
+    with patch("tools.reminders.sync_apple._sync_apple_reminder", side_effect=fake_sync_apple):
+        n = await proactive.sync_pending_apple_reminders()
     assert n == 1
     row = db.reminder_get(rid)
     assert row["apple_sync_pending"] == 0

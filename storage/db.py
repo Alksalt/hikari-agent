@@ -30,6 +30,8 @@ from typing import Any
 
 import sqlite_vec
 
+from storage.migrations import backfill_if_needed, run_once
+
 logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(os.environ.get("HIKARI_DB_PATH") or
@@ -478,8 +480,44 @@ CREATE INDEX IF NOT EXISTS idx_decisions_unresolved
     ON decisions(resolve_by) WHERE outcome IS NULL;
 CREATE INDEX IF NOT EXISTS idx_decisions_resolved
     ON decisions(resolved_at) WHERE outcome IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'run' CHECK(source IN ('run','backfill'))
+);
 """
 
+
+# Ordered list of every migration name registered in the cascade.  Used by
+# ``backfill_if_needed`` to stamp pre-7B databases on first boot.  Keep in sync
+# with the ``run_once`` calls in ``_migrate_tasks_decay_columns``.
+KNOWN_MIGRATIONS: list[str] = [
+    "migrate_tasks_decay_columns",
+    "migrate_approvals_defer_columns",
+    # migrate_user_profile_to_peer_representation is intentionally excluded:
+    # it is a data-conditional seeding op (not a DDL migration) and must run
+    # on every boot to seed peer_representation from a legacy user_profile row
+    # when one exists.  It is idempotent via its own early-return guard.
+    "migrate_messages_telegram_message_id",
+    "migrate_facts_bitemporal",
+    "migrate_facts_recall_decay",
+    "migrate_facts_attribution",
+    "migrate_reminders_apple_columns",
+    "migrate_drift_canary_indexes",
+    "migrate_fact_relations_validity",
+    "migrate_tool_calls",
+    "migrate_proactive_events",
+    "migrate_proactive_events_feedback",
+    "migrate_proactive_events_chat_id",
+    "migrate_proactive_events_status",
+    "migrate_approvals_gatekeeper",
+    "migrate_calendar_notifications",
+    "migrate_entities_and_provenance",
+    "migrate_messages_fts",
+    "migrate_graph_outbox",
+]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
 # first _conn() call per process. SQLite WAL covers cross-process safety; this
@@ -567,39 +605,52 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             stmt = stmt.strip()
             if stmt:
                 conn.execute(stmt)
+        backfill_if_needed(conn, KNOWN_MIGRATIONS)
         _migrate_tasks_decay_columns(conn)
         _SCHEMA_INITIALIZED = True
 
 
 def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     """Idempotent migration: add open-loop decay columns to ``tasks`` if missing.
-    SQLite has no ``IF NOT EXISTS`` on ALTER COLUMN, so we sniff via PRAGMA."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-    if "importance" not in existing:
-        conn.execute("ALTER TABLE tasks ADD COLUMN importance INTEGER DEFAULT 5")
-    if "mention_count" not in existing:
-        conn.execute("ALTER TABLE tasks ADD COLUMN mention_count INTEGER DEFAULT 0")
-    if "last_mention_at" not in existing:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_mention_at TEXT")
-    _migrate_approvals_defer_columns(conn)
+    SQLite has no ``IF NOT EXISTS`` on ALTER COLUMN, so we sniff via PRAGMA.
+    Each sub-migration is wrapped in ``run_once`` for ledger tracking."""
+    def _body(c: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in c.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "importance" not in existing:
+            c.execute("ALTER TABLE tasks ADD COLUMN importance INTEGER DEFAULT 5")
+        if "mention_count" not in existing:
+            c.execute("ALTER TABLE tasks ADD COLUMN mention_count INTEGER DEFAULT 0")
+        if "last_mention_at" not in existing:
+            c.execute("ALTER TABLE tasks ADD COLUMN last_mention_at TEXT")
+
+    run_once(conn, "migrate_tasks_decay_columns", _body)
+    run_once(conn, "migrate_approvals_defer_columns", _migrate_approvals_defer_columns)
+    # Not wrapped in run_once: this is a data-conditional seeding op that must
+    # run on every boot to seed peer_representation from a legacy user_profile
+    # core_block when one exists.  Its own early-return guard makes it idempotent.
     _migrate_user_profile_to_peer_representation(conn)
-    _migrate_messages_telegram_message_id(conn)
-    _migrate_facts_bitemporal(conn)
-    _migrate_facts_recall_decay(conn)
-    _migrate_facts_attribution(conn)
-    _migrate_reminders_apple_columns(conn)
-    _migrate_drift_canary_indexes(conn)
-    _migrate_fact_relations_validity(conn)
-    _migrate_tool_calls(conn)
-    _migrate_proactive_events(conn)
-    _migrate_proactive_events_feedback(conn)
-    _migrate_proactive_events_chat_id(conn)
-    _migrate_proactive_events_status(conn)
-    _migrate_approvals_gatekeeper(conn)
-    _migrate_calendar_notifications(conn)
-    _migrate_entities_and_provenance(conn)
-    _migrate_messages_fts(conn)
-    _migrate_graph_outbox(conn)
+    run_once(conn, "migrate_messages_telegram_message_id", _migrate_messages_telegram_message_id)
+    run_once(conn, "migrate_facts_bitemporal", _migrate_facts_bitemporal)
+    run_once(conn, "migrate_facts_recall_decay", _migrate_facts_recall_decay)
+    run_once(conn, "migrate_facts_attribution", _migrate_facts_attribution)
+    run_once(conn, "migrate_reminders_apple_columns", _migrate_reminders_apple_columns)
+    run_once(conn, "migrate_drift_canary_indexes", _migrate_drift_canary_indexes)
+    run_once(conn, "migrate_fact_relations_validity", _migrate_fact_relations_validity)
+    run_once(conn, "migrate_tool_calls", _migrate_tool_calls)
+    run_once(conn, "migrate_proactive_events", _migrate_proactive_events)
+    run_once(conn, "migrate_proactive_events_feedback", _migrate_proactive_events_feedback)
+    run_once(conn, "migrate_proactive_events_chat_id", _migrate_proactive_events_chat_id)
+    run_once(conn, "migrate_proactive_events_status", _migrate_proactive_events_status)
+    run_once(conn, "migrate_approvals_gatekeeper", _migrate_approvals_gatekeeper)
+    run_once(conn, "migrate_calendar_notifications", _migrate_calendar_notifications)
+    run_once(conn, "migrate_entities_and_provenance", _migrate_entities_and_provenance)
+    run_once(conn, "migrate_messages_fts", _migrate_messages_fts)
+    run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
+    # Commit any pending implicit transaction left open by migrations that
+    # called conn.commit() internally (releasing SAVEPOINTs early) — the
+    # ledger INSERT for those migrations stays in a Python-managed implicit
+    # transaction that must be flushed before callers can write concurrently.
+    conn.commit()
 
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:

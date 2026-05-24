@@ -2399,12 +2399,20 @@ def main() -> None:
         logger.info("dispatch listener task started")
 
     async def post_shutdown(application) -> None:
-        """Graceful shutdown of persistent SDK clients."""
+        """Graceful shutdown of persistent SDK clients and direct-call MCP sessions.
+        The two subsystems shut down independently — failure in one must not skip
+        the other, or MCP subprocesses leak across restart."""
         try:
             await _sdk_pool.shutdown()
             logger.info("sdk_pool shut down cleanly")
         except Exception:  # noqa: BLE001
             logger.exception("sdk_pool shutdown error (non-fatal)")
+        try:
+            from agents.mcp_manager import MANAGER
+            await MANAGER.shutdown_sessions()
+            logger.info("mcp_manager sessions shut down cleanly")
+        except Exception:  # noqa: BLE001
+            logger.exception("mcp_manager.shutdown_sessions error (non-fatal)")
 
     app.post_init = post_init
     app.post_shutdown = post_shutdown

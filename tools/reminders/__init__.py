@@ -16,4 +16,14 @@ from tools.reminders.create import reminder_create
 from tools.reminders.list import reminder_list
 from tools.reminders.snooze import reminder_snooze
 
-ALL_TOOLS = [reminder_create, reminder_list, reminder_cancel, reminder_snooze]
+# sync_apple_reminder and sync_gcal_reminder are scheduler-internal callers only.
+# They are NOT LLM-reachable @tools and are NOT included in ALL_TOOLS.
+# Import _sync_apple_reminder / _sync_gcal_reminder directly from their modules
+# when needed by the scheduler (agents/proactive.py).
+
+ALL_TOOLS = [
+    reminder_create,
+    reminder_list,
+    reminder_cancel,
+    reminder_snooze,
+]

@@ -62,11 +62,13 @@ def test_upsert_rejects_non_dict():
 
 def test_migration_seeds_from_user_profile_on_first_run():
     """If a legacy core_blocks.user_profile row exists and peer_representation
-    is empty, the migration seeds summary at next _ensure_schema."""
+    is empty, _migrate_user_profile_to_peer_representation seeds it on every boot.
+
+    This migration is a data-conditional seeding op (not a DDL migration) and is
+    intentionally NOT wrapped in run_once — it checks on every _ensure_schema call
+    and returns early if peer_representation already has a row."""
     db.upsert_core_block("user_profile", "Ol — Ukrainian, 29, lives in Norway.")
-    # The Phase 7 sentinel runs migrations ONCE per process. We've already
-    # paid that pass when upsert ran; reset to force migration to re-run
-    # against the now-populated user_profile row.
+    # Reset the sentinel to force _ensure_schema to re-run the migration cascade.
     db._reset_schema_sentinel()
     with db._conn():
         pass

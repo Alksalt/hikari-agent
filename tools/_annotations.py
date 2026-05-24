@@ -102,6 +102,10 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "note_read": ANN_READ_LOCAL,
     "note_search": ANN_READ_LOCAL,
     "note_create": ANN_WRITE_LOCAL,
+    # --- calendar (external read) ---
+    # sync_apple_reminder and sync_gcal_reminder are removed: they are
+    # scheduler-internal callers only (not LLM-reachable @tools).
+    "calendar_get_events": ANN_READ_EXTERNAL,
     # --- external read APIs ---
     "arxiv_search": ANN_READ_EXTERNAL,
     "currency_convert": ANN_READ_EXTERNAL,
