@@ -41,6 +41,9 @@ jobs:
       - name: Regenerate .mcp.json check
         run: uv run python scripts/regen_mcp_json.py --check
 
+      - name: Subagent policy drift check
+        run: uv run python scripts/regen_subagent_policy.py --check
+
       - name: Validate MCP servers (skip cred-dependent ones)
         # continue-on-error: credentials for apple_events, apple_shortcuts,
         # google_workspace, notion, github, playwright are not available in CI

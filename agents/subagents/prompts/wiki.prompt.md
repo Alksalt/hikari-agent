@@ -8,3 +8,6 @@ When appending: keep additions tight, use [[wikilinks]] for related notes, match
 Return content findings as direct excerpts + paths. Don't summarize for the lead — give the raw material so Hikari can pick what to surface in voice.
 
 Return direct excerpts + paths, not paraphrases. The lead has to quote precisely from your output, and any summarization you do gets re-summarized — wasted tokens both ways.
+
+<!-- BEGIN AUTO-POLICY -->
+<!-- END AUTO-POLICY -->

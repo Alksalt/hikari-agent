@@ -1,27 +1,40 @@
-"""Sprint 6E — subagent prompt vs runtime tool registry drift.
+"""Subagent prompt vs runtime tool registry drift tests.
 
-Subagent prompts in agents/subagents/prompts/*.md tell the LLM which MCP
-servers / tools to call. If a prompt names a tool the registry no longer
-exposes (renamed, removed, gated, behind a different server prefix), the
-subagent silently runs without that capability and the user only finds
-out when the request fails mid-conversation.
+This test file covers two invariants:
 
-This test parses every subagent prompt + description, extracts:
-  - `mcp__<server>__<tool>` literals
-  - `mcp__<server>__*` wildcards
-  - bare tool names mentioned with a write/destructive verb context
-    (gmail_send_email / drive_delete_file / etc.)
+1. MCP reference consistency (original Sprint 6E checks):
+   Subagent prompts in agents/subagents/prompts/*.md tell the LLM which MCP
+   servers / tools to call. If a prompt names a tool the registry no longer
+   exposes (renamed, removed, gated, behind a different server prefix), the
+   subagent silently runs without that capability and the user only finds
+   out when the request fails mid-conversation.
 
-then verifies:
-  1. Every server prefix is a real MCP server in config/tools.yaml.
-  2. Every literal tool resolves in the registry.
-  3. Any literal write/destructive tool resolves to an EXPLICIT registry
-     entry (not via wildcard) so its gate is unambiguous.
+   This test parses every subagent prompt + description, extracts:
+     - `mcp__<server>__<tool>` literals
+     - `mcp__<server>__*` wildcards
+     - bare tool names mentioned with a write/destructive verb context
+       (gmail_send_email / drive_delete_file / etc.)
+
+   then verifies:
+     1. Every server prefix is a real MCP server in config/tools.yaml.
+     2. Every literal tool resolves in the registry.
+     3. Any literal write/destructive tool resolves to an EXPLICIT registry
+        entry (not via wildcard) so its gate is unambiguous.
+
+2. AUTO-POLICY block consistency:
+   Each subagent prompt contains a section delimited by
+   <!-- BEGIN AUTO-POLICY --> / <!-- END AUTO-POLICY --> markers.
+   The content between the markers must match byte-for-byte what
+   scripts/regen_subagent_policy.py would generate for that subagent's
+   allowlist from config/tools.yaml. Any change to a gated tool in
+   config/tools.yaml either fails this test or triggers a prompt update
+   via `uv run python scripts/regen_subagent_policy.py`.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -56,6 +69,23 @@ def _derive_gw_gatekeeper_tools() -> set[str]:
 _BARE_WRITE_TOOLS: set[str] = _derive_gw_gatekeeper_tools()
 
 
+_BEGIN_MARKER = "<!-- BEGIN AUTO-POLICY -->"
+_END_MARKER = "<!-- END AUTO-POLICY -->"
+
+
+def _extract_policy_block(text: str) -> str | None:
+    """Return the text between AUTO-POLICY markers, or None if markers absent."""
+    begin_idx = text.find(_BEGIN_MARKER)
+    end_idx = text.find(_END_MARKER)
+    if begin_idx == -1 or end_idx == -1 or end_idx <= begin_idx:
+        return None
+    # Content starts after the marker + newline (if present).
+    content_start = begin_idx + len(_BEGIN_MARKER)
+    if text[content_start:content_start + 1] == "\n":
+        content_start += 1
+    return text[content_start:end_idx]
+
+
 def _all_prompt_text() -> list[tuple[Path, str]]:
     if not PROMPTS_DIR.exists():
         pytest.skip(f"prompts dir {PROMPTS_DIR} missing")
@@ -64,6 +94,55 @@ def _all_prompt_text() -> list[tuple[Path, str]]:
 
 def test_prompts_dir_has_files():
     assert _all_prompt_text(), "no subagent prompts found — drift test is vacuous"
+
+
+# ---------------------------------------------------------------------------
+# AUTO-POLICY block consistency
+# ---------------------------------------------------------------------------
+
+def test_auto_policy_blocks_match_registry():
+    """Each subagent prompt's AUTO-POLICY block must match regen_subagent_policy output.
+
+    Imports the generator logic directly so no subprocess is needed and the
+    assertion is deterministic. Any change to a gated tool in config/tools.yaml
+    must be followed by `uv run python scripts/regen_subagent_policy.py`.
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    from scripts.regen_subagent_policy import _build_policy_block, _inject_markers
+
+    registry = load_registry()
+    failures: list[str] = []
+
+    for subagent_id, spec in registry._subagents_spec.items():
+        prompt_path = REPO_ROOT / spec.prompt_path
+        if not prompt_path.exists():
+            failures.append(f"{subagent_id}: prompt file {spec.prompt_path!r} not found")
+            continue
+
+        current_text = prompt_path.read_text("utf-8")
+        actual_block = _extract_policy_block(current_text)
+
+        if actual_block is None:
+            failures.append(
+                f"{subagent_id} ({spec.prompt_path}): missing AUTO-POLICY markers. "
+                "Run: uv run python scripts/regen_subagent_policy.py"
+            )
+            continue
+
+        expected_body = _build_policy_block(subagent_id, spec.tools)
+        if actual_block != expected_body:
+            failures.append(
+                f"{subagent_id} ({spec.prompt_path}): AUTO-POLICY block is out of sync "
+                "with config/tools.yaml.\n"
+                f"  expected:\n{expected_body!r}\n"
+                f"  actual:\n{actual_block!r}\n"
+                "Run: uv run python scripts/regen_subagent_policy.py"
+            )
+
+    assert not failures, (
+        f"{len(failures)} subagent prompt(s) have stale AUTO-POLICY blocks:\n"
+        + "\n".join(f"  - {f}" for f in failures)
+    )
 
 
 def test_every_mcp_server_prefix_in_prompts_exists_in_registry():
@@ -142,9 +221,11 @@ def test_no_llm_facing_destructive_write_ungated():
     Wildcards are excluded — their policy is governed by the wildcard-write deny
     in gatekeeper_can_use_tool, not by gate: value.
     """
-    # Servers that are explicitly exempted: local-device write-only (no
-    # network-reachable external accounts), or in-process utilities.
-    _EXEMPT_SERVERS = {"apple_shortcuts", "apple_events"}
+    # apple_shortcuts wildcard has access_mode=destructive but no explicit write
+    # entries — exempted because it has no network-reachable external accounts.
+    # apple_events is NOT exempted: its LLM-facing write tools carry gate:
+    # confirm_send (added in 8B), so they pass the gate != null check naturally.
+    _EXEMPT_SERVERS = {"apple_shortcuts"}
 
     registry = load_registry()
     failures: list[str] = []
