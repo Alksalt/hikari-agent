@@ -91,6 +91,7 @@ class TestBackupAtomicity:
             "HOME": str(tmp_path),
             "HIKARI_BACKUP_DIR": str(backup_dir),
             "HIKARI_BACKUP_AGE_RECIPIENT": str(pub_file),
+            "HIKARI_BACKUP_AGE_KEY": str(key_file),
         }
         proc = subprocess.Popen(
             ["/bin/zsh", str(BACKUP_SH)],

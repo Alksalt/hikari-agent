@@ -150,6 +150,7 @@ class TestBackupTarAge:
             **os.environ,
             "HOME": str(tmp_path),
             "HIKARI_BACKUP_AGE_RECIPIENT": str(pub_file),
+            "HIKARI_BACKUP_AGE_KEY": str(key_file),
         }
         result = subprocess.run(
             ["/bin/zsh", str(BACKUP_SH)],

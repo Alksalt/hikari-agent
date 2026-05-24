@@ -177,8 +177,8 @@ find "$BACKUP_DIR" -name 'hikari-*.tar.age' -mtime +$RETAIN_DAYS -print -delete 
     echo "backup: pruned $OLD"
 done
 
-# Also prune any legacy plaintext .db backups beyond retention
-ls -t "$BACKUP_DIR"/hikari-*.db 2>/dev/null | tail -n +$((RETAIN_DAYS + 1)) | while read -r OLD; do
-    rm -- "$OLD"
+# Also prune any legacy plaintext .db backups beyond retention.
+# Use find (not glob) so zsh NOMATCH doesn't trip when there are no matches.
+find "$BACKUP_DIR" -maxdepth 1 -name 'hikari-*.db' -mtime +$RETAIN_DAYS -print -delete 2>/dev/null | while read -r OLD; do
     echo "backup: pruned legacy $OLD"
 done
