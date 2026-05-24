@@ -210,7 +210,8 @@ def test_log_errors_missing_file_ok(tmp_path: Path):
 
 def test_log_errors_under_threshold(tmp_path: Path):
     log = tmp_path / "hikari.log"
-    log.write_text("2026-05-24 12:00:00 INFO ok\n2026-05-24 12:00:01 ERROR boom\n")
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    log.write_text(f"{now_str} INFO ok\n{now_str} ERROR boom\n")
     result = _check_recent_log_errors(log_path=log)
     assert result.ok is True
     assert result.value == 1
