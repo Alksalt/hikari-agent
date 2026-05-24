@@ -93,7 +93,11 @@ async def test_judge_mocked_fail():
 # ---------------------------------------------------------------------------
 
 def _discover_all_layer_c() -> list[pathlib.Path]:
-    return sorted(list(GOLDEN_DIR.glob("*.yaml")) + list(CADENCE_DIR.glob("*.yaml")))
+    return sorted(
+        list(GOLDEN_DIR.glob("*.yaml"))
+        + list(CADENCE_DIR.glob("*.yaml"))
+        + list(LAYER_C_DIR.glob("rubric_*.yaml"))
+    )
 
 
 @pytest.mark.parametrize("case_path", _discover_all_layer_c(), ids=lambda p: p.stem)
@@ -115,6 +119,13 @@ def test_transcript_load(case_path: pathlib.Path):
         assert (
             "expected_max_emissions" in data or "expected_distribution" in data
         ), f"{case_path.name}: cadence case needs expected_max_emissions or expected_distribution"
+    elif kind == "rubric_judge":
+        assert isinstance(data.get("rubrics"), dict), (
+            f"{case_path.name}: rubric_judge case must have a 'rubrics' dict"
+        )
+        assert data["rubrics"], f"{case_path.name}: rubrics dict must be non-empty"
+        assert "transcript" in data, f"{case_path.name}: rubric_judge case missing 'transcript'"
+        assert data["transcript"], f"{case_path.name}: transcript must be non-empty"
     else:
         pytest.fail(f"{case_path.name}: unknown kind {kind!r}")
 

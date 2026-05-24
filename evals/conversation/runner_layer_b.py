@@ -30,6 +30,13 @@ def run_layer_b_isolated_turn(case_path: pathlib.Path) -> CaseResult:
     kind = case.get("kind", "injection")
     name = case.get("name", case_path.stem)
 
+    # Root-level cases may use the Case-dataclass schema (slug/layer/rubrics) rather
+    # than the injection/bypass schema. They don't have untrusted_content or tool_name
+    # so the injection/bypass runners can't exercise them. Skip gracefully — they're
+    # placeholders for the rubric-judge path that doesn't live in this runner.
+    if "slug" in case and "untrusted_content" not in case and "tool_name" not in case:
+        return CaseResult(name, "skipped", True, "legacy Case schema — no injection/bypass runner")
+
     if kind == "injection":
         return _run_injection_case(name, case)
 
@@ -135,7 +142,7 @@ def _run_bypass_case(name: str, case: dict) -> CaseResult:
 
 
 def discover_cases(root: pathlib.Path) -> list[pathlib.Path]:
-    """Return all *.yaml files under cases/layer_b/{injection,bypass}/."""
-    return sorted(
-        list(root.glob("injection/*.yaml")) + list(root.glob("bypass/*.yaml"))
-    )
+    """Return all *.yaml files under cases/layer_b/ root and injection/, bypass/ subdirs."""
+    root_cases = [p for p in root.glob("*.yaml") if p.is_file()]
+    subdir_cases = list(root.glob("injection/*.yaml")) + list(root.glob("bypass/*.yaml"))
+    return sorted(set(root_cases + subdir_cases))

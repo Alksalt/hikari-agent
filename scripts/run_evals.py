@@ -84,6 +84,7 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
 
     golden_count = 0
     cadence_count = 0
+    rubric_judge_count = 0
     errors: list[str] = []
 
     for case_path in cases:
@@ -125,6 +126,17 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
                     "or expected_distribution"
                 )
             cadence_count += 1
+        elif kind == "trajectory":
+            if "user_input" not in data:
+                errors.append(f"{case_path.name}: trajectory case missing 'user_input'")
+            if "canned_reply" not in data:
+                errors.append(f"{case_path.name}: trajectory case missing 'canned_reply'")
+        elif kind == "rubric_judge":
+            if not isinstance(data.get("rubrics"), dict) or not data.get("rubrics"):
+                errors.append(f"{case_path.name}: rubric_judge case missing non-empty 'rubrics' dict")
+            if "transcript" not in data or not data["transcript"]:
+                errors.append(f"{case_path.name}: rubric_judge case missing 'transcript'")
+            rubric_judge_count += 1
         else:
             errors.append(f"{case_path.name}: unknown kind {kind!r}")
 
@@ -141,11 +153,22 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
         est_input_tokens_per_golden * 0.14 + est_output_tokens_per_golden * 0.28
     ) / 1_000_000
 
-    print(f"Layer C dry-run: {len(cases)} cases ({golden_count} golden, {cadence_count} cadence)")
+    trajectory_count = sum(
+        1 for p in cases
+        if yaml.safe_load(p.read_text(encoding="utf-8")).get("kind") == "trajectory"
+    )
+    print(
+        f"Layer C dry-run: {len(cases)} cases "
+        f"({golden_count} golden, {cadence_count} cadence, "
+        f"{trajectory_count} trajectory, {rubric_judge_count} rubric_judge)"
+    )
     print(f"  estimated cost per golden case: ${usd_per_golden:.4f}")
     print(f"  estimated total golden cost: ${usd_per_golden * golden_count:.4f}")
+    print(f"  estimated cost per rubric_judge case: ${usd_per_golden:.4f}")
+    print(f"  estimated total rubric_judge cost: ${usd_per_golden * rubric_judge_count:.4f}")
     print("  default cost cap: $0.25")
     print("  cadence cases: deterministic, $0.00")
+    print("  trajectory cases: mocked SDK, $0.00")
     print("  schema: OK")
     return 0
 

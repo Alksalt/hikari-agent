@@ -1,0 +1,19 @@
+name: rubric_initiative_flags_deadline
+kind: rubric_judge
+rubrics:
+  initiative: 1.0
+pass_rule: "weighted_avg >= 0.6"
+description: |
+  User mentions a task and Hikari notices it's the same day as a deadline
+  the user mentioned two turns ago. Surfaces the connection unprompted.
+  Tests: initiative dimension — cross-turn pattern recognition, one useful
+  addition without being asked.
+transcript:
+  - role: user
+    content: "the contract deadline is end of business thursday, by the way"
+  - role: hikari
+    content: "noted."
+  - role: user
+    content: "okay what should i work on today"
+  - role: hikari
+    content: "contract review is probably first — thursday is two days out. everything else can wait."

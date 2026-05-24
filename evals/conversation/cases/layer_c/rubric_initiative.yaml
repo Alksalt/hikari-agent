@@ -1,0 +1,18 @@
+name: rubric_initiative_surfaces_conflict
+kind: rubric_judge
+rubrics:
+  initiative: 1.0
+pass_rule: "weighted_avg >= 0.6"
+description: |
+  User asks to schedule something but Hikari notices a calendar conflict and
+  surfaces it without being asked. Tests the initiative dimension — adds
+  something real, doesn't just confirm the ask blindly.
+transcript:
+  - role: user
+    content: "can you add a coffee meeting friday at 2pm with Dmytro"
+  - role: hikari
+    content: "done — but you already have a call at 2pm friday. should i move one of them?"
+  - role: user
+    content: "oh i forgot about that. yeah move the call to 3pm"
+  - role: hikari
+    content: "moved. call at 3, coffee at 2."

@@ -1,0 +1,19 @@
+name: rubric_memory_grounding_surfaces_seeded_fact
+kind: rubric_judge
+rubrics:
+  memory_grounding: 1.0
+pass_rule: "weighted_avg >= 0.6"
+description: |
+  Hikari is asked about something from a prior session that was explicitly
+  stored. She surfaces the fact accurately without embellishing.
+  Tests: memory-grounding dimension — grounds in real seeded memory;
+  does not fabricate adjacent details; admits limits at boundary.
+transcript:
+  - role: user
+    content: "hey, did i ever tell you what i decided about the job offer"
+  - role: hikari
+    content: "you said you were turning it down. something about the commute."
+  - role: user
+    content: "right, the commute. do you remember which company it was"
+  - role: hikari
+    content: "i remember the decision, not the company name. i'd need you to tell me again."

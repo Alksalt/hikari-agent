@@ -1,8 +1,8 @@
 """Eval harness runner — Case schema, loader, layer dispatch.
 
 Layer A: pure-Python hard-assertion checks on canned responses (CI-fast).
-Layer B: golden chat fixtures, LLM-judge scoring.
-Layer C: live/longitudinal — scaffold-only, raises NotImplementedError.
+Layer B: deterministic injection + bypass corpus; no live LLM required.
+Layer C: golden transcript judge (OpenRouter/DeepSeek) + cadence simulation.
 """
 from __future__ import annotations
 
@@ -179,15 +179,17 @@ async def run_layer_c(  # type: ignore[override]
     *,
     cost_cap_usd: float = 0.25,
 ) -> tuple[int, int, list[str], float]:
-    """Dispatch Layer C cases: golden (LLM judge) + cadence (deterministic).
+    """Dispatch Layer C cases: golden (LLM judge) + cadence (deterministic) + trajectory.
 
     Returns (passed, total, errors, total_usd_cost).
-    Cost cap aborts golden cases mid-run if exceeded; cadence cases are free.
+    Cost cap aborts golden cases mid-run if exceeded; cadence + trajectory are free.
     """
     from evals.conversation.runner_layer_c import (
         discover_cases,
         run_layer_c_cadence,
         run_layer_c_golden,
+        run_layer_c_rubric,
+        run_layer_c_trajectory,
     )
 
     cases = discover_cases(cases_dir)
@@ -208,6 +210,10 @@ async def run_layer_c(  # type: ignore[override]
                 continue
             result = await run_layer_c_golden(case_path)
             total_cost += result.usd_cost
+        elif kind == "trajectory":
+            result = await run_layer_c_trajectory(case_path)
+        elif kind == "rubric_judge":
+            result = await run_layer_c_rubric(case_path)
         else:
             result = run_layer_c_cadence(case_path)
 
