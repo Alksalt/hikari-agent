@@ -136,6 +136,8 @@ def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerC
         return None
     enabled_sources: set[str] = ctx.enabled_sources
     snoozed: set[str] = _snoozed_sources()
+    if "all" in snoozed:
+        return None
     pool_caps: dict[str, bool] = ctx.pool_caps  # pool_name -> bool (can send)
 
     scored: list[tuple[float, TriggerCandidate]] = []

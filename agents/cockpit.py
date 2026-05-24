@@ -14,6 +14,9 @@ import os
 import time
 from datetime import UTC, datetime
 
+_OAUTH_PROBE_CACHE: dict[str, tuple[str, float]] = {}
+_OAUTH_PROBE_TTL_SEC = 60.0
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -34,9 +37,11 @@ _COMMANDS: dict[str, str] = {
     "grab_stickers": "import sticker pack urls you pasted",
     "help":         "show this command list",
     "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
-    "tools":        "list tool registry by capability group",
+    "tools":        "list tool registry (policy) / recent tool_calls (recent) / audit_log (audit)",
     "audit":        "paginate audit_log (recent / tools / approvals / id <id>)",
     "settings":     "get or set allowlisted runtime settings",
+    "reminders":    "list active reminders with snooze/dismiss buttons",
+    "checkin":      "morning checkin: run now / skip tomorrow",
 }
 
 # ---------------------------------------------------------------------------
@@ -65,14 +70,32 @@ def _read_graphiti_enabled() -> str:
 
 
 def _write_graphiti_enabled(value: str) -> None:
-    # Persisted as env override via runtime_state so it survives to the
-    # scheduler's next tick without a restart.
     from storage import db as _db
     v = value.strip().lower()
     if v not in ("true", "false", "1", "0"):
         raise ValueError(f"GRAPHITI_ENABLED must be true/false, got {value!r}")
     _db.runtime_set("settings.GRAPHITI_ENABLED", v)
     os.environ["GRAPHITI_ENABLED"] = v
+    # Hot-toggle the live scheduler job without restart.
+    try:
+        from agents import telegram_bridge as _bridge
+        scheduler = _bridge._live_scheduler()
+        if scheduler is not None:
+            from agents.scheduler import _add_graph_outbox_drain_job
+            enabled = v not in ("false", "0")
+            if enabled:
+                _add_graph_outbox_drain_job(scheduler)
+                try:
+                    scheduler.resume_job("graph_outbox_drain")
+                except Exception:
+                    pass
+            else:
+                try:
+                    scheduler.pause_job("graph_outbox_drain")
+                except Exception:
+                    pass
+    except Exception:
+        logger.exception("_write_graphiti_enabled: scheduler hot-toggle failed (non-fatal)")
 
 
 def _read_auth_precheck() -> str:
@@ -190,15 +213,23 @@ def _silence_state() -> tuple[bool, str]:
         return False, ""
 
 
-def _oauth_states() -> dict[str, str]:
-    results: dict[str, str] = {}
+async def _probe_google_cached() -> str:
+    now = time.time()
+    cached = _OAUTH_PROBE_CACHE.get("google")
+    if cached and cached[1] > now:
+        return cached[0]
     try:
-        from auth.google import read_grant_from_keychain  # type: ignore[import]
-        grant = read_grant_from_keychain()
-        results["google"] = "ok (grant cached)" if grant else "no grant"
+        from agents.google_health import probe_google_token
+        healthy, reason = await probe_google_token(timeout_sec=10.0)
+        state = "ok" if healthy else (reason or "unknown")
     except Exception as exc:
-        results["google"] = f"keychain error: {exc}"
-    return results
+        state = f"probe_error:{type(exc).__name__}"
+    _OAUTH_PROBE_CACHE["google"] = (state, now + _OAUTH_PROBE_TTL_SEC)
+    return state
+
+
+async def _oauth_states() -> dict[str, str]:
+    return {"google": await _probe_google_cached()}
 
 
 def _parse_duration(s: str) -> int | None:
@@ -274,7 +305,7 @@ async def format_status(app) -> str:
         lines.append(f"mcp: error ({exc})")
 
     # OAuth
-    for provider, state in _oauth_states().items():
+    for provider, state in (await _oauth_states()).items():
         lines.append(f"oauth.{provider}: {state}")
 
     # DB row counts
@@ -344,12 +375,29 @@ async def format_status(app) -> str:
 def format_tools(subcmd: str, args: list[str]) -> str:
     subcmd = (subcmd or "policy").lower()
 
-    if subcmd == "recent":
+    if subcmd in ("recent", "calls"):
+        from storage import db as _db
+        rows = _db.tool_calls_recent(20)
+        if not rows:
+            return "no tool calls recorded yet."
+        lines = [f"recent tool calls ({len(rows)}):"]
+        for r in rows:
+            ts = (r.get("started_at") or "")[:16]
+            tool = r.get("tool_id") or "?"
+            dur = r.get("duration_ms")
+            ok = "ok" if r.get("success") else "err"
+            err_cls = r.get("error_class") or ""
+            err_note = f" [{err_cls}]" if err_cls else ""
+            dur_note = f" {dur}ms" if dur is not None else ""
+            lines.append(f"  {ts}  {tool}  {ok}{err_note}{dur_note}")
+        return _truncate_3900("\n".join(lines))
+
+    if subcmd == "audit":
         from storage import db as _db
         rows = _db.audit_recent(20)
         if not rows:
             return "no tool calls in audit log yet."
-        lines = [f"recent tool calls ({len(rows)}):"]
+        lines = [f"audit log ({len(rows)}):"]
         for r in rows:
             ts = (r.get("ts") or "")[:16]
             tool = r.get("tool") or "?"

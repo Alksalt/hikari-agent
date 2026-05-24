@@ -16,10 +16,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import MessageReactionUpdated, ReactionTypeEmoji, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageReactionUpdated,
+    ReactionTypeEmoji,
+    Update,
+)
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -66,6 +74,12 @@ from .scheduler import build_scheduler
 logger = logging.getLogger(__name__)
 
 _BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
+_SCHEDULER_REF = None  # Set after scheduler.start() in post_init
+
+
+def _live_scheduler():
+    """Return the live AsyncIOScheduler instance, or None if not started yet."""
+    return _SCHEDULER_REF
 
 USER_PHOTO_DIR = REPO_ROOT / "data" / "user_photos"
 DOCUMENT_OUTBOX = Path(
@@ -1646,13 +1660,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
     target = matches[0]
-    db.bg_task_update(target["task_id"], status="cancelled",
-                      completed_at=db._now(),
-                      result_summary="cancelled by user")
+    db.bg_task_cancel_request(target["task_id"])
     await send_ephemeral_ack(
         context.bot, message.chat_id,
-        f"marked {target['task_id'][:8]} cancelled. "
-        f"(it'll finish its current turn before stopping for real.)",
+        f"cancel requested for {target['task_id'][:8]}. the worker will stop after its current tool turn.",
         reason="cancel", reply_to=message,
     )
 
@@ -1986,14 +1997,15 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not rows:
         await _appr_ack("nothing pending.")
         return
-    lines = [f"pending approvals ({len(rows)}):"]
+    await _appr_ack(f"pending approvals ({len(rows)}):")
     for r in rows:
         summary = (r["summary"] or "")[:80]
-        lines.append(f"  #{r['id']}: {summary}")
-        lines.append(f"     deadline: {r['deadline_iso']}")
-    lines.append("")
-    lines.append("CONFIRM-SEND <id> | REJECT <id> | /approvals cancel <id>")
-    await _appr_ack("\n".join(lines))
+        deadline = r["deadline_iso"] or "?"
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=f"#{r['id']}: {summary}\ndeadline: {deadline}",
+            reply_markup=_kb_approval(r["id"]),
+        )
 
 
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2195,6 +2207,236 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send_ephemeral_ack(
         message.get_bot(), message.chat_id, cockpit.format_settings(subcmd, rest),
         reason="cockpit_cmd", reply_to=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# InlineKeyboardMarkup builders
+# ---------------------------------------------------------------------------
+
+def _kb_approval(row_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("confirm", callback_data=f"appr:confirm:{row_id}"),
+        InlineKeyboardButton("reject", callback_data=f"appr:reject:{row_id}"),
+        InlineKeyboardButton("cancel", callback_data=f"appr:cancel:{row_id}"),
+    ]])
+
+
+def _kb_checkin_status() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("run now", callback_data="checkin:runnow:"),
+        InlineKeyboardButton("skip tomorrow", callback_data="checkin:skiptomorrow:"),
+    ]])
+
+
+def _kb_reminder(reminder_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("snooze 10m", callback_data=f"reminder:snooze:{reminder_id}:10m"),
+        InlineKeyboardButton("snooze 1h", callback_data=f"reminder:snooze:{reminder_id}:1h"),
+        InlineKeyboardButton("dismiss", callback_data=f"reminder:dismiss:{reminder_id}:"),
+    ]])
+
+
+# ---------------------------------------------------------------------------
+# Callback implementations
+# ---------------------------------------------------------------------------
+
+async def _cb_approvals(bot, chat_id: int, action: str, row_id: int) -> None:
+    from tools.gatekeeper import GATEKEEPER
+    with db._conn() as c:
+        row = c.execute(
+            "SELECT tool_use_id FROM approvals WHERE id = ? AND status = 'pending'",
+            (row_id,),
+        ).fetchone()
+    if not row:
+        await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: not found or already resolved.")
+        return
+    tool_use_id = str(row["tool_use_id"] or "")
+    if not tool_use_id:
+        await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: missing tool_use_id.")
+        return
+    if action == "confirm":
+        resolved = await GATEKEEPER.resolve(tool_use_id, "approved")
+    elif action == "reject":
+        resolved = await GATEKEEPER.resolve(tool_use_id, "rejected")
+    elif action == "cancel":
+        resolved = await GATEKEEPER.resolve(tool_use_id, "admin_cancel")
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"unknown approval action: {action!r}")
+        return
+    if resolved:
+        await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: {action}ed.")
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: not found in flight.")
+
+
+async def _cb_checkin(bot, chat_id: int, action: str) -> None:
+    from datetime import date, timedelta
+
+    async def _send(text: str) -> tuple[str, int | None, bool]:
+        from agents.messaging import send_and_persist
+        result = await send_and_persist(
+            bot=bot, chat_id=chat_id, text=text,
+            source="daily_checkin", persist=True,
+            run_hooks=False, skip_choreography=True,
+        )
+        return result.final_text, result.telegram_message_id, result.ok
+
+    if action == "runnow":
+        try:
+            await daily_checkin_mod.maybe_run_daily_checkin(_send)
+        except Exception:
+            logger.exception("cb_checkin: maybe_run_daily_checkin failed")
+    elif action == "skiptomorrow":
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        try:
+            from agents.daily_checkin import apply_schedule_edit
+            apply_schedule_edit({"kind": "skip", "date": tomorrow})
+            await bot.send_message(chat_id=chat_id, text=f"checkin skipped for {tomorrow}.")
+        except Exception as exc:
+            await bot.send_message(chat_id=chat_id, text=f"skip failed: {exc}")
+
+
+async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> None:
+    from datetime import timedelta
+
+    if action == "dismiss":
+        db.reminder_cancel(rid)
+        await bot.send_message(chat_id=chat_id, text=f"reminder {rid}: dismissed.")
+    elif action == "snooze":
+        row = db.reminder_get(rid)
+        if not row:
+            await send_ephemeral_ack(bot, chat_id, f"reminder {rid}: not found.", reason="cockpit_cmd")
+            return
+        from agents.cockpit import _parse_duration
+        secs = _parse_duration(extra or "10m")
+        if secs is None:
+            secs = 600
+        from datetime import UTC, timedelta as _td, datetime as _dt
+        fire_at = _dt.now(UTC) + _td(seconds=secs)
+        try:
+            db.reminder_update_fire_at(rid, fire_at.isoformat())
+            db.reminder_requeue_sync(rid)
+            await send_ephemeral_ack(bot, chat_id, f"reminder {rid}: snoozed {extra or '10m'}.", reason="cockpit_cmd")
+        except Exception as exc:
+            await send_ephemeral_ack(bot, chat_id, f"snooze failed: {exc}", reason="cockpit_cmd")
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"unknown reminder action: {action!r}")
+
+
+async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route all inline-keyboard callbacks. Owner-gated."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if not query.from_user or query.from_user.id != owner_id():
+        return
+    chat_id = query.message.chat_id if query.message else owner_id()
+    bot = context.bot
+    data = query.data or ""
+    parts = data.split(":")
+    namespace = parts[0] if parts else ""
+
+    try:
+        if namespace == "appr":
+            action = parts[1] if len(parts) > 1 else ""
+            row_id = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+            await _cb_approvals(bot, chat_id, action, row_id)
+        elif namespace == "checkin":
+            action = parts[1] if len(parts) > 1 else ""
+            await _cb_checkin(bot, chat_id, action)
+        elif namespace == "reminder":
+            action = parts[1] if len(parts) > 1 else ""
+            rid = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+            extra = parts[3] if len(parts) > 3 else ""
+            await _cb_reminder(bot, chat_id, action, rid, extra)
+        else:
+            logger.warning("_handle_callback: unknown namespace %r in data %r", namespace, data)
+    except Exception:
+        logger.exception("_handle_callback: error handling data=%r", data)
+
+
+# ---------------------------------------------------------------------------
+# /reminders + /checkin
+# ---------------------------------------------------------------------------
+
+async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reminders — list active reminders with snooze/dismiss buttons."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    rows = db.reminder_list(active_only=True)
+    if not rows:
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, "no active reminders.",
+            reason="reminders_cmd", reply_to=message,
+        )
+        return
+    display = rows[:15]
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
+        f"active reminders ({len(rows)}):",
+        reason="reminders_cmd", reply_to=message,
+    )
+    for r in display:
+        rid = r["id"]
+        fire_at = (r.get("fire_at") or "")[:16]
+        text_label = (r.get("text") or f"reminder {rid}")[:60]
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=f"#{rid} {fire_at}  {text_label}",
+            reply_markup=_kb_reminder(rid),
+        )
+
+
+async def cmd_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/checkin [run | skip tomorrow] — morning checkin controls."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = context.args or []
+    arg_str = " ".join(args).strip().lower()
+
+    if arg_str == "run":
+        async def _send(text: str) -> tuple[str, int | None, bool]:
+            from agents.messaging import send_and_persist
+            result = await send_and_persist(
+                bot=context.bot, chat_id=message.chat_id, text=text,
+                source="daily_checkin", persist=True,
+                run_hooks=False, skip_choreography=True,
+            )
+            return result.final_text, result.telegram_message_id, result.ok
+        try:
+            await daily_checkin_mod.maybe_run_daily_checkin(_send)
+        except Exception:
+            logger.exception("cmd_checkin: maybe_run_daily_checkin failed")
+        return
+
+    if arg_str == "skip tomorrow":
+        from datetime import date, timedelta
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        try:
+            from agents.daily_checkin import apply_schedule_edit
+            apply_schedule_edit({"kind": "skip", "date": tomorrow})
+            await send_ephemeral_ack(
+                context.bot, message.chat_id, f"checkin skipped for {tomorrow}.",
+                reason="checkin_cmd", reply_to=message,
+            )
+        except Exception as exc:
+            await send_ephemeral_ack(
+                context.bot, message.chat_id, f"skip failed: {exc}",
+                reason="checkin_cmd", reply_to=message,
+            )
+        return
+
+    # No args — status + buttons
+    await context.bot.send_message(
+        chat_id=message.chat_id,
+        text="morning checkin options:",
+        reply_markup=_kb_checkin_status(),
     )
 
 
@@ -2521,6 +2763,9 @@ def build_application() -> Application:
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
+    app.add_handler(CommandHandler("reminders", cmd_reminders))
+    app.add_handler(CommandHandler("checkin", cmd_checkin))
+    app.add_handler(CallbackQueryHandler(_handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     # T7.2: live location updates arrive as edited_message events. Telegram
@@ -2637,6 +2882,8 @@ def main() -> None:
 
         scheduler = build_scheduler(send_text)
         scheduler.start()
+        global _SCHEDULER_REF
+        _SCHEDULER_REF = scheduler
         logger.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
         application.bot_data["scheduler"] = scheduler  # Phase 6A: /status can read jobs
 
@@ -2698,17 +2945,28 @@ def main() -> None:
 
         # Phase E: wire the gatekeeper send_text BEFORE recovery so nudge
         # messages during restart_recovery can actually reach Telegram.
+        try:
+            await application.bot.set_my_commands([
+                BotCommand(name, desc[:256]) for name, desc in cockpit._COMMANDS.items()
+            ])
+            logger.info("set_my_commands: registered %d", len(cockpit._COMMANDS))
+        except Exception:
+            logger.exception("set_my_commands failed (non-fatal)")
+
         from tools.gatekeeper import GATEKEEPER as _gatekeeper  # noqa: PLC0415
         _bot_ref = application.bot
 
-        async def _gk_send(chat_id: int, text: str) -> None:
+        async def _gk_send(chat_id: int, text: str, reply_markup=None) -> None:
             from agents.post_filter import filter_outgoing  # noqa: PLC0415
             filtered = filter_outgoing(text)
             if filtered.refusal_hits and "canary_leak" in filtered.refusal_hits:
                 logging.getLogger(__name__).critical(
                     "gatekeeper: blocked outbound containing canary leak"
                 )
-            await _bot_ref.send_message(chat_id=chat_id, text=filtered.text)
+            kwargs = {"chat_id": chat_id, "text": filtered.text}
+            if reply_markup is not None:
+                kwargs["reply_markup"] = reply_markup
+            await _bot_ref.send_message(**kwargs)
 
         _gatekeeper.set_send_text(_gk_send)
 

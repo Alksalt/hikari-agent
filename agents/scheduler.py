@@ -16,6 +16,28 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MISFIRE_GRACE_SEC = cfg.get("scheduler.default_misfire_grace_sec") or 300
 
 
+def _add_graph_outbox_drain_job(scheduler: AsyncIOScheduler) -> None:
+    """Idempotently register the graph_outbox_drain job on the given scheduler."""
+    if scheduler.get_job("graph_outbox_drain") is not None:
+        return
+    from storage.graph import process_outbox
+
+    async def _graph_outbox_drain_job():
+        try:
+            stats = await process_outbox(limit=50, max_per_call=10)
+            if stats.get("sent") or stats.get("failed"):
+                logger.info("graph_outbox_drain: %s", stats)
+        except Exception:
+            logger.exception("graph_outbox_drain: unexpected failure")
+
+    scheduler.add_job(
+        _graph_outbox_drain_job,
+        IntervalTrigger(seconds=30),
+        id="graph_outbox_drain",
+        coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+
+
 def build_scheduler(send_text) -> AsyncIOScheduler:
     """Wire up the background jobs. send_text is `async def send_text(s: str)`."""
     from .reflection import maybe_run_session_consolidation, run_daily_reflection
@@ -363,24 +385,8 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
     # Phase 5D: Graphiti outbox drain — runs every 30s if GRAPHITI_ENABLED != 'false'.
     import os as _os
-    graphiti_enabled = _os.environ.get("GRAPHITI_ENABLED", "true").strip().lower() != "false"
-    if graphiti_enabled:
-        from storage.graph import process_outbox
-
-        async def _graph_outbox_drain_job():
-            try:
-                stats = await process_outbox(limit=50, max_per_call=10)
-                if stats.get("sent") or stats.get("failed"):
-                    logger.info("graph_outbox_drain: %s", stats)
-            except Exception:
-                logger.exception("graph_outbox_drain: unexpected failure")
-
-        scheduler.add_job(
-            _graph_outbox_drain_job,
-            IntervalTrigger(seconds=30),
-            id="graph_outbox_drain",
-            coalesce=True, max_instances=1, misfire_grace_time=60,
-        )
+    if _os.environ.get("GRAPHITI_ENABLED", "true").strip().lower() != "false":
+        _add_graph_outbox_drain_job(scheduler)
 
     # 9A: Periodic media_outbox drain — catches pending rows that weren't drained
     # after their originating turn (e.g. send_and_persist crash, restart mid-turn).

@@ -142,49 +142,90 @@ async def resolve_pending_approval(chat_id: int, text: str) -> bool:
     Returns True if the message was consumed (i.e. the user replied to a pending
     approval) — in which case the bridge should NOT pass it on to the agent.
 
-    Phase F: only the gatekeeper branch is live. Any pending row without
-    gate_kind='gatekeeper' is treated as a stale artefact and left untouched.
+    Accepts: CONFIRM-SEND [id] | REJECT [id]
+    If <id> is given, targets that specific pending row (chat_id must match).
+    If absent, falls back to the most-recent pending row for this chat.
 
     Implicit-cancel: when a gatekeeper approval is pending and the user sends a
-    non-CONFIRM-SEND, non-reject message, the approval is auto-cancelled and the
-    original message still routes to the agent (returns False).
+    non-matching message, the approval is auto-cancelled and the original message
+    still routes to the agent (returns False).
     """
-    pending = db.approval_pending_for(chat_id)
-    if not pending:
-        return False
     text_clean = text.strip()
-
+    confirm_phrase = str(cfg.get("approvals.tier_2_phrase", "CONFIRM-SEND"))
+    _resolve_re = re.compile(
+        r"^(" + re.escape(confirm_phrase) + r"|REJECT)(?:\s+(\d+))?$"
+    )
+    m = _resolve_re.match(text_clean)
     reject_phrases = [
         str(p).lower() for p in cfg.get("approvals.reject_phrases", []) or []
     ]
-    confirm_phrase = str(cfg.get("approvals.tier_2_phrase", "CONFIRM-SEND"))
+
+    if m:
+        action = m.group(1)   # confirm_phrase or "REJECT"
+        explicit_id = m.group(2)  # digit string or None
+
+        if explicit_id is not None:
+            # Explicit id: look it up directly.
+            row = db.approval_get(int(explicit_id))
+            if row is None or row.get("status") != "pending":
+                await _safe_send(chat_id, f"approval {explicit_id}: not found or already resolved.")
+                return True
+            if row.get("chat_id") != chat_id:
+                await _safe_send(chat_id, f"approval {explicit_id}: not yours.")
+                return True
+            pending = row
+        else:
+            # No id: fall back to most-recent pending for this chat.
+            pending = db.approval_pending_for(chat_id)
+            if not pending:
+                return False
+
+        gate_kind = pending.get("gate_kind")
+        tool_use_id_gk = pending.get("tool_use_id")
+        if gate_kind == "gatekeeper" and tool_use_id_gk:
+            from tools.gatekeeper import GATEKEEPER
+            if action == confirm_phrase:
+                await GATEKEEPER.resolve(str(tool_use_id_gk), "approved")
+                return True
+            else:
+                await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
+                await _safe_send(chat_id, "ok. didn't do it.")
+                return True
+
+        # Non-gatekeeper row with explicit id — consume but warn.
+        return True
+
+    # Not a CONFIRM-SEND/REJECT pattern — check if there's a pending approval
+    # for the implicit-cancel side-channel (no explicit id only).
     lower = text_clean.lower()
-
-    approved = text_clean == confirm_phrase
     rejected = lower in reject_phrases
+    if rejected:
+        pending = db.approval_pending_for(chat_id)
+        if pending:
+            gate_kind = pending.get("gate_kind")
+            tool_use_id_gk = pending.get("tool_use_id")
+            if gate_kind == "gatekeeper" and tool_use_id_gk:
+                from tools.gatekeeper import GATEKEEPER
+                await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
+                await _safe_send(chat_id, "ok. didn't do it.")
+                return True
 
+    # Regular message while a gatekeeper approval is pending — implicit cancel.
+    pending = db.approval_pending_for(chat_id)
+    if not pending:
+        return False
     gate_kind = pending.get("gate_kind")
     tool_use_id_gk = pending.get("tool_use_id")
     if gate_kind == "gatekeeper" and tool_use_id_gk:
         from tools.gatekeeper import GATEKEEPER
-        if approved:
-            await GATEKEEPER.resolve(str(tool_use_id_gk), "approved")
-            return True
-        else:
-            await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
-            if rejected:
-                await _safe_send(chat_id, "ok. didn't do it.")
-                return True
-            else:
-                tool_name_gk = str(pending.get("tool_name") or "")
-                short_name = tool_name_gk.rsplit("__", 1)[-1] or "that"
-                await _safe_send(
-                    chat_id, f"...dropping the {short_name} thing. moving on.",
-                )
-                return False
+        await GATEKEEPER.resolve(str(tool_use_id_gk), "rejected")
+        tool_name_gk = str(pending.get("tool_name") or "")
+        short_name = tool_name_gk.rsplit("__", 1)[-1] or "that"
+        await _safe_send(
+            chat_id, f"...dropping the {short_name} thing. moving on.",
+        )
+        return False
 
-    # Non-gatekeeper pending row (stale legacy artefact): don't consume the
-    # message; just let it route to the agent normally.
     return False
 
 

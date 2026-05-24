@@ -124,10 +124,30 @@ class Gatekeeper:
         # Only the first caller sends — subsequent idempotent calls skip it.
         if is_new and self._send_text:
             try:
-                await self._send_text(
-                    chat_id,
-                    self._format_prompt(tool_name, summary),
-                )
+                reply_markup = None
+                try:
+                    from agents.telegram_bridge import _kb_approval  # noqa: PLC0415
+                    reply_markup = _kb_approval(pending_obj.aid)
+                except Exception:
+                    pass
+                try:
+                    if reply_markup is not None:
+                        await self._send_text(
+                            chat_id,
+                            self._format_prompt(tool_name, summary),
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await self._send_text(
+                            chat_id,
+                            self._format_prompt(tool_name, summary),
+                        )
+                except TypeError:
+                    # Fallback: send_text doesn't accept reply_markup (e.g. tests).
+                    await self._send_text(
+                        chat_id,
+                        self._format_prompt(tool_name, summary),
+                    )
             except Exception:
                 logger.exception("gatekeeper: send_text failed for tool_use_id=%s", tool_use_id)
 

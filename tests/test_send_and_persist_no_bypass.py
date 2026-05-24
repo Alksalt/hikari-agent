@@ -169,6 +169,14 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "_send_outbox_photo",
         "_drain_photo_outbox",
         "_drain_media_outbox",
+        # Inline-keyboard callback acks — short bot.send_message replies
+        # to button taps (not agent turns; ephemeral by nature).
+        "_cb_approvals",
+        "_cb_checkin",
+        "_cb_reminder",
+        "cmd_approvals",
+        "cmd_checkin",
+        "cmd_reminders",
     }
     violations: list[str] = []
 
@@ -185,9 +193,16 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
             self.stack.pop()
         def visit_Call(self, node):
             if isinstance(node.func, ast.Attribute) and node.func.attr in {"send_message", "send_photo", "send_document", "send_sticker"}:
+                caller_id = None
                 if isinstance(node.func.value, ast.Name) and node.func.value.id == "bot":
-                    if not self.stack or self.stack[-1] not in ALLOWED_FUNCS:
-                        violations.append(f"line {node.lineno} in {self.stack[-1] if self.stack else '<module>'}: bot.{node.func.attr}(...)")
+                    caller_id = "bot"
+                elif (isinstance(node.func.value, ast.Attribute)
+                      and node.func.value.attr == "bot"
+                      and isinstance(node.func.value.value, ast.Name)
+                      and node.func.value.value.id == "context"):
+                    caller_id = "context.bot"
+                if caller_id and (not self.stack or self.stack[-1] not in ALLOWED_FUNCS):
+                    violations.append(f"line {node.lineno} in {self.stack[-1] if self.stack else '<module>'}: {caller_id}.{node.func.attr}(...)")
             self.generic_visit(node)
 
     V().visit(tree)

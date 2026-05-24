@@ -85,6 +85,8 @@ def _patch_cockpit_imports(monkeypatch):
     # _uptime_str tries to import _BOOT_TIME from telegram_bridge — patch it
     import agents.cockpit as ck
     monkeypatch.setattr(ck, "_uptime_str", lambda: "5m 30s")
+    monkeypatch.setattr(ck, "_probe_google_cached", AsyncMock(return_value="ok (mocked)"))
+    monkeypatch.setattr(ck, "_OAUTH_PROBE_CACHE", {})
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +163,13 @@ async def test_tools_recent_empty():
 
 @pytest.mark.asyncio
 async def test_tools_recent_with_data():
-    db.audit_append("mcp__test__bar", "{}", "ok", approved_by=None)
+    db.tool_calls_insert(
+        tool_id="mcp__test__bar",
+        duration_ms=42,
+        success=True,
+        error_class=None,
+        output_size=10,
+    )
     from agents.telegram_bridge import cmd_tools
     update, context = _make_update(_owner_id(), args=["recent"])
     await cmd_tools(update, context)

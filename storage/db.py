@@ -545,6 +545,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_messages_fts",
     "migrate_graph_outbox",
     "migrate_oauth_tokens_to_hash",
+    "migrate_background_tasks_cancel",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -675,6 +676,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_messages_fts", _migrate_messages_fts)
     run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
     run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
+    run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -775,6 +777,17 @@ def _migrate_tool_calls(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX idx_tool_calls_started_at ON tool_calls(started_at)")
     conn.execute("CREATE INDEX idx_tool_calls_tool_started ON tool_calls(tool_id, started_at)")
+
+
+def _migrate_background_tasks_cancel(conn: sqlite3.Connection) -> None:
+    """Add cancel_requested_at column to background_tasks for cooperative cancel."""
+    existing = {row["name"] for row in conn.execute(
+        "PRAGMA table_info(background_tasks)"
+    ).fetchall()}
+    if "cancel_requested_at" not in existing:
+        conn.execute(
+            "ALTER TABLE background_tasks ADD COLUMN cancel_requested_at TEXT"
+        )
 
 
 def _migrate_proactive_events(conn: sqlite3.Connection) -> None:
@@ -2915,7 +2928,7 @@ def bg_task_update(task_id: str, **fields: Any) -> None:
     if not fields:
         return
     allowed = {"status", "session_id", "completed_at", "result_summary",
-               "cost_usd", "tool_use_count"}
+               "cost_usd", "tool_use_count", "cancel_requested_at"}
     sets = []
     args = []
     for k, v in fields.items():
@@ -2958,6 +2971,28 @@ def bg_tasks_recent(chat_id: int, limit: int = 10) -> list[dict[str, Any]]:
             (chat_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def bg_task_cancel_request(task_id: str) -> None:
+    """Request cooperative cancellation of a queued or running task."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE background_tasks SET cancel_requested_at = ? "
+            "WHERE task_id = ? AND status IN ('queued', 'running')",
+            (_now(), task_id),
+        )
+
+
+def bg_task_cancel_requested(task_id: str) -> bool:
+    """Return True if cancel_requested_at is set for this task."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT cancel_requested_at FROM background_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    if row is None:
+        return False
+    return row["cancel_requested_at"] is not None
 
 
 # ---------- approvals (gated tool calls) ----------
@@ -3016,6 +3051,16 @@ def approvals_pending_deferred() -> list[dict[str, Any]]:
             "ORDER BY created_at"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def approval_get(row_id: int) -> dict[str, Any] | None:
+    """Return a single approvals row by primary key, or None."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM approvals WHERE id = ?",
+            (int(row_id),),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def approval_pending_for(chat_id: int) -> dict[str, Any] | None:
@@ -3155,6 +3200,17 @@ def audit_recent(limit: int = 20) -> list[dict]:
             "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by, "
             "hash_prev, hash_self "
             "FROM audit_log ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def tool_calls_recent(limit: int = 20) -> list[dict]:
+    """Return the most recent tool_calls rows, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, tool_id, started_at, duration_ms, success, error_class, output_size "
+            "FROM tool_calls ORDER BY id DESC LIMIT ?",
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]

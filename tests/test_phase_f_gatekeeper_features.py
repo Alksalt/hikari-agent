@@ -145,6 +145,12 @@ async def test_approvals_command_lists_pending(monkeypatch):
     )
 
     replies: list[str] = []
+    inline_messages: list[str] = []
+
+    mock_bot = AsyncMock()
+    mock_bot.send_message = AsyncMock(
+        side_effect=lambda **kw: inline_messages.append(kw.get("text", ""))
+    )
 
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=12345),
@@ -152,18 +158,19 @@ async def test_approvals_command_lists_pending(monkeypatch):
         message=SimpleNamespace(
             reply_text=AsyncMock(side_effect=lambda t: replies.append(t)),
             chat_id=12345,
+            get_bot=lambda: mock_bot,
         ),
     )
-    context = SimpleNamespace(args=[], bot=None)
+    context = SimpleNamespace(args=[], bot=mock_bot)
 
     monkeypatch.setattr("agents.telegram_bridge.owner_id", lambda: 12345)
 
     await cmd_approvals(update, context)
 
-    assert len(replies) == 1
-    reply = replies[0]
-    assert "pending" in reply.lower()
-    assert str(aid) in reply or "list_tool" in reply or "alice" in reply
+    # The header ack goes via reply_text; per-row messages via bot.send_message.
+    all_text = " ".join(replies) + " ".join(inline_messages)
+    assert "pending" in all_text.lower()
+    assert str(aid) in all_text or "list_tool" in all_text or "alice" in all_text
 
 
 # ---------------------------------------------------------------------------

@@ -128,6 +128,19 @@ async def _run_session(task_id: str, repo_path: Path, task: str,
         async with ClaudeSDKClient(options=options) as client:
             await client.query(task)
             async for msg in client.receive_response():
+                if db.bg_task_cancel_requested(task_id):
+                    await _emit(task_id, "cancelled", {
+                        "reason": "user requested cancel",
+                        "duration_s": time.monotonic() - started,
+                        "tool_uses": tool_use_count,
+                    })
+                    db.bg_task_update(
+                        task_id, status="cancelled",
+                        completed_at=db._now(),
+                        result_summary="cancelled by user",
+                        tool_use_count=tool_use_count,
+                    )
+                    return
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, ToolUseBlock):
