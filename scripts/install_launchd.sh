@@ -43,7 +43,9 @@ cat > "$PLIST_PATH" <<EOF
     <array>
         <string>$UV_BIN</string>
         <string>run</string>
-        <string>hikari-agent</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>agents.telegram_bridge</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -125,7 +125,7 @@ def main() -> int:
     print(f"\n=== {migrated} migrated, {skipped} skipped, {failed} failed ===")
     if not args.dry_run and migrated > 0:
         print("\nnext steps:")
-        print("  1. confirm it still works: `uv run hikari-agent` (still reads .env for now)")
+        print("  1. confirm it still works: `uv run python -m agents.telegram_bridge` (still reads .env for now)")
         print("  2. when ready, replace .env with .env.keychain that does:")
         print("     export TELEGRAM_BOT_TOKEN=$(security find-generic-password "
               "-a hikari -s TELEGRAM_BOT_TOKEN -w)")

@@ -31,11 +31,28 @@ uv run python -m scripts.auth github paste       # GitHub PAT
 uv run python scripts/migrate_secrets_to_keychain.py
 
 # foreground run for first-time verification
-uv run hikari-agent
+uv run python -m agents.telegram_bridge
 ```
 
 Send any message to your Telegram bot. Reply should arrive in Hikari's
 voice. Anthropic console shows $0 API spend — quota deducts from Max.
+
+---
+
+## Install (repo-local)
+
+hikari-agent is repo-local only — no wheel, no `pip install`. Dependencies
+are managed exclusively by `uv`. There is no `[project]` build target.
+
+```bash
+git clone https://github.com/<you>/hikari-agent && cd hikari-agent
+uv sync                                      # installs all deps into .venv
+cp .env.example .env && vim .env             # fill credentials
+uv run python -m agents.telegram_bridge      # foreground run
+```
+
+`uv sync` reads `uv.lock` and reproduces the exact dependency tree. Never
+use bare `pip` or `python` — always prefix with `uv run`.
 
 ---
 
@@ -45,7 +62,7 @@ Hikari runs as a per-user LaunchAgent. Five plists:
 
 | Label                  | Purpose                                                   |
 |------------------------|-----------------------------------------------------------|
-| `com.hikari.agent`     | the bot itself; runs `uv run hikari-agent`                |
+| `com.hikari.agent`     | the bot itself; runs `uv run python -m agents.telegram_bridge`                |
 | `com.hikari.backup`    | daily encrypted backup at 03:00 local (Sprint 7F)         |
 | `com.hikari.deadman`   | liveness monitor, fires every 5 min (Sprint 7F)           |
 | `com.hikari.mcp`       | external MCP server (optional, Sprint 7/14)               |
@@ -84,7 +101,7 @@ launchctl bootout gui/$(id -u)/com.hikari.agent
 
 # foreground debug — pipes stderr to your terminal
 launchctl bootout gui/$(id -u)/com.hikari.agent
-uv run hikari-agent
+uv run python -m agents.telegram_bridge
 ```
 
 ---
@@ -337,7 +354,6 @@ launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 | `/unsilence`  | resume proactive messages immediately                     |
 | `/tasks`      | list open tasks (memory-tracked open loops)               |
 | `/cancel`     | cancel a pending in-flight tool call                      |
-| `/cost`       | today's spend across Max + OpenRouter buckets             |
 | `/memory`     | inspect / correct / forget memory + session search (5B)   |
 | `/memory_diff`| SQLite vs Graphiti reconciliation (5D)                    |
 | `/approvals`  | list pending gatekeeper approvals                         |
@@ -380,7 +396,7 @@ uv run pytest tests/persona/ -q                   # persona regression suite
 uv run pytest tests/test_link_shelf_ssrf.py -q    # security regression sweep
 uv run ruff check .
 uv run python scripts/validate_tool_registry.py
-uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts
+uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts --allow-unreachable duckdb,github,playwright
 uv run python scripts/regen_mcp_json.py --check
 ```
 
@@ -453,7 +469,7 @@ hikari-agent/
 
 - **Agent loop:** Sonnet 4.6 primary, Haiku 4.5 fallback (`fallback_model`). Sessions resume via SQLite.
 - **Memory:** SQLite with `core_blocks`, bi-temporal `facts` (`valid_to` / `superseded_by`), `episodes`, `tasks`, `entities`, `character_thoughts`, `runtime_state`, FTS5 BM25. Park et al. retrieval scoring (recency × importance × relevance). Graphiti outbox + drain (Sprint 5D) makes the graph backend optional and durable.
-- **Hooks:** `UserPromptSubmit` injects core_blocks + open tasks + top-8 retrieved hits. `PostToolUseFailure` logs failures. `PostToolUse` `untrusted_output` wrap defends against prompt injection from external tool results.
+- **Hooks:** `UserPromptSubmit` injects core_blocks + open tasks. Retrieval is on-demand via `mcp__hikari_memory__recall` (Hikari calls it when she needs context, not on every turn). `PostToolUseFailure` logs failures. `PostToolUse` `untrusted_output` wrap defends against prompt injection from external tool results.
 - **Approvals:** one canonical lifecycle via `tools/gatekeeper.py`. Destructive Google Workspace writes (gmail_send, delete_calendar_event, drive_delete_file, etc.) route through `CONFIRM-SEND` (Sprint 4C + 6C). Approval previews preserve critical fields in full (Sprint 6C).
 - **External MCP servers:** every bucket-3 package pinned in `config/tools.yaml`; `scripts/regen_mcp_json.py` refuses to write `.mcp.json` if any package floats to `@latest` (Sprint 6E).
 

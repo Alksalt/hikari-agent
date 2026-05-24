@@ -25,7 +25,7 @@ Allow these explicitly:
 
 | Process                        | Destination                  | Notes                                    |
 | ------------------------------ | ---------------------------- | ---------------------------------------- |
-| Python (`uv run hikari-agent`) | `api.telegram.org:443`       | bot polling                              |
+| Python (`uv run python -m agents.telegram_bridge`) | `api.telegram.org:443`       | bot polling                              |
 | Python                         | `api.anthropic.com:443`      | Claude Agent SDK + dispatched sessions   |
 | Python                         | `openrouter.ai:443`          | Flux photo gen                           |
 | Python                         | `*.googleapis.com:443`       | Drive / Gmail / Calendar (Phase 4)       |

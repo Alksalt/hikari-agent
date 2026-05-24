@@ -29,7 +29,6 @@ _COMMANDS: dict[str, str] = {
     "unsilence":    "cancel active silence window",
     "tasks":        "list open background tasks",
     "cancel":       "cancel a running background task by id",
-    "cost":         "show today's LLM spend vs daily cap",
     "memory":       "query / edit the fact + message memory",
     "memory_diff":  "diff two memory snapshots",
     "approvals":    "list / cancel pending gatekeeper approvals",

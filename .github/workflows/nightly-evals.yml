@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.6"
       - run: uv sync --all-extras --dev
       - name: Run Layer C (drift judge + cadence)
         env:

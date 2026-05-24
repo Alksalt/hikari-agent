@@ -3,9 +3,12 @@
 Fails closed: tools exposed by a live MCP server but not declared in the
 registry (neither as an explicit entry nor under a prefix wildcard) cause
 a non-zero exit. Servers whose env is missing yield a SOFT pass (skipped).
+Servers that fail to respond to the MCP initialize handshake also yield a
+SOFT pass (expected for credential-gated servers in CI). Any other exception
+is a HARD fail — it indicates a broken server or introspection bug.
 
 Run from CI:
-    uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts
+    uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts --allow-unreachable duckdb,github,playwright
 """
 from __future__ import annotations
 
@@ -53,7 +56,10 @@ def _coverage_gaps(server_name: str, live_tools: set[str]) -> list[str]:
     return gaps
 
 
-async def _main(skip: frozenset[str], timeout: float) -> int:
+_INITIALIZE_ERROR_MARKER = "MCP server did not respond to initialize"
+
+
+async def _main(skip: frozenset[str], allow_unreachable: frozenset[str], timeout: float) -> int:
     from tools.mcp_introspect import introspect_all
     mcp = _load_mcp_json()
     servers = mcp.get("mcpServers", {})
@@ -65,7 +71,14 @@ async def _main(skip: frozenset[str], timeout: float) -> int:
     exit_code = 0
     for server_name, result in sorted(results.items()):
         if isinstance(result, Exception):
-            print(f"  {server_name}: skipped ({type(result).__name__}: {result})")
+            err_str = str(result)
+            is_initialize_error = _INITIALIZE_ERROR_MARKER in err_str
+            if is_initialize_error or server_name in allow_unreachable:
+                print(f"  {server_name}: skipped ({type(result).__name__}: {result})")
+            else:
+                exit_code = 1
+                print(f"  {server_name}: HARD FAIL -- unexpected error (not an initialize timeout): "
+                      f"{type(result).__name__}: {result}")
             continue
         gaps = _coverage_gaps(server_name, result)
         if gaps:
@@ -84,11 +97,17 @@ async def _main(skip: frozenset[str], timeout: float) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--skip", default="", help="comma-separated server names to skip")
+    ap.add_argument("--skip", default="", help="comma-separated server names to skip entirely")
+    ap.add_argument(
+        "--allow-unreachable", default="",
+        dest="allow_unreachable",
+        help="comma-separated server names whose initialize failure is a soft skip, not a hard fail",
+    )
     ap.add_argument("--timeout", type=float, default=10.0)
     args = ap.parse_args()
     skip = frozenset(s.strip() for s in args.skip.split(",") if s.strip())
-    return asyncio.run(_main(skip, args.timeout))
+    allow_unreachable = frozenset(s.strip() for s in args.allow_unreachable.split(",") if s.strip())
+    return asyncio.run(_main(skip, allow_unreachable, args.timeout))
 
 
 if __name__ == "__main__":

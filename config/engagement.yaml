@@ -876,7 +876,6 @@ auth:
 retention:
   messages_days: 365
   oauth_audit_log_days: 365
-  drift_probes_days: 180
   calendar_notifications_days: 90
 
 # SQLite connection-pool busy timeout. Raised from default 0 to avoid

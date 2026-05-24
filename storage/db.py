@@ -244,25 +244,6 @@ CREATE TABLE IF NOT EXISTS persona_drift_scores (
 );
 CREATE INDEX IF NOT EXISTS drift_sampled_at ON persona_drift_scores(sampled_at DESC);
 
--- Phase 11: SPASM-style persona drift probes (arxiv 2604.09212).
--- Three fixed probe questions (values / emotion_coping / motivation) are
--- baselined once via agents.drift_judge.baseline_persona_probes, then
--- re-asked every 4h. Cosine distance between baseline embedding and
--- current embedding is the drift signal. Independent of the per-outbound
--- persona_drift_scores Haiku judge — those catch turn-level slips, these
--- catch slow worldview shifts.
-CREATE TABLE IF NOT EXISTS persona_drift_probes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    probe_key TEXT NOT NULL,         -- 'values' | 'emotion_coping' | 'motivation'
-    distance REAL NOT NULL,          -- cosine distance vs baseline, ~0 = on-persona
-    current_response TEXT,           -- snippet of today's answer (for audit)
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS persona_drift_probes_created
-    ON persona_drift_probes(created_at DESC);
-CREATE INDEX IF NOT EXISTS persona_drift_probes_key
-    ON persona_drift_probes(probe_key, created_at DESC);
-
 -- Phase 8: 👍/👎 reactions from the user on Hikari's outbound messages.
 -- Keyed by the Telegram outbound message_id (stored on messages.telegram_message_id
 -- by the bridge after a successful reply_text). Used by reflection to compare
@@ -295,35 +276,6 @@ CREATE TABLE IF NOT EXISTS reminders (
     fired_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
-
--- T3.3: topic-clustered episode summaries. One row per (topic, time-window)
--- pair, with the per-cluster summary text + a JSON array of contributing
--- episode ids so callers can drill down if needed. Written by the daily
--- reflection consolidation pass.
-CREATE TABLE IF NOT EXISTS episode_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic TEXT NOT NULL,
-    episode_ids_json TEXT NOT NULL,
-    summary_text TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_episode_summaries_topic ON episode_summaries(topic);
-
--- T3.3: typed edges between facts (graph). Today the only predicate is
--- ``co_occurs_with`` (same-episode co-occurrence) but the column is free-
--- text so future predicates (implies, contradicts, refines, ...) drop in
--- without a migration.
-CREATE TABLE IF NOT EXISTS fact_relations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    subject_fact_id INTEGER NOT NULL,
-    predicate TEXT NOT NULL,
-    object_fact_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (subject_fact_id) REFERENCES facts(id),
-    FOREIGN KEY (object_fact_id) REFERENCES facts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_fact_relations_subject ON fact_relations(subject_fact_id);
-CREATE INDEX IF NOT EXISTS idx_fact_relations_object ON fact_relations(object_fact_id);
 
 -- Phase 11: weekly sleep-time consolidation archive (Letta sleep-time pattern,
 -- Apr 2025). The current week's consolidation lives in core_blocks under the
@@ -425,9 +377,8 @@ CREATE INDEX IF NOT EXISTS oauth_audit_log_ts ON oauth_audit_log(ts DESC);
 -- questions targeting her hard opinions (needs_no_one / liking_embarrassing /
 -- attention_mech). LLM-as-judge classifies the answer as hold/partial/drift
 -- and on 'drift' the scheduler sends an operator-style heartbeat alert.
--- Independent of the per-outbound persona_drift_scores Haiku judge AND of the
--- 4h persona_drift_probes — those catch turn-level slips and cosine-distance
--- worldview shifts, this catches whether she still holds her hard opinions
+-- Independent of the per-outbound persona_drift_scores Haiku judge.
+-- This catches whether she still holds her hard opinions
 -- when challenged head-on. Table is brand-new (no ALTER ADD COLUMN). Indexes
 -- live in the migration fn per MEMORY.md's schema-migration-ordering note so
 -- the bootstrap pass stays index-free for fresh tables created via _SCHEMA.
@@ -547,6 +498,8 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_oauth_tokens_to_hash",
     "migrate_background_tasks_cancel",
     "migrate_media_events",
+    "migrate_drop_persona_drift_probes",
+    "migrate_drop_episode_summaries_and_fact_relations",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -679,6 +632,9 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
     run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel)
     run_once(conn, "migrate_media_events", _migrate_media_events)
+    run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes)
+    run_once(conn, "migrate_drop_episode_summaries_and_fact_relations",
+             _migrate_drop_episode_summaries_and_fact_relations)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -731,7 +687,21 @@ def _migrate_fact_relations_validity(conn: sqlite3.Connection) -> None:
     """Bi-temporal fact_relations: when a fact transitions to 'superseded',
     every relation touching it gets stamped with valid_to + the new fact's
     id. Recall filters valid_to IS NOT NULL. Graphiti pattern (Zep,
-    arxiv 2501.13956)."""
+    arxiv 2501.13956).
+
+    The fact_relations table is dropped by a later migration
+    (_migrate_drop_episode_summaries_and_fact_relations). On fresh DBs the
+    table never exists; this migration is a no-op in that case.
+    """
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='fact_relations'"
+        ).fetchall()
+    }
+    if not tables:
+        return
     existing = {
         row["name"]
         for row in conn.execute(
@@ -1548,16 +1518,6 @@ def mark_fact_invalid(fact_id: int, superseded_by: int | None = None,
                 "INSERT INTO character_thoughts (thought, created_at) VALUES (?, ?)",
                 (f"mark_fact_invalid #{fid}: {reason}", _now()),
             )
-    # Bi-temporal: walk this fact's edges and stamp them invalidated.
-    try:
-        fact_relations_invalidate_for_fact(
-            fid, invalidated_by=superseded_by,
-        )
-    except Exception:
-        logger.exception(
-            "mark_fact_invalid: edge invalidation failed for fact_id=%s",
-            fid,
-        )
 
 
 def active_facts(limit: int = 100) -> list[dict[str, Any]]:
@@ -1723,63 +1683,6 @@ def prune_episodes_older_than_days(days: int) -> int:
     return len(ids)
 
 
-# ---------- T3.3: episode summaries (topic clusters) ----------
-
-def episode_summary_insert(
-    topic: str,
-    episode_ids: list[int],
-    summary_text: str,
-) -> int:
-    """Persist one topic-cluster summary. Returns the new row id.
-
-    ``episode_ids`` is stored as JSON so downstream readers can drill back
-    to the contributing episodes without a join table. The list is filtered
-    to ints — invalid ids are silently dropped rather than raising, because
-    the caller is the reflection job and a single bad id shouldn't break
-    the whole consolidation pass.
-    """
-    import json
-    clean_topic = (topic or "").strip()
-    body = (summary_text or "").strip()
-    if not clean_topic or not body:
-        raise ValueError("episode_summary_insert: topic and summary_text are required")
-    clean_ids = [int(i) for i in (episode_ids or []) if isinstance(i, (int, str))
-                 and str(i).lstrip("-").isdigit()]
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO episode_summaries "
-            "(topic, episode_ids_json, summary_text) "
-            "VALUES (?, ?, ?)",
-            (clean_topic, json.dumps(clean_ids), body),
-        )
-        return int(cur.lastrowid or 0)
-
-
-def episode_summaries_recent(topic: str | None = None,
-                             limit: int = 10) -> list[dict[str, Any]]:
-    """Most-recent episode summaries. Filter by topic if provided; otherwise
-    return all topics interleaved by ``created_at`` descending."""
-    import json
-    sql = "SELECT * FROM episode_summaries"
-    args: list[Any] = []
-    if topic:
-        sql += " WHERE topic = ?"
-        args.append(topic)
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    args.append(int(limit))
-    with _conn() as c:
-        rows = c.execute(sql, args).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        item = dict(r)
-        try:
-            item["episode_ids"] = json.loads(item.get("episode_ids_json") or "[]")
-        except (ValueError, TypeError):
-            item["episode_ids"] = []
-        out.append(item)
-    return out
-
-
 # ---------- Phase 11: weekly sleep-time consolidation archive ----------
 
 def weekly_consolidation_insert(
@@ -1823,87 +1726,6 @@ def weekly_consolidations_recent(limit: int = 10) -> list[dict[str, Any]]:
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]
-
-
-# ---------- T3.3: fact relations (knowledge graph) ----------
-
-def fact_relation_insert(subject_id: int, predicate: str, object_id: int) -> int:
-    """Insert a typed edge ``(subject_fact_id) --[predicate]--> (object_fact_id)``.
-
-    Self-edges (a fact relating to itself) are rejected — they're always noise
-    in the co-occurrence pass. Returns the new row id. The caller is expected
-    to dedupe; the table allows duplicate edges so a graph weight signal can
-    be built later by counting them.
-    """
-    s = int(subject_id)
-    o = int(object_id)
-    pred = (predicate or "").strip()
-    if not pred:
-        raise ValueError("fact_relation_insert: predicate is required")
-    if s == o:
-        raise ValueError("fact_relation_insert: refusing to create a self-edge")
-    if s <= 0 or o <= 0:
-        raise ValueError("fact_relation_insert: ids must be positive")
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO fact_relations (subject_fact_id, predicate, object_fact_id) "
-            "VALUES (?, ?, ?)",
-            (s, pred, o),
-        )
-        return int(cur.lastrowid or 0)
-
-
-def fact_relations_invalidate_for_fact(
-    fact_id: int, invalidated_by: int | None = None,
-) -> int:
-    """Stamp valid_to + invalidated_by_fact_id on every edge touching
-    ``fact_id`` that is currently live. Returns the number of edges newly
-    invalidated. Idempotent — already-invalidated edges are skipped via
-    the partial WHERE valid_to IS NULL."""
-    with _conn() as c:
-        cur = c.execute(
-            "UPDATE fact_relations "
-            "SET valid_to = ?, invalidated_by_fact_id = ? "
-            "WHERE (subject_fact_id = ? OR object_fact_id = ?) "
-            "AND valid_to IS NULL",
-            (_now(), invalidated_by, int(fact_id), int(fact_id)),
-        )
-    return int(cur.rowcount or 0)
-
-
-def fact_relations_for(fact_id: int) -> list[dict[str, Any]]:
-    """Return all edges touching ``fact_id`` (as either subject or object),
-    joined with the matching fact rows so callers can render the graph
-    without a second query.
-
-    Each row carries ``subject``, ``predicate``, ``object`` keys for the
-    triple text + ``subject_fact_id`` / ``object_fact_id`` for ids +
-    ``direction`` ('out' when fact_id is the subject, 'in' otherwise).
-    """
-    fid = int(fact_id)
-    if not fid:
-        return []
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT r.id, r.subject_fact_id, r.predicate AS edge_predicate, "
-            "       r.object_fact_id, r.created_at, "
-            "       s.subject || ' ' || s.predicate || ' ' || s.object AS subject_text, "
-            "       o.subject || ' ' || o.predicate || ' ' || o.object AS object_text "
-            "FROM fact_relations r "
-            "LEFT JOIN facts s ON s.id = r.subject_fact_id "
-            "LEFT JOIN facts o ON o.id = r.object_fact_id "
-            "WHERE (r.subject_fact_id = ? OR r.object_fact_id = ?) "
-            "AND r.valid_to IS NULL "
-            "ORDER BY r.created_at DESC",
-            (fid, fid),
-        ).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        item = dict(r)
-        item["direction"] = "out" if item["subject_fact_id"] == fid else "in"
-        item["predicate"] = item.pop("edge_predicate")
-        out.append(item)
-    return out
 
 
 # ---------- tasks ----------
@@ -2461,37 +2283,6 @@ def prune_drift_older_than_days(days: int) -> int:
     return cur.rowcount or 0
 
 
-# ---------- persona_drift_probes (Phase 11 SPASM-style probes) ----------
-
-def persona_drift_probe_recent(probe_key: str, limit: int = 10) -> list[dict[str, Any]]:
-    """Recent probe samples for one key, newest first. Used by the daily
-    reflection / debugging tooling."""
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT id, probe_key, distance, current_response, created_at "
-            "FROM persona_drift_probes "
-            "WHERE probe_key = ? ORDER BY created_at DESC LIMIT ?",
-            (probe_key, int(limit)),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def persona_drift_probe_avg(probe_key: str, window_days: int = 7) -> float | None:
-    """Mean cosine distance for one probe over the window. None if no samples."""
-    from datetime import timedelta
-    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
-    with _conn() as c:
-        row = c.execute(
-            "SELECT AVG(distance) AS avg, COUNT(*) AS n "
-            "FROM persona_drift_probes "
-            "WHERE probe_key = ? AND created_at >= ?",
-            (probe_key, cutoff),
-        ).fetchone()
-    if not row or not row["n"]:
-        return None
-    return float(row["avg"])
-
-
 # ---------- user_feedback (Phase 8: 👍/👎 ground-truth) ----------
 
 def update_last_assistant_telegram_msg_id(telegram_message_id: int) -> int | None:
@@ -2858,17 +2649,6 @@ def prune_oauth_audit_log_older_than_days(days: int) -> int:
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM oauth_audit_log WHERE ts < datetime('now', '-' || ? || ' days')",
-            (int(days),),
-        )
-    return int(cur.rowcount or 0)
-
-
-def prune_drift_probes_older_than_days(days: int) -> int:
-    """Delete persona_drift_probes rows older than `days`. Returns rows deleted."""
-    with _conn() as c:
-        cur = c.execute(
-            "DELETE FROM persona_drift_probes "
-            "WHERE created_at < datetime('now', '-' || ? || ' days')",
             (int(days),),
         )
     return int(cur.rowcount or 0)
@@ -4282,6 +4062,26 @@ def _migrate_media_events(conn: sqlite3.Connection) -> None:
         "ON media_events(kind, created_at)"
     )
     conn.commit()
+
+
+def _migrate_drop_persona_drift_probes(conn: sqlite3.Connection) -> None:
+    """Drop the persona_drift_probes table from deployed DBs.
+
+    Sprint 7C's drift_canary (drift_canary_answers) owns this signal now.
+    The table is removed from _SCHEMA so fresh DBs never create it; this
+    migration drops it from existing deployments.
+    """
+    conn.execute("DROP TABLE IF EXISTS persona_drift_probes")
+
+
+def _migrate_drop_episode_summaries_and_fact_relations(conn: sqlite3.Connection) -> None:
+    """Drop episode_summaries and fact_relations from deployed DBs.
+
+    Both tables are removed from _SCHEMA so fresh DBs never create them; this
+    migration drops them from existing deployments. No production readers exist.
+    """
+    conn.execute("DROP TABLE IF EXISTS episode_summaries")
+    conn.execute("DROP TABLE IF EXISTS fact_relations")
 
 
 def media_events_insert(

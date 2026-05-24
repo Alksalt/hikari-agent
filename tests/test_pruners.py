@@ -1,5 +1,5 @@
 """Phase A (Sprint 3) — pruner functions for audit_log, oauth_audit_log,
-persona_drift_probes, and calendar_notifications; plus scheduler job coverage."""
+and calendar_notifications; plus scheduler job coverage."""
 from __future__ import annotations
 
 import importlib
@@ -62,23 +62,6 @@ def _insert_oauth_audit_rows(n_old: int, n_fresh: int, days_old: int = 400) -> N
             )
 
 
-def _insert_drift_probe_rows(n_old: int, n_fresh: int, days_old: int = 200) -> None:
-    _trigger_schema()
-    with db._conn() as c:
-        for _ in range(n_old):
-            c.execute(
-                "INSERT INTO persona_drift_probes (probe_key, distance, created_at) "
-                "VALUES (?, ?, datetime('now', ? || ' days'))",
-                ("values", 0.1, f"-{days_old}"),
-            )
-        for _ in range(n_fresh):
-            c.execute(
-                "INSERT INTO persona_drift_probes (probe_key, distance, created_at) "
-                "VALUES (?, ?, datetime('now'))",
-                ("values", 0.1),
-            )
-
-
 # ---------- audit_log pruner (intentionally absent — hash-chain integrity) ----------
 
 def test_prune_audit_log_is_intentionally_absent():
@@ -107,22 +90,6 @@ def test_prune_oauth_audit_log_older_than_days():
 def test_prune_oauth_audit_log_empty():
     _trigger_schema()
     assert db.prune_oauth_audit_log_older_than_days(365) == 0
-
-
-# ---------- drift_probes pruner ----------
-
-def test_prune_drift_probes_older_than_days():
-    _insert_drift_probe_rows(n_old=2, n_fresh=2, days_old=200)
-    deleted = db.prune_drift_probes_older_than_days(180)
-    assert deleted == 2
-    with db._conn() as c:
-        remaining = c.execute("SELECT COUNT(*) AS n FROM persona_drift_probes").fetchone()["n"]
-    assert remaining == 2
-
-
-def test_prune_drift_probes_empty():
-    _trigger_schema()
-    assert db.prune_drift_probes_older_than_days(180) == 0
 
 
 # ---------- calendar_notifications pruner + helpers ----------
@@ -178,12 +145,13 @@ def test_calendar_notifications_migration_backfills_kv_keys():
     assert db.runtime_get("calendar_notified_sig_a") is not None
 
 
-# ---------- scheduler job covers all 4 pruners ----------
+# ---------- scheduler job covers all 3 active pruners ----------
 
 def test_monthly_prune_job_calls_all_pruners(monkeypatch):
-    """All 4 pruner functions are called by the monthly job.
+    """All 3 pruner functions are called by the monthly job.
 
     audit_log is intentionally excluded — see test_prune_audit_log_is_intentionally_absent.
+    persona_drift_probes pruner removed in Sprint 10C (table dropped via migration).
     """
     _trigger_schema()
     calls: dict[str, int] = {}
@@ -196,7 +164,6 @@ def test_monthly_prune_job_calls_all_pruners(monkeypatch):
 
     monkeypatch.setattr(db, "prune_messages_older_than_days", _track("messages"))
     monkeypatch.setattr(db, "prune_oauth_audit_log_older_than_days", _track("oauth_audit"))
-    monkeypatch.setattr(db, "prune_drift_probes_older_than_days", _track("drift"))
     monkeypatch.setattr(db, "prune_calendar_notifications_older_than_days", _track("calendar"))
 
     import asyncio
@@ -221,5 +188,4 @@ def test_monthly_prune_job_calls_all_pruners(monkeypatch):
 
     assert "messages" in calls
     assert "oauth_audit" in calls
-    assert "drift" in calls
     assert "calendar" in calls

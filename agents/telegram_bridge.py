@@ -2132,33 +2132,6 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
-async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Daily cost summary."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    today_iso = datetime.now(UTC).date().isoformat()
-    with db._conn() as c:
-        row = c.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) AS bg_cost, COUNT(*) AS n "
-            "FROM background_tasks WHERE substr(started_at, 1, 10) = ?",
-            (today_iso,),
-        ).fetchone()
-    from tools import budget
-    bg_cost = float(row["bg_cost"] or 0.0)
-    bg_n = int(row["n"] or 0)
-    chat_today = float(db.runtime_get("cost_today") or 0.0)
-    total = bg_cost + chat_today
-    cap = budget.daily_cap()
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        f"today: ~${total:.2f} (chat ${chat_today:.2f} + {bg_n} dispatched ${bg_cost:.2f}). "
-        f"cap is ${cap:.2f}.",
-        reason="cost_cmd", reply_to=message,
-    )
-
-
 async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/proactive status | on <source> | off <source>"""
     import json as _json
@@ -2874,7 +2847,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("unsilence", cmd_unsilence))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
     app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("approvals", cmd_approvals))

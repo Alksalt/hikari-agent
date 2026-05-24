@@ -701,12 +701,10 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
     """Single in-character turn without session resume.
 
     Used by:
-      - PersonaEval drift probes (agents.drift_judge.run_persona_probes) —
-        runs probe questions against the live persona and compares the
-        response to a stored baseline.
       - Anti-sycophancy eval tests (tests/persona/test_sycophancy.py) —
         fires SycEval / ELEPHANT prompts at a fresh persona session and
         scores the response via Haiku.
+      - drift_canary weekly hard-opinion probe (agents.drift_canary).
 
     Differs from ``run_user_turn`` / ``run_visible_proactive`` in three ways:
       - No session resume — every call is a fresh conversation.
@@ -716,9 +714,7 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
         so they cannot race with user turns or proactive jobs.
 
     The full persona + MCP servers + hooks are kept so the response is
-    representative of how Hikari actually talks today. That's the whole
-    point: SPASM probes measure drift in the *production* persona, not a
-    stripped-down test rig.
+    representative of how Hikari actually talks today.
     """
     options = _build_options(
         resume=None,

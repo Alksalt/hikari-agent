@@ -20,8 +20,7 @@ bridge's ``send_text``. The function:
      the operator notices the same day, not on next reflection.
 
 Independent of the per-outbound persona-drift judge (``agents.drift_judge``)
-and the 4h SPASM probes (``persona_drift_probes``) — those catch turn-level
-slips and slow cosine-distance worldview shifts. The canary catches whether
+and the per-outbound drift judge (``agents.drift_judge``). The canary catches whether
 the three hard opinions still hold under direct challenge.
 """
 

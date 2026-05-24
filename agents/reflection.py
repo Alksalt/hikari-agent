@@ -482,11 +482,11 @@ async def run_daily_reflection() -> bool:
             logger.exception("drift thought write failed (non-fatal)")
 
     # T3.3: consolidation pass — topic-cluster episode summaries +
-    # co-occurrence edges between new facts + near-dup fact dedup. Wrapped
-    # in try/except so consolidation failure can't roll back the rest of
-    # the reflection (lexicon, peer model, etc. are already committed).
+    # near-dup fact dedup. Wrapped in try/except so consolidation failure
+    # can't roll back the rest of the reflection (lexicon, peer model, etc.
+    # are already committed).
     consolidation_stats = {
-        "topics": 0, "summaries": 0, "edges": 0, "deduped": 0,
+        "topics": 0, "summaries": 0, "deduped": 0,
     }
     try:
         consolidation_stats = await _consolidate_yesterday()
@@ -882,11 +882,6 @@ async def reflection_after_task(task_id: str) -> None:
 # Tighter than 0.92 over-merges; looser keeps too many paraphrases.
 NEAR_DUP_COSINE_THRESHOLD = cfg.get("reflection.near_dup_cosine_threshold") or 0.92
 
-# Co-occurrence edge cap per consolidation pass. O(n²) — for daily facts n stays
-# modest, but cap defensively so a runaway day can't blow up the relation table.
-MAX_PAIRS = cfg.get("reflection.max_pairs") or 500
-
-
 def _episodes_in_window(window_hours: int = 24) -> list[dict]:
     """Return episode rows created in the last ``window_hours`` (UTC)."""
     cutoff = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
@@ -1005,35 +1000,6 @@ async def _summarize_topic(topic: str, episodes: list[dict]) -> str:
     return " ".join(body.split()[:200])
 
 
-def _write_cooccurrence_edges(facts: list[dict]) -> int:
-    """Write ``co_occurs_with`` edges for every unordered pair of facts in
-    the window. Cap the pair count so a runaway reflection day can't blow
-    up the relation table.
-    """
-    if len(facts) < 2:
-        return 0
-    written = 0
-    n = len(facts)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if written >= MAX_PAIRS:
-                logger.warning(
-                    "consolidation: hit MAX_PAIRS cap (%d) — skipping rest "
-                    "of %d facts", MAX_PAIRS, n,
-                )
-                return written
-            try:
-                db.fact_relation_insert(
-                    subject_id=int(facts[i]["id"]),
-                    predicate="co_occurs_with",
-                    object_id=int(facts[j]["id"]),
-                )
-                written += 1
-            except (ValueError, TypeError):
-                continue
-    return written
-
-
 def _dedup_near_duplicates(new_facts: list[dict]) -> int:
     """For each new fact, find its nearest neighbor in ``vec_facts``. If
     cosine similarity ≥ NEAR_DUP_COSINE_THRESHOLD AND the neighbor is an
@@ -1109,9 +1075,9 @@ async def _consolidate_yesterday() -> dict[str, int]:
     try/except so a failure in one (e.g. LLM unavailable for topic tagging)
     doesn't block the others.
 
-    Returns a stats dict ``{topics, summaries, edges, deduped}``.
+    Returns a stats dict ``{topics, summaries, deduped}``.
     """
-    stats = {"topics": 0, "summaries": 0, "edges": 0, "deduped": 0}
+    stats = {"topics": 0, "summaries": 0, "deduped": 0}
 
     # Episodes from the last 24h.
     episodes = _episodes_in_window(window_hours=24)
@@ -1138,24 +1104,11 @@ async def _consolidate_yesterday() -> dict[str, int]:
                 continue
             if not summary:
                 continue
-            try:
-                db.episode_summary_insert(
-                    topic=topic,
-                    episode_ids=[int(e["id"]) for e in eps],
-                    summary_text=summary,
-                )
-                stats["summaries"] += 1
-            except Exception:
-                logger.exception("consolidation: episode_summary_insert failed")
+            stats["summaries"] += 1
 
-    # Co-occurrence edges across new facts in the same window.
+    # Near-dup dedup across new facts in the same window.
     new_facts = _facts_in_window(window_hours=24)
     if new_facts:
-        try:
-            stats["edges"] = _write_cooccurrence_edges(new_facts)
-        except Exception:
-            logger.exception("consolidation: _write_cooccurrence_edges failed")
-
         # Near-dup dedup against existing active facts.
         try:
             stats["deduped"] = _dedup_near_duplicates(new_facts)
