@@ -2314,9 +2314,11 @@ def main() -> None:
         # runtime_state.calendar_heartbeat_healthy; we just have to populate
         # it. Failure does not block startup — the chat path still tries,
         # and the scheduler simply sits out its calendar jobs.
+        _oauth_probe_result: tuple[bool, str] | None = None
         try:
             from agents.google_health import probe_google_token  # noqa: PLC0415
             healthy, reason = await probe_google_token()
+            _oauth_probe_result = (healthy, reason)
             if healthy:
                 db.runtime_set("calendar_heartbeat_healthy", "1")
                 logger.info(
@@ -2335,6 +2337,26 @@ def main() -> None:
             logger.exception(
                 "google_workspace startup probe failed (non-fatal)",
             )
+
+        # Sprint 6D: structured startup health report. Logs full dict at INFO;
+        # DMs owner only on degradation (or 'always' / 'never' via env). Wrapped
+        # in try so a probe failure cannot block post_init. Reuses the OAuth
+        # result already fetched above so Google's token endpoint isn't hit twice.
+        try:
+            from agents.health import (  # noqa: PLC0415
+                collect_startup_report,
+                format_startup_digest,
+                should_send_digest,
+            )
+            _health_report = await collect_startup_report(
+                scheduler=scheduler,
+                oauth_google_prefetched=_oauth_probe_result,
+            )
+            logger.info("startup_health: %s", _health_report)
+            if should_send_digest(_health_report):
+                await send_text(format_startup_digest(_health_report))
+        except Exception:
+            logger.exception("startup health probe failed (non-fatal)")
 
         # Phase E: wire the gatekeeper send_text BEFORE recovery so nudge
         # messages during restart_recovery can actually reach Telegram.
