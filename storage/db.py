@@ -4157,15 +4157,24 @@ def media_outbox_mark_sent(row_id: int, telegram_message_id: int | None = None) 
 
 
 def media_outbox_mark_failed(row_id: int, error: str) -> None:
-    """Increment attempts; flip to status='failed' when attempts+1 >= 5."""
+    """Mark failed. For retried kinds (photo) keep the 5-attempt budget;
+    for non-retried kinds (text, sticker, document) flip terminal on first failure."""
+    now = _now()
     with _conn() as c:
         c.execute(
             "UPDATE media_outbox SET "
             "attempts = attempts + 1, "
             "last_error = ?, "
-            "status = CASE WHEN attempts + 1 >= 5 THEN 'failed' ELSE status END "
+            "processed_at = CASE "
+            "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN processed_at "
+            "  ELSE ? "
+            "END, "
+            "status = CASE "
+            "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN status "
+            "  ELSE 'failed' "
+            "END "
             "WHERE id = ?",
-            (str(error)[:500], int(row_id)),
+            (str(error)[:500], now, int(row_id)),
         )
 
 

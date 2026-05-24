@@ -161,15 +161,34 @@ def _reconcile_photo_outbox_orphans() -> None:
     that have no corresponding DB row (legacy files predating 7A)."""
     if not PHOTO_OUTBOX.exists():
         return
+    try:
+        outbox_resolved = PHOTO_OUTBOX.resolve(strict=True)
+    except OSError:
+        return
     for path in sorted(PHOTO_OUTBOX.iterdir()):
+        # Reject symlinks outright — outbox holds only freshly-written files.
+        if path.is_symlink():
+            logger.warning("photo_outbox: refusing symlink %s", path.name)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
         if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            continue
+        # Defense in depth: resolved path must stay inside the outbox.
+        try:
+            real = path.resolve(strict=True)
+            real.relative_to(outbox_resolved)
+        except (OSError, ValueError):
+            logger.warning("photo_outbox: refusing out-of-tree path %s", path.name)
             continue
         ikey = f"photo_legacy_{path.name}"
         try:
             db.media_outbox_insert(
                 "photo",
                 ikey,
-                {"path": str(path), "caption": "", "chat_id": None},
+                {"path": str(real), "caption": "", "chat_id": None},
             )
         except Exception:
             logger.debug("_reconcile_photo_outbox_orphans: insert failed for %s", path.name)
@@ -197,12 +216,18 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
             db.media_outbox_mark_aborted(row["id"], "missing_path")
             continue
         path = __import__("pathlib").Path(path_str)
-        if not path.is_file():
-            db.media_outbox_mark_aborted(row["id"], "file_missing")
+        if path.is_symlink() or not path.is_file():
+            db.media_outbox_mark_aborted(row["id"], "not_a_regular_file")
+            continue
+        try:
+            real = path.resolve(strict=True)
+            real.relative_to(PHOTO_OUTBOX.resolve(strict=True))
+        except (OSError, ValueError):
+            db.media_outbox_mark_aborted(row["id"], "out_of_tree")
             continue
         caption = payload.get("caption") or ""
         try:
-            with open(path, "rb") as photo_fh:
+            with open(real, "rb") as photo_fh:
                 tg_msg = await bot.send_photo(
                     chat_id=chat_id,
                     photo=photo_fh,
@@ -293,6 +318,8 @@ async def _send_with_choreography(
     # Step 3+persist: delegate send + DB write to the unified helper.
     # skip_choreography=True because we already computed and applied the delay
     # above. run_hooks=False because the bridge runs its own post-send hooks below.
+    # already_filtered=True because filter_outgoing + rewrite_or_fallback were
+    # already called above — skip the redundant second pass inside send_and_persist.
     from agents.messaging import send_and_persist  # noqa: PLC0415
     result = await send_and_persist(
         bot=bot,
@@ -303,6 +330,7 @@ async def _send_with_choreography(
         elapsed_real=elapsed_real,
         skip_choreography=True,
         run_hooks=False,
+        already_filtered=True,
     )
     sent_ok = result.ok
     text_to_send = result.final_text
@@ -2037,6 +2065,8 @@ async def _send_text_with_choreography(
     # reply_to=None (reaction sends go to chat, not as a reply to a specific msg).
     # skip_choreography=True because we already computed and applied the delay above.
     # run_hooks=False because the bridge runs its own post-send hooks below.
+    # already_filtered=True because filter_outgoing + rewrite_or_fallback were
+    # already called above — skip the redundant second pass inside send_and_persist.
     from agents.messaging import send_and_persist  # noqa: PLC0415
     result = await send_and_persist(
         bot=bot,
@@ -2047,6 +2077,7 @@ async def _send_text_with_choreography(
         elapsed_real=elapsed_real,
         skip_choreography=True,
         run_hooks=False,
+        already_filtered=True,
     )
     sent_ok = result.ok
     text_to_send = result.final_text

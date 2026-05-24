@@ -97,16 +97,18 @@ def test_mark_sent_transitions_status():
 
 
 def test_mark_failed_increments_attempts():
-    row_id = _insert(key="f1")
+    # For photo rows the 5-attempt budget applies — still pending after one failure.
+    row_id = _insert(kind="photo", key="f1")
     db.media_outbox_mark_failed(row_id, "timeout")
     rows = _all_rows()
     assert rows[0]["attempts"] == 1
-    assert rows[0]["status"] == "pending"  # not yet at 5
+    assert rows[0]["status"] == "pending"  # photo: not yet at 5
     assert rows[0]["last_error"] == "timeout"
 
 
 def test_mark_failed_flips_to_failed_at_5_attempts():
-    row_id = _insert(key="f5")
+    # Photo rows have a 5-attempt retry budget.
+    row_id = _insert(kind="photo", key="f5")
     for i in range(5):
         db.media_outbox_mark_failed(row_id, f"err{i}")
     rows = _all_rows()
@@ -160,3 +162,70 @@ def test_sent_rows_not_returned_by_pending():
     rows = db.media_outbox_pending()
     assert len(rows) == 1
     assert rows[0]["idempotency_key"] == "still_pending"
+
+
+def test_mark_failed_terminal_for_non_retried_kinds():
+    """text/sticker rows flip to 'failed' on first failure; photo keeps budget of 5."""
+    # Text: terminal on first failure.
+    text_id = _insert(kind="text", key="txt_fail")
+    db.media_outbox_mark_failed(text_id, "boom")
+    rows = _all_rows()
+    txt_row = next(r for r in rows if r["idempotency_key"] == "txt_fail")
+    assert txt_row["status"] == "failed"
+    assert txt_row["attempts"] == 1
+
+    # Photo: still pending after first failure.
+    photo_id = _insert(kind="photo", key="photo_fail")
+    db.media_outbox_mark_failed(photo_id, "net err")
+    rows = _all_rows()
+    photo_row = next(r for r in rows if r["idempotency_key"] == "photo_fail")
+    assert photo_row["status"] == "pending"
+    assert photo_row["attempts"] == 1
+
+    # Photo: flips to failed after 5 total failures.
+    for i in range(4):
+        db.media_outbox_mark_failed(photo_id, f"retry {i}")
+    rows = _all_rows()
+    photo_row = next(r for r in rows if r["idempotency_key"] == "photo_fail")
+    assert photo_row["status"] == "failed"
+    assert photo_row["attempts"] == 5
+
+
+def test_reconciler_refuses_symlinks(tmp_path, monkeypatch):
+    """_reconcile_photo_outbox_orphans unlinks symlinks and inserts no DB row."""
+    import importlib
+
+    # Set up an isolated DB.
+    db_path = tmp_path / "hikari_sym.db"
+    monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
+    import storage.db as _db_mod
+    importlib.reload(_db_mod)
+    monkeypatch.setattr(db, "_DB_PATH", db_path)
+    db._reset_schema_sentinel()
+
+    # Create a fake outbox dir with a real PNG and a symlink.
+    outbox_dir = tmp_path / "photo_outbox"
+    outbox_dir.mkdir()
+    real_png = tmp_path / "real.png"
+    real_png.write_bytes(b"\x89PNG\r\n")
+    target_file = tmp_path / "secret.txt"
+    target_file.write_text("secret")
+    symlink = outbox_dir / "evil.png"
+    symlink.symlink_to(target_file)
+
+    # Patch PHOTO_OUTBOX to point to our temp dir.
+    import agents.telegram_bridge as bridge_mod
+    monkeypatch.setattr(bridge_mod, "PHOTO_OUTBOX", outbox_dir)
+    # Also patch db reference inside the bridge to the reloaded module.
+    monkeypatch.setattr(bridge_mod, "db", _db_mod)
+
+    bridge_mod._reconcile_photo_outbox_orphans()
+
+    # Symlink must be gone.
+    assert not symlink.exists()
+    assert not symlink.is_symlink()
+
+    # No media_outbox row should have been inserted.
+    with _db_mod._conn() as c:
+        count = c.execute("SELECT COUNT(*) FROM media_outbox").fetchone()[0]
+    assert count == 0

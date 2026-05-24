@@ -325,6 +325,46 @@ async def test_idempotency_key_collision_is_insert_or_ignore(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_already_filtered_skips_internal_filter(monkeypatch, tmp_path):
+    """already_filtered=True: filter_outgoing must NOT be called; text persisted verbatim."""
+    import sys
+    import types
+
+    # Patch agents.post_filter so filter_outgoing raises if called.
+    mod = types.ModuleType("agents.post_filter")
+
+    def filter_outgoing(text: str):
+        raise AssertionError("filter_outgoing must not be called when already_filtered=True")
+
+    async def rewrite_or_fallback(original, filtered, mood=None, where="bridge"):
+        raise AssertionError("rewrite_or_fallback must not be called when already_filtered=True")
+
+    mod.filter_outgoing = filter_outgoing
+    mod.rewrite_or_fallback = rewrite_or_fallback
+    sys.modules["agents.post_filter"] = mod
+
+    if "agents.messaging" in sys.modules:
+        del sys.modules["agents.messaging"]
+
+    from agents.messaging import send_and_persist
+
+    bot = _FakeBot()
+    result = await send_and_persist(
+        bot=bot,
+        chat_id=7,
+        text="hello",
+        source="chat",
+        skip_choreography=True,
+        already_filtered=True,
+    )
+
+    assert result.ok is True
+    rows = _rows()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "hello"
+
+
+@pytest.mark.asyncio
 async def test_crash_mid_send_leaves_failed_row(monkeypatch, tmp_path):
     """When the Telegram send raises, a failed/pending media_outbox row is left."""
     _patch_filter(monkeypatch)

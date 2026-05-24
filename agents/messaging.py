@@ -53,6 +53,7 @@ async def send_and_persist(
     skip_choreography: bool = False,
     persist: bool = True,
     run_hooks: bool = True,
+    already_filtered: bool = False,
     db=None,
 ) -> SendResult:
     """Send a message through Telegram and persist it to the DB.
@@ -96,8 +97,9 @@ async def send_and_persist(
 
     final_text = text
 
-    # Apply post-filter only when there is text to filter.
-    if text:
+    # Apply post-filter only when there is text to filter and the caller
+    # has not already run filter_outgoing + rewrite_or_fallback.
+    if text and not already_filtered:
         from agents.post_filter import filter_outgoing, rewrite_or_fallback
 
         result = filter_outgoing(text)
