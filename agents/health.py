@@ -116,10 +116,19 @@ def _check_graph_outbox() -> CheckResult:
     try:
         pending = db.graph_outbox_pending(limit=_OUTBOX_PENDING_WARN + 1)
         count = len(pending)
+        failed_stats = db.graph_outbox_failed_stats()
+        failed_count = failed_stats.get("count", 0)
+        last_error = failed_stats.get("last_error")
+        reason = None
+        if count > _OUTBOX_PENDING_WARN:
+            reason = f"backlog>{_OUTBOX_PENDING_WARN}"
+        if failed_count > 0:
+            err_snippet = (last_error or "")[:80]
+            reason = (f"{reason}; " if reason else "") + f"failed={failed_count} last_error={err_snippet!r}"
         return CheckResult(
-            ok=count <= _OUTBOX_PENDING_WARN,
-            value=count,
-            reason=None if count <= _OUTBOX_PENDING_WARN else f"backlog>{_OUTBOX_PENDING_WARN}",
+            ok=count <= _OUTBOX_PENDING_WARN and failed_count == 0,
+            value={"pending": count, "failed": failed_count},
+            reason=reason,
         )
     except Exception as e:
         return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")

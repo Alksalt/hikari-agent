@@ -115,6 +115,7 @@ async def add_episode_safe(
     source_description: str = "",
     reference_time=None,
     group_id: str = "hikari_chat",
+    fact_id: int | None = None,
 ) -> bool:
     """Dual-write helper: add_episode wrapped in try/except. Returns True on
     success, False on failure (logged). Never raises."""
@@ -126,6 +127,8 @@ async def add_episode_safe(
             reference_time = datetime.fromisoformat(reference_time)
         except ValueError:
             reference_time = datetime.now(UTC)
+    if fact_id is not None:
+        source_description = f"fact_id:{fact_id}|{source_description}"
     try:
         g = await get_graph()
         await g.add_episode(
@@ -169,6 +172,7 @@ def schedule_episode(
         "source_description": source_description or "fact",
         "group_id": "hikari_chat",
         "reference_time": datetime.now(UTC).isoformat(),
+        "fact_id": source_id,
     }
     try:
         return db.graph_outbox_insert("facts", source_id, _json.dumps(payload))
@@ -182,10 +186,24 @@ async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:
 
     Returns {"polled": N, "sent": s, "failed": f, "skipped": 0}.
     Never raises — Graphiti failures mark rows failed and continue.
+
+    Infrastructure errors (OPENROUTER_API_KEY missing, GRAPHITI_ENABLED=false)
+    are transient: rows stay 'pending' so the outbox drains once the env is fixed.
     """
     import json as _json
 
     from storage import db
+
+    # Detect infra-level blockers up front so the error string propagates to
+    # graph_outbox_mark_failed's transient-check logic, keeping rows 'pending'.
+    if not _graphiti_enabled():
+        return {"polled": 0, "sent": 0, "failed": 0, "skipped": 0}
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        rows = db.graph_outbox_pending(limit=limit)
+        rows = rows[:max_per_call]
+        for row in rows:
+            db.graph_outbox_mark_failed(row["id"], "OPENROUTER_API_KEY not set (transient)")
+        return {"polled": len(rows), "sent": 0, "failed": 0, "skipped": len(rows)}
 
     rows = db.graph_outbox_pending(limit=limit)
     rows = rows[:max_per_call]
@@ -205,6 +223,7 @@ async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:
                 episode_body=payload.get("episode_body", ""),
                 source_description=payload.get("source_description", "fact"),
                 reference_time=payload.get("reference_time"),
+                fact_id=payload.get("fact_id") or row.get("source_id"),
             )
         except Exception as e:
             db.graph_outbox_mark_failed(row["id"], f"add_episode_safe raised: {e}")
@@ -219,8 +238,25 @@ async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:
     return out
 
 
+_GRAPHITI_DISABLED_LOGGED = False
+
+
+def _graphiti_enabled() -> bool:
+    return os.environ.get("GRAPHITI_ENABLED", "true").strip().lower() not in ("false", "0")
+
+
 async def search(query: str, *, group_id: str = "hikari_chat", num_results: int = 8) -> list:
-    """Read-side helper. Returns list of EntityEdge objects from Graphiti."""
+    """Read-side helper. Returns list of EntityEdge objects from Graphiti.
+
+    Returns [] immediately (one boot-time INFO, not per-call ERROR) when
+    GRAPHITI_ENABLED=false so recall.py produces zero ERROR log lines.
+    """
+    global _GRAPHITI_DISABLED_LOGGED
+    if not _graphiti_enabled():
+        if not _GRAPHITI_DISABLED_LOGGED:
+            logger.info("graph.search: GRAPHITI_ENABLED=false — graph reads are disabled")
+            _GRAPHITI_DISABLED_LOGGED = True
+        return []
     try:
         g = await get_graph()
         return await g.search(query=query, group_ids=[group_id], num_results=num_results)

@@ -80,6 +80,7 @@ class Gatekeeper:
         args: dict,
         summary: str,
         deadline: datetime,
+        gate_kind: str = "gatekeeper",
     ) -> Outcome:
         """Block until the user resolves the approval or the deadline expires.
 
@@ -108,6 +109,7 @@ class Gatekeeper:
                     args_json=json.dumps(args, ensure_ascii=False, default=str),
                     summary=summary,
                     deadline_iso=deadline.isoformat(),
+                    gate_kind=gate_kind,
                 )
                 pending_obj = _Pending(
                     aid=aid,
@@ -286,13 +288,34 @@ def summarize(tool_name: str, tool_input: dict) -> str:
 
     if tool_name == "mcp__google_workspace__gmail_send_email":
         to = tool_input.get("to", "?")
-        subject = (tool_input.get("subject") or "")[:60]
-        return f"send email to {to}: {subject!r}"
+        subject = tool_input.get("subject") or ""
+        body = tool_input.get("body") or tool_input.get("html", "") or ""
+        cc = tool_input.get("cc") or ""
+        bcc = tool_input.get("bcc") or ""
+        parts = [f"send email to {to}\nsubject: {subject}\nbody: {body}"]
+        if cc:
+            parts.append(f"cc: {cc}")
+        if bcc:
+            parts.append(f"bcc: {bcc}")
+        html = tool_input.get("html") or ""
+        if html and html != body:
+            parts.append(f"html: {html}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__google_workspace__gmail_reply_to_email":
         msg_id = tool_input.get("message_id", "?")
-        body_preview = (tool_input.get("body") or "")[:80]
-        return f"reply to gmail thread {msg_id}: {body_preview!r}"
+        body = tool_input.get("body") or ""
+        html = tool_input.get("html") or ""
+        cc = tool_input.get("cc") or ""
+        bcc = tool_input.get("bcc") or ""
+        parts = [f"reply to gmail thread {msg_id}\nbody: {body}"]
+        if html and html != body:
+            parts.append(f"html: {html}")
+        if cc:
+            parts.append(f"cc: {cc}")
+        if bcc:
+            parts.append(f"bcc: {bcc}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__google_workspace__delete_calendar_event":
         event_id = tool_input.get("event_id", "?")
@@ -304,33 +327,51 @@ def summarize(tool_name: str, tool_input: dict) -> str:
         return f"delete drive file {file_id}"
 
     if tool_name == "mcp__google_workspace__create_calendar_event":
-        title = (tool_input.get("summary") or tool_input.get("title") or "?")[:60]
+        title = tool_input.get("summary") or tool_input.get("title") or "?"
         start = tool_input.get("start_time") or tool_input.get("start", "?")
-        return f"create calendar event {title!r} at {start}"
+        end = tool_input.get("end_time") or tool_input.get("end") or ""
+        location = tool_input.get("location") or ""
+        attendees = tool_input.get("attendees") or []
+        parts = [f"create calendar event {title!r} at {start}"]
+        if end:
+            parts.append(f"end: {end}")
+        if location:
+            parts.append(f"location: {location}")
+        if attendees:
+            parts.append(f"attendees: {attendees!r}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__google_workspace__drive_delete_folder":
         folder_id = tool_input.get("folder_id", "?")
         return f"delete drive folder {folder_id}"
 
     if tool_name == "mcp__google_workspace__drive_upload_file":
-        name = (tool_input.get("file_name") or tool_input.get("name") or "?")[:60]
-        return f"upload to drive: {name!r}"
+        name = tool_input.get("file_name") or tool_input.get("name") or "?"
+        source = tool_input.get("source_path") or tool_input.get("local_path") or tool_input.get("path") or ""
+        parts = [f"upload to drive: {name!r}"]
+        if source:
+            parts.append(f"source: {source}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__notion__API-patch-page":
         page_id = tool_input.get("page_id", "?")
-        return f"patch notion page {page_id}"
+        content = tool_input.get("properties") or tool_input.get("content") or ""
+        return f"patch notion page {page_id}\ncontent: {content!r}"
 
     if tool_name == "mcp__notion__API-post-page":
         parent = (tool_input.get("parent") or {}).get("page_id") or "?"
-        return f"create notion page under {parent}"
+        content = tool_input.get("children") or tool_input.get("content") or ""
+        return f"create notion page under {parent}\ncontent: {content!r}"
 
     if tool_name == "mcp__notion__API-patch-block-children":
         block_id = tool_input.get("block_id", "?")
-        return f"add children to notion block {block_id}"
+        content = tool_input.get("children") or tool_input.get("content") or ""
+        return f"add children to notion block {block_id}\ncontent: {content!r}"
 
     if tool_name == "mcp__notion__API-update-a-block":
         block_id = tool_input.get("block_id", "?")
-        return f"update notion block {block_id}"
+        content = tool_input.get("block") or tool_input.get("content") or ""
+        return f"update notion block {block_id}\ncontent: {content!r}"
 
     if tool_name == "mcp__notion__API-delete-a-block":
         block_id = tool_input.get("block_id", "?")
@@ -338,13 +379,27 @@ def summarize(tool_name: str, tool_input: dict) -> str:
 
     if tool_name == "mcp__github__create_issue":
         repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
-        title = (tool_input.get("title") or "?")[:60]
-        return f"create issue in {repo}: {title!r}"
+        title = tool_input.get("title") or "?"
+        body = tool_input.get("body") or ""
+        parts = [f"create issue in {repo}: {title!r}"]
+        if body:
+            parts.append(f"body: {body}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__github__create_pull_request":
         repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
-        title = (tool_input.get("title") or "?")[:60]
-        return f"open PR in {repo}: {title!r}"
+        title = tool_input.get("title") or "?"
+        body = tool_input.get("body") or ""
+        base = tool_input.get("base") or ""
+        head = tool_input.get("head") or ""
+        parts = [f"open PR in {repo}: {title!r}"]
+        if base:
+            parts.append(f"base: {base}")
+        if head:
+            parts.append(f"head: {head}")
+        if body:
+            parts.append(f"body: {body}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__github__merge_pull_request":
         repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
@@ -361,8 +416,15 @@ def summarize(tool_name: str, tool_input: dict) -> str:
         return f"DELETE REPO {repo}"
 
     if tool_name == "mcp__hikari_dispatch__dispatch_claude_session":
-        task_preview = (tool_input.get("task") or tool_input.get("prompt") or "")[:80]
-        return f"dispatch claude session: {task_preview!r}"
+        task = tool_input.get("task") or tool_input.get("prompt") or ""
+        repo_path = tool_input.get("repo_path") or ""
+        allowed_tools = tool_input.get("allowed_tools") or []
+        parts = [f"dispatch claude session: {task!r}"]
+        if repo_path:
+            parts.append(f"repo_path: {repo_path}")
+        if allowed_tools:
+            parts.append(f"allowed_tools: {allowed_tools!r}")
+        return "\n".join(parts)
 
     if tool_name == "mcp__hikari_utility__python_run":
         code_preview = (tool_input.get("code") or "")[:120]

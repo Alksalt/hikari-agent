@@ -14,17 +14,38 @@ import pytest
 pytestmark = pytest.mark.uses_real_graph
 
 
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path: Path, monkeypatch):
+    """Fresh per-test DB so recall's SQLite fact-validity lookups work."""
+    db_path = tmp_path / "hikari.db"
+    monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
+    import storage.db as _db_mod
+    importlib.reload(_db_mod)
+    from agents import config
+    config.reload()
+    yield
+    config.reload()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _edge(fact: str, score: float, valid_at=None, invalid_at=None) -> MagicMock:
+def _edge(fact: str, score: float, valid_at=None, invalid_at=None, fact_id=None) -> MagicMock:
     e = MagicMock()
     e.fact = fact
     e.score = score
     e.valid_at = valid_at
     e.invalid_at = invalid_at
+    # Explicitly set fact_id so back-compat (no fact_id) path is tested by callers
+    # that don't pass it, and validity-gate tests can pass a real SQLite id.
+    e.fact_id = fact_id
     return e
+
+
+def _insert_fact(subject: str = "user", predicate: str = "test", obj: str = "fact") -> int:
+    from storage import db
+    return db.insert_fact(subject, predicate, obj)
 
 
 async def _call_recall(query: str, limit: int = 8) -> dict:
@@ -42,7 +63,8 @@ def _text(result: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_recall_returns_high_confidence_when_score_high(monkeypatch):
-    edge = _edge("user loves matcha", score=0.9)
+    fid = _insert_fact("user", "loves", "matcha")
+    edge = _edge("user loves matcha", score=0.9, fact_id=fid)
     monkeypatch.setattr("storage.graph.search", AsyncMock(return_value=[edge]))
 
     result = await _call_recall("matcha")
@@ -58,7 +80,8 @@ async def test_recall_returns_high_confidence_when_score_high(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_recall_returns_medium_confidence_when_score_mid(monkeypatch):
-    edge = _edge("user has a sister named Yuki", score=0.5)
+    fid = _insert_fact("user", "has_sister", "Yuki")
+    edge = _edge("user has a sister named Yuki", score=0.5, fact_id=fid)
     monkeypatch.setattr("storage.graph.search", AsyncMock(return_value=[edge]))
 
     result = await _call_recall("sister")
@@ -73,7 +96,8 @@ async def test_recall_returns_medium_confidence_when_score_mid(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_recall_returns_low_confidence_when_score_low(monkeypatch):
-    edge = _edge("user once mentioned Oslo", score=0.2)
+    fid = _insert_fact("user", "mentioned", "Oslo")
+    edge = _edge("user once mentioned Oslo", score=0.2, fact_id=fid)
     monkeypatch.setattr("storage.graph.search", AsyncMock(return_value=[edge]))
 
     result = await _call_recall("oslo")

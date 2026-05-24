@@ -30,25 +30,97 @@ _DEFAULT_BACKUP_DIR = (
 BACKUP_DIR = Path(os.environ.get("HIKARI_BACKUP_DIR", str(_DEFAULT_BACKUP_DIR)))
 MCP_EXTERNAL_URL = os.environ.get("HIKARI_MCP_EXTERNAL_URL", "http://127.0.0.1:8765/mcp")
 
+# Guard: external MCP + Cloudflare checks only run when this env var is set.
+_HAS_MCP_EXTERNAL = os.environ.get("HIKARI_HAS_MCP_EXTERNAL", "0") == "1"
 
-def _launchctl_list_has(label: str) -> bool:
+# Cookie table used by the main process to signal it is alive (db write tracker).
+_COOKIE_TABLE = "deadman_cookie"
+
+# State file persisting the Telegram probe failure streak for the 3-strike debounce.
+_STRIKE_FILE = Path(os.environ.get(
+    "HIKARI_DEADMAN_STRIKE_FILE",
+    str(Path.home() / ".config/hikari/deadman_strikes.txt"),
+))
+
+
+def _launchctl_pid_and_exit(label: str) -> tuple[int | None, int | None]:
+    """Return (pid, last_exit_code) from `launchctl print system/<label>`.
+
+    Returns (None, None) on any error or when the service is not found.
+    Uses `launchctl print` rather than `launchctl list` for reliable PID/exit-code parsing.
+    """
     try:
-        out = subprocess.run(
-            ["launchctl", "list"],
+        res = subprocess.run(
+            ["launchctl", "print", f"system/{label}"],
             capture_output=True, text=True, timeout=5,
-        ).stdout
+        )
     except Exception:
-        return False
-    return label in out
+        # Fall back to the gui domain (user-level services).
+        try:
+            uid = os.getuid()
+            res = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{label}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return None, None
+
+    if res.returncode != 0:
+        # Try gui domain before giving up.
+        try:
+            uid = os.getuid()
+            res2 = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{label}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res2.returncode == 0:
+                res = res2
+            else:
+                return None, None
+        except Exception:
+            return None, None
+
+    pid: int | None = None
+    exit_code: int | None = None
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("pid ="):
+            try:
+                pid = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pass
+        elif line.startswith("last exit code ="):
+            try:
+                exit_code = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pass
+    return pid, exit_code
 
 
 def check_agent_running() -> bool:
-    return _launchctl_list_has("com.hikari.agent")
+    pid, _ = _launchctl_pid_and_exit("com.hikari.agent")
+    return pid is not None and pid > 0
 
 
 def check_db_mtime_fresh() -> bool:
+    """Check that the DB has a recent write via the cookie row the main process updates."""
     if not DB_PATH.exists():
         return False
+    # Primary: check the cookie row mtime (bounded to writes-this-process).
+    try:
+        import sqlite3
+        with sqlite3.connect(str(DB_PATH), timeout=3) as conn:
+            row = conn.execute(
+                f"SELECT ts FROM {_COOKIE_TABLE} WHERE key='heartbeat' LIMIT 1"
+            ).fetchone()
+        if row:
+            import datetime
+            ts_str = row[0]
+            ts = datetime.datetime.fromisoformat(ts_str).timestamp()
+            return (time.time() - ts) < 30 * 60
+    except Exception:
+        pass
+    # Fallback: file mtime (less precise — includes reads/vacuums).
     age_sec = time.time() - DB_PATH.stat().st_mtime
     return age_sec < 30 * 60
 
@@ -69,6 +141,8 @@ def check_backup_fresh() -> bool:
 
 def check_mcp_external() -> bool:
     """A 401 means the server is up; only network errors mean it's down."""
+    if not _HAS_MCP_EXTERNAL:
+        return True
     try:
         r = httpx.get(MCP_EXTERNAL_URL, timeout=10.0)
         return r.status_code in (200, 401, 405)
@@ -77,13 +151,57 @@ def check_mcp_external() -> bool:
 
 
 def check_cloudflared_running() -> bool:
-    return _launchctl_list_has("com.hikari.tunnel")
+    if not _HAS_MCP_EXTERNAL:
+        return True
+    pid, _ = _launchctl_pid_and_exit("com.hikari.tunnel")
+    return pid is not None and pid > 0
+
+
+def _telegram_probe_ok() -> bool:
+    """HEAD request to api.telegram.org with a 3-strike debounce.
+
+    Returns True if Telegram is reachable, or if the streak is below 3 consecutive
+    failures (avoids spurious alerts on transient network blips).
+    """
+    try:
+        r = httpx.head("https://api.telegram.org", timeout=10.0)
+        reachable = r.status_code < 500
+    except Exception:
+        reachable = False
+
+    if reachable:
+        # Reset strike counter on success.
+        try:
+            _STRIKE_FILE.write_text("0")
+        except Exception:
+            pass
+        return True
+
+    # Increment strike counter.
+    try:
+        _STRIKE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        current = int(_STRIKE_FILE.read_text().strip()) if _STRIKE_FILE.exists() else 0
+        current += 1
+        _STRIKE_FILE.write_text(str(current))
+        if current < 3:
+            # Suppress until 3 consecutive failures.
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def post_alert(failed_checks: list[str]) -> None:
     if not DEADMAN_TOKEN or not OWNER_ID:
         print(
             f"deadman: no telegram token/owner configured; failed checks: {failed_checks}",
+            file=sys.stderr,
+        )
+        return
+    if not _telegram_probe_ok():
+        print(
+            f"deadman: telegram unreachable (3-strike debounce); "
+            f"failed checks: {failed_checks}",
             file=sys.stderr,
         )
         return

@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os as _os
+from datetime import UTC as _UTC
+from datetime import datetime as _datetime
 from typing import Any
 
 from claude_agent_sdk import tool
@@ -71,6 +74,13 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
     threshold = float(cfg.get("recall_calibration.confidence_threshold", 0.6))
 
     # --- primary path: Graphiti ---
+    # Short-circuit BEFORE calling graph.search when GRAPHITI_ENABLED=false
+    # so no ERROR lines appear in logs (graph.search itself also no-ops, but
+    # this skip avoids even the call overhead and the fallback debug log).
+    if _os.environ.get("GRAPHITI_ENABLED", "true").strip().lower() in ("false", "0"):
+        logger.debug("recall: GRAPHITI_ENABLED=false — skipping graph, using legacy_retrieve")
+        return await _legacy_fallback(query, limit, threshold)
+
     try:
         edges = await _graph.search(query, group_id="hikari_chat", num_results=limit)
     except Exception:
@@ -82,7 +92,62 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
         logger.debug("recall: graph returned empty for %r; falling back to legacy_retrieve", query)
         return await _legacy_fallback(query, limit, threshold)
 
-    top_edge = edges[0]
+    # Filter out graph hits whose SQLite fact row is no longer active.
+    # Edges that carry a fact_id (v1 payload) are validated against facts.status
+    # and facts.valid_to. Edges with no fact_id are kept as expansion-only hits
+    # (they may still add context) but never treated as the primary answer.
+    now_iso = _datetime.now(_UTC).isoformat()
+    active_edges: list = []
+    expansion_edges: list = []
+    for edge in edges:
+        payload_fact_id = getattr(edge, "fact_id", None)
+        if payload_fact_id is None:
+            src_desc = str(getattr(edge, "source_description", "") or "")
+            if src_desc.startswith("fact_id:"):
+                try:
+                    payload_fact_id = int(src_desc.split("|", 1)[0].split(":", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+        if payload_fact_id is None:
+            expansion_edges.append(edge)
+            continue
+        try:
+            fact_row = await asyncio.to_thread(_db.get_fact, int(payload_fact_id))
+        except Exception:
+            logger.debug("recall: get_fact(%s) failed; treating edge as expansion-only", payload_fact_id)
+            expansion_edges.append(edge)
+            continue
+        if fact_row is None:
+            # Row deleted — skip entirely
+            logger.debug("recall: fact_id=%s not found in SQLite; dropping graph hit", payload_fact_id)
+            continue
+        status = fact_row.get("status", "active")
+        valid_to = fact_row.get("valid_to")
+        if status != "active" or (valid_to is not None and str(valid_to) < now_iso):
+            logger.debug(
+                "recall: dropping graph hit for fact_id=%s status=%r valid_to=%r",
+                payload_fact_id, status, valid_to,
+            )
+            continue
+        edge._sqlite_fact_id = int(payload_fact_id)
+        active_edges.append(edge)
+
+    # Primary answer requires at least one active edge.
+    # Expansion-only edges are appended after for breadth, but confidence is
+    # anchored on the top active edge score (or fallback if none).
+    primary_edges = active_edges if active_edges else []
+    if not primary_edges and not expansion_edges:
+        logger.debug("recall: all graph hits filtered; falling back to legacy_retrieve")
+        return await _legacy_fallback(query, limit, threshold)
+
+    if not primary_edges:
+        # Only expansion-only (no-fact_id) edges — degrade to legacy as primary,
+        # caller will get SQLite answer with graph breadth unavailable.
+        logger.debug("recall: only back-compat (no fact_id) graph hits; falling back to legacy")
+        return await _legacy_fallback(query, limit, threshold)
+
+    scored_edges = primary_edges + expansion_edges
+    top_edge = scored_edges[0]
     top_score = float(getattr(top_edge, "score", 0.0))
     bucket_label, confidence_prefix = _score_to_bucket(top_score)
     below = top_score < threshold
@@ -90,15 +155,16 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
     header = (
         f"{confidence_prefix}: {top_score:.2f} ({bucket_label}"
         f"{'; BELOW THRESHOLD' if below else ''}). "
-        f"top {len(edges)} graph matches for {query!r}:"
+        f"top {len(scored_edges)} graph matches for {query!r}:"
     )
     lines = [header]
     hit_data = []
-    for edge in edges:
+    for edge in scored_edges:
         score = float(getattr(edge, "score", 0.0))
         fact_text = str(getattr(edge, "fact", "") or "")
         valid_at = getattr(edge, "valid_at", None)
         invalid_at = getattr(edge, "invalid_at", None)
+        sqlite_fact_id = getattr(edge, "_sqlite_fact_id", None)
 
         time_note = ""
         if valid_at is not None:
@@ -116,6 +182,7 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"  [graph score={score:.2f} conf={b_label}]{time_note} {fact_text}")
         hit_data.append({
             "fact": fact_text, "score": score,
+            "fact_id": sqlite_fact_id,
             "valid_at": str(valid_at), "invalid_at": str(invalid_at),
             "attribution": None,
             "source_message_id": None,

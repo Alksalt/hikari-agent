@@ -61,21 +61,23 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
     from .proactive import sync_pending_gcal_reminders
     gcal_interval = int(cfg.get("reminders.gcal_sync_interval_sec", 300))
-    if _calendar_creds_healthy():
-        async def _gcal_sync_job():
-            return await sync_pending_gcal_reminders()
-        scheduler.add_job(
-            _gcal_sync_job,
-            IntervalTrigger(seconds=gcal_interval),
-            id="reminders_gcal_sync",
-            coalesce=True, max_instances=1, misfire_grace_time=600,
-        )
-    else:
-        logger.info(
-            "reminders_gcal_sync: skipped — calendar creds unhealthy. "
-            "pending gcal mirrors will accumulate; new reminders still fire "
-            "locally via the reminders_fire job."
-        )
+
+    async def _gcal_sync_job():
+        # Re-check at execution time so a probe that lands after build_scheduler
+        # (or a credential recovery mid-session) is honoured without a restart.
+        if not _calendar_creds_healthy():
+            logger.debug(
+                "reminders_gcal_sync: skipping execution — calendar creds unhealthy"
+            )
+            return
+        return await sync_pending_gcal_reminders()
+
+    scheduler.add_job(
+        _gcal_sync_job,
+        IntervalTrigger(seconds=gcal_interval),
+        id="reminders_gcal_sync",
+        coalesce=True, max_instances=1, misfire_grace_time=600,
+    )
 
     # Daily reflection: 09:00 local (use OS-local TZ via cron trigger without tz)
     scheduler.add_job(
@@ -384,12 +386,10 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
 
 def _calendar_creds_healthy() -> bool:
-    """Phase 8 (Phase 10 update): cheap startup gate. If the bridge wrote
-    ``runtime_state.calendar_heartbeat_healthy = '1'`` after a successful
-    probe call, the job runs; otherwise it sits out.
-
-    Default: if all three OAuth env vars for google-workspace-mcp are set,
-    treat as healthy unless explicitly disabled. Bridge probes can override.
+    """Checked at each job execution (not just at build time) so a probe that
+    finishes after build_scheduler takes effect on the next tick without a
+    restart. Returns True when ``runtime_state.calendar_heartbeat_healthy`` is
+    '1', or when all three OAuth env vars are present and no explicit override.
     """
     import os
 

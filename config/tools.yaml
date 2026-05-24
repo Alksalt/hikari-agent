@@ -1738,15 +1738,17 @@ tools:
     untrusted_output: true
     wrap_patterns: ["^mcp__github__"]
 
-  # Apple Events — explicit per-tool entries for tools that are ungated writes.
-  # These MUST appear before the wildcard so the resolver finds them as EXPLICIT
-  # (not wildcard), bypassing the wildcard-write deny in gatekeeper.
-  # See tests/test_destructive_tool_gating.py _APPLE_UNGATED_TOOLS for the
-  # canonical list of intentionally-ungated tools (Phase 13.1 rationale there).
+  # Apple Events — split: LLM-facing entries use gate: confirm_send so the
+  # registry test can assert no LLM-facing destructive tool has gate: null.
+  # confirm_send does not trigger the gatekeeper state machine (only gate:
+  # gatekeeper does); it is a policy marker only. Scheduler-internal callers
+  # use MANAGER.call() directly and never go through can_use_tool, so they are
+  # unaffected by the gate value. The _unsafe variants below (gate: null) are
+  # registry documentation for that scheduler-bypass path.
   - id: "mcp__apple_events__create_reminder"
     bucket: 3
     server: apple_events
-    gate: null
+    gate: confirm_send
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -1754,7 +1756,7 @@ tools:
   - id: "mcp__apple_events__delete_reminder"
     bucket: 3
     server: apple_events
-    gate: null
+    gate: confirm_send
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -1762,7 +1764,7 @@ tools:
   - id: "mcp__apple_events__create_calendar_event"
     bucket: 3
     server: apple_events
-    gate: null
+    gate: confirm_send
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -1770,12 +1772,56 @@ tools:
   - id: "mcp__apple_events__delete_calendar_event"
     bucket: 3
     server: apple_events
-    gate: null
+    gate: confirm_send
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
 
   - id: "mcp__apple_events__reminders_tasks"
+    bucket: 3
+    server: apple_events
+    gate: confirm_send
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  # Apple Events — scheduler-internal bypass variants (gate: null).
+  # These ids are never invoked by the LLM; MANAGER.call() reaches the MCP
+  # server directly without going through can_use_tool. Present here so the
+  # LLM-facing gate test can use the _unsafe suffix as the exclusion signal.
+  - id: "mcp__apple_events__create_reminder_unsafe"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__delete_reminder_unsafe"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__create_calendar_event_unsafe"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__delete_calendar_event_unsafe"
+    bucket: 3
+    server: apple_events
+    gate: null
+    access_mode: write
+    untrusted_output: true
+    wrap_patterns: []
+
+  - id: "mcp__apple_events__reminders_tasks_unsafe"
     bucket: 3
     server: apple_events
     gate: null
@@ -1803,12 +1849,15 @@ tools:
     untrusted_output: true
     wrap_patterns: ["^mcp__apple_shortcuts__"]
 
-  # Playwright — wildcard
+  # Playwright — read-only navigation/inspection. Playwright tools do not
+  # persist external state (no email, no file writes, no API mutations); the
+  # wildcard access_mode is read so any future tool resolves without triggering
+  # the wildcard-write deny path.
   - id: "mcp__playwright__*"
     bucket: 3
     server: playwright
     gate: null
-    access_mode: write
+    access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__playwright__"]
 

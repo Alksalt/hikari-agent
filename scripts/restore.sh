@@ -3,38 +3,57 @@
 #
 # Usage:
 #   bash scripts/restore.sh <hikari-YYYYMMDD.tar.age>
+#   bash scripts/restore.sh --dry-run <hikari-YYYYMMDD.tar.age>
 #
 # DRY_RUN=1 bash scripts/restore.sh <archive>  — print steps without executing
 #
 # The script decrypts the archive, extracts it, then guides you through the
 # manual steps needed to complete the restore.
+#
+# TMP_ROOT is NOT deleted automatically so the operator can copy files out.
+# Print its path at exit. Remove manually when done.
 
 set -euo pipefail
 
 umask 077
+
+# Parse --dry-run flag and optional archive positional arg.
+DRY_RUN="${DRY_RUN:-0}"
+ARCHIVE=""
+for _arg in "$@"; do
+    case "$_arg" in
+        --dry-run) DRY_RUN=1 ;;
+        *) ARCHIVE="$_arg" ;;
+    esac
+done
+
+if [ -z "$ARCHIVE" ] && [ "$DRY_RUN" != "1" ]; then
+    echo "usage: $0 [--dry-run] <hikari-YYYYMMDD.tar.age>" >&2
+    exit 1
+fi
+# In dry-run without an archive, use a placeholder so the script can show steps.
+ARCHIVE="${ARCHIVE:-/path/to/hikari-YYYYMMDD.tar.age}"
+
 TMP_ROOT=$(mktemp -d -t hikari-restore.XXXXXX)
 chmod 700 "$TMP_ROOT"
 TAR_PATH="$TMP_ROOT/hikari-restore.tar"
 EXTRACT_DIR="$TMP_ROOT/extracted"
 
 cleanup() {
-    if [ "$DRY_RUN" != "1" ] && [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
-        find "$TMP_ROOT" -type f -exec /bin/dd if=/dev/zero of={} bs=4k count=1 conv=notrunc 2>/dev/null \; || true
-        rm -rf "$TMP_ROOT"
-    fi
+    # Intentionally does NOT delete TMP_ROOT so the operator can copy files.
+    # The path is printed at the end of the script. Remove manually when done.
+    :
 }
 trap cleanup EXIT INT TERM
 
-ARCHIVE="${1:?usage: $0 <hikari-YYYYMMDD.tar.age>}"
 KEY_FILE="${HIKARI_BACKUP_AGE_KEY:-$HOME/.config/hikari/backup_age.key}"
-DRY_RUN="${DRY_RUN:-0}"
 
-if ! command -v age >/dev/null 2>&1; then
+if ! command -v age >/dev/null 2>&1 && [ "$DRY_RUN" != "1" ]; then
     echo "error: age not found in PATH — install via: brew install age" >&2
     exit 1
 fi
 
-if [ ! -f "$ARCHIVE" ]; then
+if [ ! -f "$ARCHIVE" ] && [ "$DRY_RUN" != "1" ]; then
     echo "error: archive not found: $ARCHIVE" >&2
     exit 1
 fi
@@ -81,4 +100,7 @@ echo "  bash scripts/install_external_mcp_launchd.sh"
 echo "  bash scripts/install_cloudflared_launchd.sh"
 
 step "DONE — restored to $EXTRACT_DIR/. Manual copy required (see step 3)."
-echo "WARNING: $TMP_ROOT will be wiped on shell exit — copy needed files NOW."
+echo ""
+echo "EXTRACT DIR: $EXTRACT_DIR"
+echo "TMP ROOT:    $TMP_ROOT"
+echo "(not auto-deleted — run: rm -rf $TMP_ROOT  when done)"

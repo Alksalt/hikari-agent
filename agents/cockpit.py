@@ -76,7 +76,8 @@ def _write_graphiti_enabled(value: str) -> None:
 
 
 def _read_auth_precheck() -> str:
-    return os.environ.get("AUTH_PRECHECK", os.environ.get("AUTH_PRECHECK_OVERRIDE", "shadow"))
+    from agents.auth_precheck import resolve_mode
+    return resolve_mode()
 
 
 def _write_auth_precheck(value: str) -> None:
@@ -326,10 +327,14 @@ async def format_status(app) -> str:
     except Exception as exc:
         lines.append(f"proactive: error ({exc})")
 
-    # graph_outbox pending
+    # graph_outbox pending + failed
     try:
         pending_graph = len(_db.graph_outbox_pending(limit=500))
-        lines.append(f"graph outbox pending: {pending_graph}")
+        failed_stats = _db.graph_outbox_failed_stats()
+        failed_graph = failed_stats.get("count", 0)
+        last_err = failed_stats.get("last_error")
+        err_note = f" last_error={last_err!r}" if last_err else ""
+        lines.append(f"graph outbox pending: {pending_graph}  failed: {failed_graph}{err_note}")
     except Exception as exc:
         lines.append(f"graph outbox: error ({exc})")
 

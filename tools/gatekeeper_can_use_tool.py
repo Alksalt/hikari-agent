@@ -177,7 +177,7 @@ async def gatekeeper_can_use_tool(
             )
         )
 
-    if gate != "gatekeeper":
+    if gate not in ("gatekeeper", "confirm_send"):
         return PermissionResultAllow(updated_input=input)
 
     tool_use_id = getattr(context, "tool_use_id", None) or f"missing-{tool_name}-{id(input)}"
@@ -215,6 +215,7 @@ async def gatekeeper_can_use_tool(
             args=input,
             summary=summary,
             deadline=deadline,
+            gate_kind=gate,
         )
     except Exception as e:
         logger.exception("gatekeeper_can_use_tool: request failed for %s", tool_name)

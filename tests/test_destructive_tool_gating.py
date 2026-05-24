@@ -100,12 +100,15 @@ _APPLE_UNGATED_TOOLS = [
 
 @pytest.mark.parametrize("tool_name", _APPLE_UNGATED_TOOLS)
 def test_apple_events_writes_intentionally_not_gated(tool_name):
-    """Apple Events writes must NOT be gatekeeper-gated (Phase 13.1)."""
+    """Apple Events writes use confirm_send gate (not gatekeeper, not defer)."""
     gate = _gate_for(tool_name)
-    assert gate != "gatekeeper" and gate != "defer", (
-        f"{tool_name!r} appears to be gated ({gate!r}), but Phase 13.1 deliberately "
-        "leaves Apple Events writes ungated (see config/tools.yaml comment "
-        "near the apple_events block)."
+    assert gate not in ("gatekeeper", "defer"), (
+        f"{tool_name!r} has gate={gate!r}; apple_events tools must use confirm_send, "
+        "not gatekeeper or defer."
+    )
+    assert gate == "confirm_send", (
+        f"{tool_name!r} has gate={gate!r}; expected confirm_send so apple_events "
+        "writes go through the approval state machine."
     )
 
 

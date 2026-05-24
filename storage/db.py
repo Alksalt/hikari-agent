@@ -1294,6 +1294,7 @@ def insert_fact(
             "source_description": f"fact ({attribution or 'unknown'})",
             "group_id": "hikari_chat",
             "reference_time": datetime.now(UTC).isoformat(),
+            "fact_id": fact_id,
         }
         graph_outbox_insert("facts", fact_id, _json.dumps(_payload), conn=c)
     return fact_id
@@ -3019,13 +3020,14 @@ def approval_create_gatekeeper(
     args_json: str,
     summary: str,
     deadline_iso: str,
+    gate_kind: str = "gatekeeper",
 ) -> int:
     """Phase E: write an approval row for the can_use_tool gatekeeper path.
 
     Unlike the legacy defer path, gatekeeper rows have:
       - tool_use_id populated from the SDK ToolPermissionContext
       - deadline_iso set by the caller
-      - gate_kind = 'gatekeeper'
+      - gate_kind = 'gatekeeper' (default) or caller-supplied value
       - tier = 2 (kept for schema compat with approval_pending_for)
     """
     with _conn() as c:
@@ -3033,9 +3035,9 @@ def approval_create_gatekeeper(
             "INSERT INTO approvals "
             "(chat_id, tool_name, tier, summary, args_json, status, created_at, "
             " tool_use_id, deadline_iso, gate_kind) "
-            "VALUES (?, ?, 2, ?, ?, 'pending', ?, ?, ?, 'gatekeeper')",
+            "VALUES (?, ?, 2, ?, ?, 'pending', ?, ?, ?, ?)",
             (chat_id, tool_name, summary, args_json, _now(),
-             tool_use_id, deadline_iso),
+             tool_use_id, deadline_iso, gate_kind),
         )
     return int(cur.lastrowid or 0)
 
@@ -3313,6 +3315,7 @@ def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
                 "source_description": "fact (unknown)",
                 "group_id": "hikari_chat",
                 "reference_time": datetime.now(UTC).isoformat(),
+                "fact_id": fid,
             }
             graph_outbox_insert("facts", fid, _json.dumps(_payload), conn=c)
             n += 1
@@ -4201,7 +4204,27 @@ def graph_outbox_mark_sent(row_id: int, processed_at_epoch: int | None = None) -
 
 
 def graph_outbox_mark_failed(row_id: int, error: str) -> None:
-    """Increment attempts; flip to status='failed' if attempts+1 >= 5."""
+    """Increment attempts; flip to status='failed' if attempts+1 >= 5.
+
+    Infrastructure errors (missing OPENROUTER_API_KEY, GRAPHITI_ENABLED=false)
+    are treated as transient: rows stay 'pending' with backoff so the outbox
+    drains automatically once the env is restored, instead of piling up as
+    permanently 'failed'. Permanent errors (bad payload JSON, etc.) still flip
+    at the 5-attempt threshold.
+    """
+    import os as _os
+    _TRANSIENT_PREFIXES = (
+        "OPENROUTER_API_KEY",
+        "GRAPHITI_ENABLED",
+    )
+    is_transient = any(p in error for p in _TRANSIENT_PREFIXES)
+    if is_transient:
+        with _conn() as c:
+            c.execute(
+                "UPDATE graph_outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?",
+                (str(error)[:500], int(row_id))
+            )
+        return
     with _conn() as c:
         c.execute(
             "UPDATE graph_outbox SET "
@@ -4211,6 +4234,24 @@ def graph_outbox_mark_failed(row_id: int, error: str) -> None:
             "WHERE id = ?",
             (str(error)[:500], int(row_id))
         )
+
+
+def graph_outbox_failed_stats() -> dict:
+    """Return failed-row count and the most recent last_error string.
+
+    Used by health.py and cockpit.py to surface actionable error detail.
+    """
+    with _conn() as c:
+        count_row = c.execute(
+            "SELECT COUNT(*) AS n FROM graph_outbox WHERE status = 'failed'"
+        ).fetchone()
+        error_row = c.execute(
+            "SELECT last_error FROM graph_outbox WHERE status = 'failed' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    count = (count_row["n"] or 0) if count_row else 0
+    last_error = error_row["last_error"] if error_row else None
+    return {"count": count, "last_error": last_error}
 
 
 def graph_outbox_stats() -> dict:

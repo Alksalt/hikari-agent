@@ -564,9 +564,13 @@ async def test_middleware_well_known_path_bypasses_auth():
 @pytest.mark.asyncio
 async def test_middleware_accepts_valid_oauth_access_token():
     from mcp_external.launch import AuthMiddleware
-    # Mint a real access token.
+    # Mint with an audience bound to the configured public_base_url.
+    # engagement.yaml sets mcp_external.public_base_url = "https://hikari.alksalt.com".
     reg = db.oauth_client_register("t", ["http://localhost/cb"])
-    access = db.oauth_token_mint(reg["client_id"], "access", ttl_seconds=600)
+    access = db.oauth_token_mint(
+        reg["client_id"], "access", ttl_seconds=600,
+        scope="mcp aud:https://hikari.alksalt.com"
+    )
 
     inner_called = {"v": False}
 
@@ -643,6 +647,29 @@ async def test_middleware_expired_oauth_token_rejected():
     mw = AuthMiddleware(fake_app)
     scope = {"type": "http", "path": "/mcp",
              "headers": [(b"authorization", f"Bearer {expired}".encode())]}
+    async def _send(m):
+        sent.append(m)
+    await mw(scope, lambda: None, _send)
+    assert sent[0]["status"] == 401
+
+
+@pytest.mark.asyncio
+async def test_middleware_rejects_oauth_token_without_aud():
+    """RFC 8707 — access tokens without an audience binding must be rejected."""
+    from mcp_external.launch import AuthMiddleware
+    reg = db.oauth_client_register("t", ["http://localhost/cb"])
+    # Mint without any scope (no aud: suffix).
+    access = db.oauth_token_mint(reg["client_id"], "access", ttl_seconds=600, scope=None)
+    sent: list = []
+
+    async def fake_app(scope, receive, send):
+        pass  # must not be reached
+
+    mw = AuthMiddleware(fake_app)
+    scope = {
+        "type": "http", "path": "/mcp",
+        "headers": [(b"authorization", f"Bearer {access}".encode())],
+    }
     async def _send(m):
         sent.append(m)
     await mw(scope, lambda: None, _send)

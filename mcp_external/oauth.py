@@ -28,6 +28,7 @@ import hmac
 import html
 import logging
 import os
+import re as _re
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -180,6 +181,47 @@ def _redirect_with_error(redirect_uri: str, state: str | None,
     return RedirectResponse(f"{redirect_uri}{sep}{urlencode(params)}", status_code=302)
 
 
+# RFC 8707 resource encoding: encode audience into the scope field using a
+# synthetic " aud:<uri>" suffix. This avoids a DB schema migration while
+# keeping audience binding durable across code→token redemption.
+_AUD_PREFIX = " aud:"
+
+
+_AUD_STRIP_RE = _re.compile(r"\s+aud:\S*", _re.I)
+
+
+def _sanitize_scope(scope: str | None) -> str | None:
+    """Strip client-supplied aud: tokens from scope — audience binds via the
+    `resource` parameter only, never via the scope field."""
+    if not scope:
+        return scope
+    cleaned = _AUD_STRIP_RE.sub("", scope).strip()
+    return cleaned or None
+
+
+def _encode_resource_into_scope(scope: str | None, resource: str | None) -> str | None:
+    """Append " aud:<resource>" to scope when resource is provided."""
+    if not resource:
+        return scope
+    base = (scope or "").strip()
+    return (base + _AUD_PREFIX + resource).lstrip()
+
+
+def _decode_scope_and_resource(raw: str | None) -> tuple[str | None, str | None]:
+    """Split a stored scope into (user_scope, resource).
+
+    Returns (original_scope_without_aud, resource_uri_or_None).
+    """
+    if not raw:
+        return raw, None
+    idx = raw.find(_AUD_PREFIX)
+    if idx == -1:
+        return raw or None, None
+    user_scope = raw[:idx].strip() or None
+    resource = raw[idx + len(_AUD_PREFIX):].strip() or None
+    return user_scope, resource
+
+
 # ---------------------------------------------------------------------------
 # 1. RFC 9728 — protected resource metadata
 # ---------------------------------------------------------------------------
@@ -321,6 +363,20 @@ def _render_authorize_page(client_label: str, scope: str | None,
             .replace("__ERROR__", err_block))
 
 
+def _normalize_resource(resource: str | None, request: Request) -> str | None:
+    """Return a normalized RFC 8707 resource URI, or None if not provided.
+
+    Rejects non-http(s) values so a malformed resource parameter can't
+    be smuggled into the scope field as arbitrary text.
+    """
+    if not resource:
+        return None
+    r = resource.strip()
+    if not _valid_http_url(r):
+        return None
+    return r
+
+
 async def _authorize_get(request: Request) -> Response:
     q = request.query_params
     response_type = q.get("response_type")
@@ -329,7 +385,9 @@ async def _authorize_get(request: Request) -> Response:
     code_challenge = q.get("code_challenge")
     code_challenge_method = q.get("code_challenge_method")
     state = q.get("state")
-    scope = q.get("scope")
+    scope = _sanitize_scope(q.get("scope"))
+    # RFC 8707: optional resource indicator; validated and stashed in cookie.
+    resource = _normalize_resource(q.get("resource"), request)
 
     # Validate client first so we know whether it's safe to redirect errors.
     client = db.oauth_client_get(client_id) if client_id else None
@@ -383,6 +441,7 @@ async def _authorize_get(request: Request) -> Response:
         "code_challenge_method": code_challenge_method,
         "scope": scope,
         "state": state,
+        "resource": resource,
     }
     signed = _state_signer().dumps(payload)
 
@@ -448,12 +507,19 @@ async def _authorize_post(request: Request) -> Response:
         return HTMLResponse(body, status_code=401)
 
     # Match — mint the auth code and bounce back to the client.
+    # Encode the RFC 8707 resource into the scope field so it survives the
+    # code→token round-trip without a schema change. Format: existing scope
+    # kept as-is; resource appended as a synthetic " aud:<uri>" token that
+    # the token endpoint (and launch.py validator) can parse back out.
+    raw_scope = stash.get("scope")
+    resource = stash.get("resource")
+    persisted_scope = _encode_resource_into_scope(raw_scope, resource)
     code = db.oauth_code_mint(
         client_id=stash["client_id"],
         redirect_uri=stash["redirect_uri"],
         code_challenge=stash["code_challenge"],
         code_challenge_method=stash["code_challenge_method"],
-        scope=stash.get("scope"),
+        scope=persisted_scope,
         ttl_seconds=_code_ttl(),
     )
     db.oauth_client_touch(stash["client_id"])
@@ -461,7 +527,8 @@ async def _authorize_post(request: Request) -> Response:
         "authorize_granted",
         stash["client_id"],
         ip,
-        {"redirect_uri": stash["redirect_uri"], "scope": stash.get("scope")},
+        {"redirect_uri": stash["redirect_uri"], "scope": raw_scope,
+         "resource": resource},
     )
 
     params = {"code": code}
@@ -493,15 +560,21 @@ def _token_error(code: str = "invalid_grant",
     return JSONResponse({"error": code}, status_code=status, headers=_TOKEN_NO_STORE)
 
 
-def _token_success(access: str, refresh: str, scope: str | None) -> JSONResponse:
+def _token_success(access: str, refresh: str, scope: str | None,
+                   resource: str | None = None) -> JSONResponse:
+    user_scope, _aud = _decode_scope_and_resource(scope)
     body: dict[str, Any] = {
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "Bearer",
         "expires_in": _access_ttl(),
     }
-    if scope:
-        body["scope"] = scope
+    if user_scope:
+        body["scope"] = user_scope
+    # RFC 8707: echo the bound audience back to the client.
+    aud = resource or _aud
+    if aud:
+        body["aud"] = aud
     return JSONResponse(body, headers=_TOKEN_NO_STORE)
 
 
@@ -512,6 +585,8 @@ async def token(request: Request) -> Response:
         return _token_error()
     grant_type = (form.get("grant_type") or "").strip()
     ip = _client_ip(request)
+    # RFC 8707: optional resource indicator supplied at token request time.
+    req_resource = _normalize_resource(form.get("resource"), request)
 
     if grant_type == "authorization_code":
         code = (form.get("code") or "").strip()
@@ -531,18 +606,34 @@ async def token(request: Request) -> Response:
                 {"reason": "binding_mismatch"},
             )
             return _token_error()
-        scope = consumed.get("scope")
+        persisted_scope = consumed.get("scope")
+        _, bound_resource = _decode_scope_and_resource(persisted_scope)
+        # RFC 8707 audience validation: if the code was bound to a resource,
+        # the token request MUST present the same resource (or omit it).
+        # If the token request presents a resource not matching the bound one, deny.
+        if bound_resource and req_resource and req_resource != bound_resource:
+            db.oauth_audit(
+                "token_denied", client_id, ip,
+                {"reason": "resource_mismatch",
+                 "bound": bound_resource, "requested": req_resource},
+            )
+            return _token_error("invalid_target", 400)
+        effective_resource = req_resource or bound_resource
+        # Store the effective resource in the minted tokens' scope field too.
+        user_scope, _ = _decode_scope_and_resource(persisted_scope)
+        mint_scope = _encode_resource_into_scope(user_scope, effective_resource)
         refresh = db.oauth_token_mint(
             client_id=client_id, token_type="refresh",
-            scope=scope, ttl_seconds=_refresh_ttl(),
+            scope=mint_scope, ttl_seconds=_refresh_ttl(),
         )
         access = db.oauth_token_mint(
             client_id=client_id, token_type="access",
-            parent_token=refresh, scope=scope, ttl_seconds=_access_ttl(),
+            parent_token=refresh, scope=mint_scope, ttl_seconds=_access_ttl(),
         )
         db.oauth_client_touch(client_id)
-        db.oauth_audit("token_issued", client_id, ip, {"scope": scope})
-        return _token_success(access, refresh, scope)
+        db.oauth_audit("token_issued", client_id, ip,
+                       {"scope": user_scope, "resource": effective_resource})
+        return _token_success(access, refresh, mint_scope, effective_resource)
 
     if grant_type == "refresh_token":
         old_refresh = (form.get("refresh_token") or "").strip()
@@ -559,18 +650,30 @@ async def token(request: Request) -> Response:
                 {"reason": "refresh_invalid_or_raced"},
             )
             return _token_error()
-        scope = consumed.get("scope")
+        persisted_scope = consumed.get("scope")
+        _, bound_resource = _decode_scope_and_resource(persisted_scope)
+        if bound_resource and req_resource and req_resource != bound_resource:
+            db.oauth_audit(
+                "token_denied", client_id, ip,
+                {"reason": "resource_mismatch",
+                 "bound": bound_resource, "requested": req_resource},
+            )
+            return _token_error("invalid_target", 400)
+        effective_resource = req_resource or bound_resource
+        user_scope, _ = _decode_scope_and_resource(persisted_scope)
+        mint_scope = _encode_resource_into_scope(user_scope, effective_resource)
         new_refresh = db.oauth_token_mint(
             client_id=client_id, token_type="refresh",
-            scope=scope, ttl_seconds=_refresh_ttl(),
+            scope=mint_scope, ttl_seconds=_refresh_ttl(),
         )
         new_access = db.oauth_token_mint(
             client_id=client_id, token_type="access",
-            parent_token=new_refresh, scope=scope, ttl_seconds=_access_ttl(),
+            parent_token=new_refresh, scope=mint_scope, ttl_seconds=_access_ttl(),
         )
         db.oauth_client_touch(client_id)
-        db.oauth_audit("token_refreshed", client_id, ip, {"scope": scope})
-        return _token_success(new_access, new_refresh, scope)
+        db.oauth_audit("token_refreshed", client_id, ip,
+                       {"scope": user_scope, "resource": effective_resource})
+        return _token_success(new_access, new_refresh, mint_scope, effective_resource)
 
     return JSONResponse(
         {"error": "unsupported_grant_type"},

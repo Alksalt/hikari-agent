@@ -27,16 +27,22 @@ import scripts.dead_man as dm
 # ---------------------------------------------------------------------------
 
 class TestCheckAgentRunning:
-    def test_returns_true_when_label_in_output(self):
-        output = "42  0  com.hikari.agent\n99  0  com.hikari.backup\n"
+    def test_returns_true_when_pid_in_print_output(self):
+        output = "pid = 12345\nlast exit code = 0\n"
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=output)
+            mock_run.return_value = MagicMock(returncode=0, stdout=output)
             assert dm.check_agent_running() is True
 
-    def test_returns_false_when_label_absent(self):
-        output = "99  0  com.other.service\n"
+    def test_returns_false_when_pid_zero_or_absent(self):
+        output = "pid = 0\nlast exit code = 1\n"
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=output)
+            mock_run.return_value = MagicMock(returncode=0, stdout=output)
+            assert dm.check_agent_running() is False
+
+    def test_returns_false_when_launchctl_returns_nonzero(self):
+        # returncode != 0 means service not found in both domains.
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=113, stdout="")
             assert dm.check_agent_running() is False
 
     def test_returns_false_on_subprocess_exception(self):
@@ -115,37 +121,48 @@ class TestCheckMcpExternal:
     def test_returns_true_on_200(self):
         mock_response = MagicMock()
         mock_response.status_code = 200
-        with patch("httpx.get", return_value=mock_response):
-            assert dm.check_mcp_external() is True
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", return_value=mock_response):
+                assert dm.check_mcp_external() is True
 
     def test_returns_true_on_401(self):
-        """Fix 6: 401 means the server is up (auth required), not down."""
+        """401 means the server is up (auth required), not down."""
         mock_response = MagicMock()
         mock_response.status_code = 401
-        with patch("httpx.get", return_value=mock_response):
-            assert dm.check_mcp_external() is True
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", return_value=mock_response):
+                assert dm.check_mcp_external() is True
 
     def test_returns_true_on_405(self):
         mock_response = MagicMock()
         mock_response.status_code = 405
-        with patch("httpx.get", return_value=mock_response):
-            assert dm.check_mcp_external() is True
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", return_value=mock_response):
+                assert dm.check_mcp_external() is True
 
     def test_returns_false_on_500(self):
         mock_response = MagicMock()
         mock_response.status_code = 500
-        with patch("httpx.get", return_value=mock_response):
-            assert dm.check_mcp_external() is False
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", return_value=mock_response):
+                assert dm.check_mcp_external() is False
 
     def test_returns_false_on_connection_error(self):
         import httpx
-        with patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-            assert dm.check_mcp_external() is False
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", side_effect=httpx.ConnectError("refused")):
+                assert dm.check_mcp_external() is False
 
     def test_returns_false_on_timeout(self):
         import httpx
-        with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            assert dm.check_mcp_external() is False
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
+                assert dm.check_mcp_external() is False
+
+    def test_returns_true_when_mcp_flag_off(self):
+        """Skipped (returns True) when HIKARI_HAS_MCP_EXTERNAL flag not set."""
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", False):
+            assert dm.check_mcp_external() is True
 
 
 # ---------------------------------------------------------------------------
@@ -153,17 +170,24 @@ class TestCheckMcpExternal:
 # ---------------------------------------------------------------------------
 
 class TestCheckCloudflaredRunning:
-    def test_returns_true_when_tunnel_in_output(self):
-        output = "7  0  com.hikari.tunnel\n"
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=output)
-            assert dm.check_cloudflared_running() is True
+    def test_returns_true_when_pid_present(self):
+        output = "pid = 7\nlast exit code = 0\n"
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout=output)
+                assert dm.check_cloudflared_running() is True
 
-    def test_returns_false_when_tunnel_absent(self):
-        output = "42  0  com.hikari.agent\n"
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=output)
-            assert dm.check_cloudflared_running() is False
+    def test_returns_false_when_pid_zero_or_absent(self):
+        output = "pid = 0\nlast exit code = 1\n"
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout=output)
+                assert dm.check_cloudflared_running() is False
+
+    def test_returns_true_when_flag_off(self):
+        """Skipped when HIKARI_HAS_MCP_EXTERNAL != '1'."""
+        with patch.object(dm, "_HAS_MCP_EXTERNAL", False):
+            assert dm.check_cloudflared_running() is True
 
 
 # ---------------------------------------------------------------------------
@@ -172,10 +196,13 @@ class TestCheckCloudflaredRunning:
 
 class TestPostAlert:
     def test_all_fail_sends_one_telegram_post(self):
-        with patch("httpx.post") as mock_post:
-            with patch.object(dm, "DEADMAN_TOKEN", "bot123"):
-                with patch.object(dm, "OWNER_ID", "456"):
-                    dm.post_alert(["agent", "db_fresh", "backup_fresh"])
+        with (
+            patch("httpx.post") as mock_post,
+            patch.object(dm, "DEADMAN_TOKEN", "bot123"),
+            patch.object(dm, "OWNER_ID", "456"),
+            patch.object(dm, "_telegram_probe_ok", return_value=True),
+        ):
+            dm.post_alert(["agent", "db_fresh", "backup_fresh"])
         mock_post.assert_called_once()
         call_kwargs = mock_post.call_args
         body = call_kwargs[1]["json"] if call_kwargs[1] else call_kwargs[0][1]
@@ -186,10 +213,13 @@ class TestPostAlert:
 
     def test_single_call_regardless_of_fail_count(self):
         checks = ["agent", "db_fresh", "backup_fresh", "mcp_external", "cloudflared"]
-        with patch("httpx.post") as mock_post:
-            with patch.object(dm, "DEADMAN_TOKEN", "bot123"):
-                with patch.object(dm, "OWNER_ID", "456"):
-                    dm.post_alert(checks)
+        with (
+            patch("httpx.post") as mock_post,
+            patch.object(dm, "DEADMAN_TOKEN", "bot123"),
+            patch.object(dm, "OWNER_ID", "456"),
+            patch.object(dm, "_telegram_probe_ok", return_value=True),
+        ):
+            dm.post_alert(checks)
         assert mock_post.call_count == 1
 
 
@@ -210,10 +240,12 @@ class TestNetworkDown:
             patch.object(dm, "check_db_mtime_fresh", return_value=True),
             patch.object(dm, "check_backup_fresh", return_value=True),
             patch("httpx.get", side_effect=_raise),
+            patch("httpx.head", side_effect=httpx.ConnectError("network down")),
             patch.object(dm, "check_cloudflared_running", return_value=True),
             patch("httpx.post"),  # suppress alert post
             patch.object(dm, "DEADMAN_TOKEN", "bot123"),
             patch.object(dm, "OWNER_ID", "456"),
+            patch.object(dm, "_STRIKE_FILE", tmp_path / "deadman_strikes.txt"),
         ):
             # Call main() directly via argparse-bypassing approach
             with patch("sys.argv", ["dead_man.py"]):

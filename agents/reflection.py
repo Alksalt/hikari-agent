@@ -858,8 +858,14 @@ async def reflection_after_task(task_id: str) -> None:
 
     for loop in data.get("open_loops") or []:
         loop_text = str(loop).strip()
-        if loop_text:
-            db.create_task(loop_text)
+        if not loop_text:
+            continue
+        try:
+            loop_text = sanitize(loop_text, kind="observation")
+        except Exception:
+            logger.warning("reflection_after_task: open_loop rejected by sanitizer: %r", loop_text[:80])
+            continue
+        db.create_task(loop_text)
 
     thought = (data.get("thought") or "").strip()
     if thought:

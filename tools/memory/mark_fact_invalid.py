@@ -13,8 +13,11 @@ from tools._response import ok as _ok
 @tool(
     "mark_fact_invalid",
     "Invalidate a stored fact by its numeric id (returned earlier by `recall`). "
-    "Pass superseded_by=<new fact id> if there's a replacement, otherwise the row "
-    "is just flagged invalid. e.g. user says 'I never said I hate cilantro, that was sarcastic' "
+    "The `fact_id` is the SQLite row id that `recall` surfaces in the `hits[].fact_id` "
+    "field — it is now round-tripped through graph payloads so recall always returns it "
+    "even for graph-path hits. Pass superseded_by=<new fact id> if there's a replacement, "
+    "otherwise the row is just flagged invalid. "
+    "e.g. user says 'I never said I hate cilantro, that was sarcastic' "
     "and recall returned fact #42 → mark_fact_invalid(42). "
     "Don't use this when you're inserting a new replacing fact in the same step — "
     "use `remember` with on_conflict='supersede' instead (one call, not two).",

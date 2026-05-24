@@ -159,6 +159,8 @@ class ToolRegistry:
         out: list[str] = []
         for spec in self._tools:
             name = spec.id
+            if name.endswith("_unsafe"):
+                continue
             # Utility wildcard auto-discovery handles hikari_utility tools;
             # explicit ones registered here are still included.
             if name not in seen:

@@ -30,6 +30,24 @@ from .server import build_server
 
 logger = logging.getLogger(__name__)
 
+# Sentinel prefix used by oauth.py to encode RFC 8707 audience into scope field.
+_AUD_SCOPE_PREFIX = " aud:"
+
+
+def _extract_token_aud(scope: str | None) -> str | None:
+    """Parse the " aud:<uri>" suffix that oauth.py encodes into the scope field.
+
+    Returns the bound audience URI, or None if no audience was encoded.
+    Tokens without an audience claim bypass audience validation (backward compat).
+    """
+    if not scope:
+        return None
+    idx = scope.find(_AUD_SCOPE_PREFIX)
+    if idx == -1:
+        return None
+    aud = scope[idx + len(_AUD_SCOPE_PREFIX):].strip()
+    return aud or None
+
 
 def _enabled() -> bool:
     return bool(cfg.get("mcp_external.enabled", False))
@@ -143,6 +161,25 @@ class AuthMiddleware:
                 logger.exception("auth middleware: _oauth2_token_validate failed")
                 row2 = None
             if row2 and row2.get("token_type") == "access":
+                # RFC 8707 audience validation: token MUST carry an aud binding.
+                # Tokens without aud are rejected — spec requires audience binding.
+                token_aud = _extract_token_aud(row2.get("scope"))
+                if token_aud is None:
+                    logger.warning(
+                        "auth middleware: RFC 8707 — token has no audience binding; "
+                        "rejecting (cycle this token)"
+                    )
+                    await self._send_401(scope, send)
+                    return
+                server_base = _public_base_url(scope).rstrip("/")
+                if token_aud.rstrip("/") != server_base:
+                    logger.warning(
+                        "auth middleware: RFC 8707 audience mismatch — "
+                        "token aud=%r, server=%r; rejecting",
+                        token_aud, server_base,
+                    )
+                    await self._send_401(scope, send)
+                    return
                 auth_info = {
                     "auth_method": "oauth",
                     "oauth_client_id": row2.get("client_id"),

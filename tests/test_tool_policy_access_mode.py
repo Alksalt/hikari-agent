@@ -52,10 +52,12 @@ def test_access_mode_destructive_on_apple_shortcuts(registry):
     assert spec.access_mode == "destructive"
 
 
-def test_access_mode_write_on_playwright(registry):
+def test_access_mode_read_on_playwright(registry):
+    # Restricted to read-only so the wildcard-write deny does not block
+    # research subagent calls.
     spec = registry._resolve("mcp__playwright__*")
     assert spec is not None
-    assert spec.access_mode == "write"
+    assert spec.access_mode == "read"
 
 
 def test_access_mode_write_on_notion_wildcard(registry):
@@ -126,10 +128,15 @@ async def test_destructive_wildcard_denied():
 
 @pytest.mark.asyncio
 async def test_write_wildcard_denied():
-    """A tool that resolves only via a write wildcard must be denied."""
+    """A tool that resolves only via a write wildcard must be denied.
+
+    Uses a github tool that has no explicit registry entry so it falls through
+    to the mcp__github__* wildcard (access_mode=write) — the gatekeeper
+    wildcard-write deny must fire.
+    """
     from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
     ns = SimpleNamespace(tool_use_id="t1")
-    result = await gatekeeper_can_use_tool("mcp__playwright__delete_session", {}, ns)
+    result = await gatekeeper_can_use_tool("mcp__github__some_unknown_write_op", {}, ns)
     msg = getattr(result, "message", "") or ""
     behavior = getattr(result, "behavior", "")
     assert "write" in msg or behavior == "deny", (

@@ -128,15 +128,17 @@ def test_mcp_warm_pool_handles_exception():
 
 def test_graph_outbox_under_threshold():
     with patch("storage.db.graph_outbox_pending", return_value=[{"id": i} for i in range(3)]):
-        result = _check_graph_outbox()
+        with patch("storage.db.graph_outbox_failed_stats", return_value={"count": 0, "last_error": None}):
+            result = _check_graph_outbox()
     assert result.ok is True
-    assert result.value == 3
+    assert result.value == {"pending": 3, "failed": 0}
 
 
 def test_graph_outbox_over_threshold_degraded():
     # The check uses limit = _OUTBOX_PENDING_WARN + 1 = 51
     with patch("storage.db.graph_outbox_pending", return_value=[{"id": i} for i in range(51)]):
-        result = _check_graph_outbox()
+        with patch("storage.db.graph_outbox_failed_stats", return_value={"count": 0, "last_error": None}):
+            result = _check_graph_outbox()
     assert result.ok is False
     assert "backlog>50" in (result.reason or "")
 

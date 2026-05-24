@@ -255,6 +255,8 @@ def _format_peer_representation() -> str:
 
 
 def _format_open_tasks() -> str:
+    from agents.reflection_sanitize import MemoryInstructionShape, sanitize
+
     tasks = db.open_tasks()
     if not tasks:
         return ""
@@ -262,9 +264,20 @@ def _format_open_tasks() -> str:
     for t in tasks:
         due = f" (due {t['due_at']})" if t["due_at"] else ""
         status = t["status"]
-        lines.append(f"- [#{t['id']} {status}{due}] {t['subject'][:150]}")
+        raw_subject = str(t.get("subject") or "")[:150]
+        try:
+            subject = sanitize(raw_subject, kind="observation")
+        except MemoryInstructionShape:
+            logger.warning("_format_open_tasks: task #%s subject failed sanitizer; skipping", t["id"])
+            continue
+        lines.append(f"- [#{t['id']} {status}{due}] {subject}")
         if t.get("description"):
-            lines.append(f"    {t['description'][:100]}")
+            raw_desc = str(t["description"])[:100]
+            try:
+                desc = sanitize(raw_desc, kind="observation")
+                lines.append(f"    {desc}")
+            except MemoryInstructionShape:
+                logger.warning("_format_open_tasks: task #%s description failed sanitizer; skipping desc", t["id"])
     return "\n".join(lines)
 
 
@@ -671,24 +684,8 @@ async def _precheck_scopes(
     """
     global _precheck_mode_logged
 
-    _VALID_MODES = {"off", "shadow", "enforce"}
-
-    # Priority: AUTH_PRECHECK_OVERRIDE env (escape hatch) > AUTH_PRECHECK env >
-    # auth.precheck config > "shadow" default.
-    override_env = os.environ.get("AUTH_PRECHECK_OVERRIDE", "").strip().lower()
-    if override_env:
-        if override_env not in _VALID_MODES:
-            logger.warning(
-                "auth: unknown AUTH_PRECHECK_OVERRIDE=%r — falling back to shadow",
-                override_env,
-            )
-            mode = "shadow"
-        else:
-            mode = override_env
-    elif os.environ.get("AUTH_PRECHECK"):
-        mode = os.environ.get("AUTH_PRECHECK", "shadow").strip().lower()
-    else:
-        mode = str(cfg.get("auth.precheck") or "shadow").strip().lower()
+    from agents.auth_precheck import resolve_mode as _resolve_mode
+    mode = _resolve_mode()
 
     if not _precheck_mode_logged:
         logger.info("auth: scope precheck mode = %s", mode)
