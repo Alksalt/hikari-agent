@@ -75,7 +75,7 @@ def should_send_heartbeat() -> bool:
 
 
 def _last_message_role() -> tuple[str | None, datetime | None]:
-    rows = db.recent_messages(limit=1)
+    rows = db.recent_messages(limit=1, exclude_ephemeral=True)
     if not rows:
         return None, None
     last = rows[0]

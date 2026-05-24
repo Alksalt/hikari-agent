@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from storage import db
 
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 
 OBS_KEY = "pending_surfaced_observation_ids"
 NOT_KEY = "pending_surfaced_noticing_ids"
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize(s: str) -> str:
+    return _WS_RE.sub(" ", s.strip().lower())
 
 
 def _pop_ids(key: str) -> list[int]:
@@ -61,21 +68,54 @@ def _pop_ids(key: str) -> list[int]:
     return out
 
 
-def mark_pending_surfaced() -> None:
-    """Drain the runtime_state keys populated by ``inject_memory`` and mark
-    every observation/noticing surfaced. Call after a successful send + DB
-    append in ``_send_with_choreography``."""
+def _restash(key: str, obs_id: int) -> None:
+    raw = db.runtime_get(key) or "[]"
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            data = []
+    except (TypeError, ValueError):
+        data = []
+    if obs_id not in data:
+        data.append(obs_id)
+    db.runtime_set(key, json.dumps(data))
+
+
+def mark_pending_surfaced(sent_text: str = "") -> None:
+    """Drain the runtime_state keys populated by ``inject_memory``.
+
+    Only marks an observation/noticing surfaced if a normalized substring of
+    its stored text appears in ``sent_text``. If not mentioned, re-stashes the
+    ID so it stays eligible for re-injection on the next turn.
+
+    Pass empty string (or omit) to skip content checking and re-stash all
+    pending IDs — used when the send failed or produced no text.
+    """
+    if not sent_text:
+        for obs_id in _pop_ids(OBS_KEY):
+            _restash(OBS_KEY, obs_id)
+        for not_id in _pop_ids(NOT_KEY):
+            _restash(NOT_KEY, not_id)
+        return
+
+    sent_norm = _normalize(sent_text)
+
     for obs_id in _pop_ids(OBS_KEY):
         try:
-            db.observation_mark_surfaced(obs_id)
+            obs_text = db.observation_text(obs_id)
+            if obs_text and _normalize(obs_text) in sent_norm:
+                db.observation_mark_surfaced(obs_id)
+            else:
+                _restash(OBS_KEY, obs_id)
         except Exception:
-            logger.exception(
-                "postsend: observation_mark_surfaced failed for id=%s", obs_id,
-            )
+            logger.exception("postsend: observation_mark_surfaced failed id=%s", obs_id)
+
     for not_id in _pop_ids(NOT_KEY):
         try:
-            db.noticing_mark_surfaced(not_id)
+            not_text = db.noticing_text(not_id)
+            if not_text and _normalize(not_text) in sent_norm:
+                db.noticing_mark_surfaced(not_id)
+            else:
+                _restash(NOT_KEY, not_id)
         except Exception:
-            logger.exception(
-                "postsend: noticing_mark_surfaced failed for id=%s", not_id,
-            )
+            logger.exception("postsend: noticing_mark_surfaced failed id=%s", not_id)

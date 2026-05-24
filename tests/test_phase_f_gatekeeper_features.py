@@ -116,6 +116,7 @@ async def test_approvals_command_empty(monkeypatch):
         effective_chat=SimpleNamespace(id=12345),
         message=SimpleNamespace(
             reply_text=AsyncMock(side_effect=lambda t: replies.append(t)),
+            chat_id=12345,
         ),
     )
     context = SimpleNamespace(args=[], bot=None)
@@ -150,6 +151,7 @@ async def test_approvals_command_lists_pending(monkeypatch):
         effective_chat=SimpleNamespace(id=12345),
         message=SimpleNamespace(
             reply_text=AsyncMock(side_effect=lambda t: replies.append(t)),
+            chat_id=12345,
         ),
     )
     context = SimpleNamespace(args=[], bot=None)
@@ -202,6 +204,7 @@ async def test_approvals_cancel_resolves_via_gatekeeper(monkeypatch):
         effective_chat=SimpleNamespace(id=12345),
         message=SimpleNamespace(
             reply_text=AsyncMock(side_effect=lambda t: replies.append(t)),
+            chat_id=12345,
         ),
     )
     context = SimpleNamespace(args=["cancel", str(aid)], bot=None)
@@ -237,6 +240,7 @@ async def test_approvals_cancel_not_found(monkeypatch):
         effective_chat=SimpleNamespace(id=12345),
         message=SimpleNamespace(
             reply_text=AsyncMock(side_effect=lambda t: replies.append(t)),
+            chat_id=12345,
         ),
     )
     context = SimpleNamespace(args=["cancel", "99999"], bot=None)

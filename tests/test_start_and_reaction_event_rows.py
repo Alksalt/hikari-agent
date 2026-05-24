@@ -104,10 +104,10 @@ async def test_cmd_start_writes_compact_event_row(monkeypatch):
         pass
     monkeypatch.setattr(telegram_bridge, "_send_with_choreography", fake_send)
 
-    # Stub _drain_photo_outbox
-    async def fake_drain(bot, chat_id):
-        pass
-    monkeypatch.setattr(telegram_bridge, "_drain_photo_outbox", fake_drain)
+    # Stub _drain_media_outbox
+    async def fake_drain(bot, chat_id, **kwargs):
+        return {}
+    monkeypatch.setattr(telegram_bridge, "_drain_media_outbox", fake_drain)
 
     update, message = _make_start_update()
     ctx = _ctx_with_bot()
@@ -138,9 +138,9 @@ async def test_cmd_start_does_not_write_instruction_text_as_row(monkeypatch):
         pass
     monkeypatch.setattr(telegram_bridge, "_send_with_choreography", fake_send)
 
-    async def fake_drain(bot, chat_id):
-        pass
-    monkeypatch.setattr(telegram_bridge, "_drain_photo_outbox", fake_drain)
+    async def fake_drain(bot, chat_id, **kwargs):
+        return {}
+    monkeypatch.setattr(telegram_bridge, "_drain_media_outbox", fake_drain)
 
     update, message = _make_start_update()
     ctx = _ctx_with_bot()

@@ -113,7 +113,7 @@ def _format_working_memory(k: int | None = None) -> str:
         k = int(cfg.get("working_memory.last_k_turns", 6))
     snippet_chars = int(cfg.get("working_memory.snippet_chars", 400))
     try:
-        rows = db.recent_messages(limit=k * 2)
+        rows = db.recent_messages(limit=k * 2, exclude_ephemeral=True)
     except Exception:
         logger.exception("_format_working_memory: recent_messages failed")
         return ""

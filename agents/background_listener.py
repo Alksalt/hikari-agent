@@ -21,6 +21,7 @@ from tools.dispatch import DISPATCH_EVENTS
 
 from . import config as cfg
 from . import post_filter
+from .messaging import send_ephemeral_ack
 from .post_filter import filter_outgoing
 
 if TYPE_CHECKING:
@@ -166,7 +167,7 @@ async def _safe_send(bot: Bot, chat_id: int, text: str) -> None:
             to_send = await post_filter.rewrite_or_fallback(
                 text, filtered, mood=None, where="listener",
             )
-        await bot.send_message(chat_id=chat_id, text=to_send)
+        await send_ephemeral_ack(bot, chat_id, to_send, reason="listener")
     except Exception:  # noqa: BLE001
         logger.exception("listener: send_message failed for chat %s", chat_id)
 

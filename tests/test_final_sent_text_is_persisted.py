@@ -54,7 +54,7 @@ def _noop_handoff():
     pass
 
 
-def _noop_postsend():
+def _noop_postsend(sent_text: str = "") -> None:
     pass
 
 

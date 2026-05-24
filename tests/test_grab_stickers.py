@@ -40,6 +40,7 @@ def _isolated(tmp_path: Path, monkeypatch):
 def _owner_msg(text: str | None = None, sticker_id: str | None = None):
     msg = SimpleNamespace(
         reply_text=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+        chat_id=12345,
         text=text,
         sticker=(SimpleNamespace(file_id=sticker_id) if sticker_id else None),
     )
@@ -48,7 +49,10 @@ def _owner_msg(text: str | None = None, sticker_id: str | None = None):
 
 
 def _ctx(args: list[str] | None = None):
-    return SimpleNamespace(args=args or [])
+    return SimpleNamespace(
+        args=args or [],
+        bot=AsyncMock(send_message=AsyncMock(return_value=SimpleNamespace(message_id=1))),
+    )
 
 
 @pytest.mark.asyncio

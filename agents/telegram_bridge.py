@@ -57,6 +57,7 @@ from .bridge_ux import (
     should_false_start,
 )
 from .log_scrub import install_root_filter
+from .messaging import send_ephemeral_ack
 from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
 from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_user_turn
@@ -67,6 +68,9 @@ logger = logging.getLogger(__name__)
 _BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
 
 USER_PHOTO_DIR = REPO_ROOT / "data" / "user_photos"
+DOCUMENT_OUTBOX = Path(
+    os.environ.get("HIKARI_DOCUMENT_OUTBOX") or REPO_ROOT / "data" / "document_outbox"
+)
 
 
 def _user_voice_dir() -> Path:
@@ -194,57 +198,175 @@ def _reconcile_photo_outbox_orphans() -> None:
             logger.debug("_reconcile_photo_outbox_orphans: insert failed for %s", path.name)
 
 
-async def _drain_photo_outbox(bot, chat_id: int) -> int:
-    """Send pending photo media_outbox rows. Returns count sent.
+_DRAIN_KINDS_DEFAULT: tuple[str, ...] = ("text", "sticker", "document", "photo")
+_DRAIN_RETRY_LIMITS: dict[str, int] = {
+    "photo": 5, "text": 3, "sticker": 3, "document": 2,
+}
 
-    Strategy: query media_outbox_pending(kind='photo'), send each file directly
-    via bot.send_photo, then mark_sent + unlink. The photo file at payload['path']
-    is the artifact; the DB row is the durable queue entry.
-    """
-    rows = db.media_outbox_pending(kind="photo")
-    sent = 0
-    for row in rows:
-        import json as _json  # noqa: PLC0415
-        try:
-            payload = _json.loads(row["payload_json"])
-        except (ValueError, KeyError):
-            logger.warning("_drain_photo_outbox: bad payload_json on row %s", row["id"])
-            db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
-            continue
-        path_str = payload.get("path")
-        if not path_str:
-            db.media_outbox_mark_aborted(row["id"], "missing_path")
-            continue
-        path = __import__("pathlib").Path(path_str)
-        if path.is_symlink() or not path.is_file():
-            db.media_outbox_mark_aborted(row["id"], "not_a_regular_file")
-            continue
-        try:
-            real = path.resolve(strict=True)
-            real.relative_to(PHOTO_OUTBOX.resolve(strict=True))
-        except (OSError, ValueError):
-            db.media_outbox_mark_aborted(row["id"], "out_of_tree")
-            continue
-        caption = payload.get("caption") or ""
-        try:
-            with open(real, "rb") as photo_fh:
-                tg_msg = await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo_fh,
-                    caption=caption or None,
-                )
-            tg_msg_id = getattr(tg_msg, "message_id", None)
-            db.media_outbox_mark_sent(row["id"], tg_msg_id)
-            sent += 1
-        except Exception:
-            logger.exception("_drain_photo_outbox: failed to send photo row %s", row["id"])
-            db.media_outbox_mark_failed(row["id"], "send_photo raised")
-            continue
+
+async def _send_outbox_photo(bot, chat_id: int, row: dict) -> int | None:  # noqa: HIKARI001
+    """Send a single photo outbox row. Returns tg_msg_id or None on failure."""
+    import json as _json  # noqa: PLC0415
+    try:
+        payload = _json.loads(row["payload_json"])
+    except (ValueError, KeyError):
+        logger.warning("_drain_media_outbox: bad payload_json on photo row %s", row["id"])
+        db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+        return None
+    path_str = payload.get("path")
+    if not path_str:
+        db.media_outbox_mark_aborted(row["id"], "missing_path")
+        return None
+    path = Path(path_str)
+    if path.is_symlink() or not path.is_file():
+        db.media_outbox_mark_aborted(row["id"], "not_a_regular_file")
+        return None
+    try:
+        real = path.resolve(strict=True)
+        real.relative_to(PHOTO_OUTBOX.resolve(strict=True))
+    except (OSError, ValueError):
+        db.media_outbox_mark_aborted(row["id"], "out_of_tree")
+        return None
+    caption = payload.get("caption") or ""
+    try:
+        with open(real, "rb") as photo_fh:
+            tg_msg = await bot.send_photo(  # noqa: HIKARI001
+                chat_id=chat_id,
+                photo=photo_fh,
+                caption=caption or None,
+            )
+        tg_msg_id = getattr(tg_msg, "message_id", None)
+        db.media_outbox_mark_sent(row["id"], tg_msg_id)
         try:
             path.unlink()
         except OSError:
             pass
-    return sent
+        return tg_msg_id
+    except Exception:
+        logger.exception("_drain_media_outbox: failed to send photo row %s", row["id"])
+        db.media_outbox_mark_failed(row["id"], "send_photo raised", max_attempts=5)
+        return None
+
+
+async def _send_outbox_text(bot, chat_id: int, row: dict) -> int | None:  # noqa: HIKARI001
+    """Send a single text outbox row. Returns tg_msg_id or None on failure."""
+    import json as _json  # noqa: PLC0415
+    try:
+        payload = _json.loads(row["payload_json"])
+    except (ValueError, KeyError):
+        logger.warning("_drain_media_outbox: bad payload_json on text row %s", row["id"])
+        db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+        return None
+    text = payload.get("text", "")
+    if not text:
+        db.media_outbox_mark_aborted(row["id"], "empty_text")
+        return None
+    try:
+        tg_msg = await bot.send_message(chat_id=chat_id, text=text)  # noqa: HIKARI001
+        tg_msg_id = getattr(tg_msg, "message_id", None)
+        db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        return tg_msg_id
+    except Exception:
+        logger.exception("_drain_media_outbox: failed to send text row %s", row["id"])
+        db.media_outbox_mark_failed(row["id"], "send_message raised", max_attempts=3)
+        return None
+
+
+async def _send_outbox_sticker(bot, chat_id: int, row: dict) -> int | None:  # noqa: HIKARI001
+    """Send a single sticker outbox row. Returns tg_msg_id or None on failure."""
+    import json as _json  # noqa: PLC0415
+    try:
+        payload = _json.loads(row["payload_json"])
+    except (ValueError, KeyError):
+        logger.warning("_drain_media_outbox: bad payload_json on sticker row %s", row["id"])
+        db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+        return None
+    file_id = payload.get("file_id", "")
+    if not file_id:
+        db.media_outbox_mark_aborted(row["id"], "empty_file_id")
+        return None
+    try:
+        tg_msg = await bot.send_sticker(chat_id=chat_id, sticker=file_id)  # noqa: HIKARI001
+        tg_msg_id = getattr(tg_msg, "message_id", None)
+        db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        return tg_msg_id
+    except Exception:
+        logger.exception("_drain_media_outbox: failed to send sticker row %s", row["id"])
+        db.media_outbox_mark_failed(row["id"], "send_sticker raised", max_attempts=3)
+        return None
+
+
+async def _send_outbox_document(bot, chat_id: int, row: dict) -> int | None:  # noqa: HIKARI001
+    """Send a single document outbox row. Returns tg_msg_id or None on failure."""
+    import json as _json  # noqa: PLC0415
+    try:
+        payload = _json.loads(row["payload_json"])
+    except (ValueError, KeyError):
+        logger.warning("_drain_media_outbox: bad payload_json on document row %s", row["id"])
+        db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+        return None
+    path_str = payload.get("path", "")
+    if not path_str:
+        db.media_outbox_mark_aborted(row["id"], "missing_path")
+        return None
+    path = Path(path_str)
+    if path.is_symlink() or not path.is_file():
+        db.media_outbox_mark_aborted(row["id"], "not_a_regular_file")
+        return None
+    try:
+        real = path.resolve(strict=True)
+        DOCUMENT_OUTBOX.mkdir(parents=True, exist_ok=True)
+        real.relative_to(DOCUMENT_OUTBOX.resolve())
+    except (OSError, ValueError):
+        db.media_outbox_mark_aborted(row["id"], "out_of_tree")
+        return None
+    caption = payload.get("caption") or ""
+    try:
+        with open(real, "rb") as doc_fh:
+            tg_msg = await bot.send_document(  # noqa: HIKARI001
+                chat_id=chat_id,
+                document=doc_fh,
+                caption=caption or None,
+            )
+        tg_msg_id = getattr(tg_msg, "message_id", None)
+        db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        return tg_msg_id
+    except Exception:
+        logger.exception("_drain_media_outbox: failed to send document row %s", row["id"])
+        db.media_outbox_mark_failed(row["id"], "send_document raised", max_attempts=2)
+        return None
+
+
+_OUTBOX_DISPATCHERS = {
+    "photo": _send_outbox_photo,
+    "text": _send_outbox_text,
+    "sticker": _send_outbox_sticker,
+    "document": _send_outbox_document,
+}
+
+
+async def _drain_media_outbox(
+    bot, chat_id: int, *, kinds: tuple[str, ...] = _DRAIN_KINDS_DEFAULT,
+) -> dict[str, int]:
+    """Drain pending media_outbox rows for each kind. Returns {kind: sent_count}."""
+    counts: dict[str, int] = {k: 0 for k in kinds}
+    for kind in kinds:
+        dispatcher = _OUTBOX_DISPATCHERS.get(kind)
+        if dispatcher is None:
+            logger.warning("_drain_media_outbox: no dispatcher for kind %r", kind)
+            continue
+        rows = db.media_outbox_pending(kind=kind)
+        for row in rows:
+            tg_msg_id = await dispatcher(bot, chat_id, row)
+            if tg_msg_id is not None:
+                counts[kind] += 1
+    return counts
+
+
+async def _drain_photo_outbox(bot, chat_id: int) -> int:
+    """Legacy alias — drains only photo rows. Returns count sent."""
+    result = await _drain_media_outbox(bot, chat_id, kinds=("photo",))
+    return result["photo"]
 
 
 async def _send_with_choreography(
@@ -346,9 +468,10 @@ async def _send_with_choreography(
         logger.exception("write_handoff failed (non-fatal)")
 
     # Step 5: commit observation/noticing surfaced markers only now that the
-    # reply is in front of the user.
+    # reply is in front of the user. Pass the actual sent text so only IDs
+    # whose content appears in the reply are marked surfaced; others re-stash.
     try:
-        postsend_mod.mark_pending_surfaced()
+        postsend_mod.mark_pending_surfaced(text_to_send)
     except Exception:
         logger.exception("postsend.mark_pending_surfaced failed (non-fatal)")
 
@@ -470,7 +593,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         db.append_thought(
             f"refused — user was rude. matched={matched!r}. sent={refusal!r}"
         )
-        await message.reply_text(refusal)
+        await send_ephemeral_ack(
+            context.bot, chat.id, refusal, reason="refusal", reply_to=message,
+        )
         return
 
     # Emotional half-life — scan inbound for heavy-moment signals. Sets
@@ -487,21 +612,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.exception("reactions: maybe_react failed (non-fatal)")
 
     # Belief-frame guard — if the user is asserting a factual claim as their
-    # belief ("i think X", "i'm pretty sure X"), prepend an adversarial
-    # instruction so the recall subagent looks for contradictions instead of
-    # confirmations. Mitigates Stanford-AI-Index 2026 sycophancy-under-belief.
+    # belief ("i think X", "i'm pretty sure X"), build an adversarial context
+    # suffix so the recall subagent looks for contradictions instead of
+    # confirmations. The RAW user text is persisted; the belief context is only
+    # passed to the SDK via respond()'s internal_belief_context kwarg.
     user_text = message.text
+    internal_belief_context: str | None = None
     try:
         bm_hit, bm_fragment = belief_mod.is_belief_assertion(user_text)
     except Exception:
         logger.exception("belief_frame scan failed (non-fatal)")
         bm_hit, bm_fragment = False, None
     if bm_hit and bm_fragment:
-        user_text = (
-            belief_mod.adversarial_prompt_suffix(bm_fragment) + "\n\n" + user_text
-        )
+        internal_belief_context = belief_mod.adversarial_prompt_suffix(bm_fragment)
         db.append_thought(
-            f"belief-frame detected: {bm_fragment!r}. recall adversarial mode primed."
+            f"belief-frame detected: {bm_fragment!r}."
         )
 
     # Phase 8: start the typing heartbeat IMMEDIATELY so the user sees the
@@ -509,10 +634,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # already in hand.
     async with TypingHeartbeat(context.bot, chat.id) as hb:
         try:
-            reply = await respond(user_text)
+            reply = await respond(
+                user_text, internal_belief_context=internal_belief_context
+            )
         except Exception:
             logger.exception("agent failed for: %r", message.text[:80])
-            await message.reply_text("(brain hit a wall. try again.)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(brain hit a wall. try again.)",
+                reason="runtime_fallback", reply_to=message,
+            )
             return
 
         elapsed = hb.elapsed
@@ -520,7 +650,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _send_with_choreography(
             context.bot, message, reply, elapsed_real=elapsed,
         )
-    n = await _drain_photo_outbox(context.bot, chat.id)
+    drain_counts = await _drain_media_outbox(context.bot, chat.id)
+    n = drain_counts.get("photo", 0)
     if n and not reply:
         logger.info("sent %d photo(s) with no accompanying text", n)
 
@@ -551,7 +682,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await f.download_to_drive(custom_path=str(abs_path))
         except Exception:
             logger.exception("failed to download user photo")
-            await message.reply_text("(couldn't download that. try again?)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(couldn't download that. try again?)",
+                reason="photo_error", reply_to=message,
+            )
             return
 
         user_caption = (message.caption or "").strip()
@@ -566,7 +700,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 db.append_thought(
                     f"refused — rude photo caption. matched={matched!r}. sent={refusal!r}"
                 )
-                await message.reply_text(refusal)
+                await send_ephemeral_ack(
+                    context.bot, chat.id, refusal,
+                    reason="photo_refusal", reply_to=message,
+                )
                 return
             try:
                 affect_mod.scan_inbound(user_caption)
@@ -615,7 +752,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound photo")
-            await message.reply_text("(brain hit a wall on that photo.)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(brain hit a wall on that photo.)",
+                reason="photo_error", reply_to=message,
+            )
             return
         # Record an episode so we can callback later ("how's the plant?").
         try:
@@ -633,7 +773,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _send_with_choreography(
             context.bot, message, reply, elapsed_real=elapsed,
         )
-    await _drain_photo_outbox(context.bot, chat.id)
+    await _drain_media_outbox(context.bot, chat.id)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -662,7 +802,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await f.download_to_drive(custom_path=str(abs_path))
         except Exception:
             logger.exception("failed to download user voice note")
-            await message.reply_text("(couldn't download that. try again?)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(couldn't download that. try again?)",
+                reason="voice_error", reply_to=message,
+            )
             return
 
         duration_sec = float(getattr(message.voice, "duration", 0) or 0)
@@ -676,18 +819,27 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "voice note rejected: duration %.1fs > max %.1fs",
                 duration_sec, max_duration,
             )
-            await message.reply_text(graceful_reply)
+            await send_ephemeral_ack(
+                context.bot, chat.id, graceful_reply,
+                reason="voice_error", reply_to=message,
+            )
             return
 
         try:
             transcript = await voice_tool.transcribe_voice(abs_path)
         except voice_tool.VoiceTranscribeError as e:
             logger.info("voice transcription failed: %s", e)
-            await message.reply_text(graceful_reply)
+            await send_ephemeral_ack(
+                context.bot, chat.id, graceful_reply,
+                reason="voice_transcription_fail", reply_to=message,
+            )
             return
         except Exception:
             logger.exception("voice transcription crashed unexpectedly")
-            await message.reply_text(graceful_reply)
+            await send_ephemeral_ack(
+                context.bot, chat.id, graceful_reply,
+                reason="voice_transcription_fail", reply_to=message,
+            )
             return
 
         rude, matched = is_rude(transcript)
@@ -699,7 +851,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             db.append_thought(
                 f"refused — rude voice transcript. matched={matched!r}. sent={refusal!r}"
             )
-            await message.reply_text(refusal)
+            await send_ephemeral_ack(
+                context.bot, chat.id, refusal,
+                reason="voice_politeness_refusal", reply_to=message,
+            )
             return
 
         try:
@@ -730,7 +885,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound voice note")
-            await message.reply_text("(brain hit a wall on that one.)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(brain hit a wall on that one.)",
+                reason="runtime_fallback", reply_to=message,
+            )
             return
 
         try:
@@ -749,7 +907,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _send_with_choreography(
             context.bot, message, reply, elapsed_real=elapsed,
         )
-    await _drain_photo_outbox(context.bot, chat.id)
+    await _drain_media_outbox(context.bot, chat.id)
 
 
 _USER_LIVE_LOCATION_KEY = "user_live_location_state"
@@ -827,7 +985,9 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     ack_pool = cfg.get("location.ack_pool") or ["noted."]
     ack = _random.choice(ack_pool)
     try:
-        await message.reply_text(ack)
+        await send_ephemeral_ack(
+            context.bot, chat.id, ack, reason="location_ack", reply_to=message,
+        )
     except Exception:
         logger.exception("location ack send failed (non-fatal)")
 
@@ -1099,9 +1259,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     HARD_CAP = 32 * 1024 * 1024  # Anthropic Messages API inline cap
     if size > HARD_CAP:
-        await message.reply_text(
+        await send_ephemeral_ack(
+            context.bot, chat.id,
             f"({size // 1024 // 1024} MB is too big to look at right now — "
-            "split it or send a smaller version.)"
+            "split it or send a smaller version.)",
+            reason="document_refusal", reply_to=message,
         )
         return
 
@@ -1124,7 +1286,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await f.download_to_drive(custom_path=str(abs_path))
         except Exception:
             logger.exception("failed to download user document")
-            await message.reply_text("(couldn't download that. try again?)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(couldn't download that. try again?)",
+                reason="document_error", reply_to=message,
+            )
             return
 
         caption = (message.caption or "").strip()
@@ -1138,7 +1303,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 db.append_thought(
                     f"refused — rude doc caption. matched={matched!r}. sent={refusal!r}",
                 )
-                await message.reply_text(refusal)
+                await send_ephemeral_ack(
+                    context.bot, chat.id, refusal,
+                    reason="document_refusal", reply_to=message,
+                )
                 return
             try:
                 affect_mod.scan_inbound(caption)
@@ -1151,7 +1319,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except OSError:
             magic_head = b""
         if mime == "application/pdf" and magic_head.startswith(b"MZ"):
-            await message.reply_text("(that's not a pdf. refusing.)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(that's not a pdf. refusing.)",
+                reason="document_pdf_reject", reply_to=message,
+            )
             return
 
         block, kind_note = _build_ingest_block(abs_path, mime, fname)
@@ -1189,14 +1360,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply = await run_user_turn_blocks(prompt_blocks)
         except Exception:
             logger.exception("agent failed on inbound document")
-            await message.reply_text("(brain hit a wall on that file.)")
+            await send_ephemeral_ack(
+                context.bot, chat.id, "(brain hit a wall on that file.)",
+                reason="runtime_fallback", reply_to=message,
+            )
             return
 
         elapsed = hb.elapsed
 
     if reply:
         await _send_with_choreography(context.bot, message, reply, elapsed_real=elapsed)
-    await _drain_photo_outbox(context.bot, chat.id)
+    await _drain_media_outbox(context.bot, chat.id)
 
 
 # ---------- commands ----------
@@ -1226,11 +1400,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception:
         logger.exception("agent failed on /start")
-        await message.reply_text("(brain hit a wall. try again.)")
+        await send_ephemeral_ack(
+            context.bot, chat.id, "(brain hit a wall. try again.)",
+            reason="start_error", reply_to=message,
+        )
         return
     if reply:
         await _send_with_choreography(context.bot, message, reply)
-    await _drain_photo_outbox(context.bot, chat.id)
+    await _drain_media_outbox(context.bot, chat.id)
 
 
 async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1257,7 +1434,11 @@ async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         db.proactive_event_record_silence_window(chat_id=chat_id)
     except Exception:
         logger.exception("proactive_event_record_silence_window failed (non-fatal)")
-    await message.reply_text(f"ok. quiet for {minutes} minutes. don't make me regret it.")
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
+        f"ok. quiet for {minutes} minutes. don't make me regret it.",
+        reason="silence_ack", reply_to=message,
+    )
 
 
 async def cmd_unsilence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1266,7 +1447,10 @@ async def cmd_unsilence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user or not message or user.id != owner_id():
         return
     db.runtime_set("silence_until", None)
-    await message.reply_text("fine. you can hear me again.")
+    await send_ephemeral_ack(
+        context.bot, message.chat_id, "fine. you can hear me again.",
+        reason="silence_ack", reply_to=message,
+    )
 
 
 _STICKER_CAPTURE_MODE_KEY = "sticker_capture_mode"
@@ -1305,17 +1489,21 @@ async def cmd_grab_stickers(
     if arg == "start":
         db.runtime_set(_STICKER_CAPTURE_MODE_KEY, "1")
         # Don't clobber an existing partial pool — let user append across sessions.
-        await message.reply_text(
+        await send_ephemeral_ack(
+            context.bot, message.chat_id,
             f"sticker capture ON. send me stickers; i'll log them. "
-            f"({len(pool)} already queued.) /grab_stickers stop to finish."
+            f"({len(pool)} already queued.) /grab_stickers stop to finish.",
+            reason="stickers_cmd", reply_to=message, silent=True,
         )
         return
 
     if arg in ("stop", "done", "finish"):
         db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
         if not pool:
-            await message.reply_text(
-                "captured nothing. send stickers while capture is on first."
+            await send_ephemeral_ack(
+                context.bot, message.chat_id,
+                "captured nothing. send stickers while capture is on first.",
+                reason="stickers_cmd", reply_to=message, silent=True,
             )
             return
         snippet_lines = ["stickers:", "  pool:"]
@@ -1326,10 +1514,12 @@ async def cmd_grab_stickers(
             fid_safe = str(fid).replace("\\", "\\\\").replace('"', '\\"')
             snippet_lines.append(f'    - "{fid_safe}"')
         snippet = "\n".join(snippet_lines)
-        await message.reply_text(
+        await send_ephemeral_ack(
+            context.bot, message.chat_id,
             f"captured {len(pool)} sticker(s). paste this into "
             f"config/engagement.yaml (replace the existing `stickers.pool:`):\n\n"
-            f"```\n{snippet}\n```"
+            f"```\n{snippet}\n```",
+            reason="stickers_cmd", reply_to=message, silent=True,
         )
         # Leave the pool intact in case they want to capture more later.
         return
@@ -1337,14 +1527,19 @@ async def cmd_grab_stickers(
     if arg == "reset":
         db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
         db.runtime_set(_STICKER_CAPTURE_POOL_KEY, None)
-        await message.reply_text("sticker capture cleared.")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, "sticker capture cleared.",
+            reason="stickers_cmd", reply_to=message, silent=True,
+        )
         return
 
     # No arg → status.
     state = "ON" if on else "off"
-    await message.reply_text(
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
         f"sticker capture is {state}. {len(pool)} file_id(s) queued.\n"
-        f"/grab_stickers start | stop | reset"
+        f"/grab_stickers start | stop | reset",
+        reason="stickers_cmd", reply_to=message, silent=True,
     )
 
 
@@ -1376,11 +1571,19 @@ async def handle_inbound_sticker(
 
     file_id = message.sticker.file_id
     if file_id in pool:
-        await message.reply_text(f"already have that one ({len(pool)} total).")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id,
+            f"already have that one ({len(pool)} total).",
+            reason="stickers_cmd", reply_to=message, silent=True,
+        )
         return
     pool.append(file_id)
     db.runtime_set(_STICKER_CAPTURE_POOL_KEY, json.dumps(pool))
-    await message.reply_text(f"captured ({len(pool)}). send more or /grab_stickers stop.")
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
+        f"captured ({len(pool)}). send more or /grab_stickers stop.",
+        reason="stickers_cmd", reply_to=message, silent=True,
+    )
 
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1406,7 +1609,10 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             lines.append(
                 f"  {r['task_id'][:8]} [{r['status']}] ${cost:.2f} — {r['prompt'][:50]}"
             )
-    await message.reply_text("\n".join(lines))
+    await send_ephemeral_ack(
+        context.bot, message.chat_id, "\n".join(lines),
+        reason="tasks", reply_to=message,
+    )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1419,24 +1625,35 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not user or not message or user.id != owner_id():
         return
     if not context.args:
-        await message.reply_text("usage: /cancel <task_id_prefix>")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, "usage: /cancel <task_id_prefix>",
+            reason="cancel", reply_to=message,
+        )
         return
     prefix = context.args[0].strip().lower()
     running = db.bg_tasks_running()
     matches = [r for r in running if r["task_id"].lower().startswith(prefix)]
     if not matches:
-        await message.reply_text(f"no running task starting with {prefix!r}.")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, f"no running task starting with {prefix!r}.",
+            reason="cancel", reply_to=message,
+        )
         return
     if len(matches) > 1:
-        await message.reply_text(f"ambiguous; {len(matches)} match. be more specific.")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, f"ambiguous; {len(matches)} match. be more specific.",
+            reason="cancel", reply_to=message,
+        )
         return
     target = matches[0]
     db.bg_task_update(target["task_id"], status="cancelled",
                       completed_at=db._now(),
                       result_summary="cancelled by user")
-    await message.reply_text(
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
         f"marked {target['task_id'][:8]} cancelled. "
-        f"(it'll finish its current turn before stopping for real.)"
+        f"(it'll finish its current turn before stopping for real.)",
+        reason="cancel", reply_to=message,
     )
 
 
@@ -1448,7 +1665,10 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     query = " ".join(context.args or []).strip()
     if not query:
-        await message.reply_text("usage: /memory_diff <query>")
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, "usage: /memory_diff <query>",
+            reason="memory_cmd", reply_to=message,
+        )
         return
 
     from storage.graph import search as graph_search  # noqa: PLC0415
@@ -1488,7 +1708,10 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         lines.append(f"- {str(h)[:120]}")
     if not graph_hits:
         lines.append("(none)")
-    await message.reply_text("\n".join(lines))
+    await send_ephemeral_ack(
+        context.bot, message.chat_id, "\n".join(lines),
+        reason="memory_cmd", reply_to=message,
+    )
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1513,9 +1736,15 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     args = context.args or []
     sub = args[0].lower() if args else ""
 
+    async def _mem_ack(text: str, silent: bool = False) -> None:
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, text,
+            reason="memory_cmd", reply_to=message, silent=silent,
+        )
+
     # ---- /memory (no args) → usage ----
     if not sub:
-        await message.reply_text(
+        await _mem_ack(
             "/memory: recent [N] | search <q> | fact <id> | forget <id> | "
             "correct <id> <new> | tasks | session <q> | why <id> | debug <q>"
         )
@@ -1529,45 +1758,44 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             n = 10
         facts = db.active_facts(limit=max(1, min(50, n)))
         if not facts:
-            await message.reply_text("no facts yet.")
+            await _mem_ack("no facts yet.")
             return
         lines = [f"recent {len(facts)} facts:"]
         for f in facts:
             obj_short = f['object'][:80]
             lines.append(f"  #{f['id']}: {f['predicate']} — {obj_short}  [{f['valid_from'][:10]}]")
-        text = "\n".join(lines)
-        await message.reply_text(text[:3900])
+        await _mem_ack("\n".join(lines)[:3900])
         return
 
     # ---- search ----
     if sub == "search":
         q = " ".join(args[1:]).strip()
         if not q:
-            await message.reply_text("usage: /memory search <query>")
+            await _mem_ack("usage: /memory search <query>")
             return
         hits = db.facts_text_search(q, limit=10)
         if not hits:
-            await message.reply_text(f"no fact matches for {q!r}.")
+            await _mem_ack(f"no fact matches for {q!r}.")
             return
         lines = [f"{len(hits)} matches for {q!r}:"]
         for f in hits:
             lines.append(f"  #{f['id']}: {f['predicate']} — {f['object'][:80]}")
-        await message.reply_text("\n".join(lines)[:3900])
+        await _mem_ack("\n".join(lines)[:3900])
         return
 
     # ---- fact ----
     if sub == "fact":
         if len(args) < 2:
-            await message.reply_text("usage: /memory fact <id>")
+            await _mem_ack("usage: /memory fact <id>")
             return
         try:
             fid = int(args[1])
         except ValueError:
-            await message.reply_text("id must be an integer.")
+            await _mem_ack("id must be an integer.")
             return
         fact = db.fact_by_id(fid)
         if not fact:
-            await message.reply_text(f"fact {fid}: not found.")
+            await _mem_ack(f"fact {fid}: not found.")
             return
         prov = db.fact_provenance(fid)
         with db._conn() as c:
@@ -1596,45 +1824,45 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if entity_rows:
             ent_str = ", ".join(f"{r['kind']}:{r['canonical_name']}" for r in entity_rows)
             lines.append(f"  entities: {ent_str}")
-        await message.reply_text("\n".join(lines)[:3900])
+        await _mem_ack("\n".join(lines)[:3900])
         return
 
     # ---- forget ----
     if sub == "forget":
         if len(args) < 2:
-            await message.reply_text("usage: /memory forget <id>")
+            await _mem_ack("usage: /memory forget <id>")
             return
         try:
             fid = int(args[1])
         except ValueError:
-            await message.reply_text("id must be an integer.")
+            await _mem_ack("id must be an integer.")
             return
         from tools.memory.forget_fact import forget_fact
         ok = forget_fact(fid)
         if ok:
-            await message.reply_text(f"forgot {fid}.")
+            await _mem_ack(f"forgot {fid}.")
         else:
-            await message.reply_text(f"fact {fid}: not found.")
+            await _mem_ack(f"fact {fid}: not found.")
         return
 
     # ---- correct ----
     if sub == "correct":
         if len(args) < 3:
-            await message.reply_text("usage: /memory correct <id> <new object>")
+            await _mem_ack("usage: /memory correct <id> <new object>")
             return
         try:
             fid = int(args[1])
         except ValueError:
-            await message.reply_text("id must be an integer.")
+            await _mem_ack("id must be an integer.")
             return
         new_obj = " ".join(args[2:]).strip()
         from tools.memory.correct_fact import correct_fact
         try:
             new_id = correct_fact(fid, new_obj)
         except ValueError as exc:
-            await message.reply_text(str(exc))
+            await _mem_ack(str(exc))
             return
-        await message.reply_text(f"corrected {fid} → new fact #{new_id}.")
+        await _mem_ack(f"corrected {fid} → new fact #{new_id}.")
         return
 
     # ---- tasks ----
@@ -1646,32 +1874,32 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if sub == "session":
         q = " ".join(args[1:]).strip()
         if not q:
-            await message.reply_text("usage: /memory session <query>")
+            await _mem_ack("usage: /memory session <query>")
             return
         rows = db.messages_fts_search(q, limit=10)
         if not rows:
-            await message.reply_text(f"no message matches for {q!r}.")
+            await _mem_ack(f"no message matches for {q!r}.")
             return
         lines = [f"{len(rows)} message matches for {q!r}:"]
         for r in rows:
             snippet = (r["content"] or "")[:100].replace("\n", " ")
             lines.append(f"  [{r['role']} #{r['id']} @ {r['ts'][:19]}] {snippet}")
-        await message.reply_text("\n".join(lines)[:3900])
+        await _mem_ack("\n".join(lines)[:3900])
         return
 
     # ---- why ----
     if sub == "why":
         if len(args) < 2:
-            await message.reply_text("usage: /memory why <id>")
+            await _mem_ack("usage: /memory why <id>")
             return
         try:
             fid = int(args[1])
         except ValueError:
-            await message.reply_text("id must be an integer.")
+            await _mem_ack("id must be an integer.")
             return
         prov = db.fact_provenance(fid)
         if not prov:
-            await message.reply_text(f"fact {fid}: not found.")
+            await _mem_ack(f"fact {fid}: not found.")
             return
         lines = [f"provenance for fact #{fid}:"]
         lines.append(f"  attribution: {prov.get('attribution') or 'unknown'}")
@@ -1685,7 +1913,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             if prov.get("content"):
                 snippet = (prov["content"] or "")[:200].replace("\n", " ")
                 lines.append(f"  text:        {snippet}")
-        await message.reply_text("\n".join(lines)[:3900])
+        await _mem_ack("\n".join(lines)[:3900])
         return
 
     # ---- debug ----
@@ -1696,7 +1924,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # ---- unknown ----
-    await message.reply_text(f"unknown subcommand: {sub!r}.")
+    await _mem_ack(f"unknown subcommand: {sub!r}.")
 
 
 async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1713,11 +1941,17 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     arg = " ".join(context.args).strip() if context.args else ""
 
+    async def _appr_ack(text: str) -> None:
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, text,
+            reason="approvals_cmd", reply_to=message,
+        )
+
     if arg.startswith("cancel "):
         try:
             row_id = int(arg.split(maxsplit=1)[1])
         except (IndexError, ValueError):
-            await message.reply_text("usage: /approvals cancel <id>")
+            await _appr_ack("usage: /approvals cancel <id>")
             return
         from tools.gatekeeper import GATEKEEPER
         # Look up the tool_use_id for this row so we can resolve via the
@@ -1731,13 +1965,13 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if _row:
             tool_use_id_for_cancel = str(_row["tool_use_id"] or "")
         if not tool_use_id_for_cancel:
-            await message.reply_text(f"approval {row_id}: not found or already resolved.")
+            await _appr_ack(f"approval {row_id}: not found or already resolved.")
             return
         resolved = await GATEKEEPER.resolve(tool_use_id_for_cancel, "admin_cancel")
         if resolved:
-            await message.reply_text(f"approval {row_id}: cancelled.")
+            await _appr_ack(f"approval {row_id}: cancelled.")
         else:
-            await message.reply_text(f"approval {row_id}: not found or already resolved.")
+            await _appr_ack(f"approval {row_id}: not found or already resolved.")
         return
 
     chat_id = update.effective_chat.id
@@ -1750,7 +1984,7 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             (chat_id,),
         ).fetchall()
     if not rows:
-        await message.reply_text("nothing pending.")
+        await _appr_ack("nothing pending.")
         return
     lines = [f"pending approvals ({len(rows)}):"]
     for r in rows:
@@ -1759,7 +1993,7 @@ async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines.append(f"     deadline: {r['deadline_iso']}")
     lines.append("")
     lines.append("CONFIRM-SEND <id> | REJECT <id> | /approvals cancel <id>")
-    await message.reply_text("\n".join(lines))
+    await _appr_ack("\n".join(lines))
 
 
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1781,9 +2015,11 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_today = float(db.runtime_get("cost_today") or 0.0)
     total = bg_cost + chat_today
     cap = budget.daily_cap()
-    await message.reply_text(
+    await send_ephemeral_ack(
+        context.bot, message.chat_id,
         f"today: ~${total:.2f} (chat ${chat_today:.2f} + {bg_n} dispatched ${bg_cost:.2f}). "
-        f"cap is ${cap:.2f}."
+        f"cap is ${cap:.2f}.",
+        reason="cost_cmd", reply_to=message,
     )
 
 
@@ -1799,6 +2035,12 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     args = context.args or []
 
+    async def _pro_ack(text: str) -> None:
+        await send_ephemeral_ack(
+            context.bot, message.chat_id, text,
+            reason="proactive_cmd", reply_to=message,
+        )
+
     # Phase 6A: new subcommands — recent, why, snooze
     if args and args[0] == "recent":
         days = 7
@@ -1808,30 +2050,30 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             except ValueError:
                 pass
         text = cockpit.format_proactive_recent(days=days)
-        await message.reply_text(text)
+        await _pro_ack(text)
         return
 
     if args and args[0] == "why":
         if len(args) < 2:
-            await message.reply_text("usage: /proactive why <event_id>")
+            await _pro_ack("usage: /proactive why <event_id>")
             return
         try:
             event_id = int(args[1])
         except ValueError:
-            await message.reply_text(f"invalid id: {args[1]}")
+            await _pro_ack(f"invalid id: {args[1]}")
             return
         text = cockpit.format_proactive_why(event_id)
-        await message.reply_text(text)
+        await _pro_ack(text)
         return
 
     if args and args[0] == "snooze":
         if len(args) < 3:
-            await message.reply_text("usage: /proactive snooze <source> <duration>  e.g. 2h")
+            await _pro_ack("usage: /proactive snooze <source> <duration>  e.g. 2h")
             return
         source = args[1]
         duration_str = args[2]
         text = cockpit.format_proactive_snooze(source, duration_str)
-        await message.reply_text(text)
+        await _pro_ack(text)
         return
 
     if not args or args[0] == "status":
@@ -1850,17 +2092,17 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             mark = "✓" if s in enabled else " "
             count = db.proactive_send_count_7d(s)
             lines.append(f"  [{mark}] {s}  (7d: {count})")
-        await message.reply_text("\n".join(lines))
+        await _pro_ack("\n".join(lines))
         return
 
     op = args[0]
     if op not in ("on", "off") or len(args) < 2:
-        await message.reply_text("usage: /proactive on|off <source> | /proactive status")
+        await _pro_ack("usage: /proactive on|off <source> | /proactive status")
         return
 
     source = args[1]
     if source not in ALL_PRODUCER_IDS:
-        await message.reply_text(f"unknown source: {source}")
+        await _pro_ack(f"unknown source: {source}")
         return
 
     raw_override = db.runtime_get("proactive_enabled_sources_override")
@@ -1879,7 +2121,7 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         enabled.discard(source)
 
     db.runtime_set("proactive_enabled_sources_override", _json.dumps(sorted(enabled)))
-    await message.reply_text(f"{op} {source}. now enabled: {sorted(enabled)}")
+    await _pro_ack(f"{op} {source}. now enabled: {sorted(enabled)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1892,7 +2134,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if not user or not message or user.id != owner_id():
         return
-    await message.reply_text(cockpit.format_help())
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, cockpit.format_help(),
+        reason="cockpit_cmd", reply_to=message,
+    )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1902,7 +2147,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not user or not message or user.id != owner_id():
         return
     text = await cockpit.format_status(context.application)
-    await message.reply_text(text)
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, text,
+        reason="cockpit_cmd", reply_to=message,
+    )
 
 
 async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1914,7 +2162,10 @@ async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     subcmd = args[0].lower() if args else "policy"
     rest = args[1:] if len(args) > 1 else []
-    await message.reply_text(cockpit.format_tools(subcmd, rest))
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, cockpit.format_tools(subcmd, rest),
+        reason="cockpit_cmd", reply_to=message,
+    )
 
 
 async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1926,7 +2177,10 @@ async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     subcmd = args[0].lower() if args else "recent"
     rest = args[1:] if len(args) > 1 else []
-    await message.reply_text(cockpit.format_audit(subcmd, rest))
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, cockpit.format_audit(subcmd, rest),
+        reason="cockpit_cmd", reply_to=message,
+    )
 
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1938,7 +2192,10 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     args = context.args or []
     subcmd = args[0].lower() if args else "list"
     rest = args[1:] if len(args) > 1 else []
-    await message.reply_text(cockpit.format_settings(subcmd, rest))
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, cockpit.format_settings(subcmd, rest),
+        reason="cockpit_cmd", reply_to=message,
+    )
 
 
 _REACTION_TURN_COOLDOWN_KEY = "reaction_turn_last_at"
@@ -2088,7 +2345,7 @@ async def _send_text_with_choreography(
     # Reaction turns inject the same observation/noticing block via the hook,
     # so commit the markers here too.
     try:
-        postsend_mod.mark_pending_surfaced()
+        postsend_mod.mark_pending_surfaced(text_to_send)
     except Exception:
         logger.exception(
             "reaction-turn: postsend.mark_pending_surfaced failed (non-fatal)",
@@ -2362,6 +2619,13 @@ def main() -> None:
 
         # 7A: reconcile any photo files written before 7A (one-shot, idempotent).
         _reconcile_photo_outbox_orphans()
+
+        # 9A: drain any pending media_outbox rows from before the last restart
+        # (text/sticker/document as well as photos).
+        try:
+            await _drain_media_outbox(application.bot, owner_id())
+        except Exception:
+            logger.exception("boot drain_media_outbox failed (non-fatal)")
 
         # 7A: flip stale proactive_events 'reserved' rows to 'aborted' before
         # the scheduler starts dispatching new events.

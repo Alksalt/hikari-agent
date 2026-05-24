@@ -30,8 +30,8 @@ async def test_run_user_turn_blocks_passes_blocks_to_sdk(monkeypatch):
     assert result == "ok"
     assert isinstance(captured["prompt"], list)
     assert captured["prompt"] == blocks
-    assert captured["log_session_id"] is False, (
-        "run_user_turn_blocks must call _invoke_sdk with log_session_id=False "
-        "so the ephemeral fallback never overwrites the persistent-live session "
-        "(Sprint 4 4A contract)."
+    assert captured["log_session_id"] is True, (
+        "run_user_turn_blocks must call _invoke_sdk with log_session_id=True "
+        "so the session_id from the content-block turn is stored for PDF/image "
+        "continuity."
     )

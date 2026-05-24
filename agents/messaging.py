@@ -26,6 +26,17 @@ Source = Literal[
     "event",
 ]
 
+EphemeralReason = Literal[
+    "refusal", "runtime_fallback",
+    "voice_error", "voice_transcription_fail", "voice_politeness_refusal",
+    "silence_ack", "listener",
+    "document_error", "document_refusal", "document_pdf_reject",
+    "photo_error", "photo_refusal",
+    "start_error", "cancel", "tasks",
+    "memory_cmd", "approvals_cmd", "stickers_cmd",
+    "location_ack", "proactive_cmd", "cockpit_cmd", "cost_cmd",
+]
+
 _MAX_TYPING_SLEEP = 2.5  # seconds
 
 
@@ -187,3 +198,45 @@ async def send_and_persist(
     _ = run_hooks
 
     return SendResult(final_text, tg_msg_id, True)
+
+
+async def send_ephemeral_ack(  # noqa: HIKARI001
+    bot,
+    chat_id: int,
+    text: str,
+    *,
+    reason: EphemeralReason,
+    reply_to=None,
+    silent: bool = False,
+) -> None:
+    """System-side ack/error/refusal/command-output send.
+
+    Writes to messages with source=f'ephemeral:{reason}'. Reflection,
+    handoff, drift_judge filter out ephemeral:* rows via their message queries.
+
+    silent=True: send but do NOT persist to messages (use for debug-tooling
+    acks like /grab_stickers status that would pollute lexicon/handoff).
+    """
+    if not text:
+        return
+    try:
+        if reply_to is not None:
+            tg_msg = await reply_to.reply_text(text)  # noqa: HIKARI001
+        else:
+            tg_msg = await bot.send_message(chat_id=chat_id, text=text)  # noqa: HIKARI001
+    except Exception:
+        logger.exception("send_ephemeral_ack: send failed (reason=%s)", reason)
+        return
+    if silent:
+        return
+    tg_msg_id = getattr(tg_msg, "message_id", None)
+    try:
+        from storage import db as _db
+        if tg_msg_id is not None:
+            _db.append_message_with_telegram_id(
+                "assistant", text, tg_msg_id, source=f"ephemeral:{reason}",
+            )
+        else:
+            _db.append_message("assistant", text, source=f"ephemeral:{reason}")
+    except Exception:
+        logger.exception("send_ephemeral_ack: persist failed (reason=%s)", reason)

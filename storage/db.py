@@ -1643,11 +1643,18 @@ def append_message_with_telegram_id(
     return cur.lastrowid
 
 
-def recent_messages(limit: int = 20) -> list[dict[str, Any]]:
+def recent_messages(limit: int = 20, *, exclude_ephemeral: bool = False) -> list[dict[str, Any]]:
     with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM messages ORDER BY ts DESC LIMIT ?", (limit,)
-        ).fetchall()
+        if exclude_ephemeral:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE source NOT LIKE 'ephemeral:%' "
+                "ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM messages ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
     return [dict(r) for r in reversed(rows)]
 
 
@@ -2228,6 +2235,24 @@ def noticings_unsurfaced(limit: int = 1) -> list[dict[str, Any]]:
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def observation_text(obs_id: int) -> str | None:
+    """Return the summary text for an observation row, or None if not found."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT summary FROM observations WHERE id = ?", (int(obs_id),)
+        ).fetchone()
+    return str(row["summary"]) if row and row["summary"] is not None else None
+
+
+def noticing_text(not_id: int) -> str | None:
+    """Return the summary text for a noticing row, or None if not found."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT summary FROM noticings WHERE id = ?", (int(not_id),)
+        ).fetchone()
+    return str(row["summary"]) if row and row["summary"] is not None else None
 
 
 def noticing_mark_surfaced(noticing_id: int) -> None:
@@ -4069,7 +4094,7 @@ def messages_fts_search(
     sql = (
         "SELECT m.id, m.role, m.content, m.ts "
         "FROM messages_fts f JOIN messages m ON m.id = f.rowid "
-        "WHERE messages_fts MATCH ?"
+        "WHERE messages_fts MATCH ? AND (m.source IS NULL OR m.source NOT LIKE 'ephemeral:%')"
     )
     params: list[Any] = [query]
     if since_iso:
@@ -4314,26 +4339,50 @@ def media_outbox_mark_sent(row_id: int, telegram_message_id: int | None = None) 
         )
 
 
-def media_outbox_mark_failed(row_id: int, error: str) -> None:
-    """Mark failed. For retried kinds (photo) keep the 5-attempt budget;
-    for non-retried kinds (text, sticker, document) flip terminal on first failure."""
+def media_outbox_mark_failed(
+    row_id: int, error: str, *, max_attempts: int | None = None
+) -> None:
+    """Mark failed. Increments attempts; flips to 'failed' when budget exhausted.
+
+    max_attempts: explicit retry budget. None → kind-based default (5 for photo,
+    1 for all others — matches pre-9A behavior).
+    """
     now = _now()
-    with _conn() as c:
-        c.execute(
-            "UPDATE media_outbox SET "
-            "attempts = attempts + 1, "
-            "last_error = ?, "
-            "processed_at = CASE "
-            "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN processed_at "
-            "  ELSE ? "
-            "END, "
-            "status = CASE "
-            "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN status "
-            "  ELSE 'failed' "
-            "END "
-            "WHERE id = ?",
-            (str(error)[:500], now, int(row_id)),
-        )
+    if max_attempts is not None:
+        limit = int(max_attempts)
+        with _conn() as c:
+            c.execute(
+                "UPDATE media_outbox SET "
+                "attempts = attempts + 1, "
+                "last_error = ?, "
+                "processed_at = CASE "
+                "  WHEN attempts + 1 < ? THEN processed_at "
+                "  ELSE ? "
+                "END, "
+                "status = CASE "
+                "  WHEN attempts + 1 < ? THEN status "
+                "  ELSE 'failed' "
+                "END "
+                "WHERE id = ?",
+                (str(error)[:500], limit, now, limit, int(row_id)),
+            )
+    else:
+        with _conn() as c:
+            c.execute(
+                "UPDATE media_outbox SET "
+                "attempts = attempts + 1, "
+                "last_error = ?, "
+                "processed_at = CASE "
+                "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN processed_at "
+                "  ELSE ? "
+                "END, "
+                "status = CASE "
+                "  WHEN kind = 'photo' AND attempts + 1 < 5 THEN status "
+                "  ELSE 'failed' "
+                "END "
+                "WHERE id = ?",
+                (str(error)[:500], now, int(row_id)),
+            )
 
 
 def media_outbox_mark_aborted(row_id: int, reason: str) -> None:

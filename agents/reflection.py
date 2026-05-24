@@ -99,7 +99,7 @@ def _entities_for_fact(subj: str, obj: str, entity_block) -> list[int]:
 def _build_reflection_prompt() -> str:
     episodes = db.recent_episodes(limit=5)
     facts = db.active_facts(limit=20)
-    messages = db.recent_messages(limit=80)
+    messages = db.recent_messages(limit=80, exclude_ephemeral=True)
     episodes_text = "\n\n".join(
         f"### {e['date']}\n{e['summary']}" for e in episodes
     ) or "no episodes yet"
@@ -723,7 +723,7 @@ def _drift_vs_feedback(cfg) -> dict | None:
 async def maybe_run_session_consolidation() -> None:
     """If the rolling message log has accumulated enough since the last episode,
     summarize it into an episode. Lightweight — runs every few minutes."""
-    msgs = db.recent_messages(limit=40)
+    msgs = db.recent_messages(limit=40, exclude_ephemeral=True)
     if len(msgs) < 6:
         return
 

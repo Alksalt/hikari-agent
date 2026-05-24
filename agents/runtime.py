@@ -428,7 +428,7 @@ async def _invoke_sdk_persistent_live(
                 "_invoke_sdk_persistent_live: %s — reconnecting live client",
                 reason,
             )
-        await sdk_pool._reconnect_live(f"{reason} on user turn")
+        await sdk_pool._reconnect_live(f"{reason} on user turn", lock_run=False)
         result = await _run_one()   # one retry; re-raises on second failure
 
     sdk_pool._maybe_schedule_live_recycle()
@@ -587,23 +587,32 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     so the next user turn contains a native ``document`` or ``image`` block,
     not a base64 blob wedged into text.
 
-    Note: ``use_persistent_live`` is intentionally NOT set here (defaults
-    False).  The persistent live client expects string prompts on its
-    subprocess stdin; injecting a content-block list would corrupt the
-    transcript format.  This call goes through the standard ephemeral
-    (cold-start) path which handles arbitrary prompt shapes correctly.
-    log_session_id is False so the ephemeral fallback's session_id never overwrites
-    the persistent live session pointer (Sprint 4 4A fix).
+    The ephemeral path handles content-block lists correctly. log_session_id=True
+    so the session_id produced by this turn is stored and the next text turn can
+    reference the same conversation (PDF continuity fix). After the turn,
+    advance the persistent live client so it resumes from the new session_id.
     """
     async with _RUN_LOCK:
-        return await _invoke_sdk(
+        result = await _invoke_sdk(
             content_blocks,
             resume=db.get_session_id(),
-            log_session_id=False,
+            log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
             max_budget_usd=0.50,
             retry_on_process_error=True,
         )
+        if sdk_pool.is_live_persistent_path_enabled():
+            try:
+                await sdk_pool._reconnect_live(
+                    "content-block turn advanced session", lock_run=False,
+                )
+            except Exception:
+                logger.warning(
+                    "run_user_turn_blocks: live client reconnect after content-block "
+                    "turn failed (non-fatal — next text turn will reconnect)",
+                    exc_info=True,
+                )
+        return result
 
 
 async def run_visible_proactive(seed_prompt: str) -> str:
@@ -661,18 +670,23 @@ async def run_internal_control(
     )
 
 
-async def respond(user_text: str) -> str:
-    """Backwards-compat wrapper for the chat path.
+async def respond(
+    user_text: str, *, internal_belief_context: str | None = None
+) -> str:
+    """Chat path entry point.
 
-    Appends the user message + bumps ``last_user_message``, then delegates
-    to ``run_user_turn``. Does NOT append the assistant reply — that's the
-    caller's job (telegram_bridge._send_with_choreography, post-send) so the
-    DB row matches what Telegram actually delivered (codex P0 fix).
+    Persists the RAW user text to messages, then builds the SDK prompt.
+    When internal_belief_context is provided (belief-frame adversarial suffix),
+    the prompt passed to the SDK is augmented but the persisted row stays clean.
     """
     mid = db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
     db.runtime_set("last_user_message_id", str(mid))
-    return await run_user_turn(user_text)
+    if internal_belief_context:
+        sdk_prompt = internal_belief_context + "\n\n" + user_text
+    else:
+        sdk_prompt = user_text
+    return await run_user_turn(sdk_prompt)
 
 
 # Phase 13 (Stream C): legacy alias kept so out-of-stream code that imports

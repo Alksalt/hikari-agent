@@ -224,25 +224,41 @@ async def shutdown() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def _reconnect_live(reason: str) -> None:
-    """Reconnect live client under connect_lock."""
-    async with _live.connect_lock:
-        logger.info("sdk_pool: reconnecting live client (reason=%s)", reason)
-        await _disconnect(_live.client)
-        _live.client = None
+async def _do_reconnect_live(reason: str) -> None:
+    """Inner reconnect body — must be called while connect_lock is held."""
+    logger.info("sdk_pool: reconnecting live client (reason=%s)", reason)
+    await _disconnect(_live.client)
+    _live.client = None
 
-        from storage import db
-        resume = db.get_session_id() or None
-        try:
-            _live.client = await _connect_live(resume)
-            _live.counter = 0
-            logger.info(
-                "sdk_pool: live client reconnected (resume=%s)", "present" if resume else "none"
-            )
-        except Exception:
-            logger.exception("sdk_pool: live client reconnect failed")
-            _live.client = None
-            raise
+    from storage import db
+    resume = db.get_session_id() or None
+    try:
+        _live.client = await _connect_live(resume)
+        _live.counter = 0
+        logger.info(
+            "sdk_pool: live client reconnected (resume=%s)", "present" if resume else "none"
+        )
+    except Exception:
+        logger.exception("sdk_pool: live client reconnect failed")
+        _live.client = None
+        raise
+
+
+async def _reconnect_live(reason: str, *, lock_run: bool = True) -> None:
+    """Reconnect live client under connect_lock.
+
+    lock_run=True (default): also acquires _RUN_LOCK before connect_lock so no
+    user turn can interleave with the reconnect. Pass lock_run=False from callers
+    that are already holding _RUN_LOCK (avoids deadlock).
+    """
+    if lock_run:
+        from agents.runtime import _RUN_LOCK  # late import to break cycle
+        async with _RUN_LOCK:
+            async with _live.connect_lock:
+                await _do_reconnect_live(reason)
+    else:
+        async with _live.connect_lock:
+            await _do_reconnect_live(reason)
 
 
 async def _reconnect_judge(reason: str) -> None:
@@ -269,7 +285,7 @@ async def _reconnect_judge(reason: str) -> None:
 async def get_live_client() -> ClaudeSDKClient:
     """Return the live client, reconnecting if dead or over recycle threshold."""
     if _live.client is None:
-        await _reconnect_live("client is None")
+        await _reconnect_live("client is None", lock_run=False)
     assert _live.client is not None, "sdk_pool: live client unavailable after reconnect attempt"
     return _live.client
 

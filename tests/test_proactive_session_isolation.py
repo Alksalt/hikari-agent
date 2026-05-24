@@ -128,29 +128,35 @@ async def test_concurrent_internal_control_does_not_race_session_id(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_run_user_turn_blocks_does_not_overwrite_session_id(monkeypatch):
-    """run_user_turn_blocks (multimodal ephemeral path) must NOT overwrite the
-    live session_id, even if the stubbed SDK returns a different session_id."""
-    db.set_session_id("live-session-multimodal")
-
+async def test_run_user_turn_blocks_uses_log_session_id_true(monkeypatch):
+    """run_user_turn_blocks must use log_session_id=True so the session_id
+    produced by the content-block turn is stored for PDF/image continuity.
+    The live client is then reconnected so the next text turn resumes it.
+    """
     import agents.runtime as runtime_mod
+    import agents.sdk_pool as pool_mod
+
+    log_session_id_received: list[bool] = []
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
                                max_budget_usd, retry_on_process_error=True,
                                **kwargs):
-        assert not log_session_id, (
-            "run_user_turn_blocks violated session contract: log_session_id=True"
-        )
+        log_session_id_received.append(log_session_id)
         return "blocks reply"
+
+    async def fake_reconnect(reason, *, lock_run=True):
+        pass
 
     monkeypatch.setattr(runtime_mod, "_invoke_sdk", fake_invoke_sdk)
     monkeypatch.setattr(runtime_mod, "_RUN_LOCK", asyncio.Lock())
+    monkeypatch.setattr(pool_mod, "is_live_persistent_path_enabled", lambda: False)
+    monkeypatch.setattr(pool_mod, "_reconnect_live", fake_reconnect)
 
     from agents.runtime import run_user_turn_blocks
     result = await run_user_turn_blocks([{"type": "text", "text": "hi"}])
 
     assert result == "blocks reply"
-    assert db.get_session_id() == "live-session-multimodal", (
-        f"session_id was overwritten to {db.get_session_id()!r}; "
-        "run_user_turn_blocks must not mutate the live session"
+    assert log_session_id_received == [True], (
+        f"run_user_turn_blocks must call _invoke_sdk with log_session_id=True; "
+        f"got {log_session_id_received}"
     )

@@ -50,7 +50,7 @@ def write_handoff() -> None:
     if not _enabled():
         return
     try:
-        msgs = db.recent_messages(limit=_last_n())
+        msgs = db.recent_messages(limit=_last_n(), exclude_ephemeral=True)
     except Exception:
         logger.exception("write_handoff: recent_messages failed")
         return

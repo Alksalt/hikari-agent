@@ -382,6 +382,33 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=60,
         )
 
+    # 9A: Periodic media_outbox drain — catches pending rows that weren't drained
+    # after their originating turn (e.g. send_and_persist crash, restart mid-turn).
+    from agents.runtime import owner_id as _owner_id
+
+    async def _media_outbox_drain_job():
+        from agents.telegram_bridge import _drain_media_outbox  # noqa: PLC0415
+        try:
+            from telegram import Bot  # noqa: PLC0415
+            import os  # noqa: PLC0415
+            token = os.environ.get("TELEGRAM_BOT_TOKEN")
+            if not token:
+                return
+            bot = Bot(token=token)
+            counts = await _drain_media_outbox(bot, _owner_id())
+            total = sum(counts.values())
+            if total:
+                logger.info("media_outbox_drain (periodic): %s", counts)
+        except Exception:
+            logger.exception("media_outbox_drain: unexpected failure")
+
+    scheduler.add_job(
+        _media_outbox_drain_job,
+        IntervalTrigger(minutes=2),
+        id="media_outbox_drain",
+        coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+
     return scheduler
 
 
