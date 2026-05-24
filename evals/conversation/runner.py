@@ -174,5 +174,46 @@ def run_layer_b(cases_dir: Path) -> tuple[int, int, list[str]]:
     return passed, len(cases), errors
 
 
-async def run_layer_c(case: Case) -> EvalResult:
-    raise NotImplementedError("Layer C live runner not yet wired — Sprint 5D scope")
+async def run_layer_c(  # type: ignore[override]
+    cases_dir: Path,
+    *,
+    cost_cap_usd: float = 0.25,
+) -> tuple[int, int, list[str], float]:
+    """Dispatch Layer C cases: golden (LLM judge) + cadence (deterministic).
+
+    Returns (passed, total, errors, total_usd_cost).
+    Cost cap aborts golden cases mid-run if exceeded; cadence cases are free.
+    """
+    from evals.conversation.runner_layer_c import (
+        discover_cases,
+        run_layer_c_cadence,
+        run_layer_c_golden,
+    )
+
+    cases = discover_cases(cases_dir)
+    passed = 0
+    errors: list[str] = []
+    total_cost = 0.0
+
+    for case_path in cases:
+        case_data = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+        kind = case_data.get("kind", "golden")
+
+        if kind == "golden":
+            if total_cost > cost_cap_usd:
+                errors.append(
+                    f"{case_data.get('name', case_path.stem)}: SKIPPED — "
+                    f"cost cap ${cost_cap_usd:.2f} exceeded"
+                )
+                continue
+            result = await run_layer_c_golden(case_path)
+            total_cost += result.usd_cost
+        else:
+            result = run_layer_c_cadence(case_path)
+
+        if result.passed:
+            passed += 1
+        else:
+            errors.append(f"{result.case_name} ({result.kind}): {result.reason}")
+
+    return passed, len(cases), errors, total_cost

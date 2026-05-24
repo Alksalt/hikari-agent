@@ -1,0 +1,33 @@
+name: cross_pool_fairness
+kind: cadence
+description: |
+  Simulate 10 candidates in pool A (reengage_silence), 2 in pool B (reminder_fire) over 1h.
+  Assert pool A doesn't monopolize — both pools should emit at least once.
+simulated_events:
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:05:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:10:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:15:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:20:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:25:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:35:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:40:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:45:00"
+  - source: reminder_fire
+    candidate_at: "2026-05-25T10:50:00"
+  - source: reminder_fire
+    candidate_at: "2026-05-25T10:55:00"
+expected_distribution:
+  reengage_silence: ">=1"
+  reminder_fire: ">=1"

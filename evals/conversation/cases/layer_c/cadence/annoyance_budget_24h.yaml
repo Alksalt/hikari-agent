@@ -1,0 +1,32 @@
+name: annoyance_budget_24h
+kind: cadence
+description: |
+  Simulate 12 proactive event candidates from the agent_spontaneous pool
+  (reengage_silence, cap=8/7d) sent in rapid succession.
+  Assert that no more than 8 actually emit — the pool cap gates excess.
+simulated_events:
+  - source: reengage_silence
+    candidate_at: "2026-05-25T09:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T09:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T10:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T11:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T11:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T12:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T12:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T13:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T13:30:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T14:00:00"
+  - source: reengage_silence
+    candidate_at: "2026-05-25T14:30:00"
+expected_max_emissions: 8

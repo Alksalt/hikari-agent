@@ -158,4 +158,72 @@ def record_user_anchored_sent(source: str) -> int:
     return _append_now(Pool.USER_ANCHORED)
 
 
+# ---------- eval / test harness ----------
+
+class _SimulationState:
+    """Ephemeral state used by simulate_emission. Not persisted to DB."""
+
+    def __init__(self) -> None:
+        self._logs: dict[Pool, list[datetime]] = {p: [] for p in Pool}
+        self._now: datetime | None = None  # simulated clock — set to latest candidate_at
+
+    def count(self, pool: Pool) -> int:
+        if self._now is None:
+            return 0
+        cutoff = self._now - timedelta(days=7)
+        return sum(1 for ts in self._logs[pool] if ts > cutoff)
+
+    def record(self, pool: Pool, at: datetime) -> None:
+        self._logs[pool].append(at)
+
+
+_SIM_STATE: _SimulationState | None = None
+
+
+def _get_sim_state() -> _SimulationState:
+    global _SIM_STATE
+    if _SIM_STATE is None:
+        _SIM_STATE = _SimulationState()
+    return _SIM_STATE
+
+
+def reset_simulation() -> None:
+    """Reset ephemeral simulation state. Call before each cadence eval run."""
+    global _SIM_STATE
+    _SIM_STATE = _SimulationState()
+
+
+def simulate_emission(source: str, candidate_at: str) -> bool:
+    """Thin eval harness — decide whether a candidate emits, updating ephemeral state.
+
+    Uses the same pool caps from config as the live path, but against in-memory
+    counters so tests remain deterministic and never touch the DB.
+
+    Returns True if the candidate would emit, False if suppressed by cap.
+    """
+    pool = _resolve_pool(source)
+    if pool is None:
+        logger.debug("simulate_emission: source %r not in any pool — suppress", source)
+        return False
+
+    state = _get_sim_state()
+    at = datetime.fromisoformat(candidate_at)
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    if state._now is None or at > state._now:
+        state._now = at
+    cap = _max_per_7d(pool)
+    count = state.count(pool)
+    if count >= cap:
+        logger.debug(
+            "simulate_emission: cap_reached (%d/%d 7d, pool=%s) for source=%r",
+            count,
+            cap,
+            pool.value,
+            source,
+        )
+        return False
+
+    state.record(pool, at)
+    return True
 

@@ -1,0 +1,19 @@
+name: nightly-evals
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # 04:00 UTC daily
+  workflow_dispatch: {}  # manual trigger
+
+jobs:
+  layer-c:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras --dev
+      - name: Run Layer C (drift judge + cadence)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: uv run python scripts/run_evals.py --layer c --cost-cap-usd 0.25

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from evals.conversation import load_case, run_layer_a, run_layer_c
+from evals.conversation import load_case, run_layer_a
 from evals.conversation.runner import run_layer_b
 
 CASES_DIR = Path(__file__).resolve().parent.parent / "evals" / "conversation" / "cases"
@@ -54,11 +54,24 @@ def test_layer_b_runs_without_error():
     assert errors == [], f"Layer B failures: {errors}"
 
 
-def test_layer_c_raises_not_implemented():
-    import asyncio
+def test_layer_c_discovers_cases():
+    """Layer C cases dir has golden and cadence subdirs, each with at least one YAML."""
     layer_c = CASES_DIR / "layer_c"
-    case_files = sorted(layer_c.glob("*.yaml"))
-    assert case_files, "no Layer C cases found"
-    case = load_case(case_files[0])
-    with pytest.raises(NotImplementedError):
-        asyncio.run(run_layer_c(case))
+    assert (layer_c / "golden").exists(), "golden subdir missing"
+    assert (layer_c / "cadence").exists(), "cadence subdir missing"
+    golden = sorted((layer_c / "golden").glob("*.yaml"))
+    cadence = sorted((layer_c / "cadence").glob("*.yaml"))
+    assert len(golden) >= 1, "no golden cases found"
+    assert len(cadence) >= 1, "no cadence cases found"
+
+
+def test_layer_c_cadence_runs_deterministically():
+    """Layer C cadence cases run without error and return a result."""
+    from evals.conversation.runner_layer_c import run_layer_c_cadence
+    layer_c = CASES_DIR / "layer_c"
+    cadence_cases = sorted((layer_c / "cadence").glob("*.yaml"))
+    assert cadence_cases, "no cadence cases found"
+    for case_path in cadence_cases:
+        result = run_layer_c_cadence(case_path)
+        # Cadence cases should pass (deterministic, no external deps).
+        assert result.passed is True, f"{result.case_name}: {result.reason}"

@@ -1,0 +1,26 @@
+name: morning_check_full_flow
+kind: golden
+description: |
+  5-turn morning check-in: delete-pile proposal, accept, weather query,
+  calendar query, end. Exercises brevity, reluctance-then-help, no task-asking tail.
+transcript:
+  - role: user
+    content: "morning"
+  - role: hikari
+    content: "morning. you have 3 emails i'd delete-pile — 2 newsletters and one automated receipt. want me to move them?"
+  - role: user
+    content: "yeah go ahead"
+  - role: hikari
+    content: "done. moved to trash."
+  - role: user
+    content: "what's the weather today"
+  - role: hikari
+    content: "kyiv. morning 18° partly cloudy, midday 23° sunny, evening 17°. no rain. light jacket in the morning."
+  - role: user
+    content: "anything on my calendar"
+  - role: hikari
+    content: "one thing — standup at 10. that's it."
+  - role: user
+    content: "cool thanks"
+  - role: hikari
+    content: "obviously."
