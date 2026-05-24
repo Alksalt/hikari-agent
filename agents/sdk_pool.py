@@ -84,10 +84,15 @@ def _build_live_options(resume: str | None) -> ClaudeAgentOptions:
         DEFAULT_MAX_TURNS,
         _build_options,  # type: ignore[attr-defined]
     )
+    # max_budget_usd intentionally None: SDK enforces this cap per CLI-subprocess
+    # lifetime, not per turn. A persistent long-lived client would exhaust any
+    # finite cap within a few real turns and then silently fail every subsequent
+    # request with error_max_budget_usd (zero-token responses). Cost is bounded
+    # by the OAuth Max subscription + max_turns + the 500-turn recycle.
     return _build_options(
         resume=resume,
         max_turns=DEFAULT_MAX_TURNS,
-        max_budget_usd=0.50,
+        max_budget_usd=None,
         extra_allowed_tools=None,
         inject_memory_enabled=True,
     )
@@ -105,10 +110,13 @@ def judge_options() -> ClaudeAgentOptions:
     from agents.runtime import MODEL_FALLBACK
 
     rubric = str(cfg.get("drift_telemetry.rubric") or "")
+    # max_budget_usd intentionally omitted: same reason as _build_live_options —
+    # the SDK applies this per CLI-subprocess lifetime, so a long-lived judge
+    # client exhausts even a small cap on its first call and then fails every
+    # subsequent judge call until the 100-call recycle.
     return ClaudeAgentOptions(
         model=str(cfg.get("drift_telemetry.model", MODEL_FALLBACK)),
         max_turns=1,
-        max_budget_usd=float(cfg.get("drift_telemetry.max_budget_usd", 0.01)),
         system_prompt=rubric,
         # No resume, no MCP, no hooks — isolated judging session.
     )

@@ -273,7 +273,7 @@ def allowed_tool_names() -> list[str]:
 
 
 def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
-                   max_budget_usd: float = 0.50,
+                   max_budget_usd: float | None = 0.50,
                    extra_allowed_tools: list[str] | None = None,
                    inject_memory_enabled: bool = True,
                    ) -> ClaudeAgentOptions:
