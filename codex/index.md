@@ -1,556 +1,257 @@
 ---
 title: Codex Reports Index
-date: 2026-05-23
+date: 2026-05-24
 tags:
   - codex
   - reports
   - planning
+  - second-pass
 ---
 
 # Codex Reports Index
 
-This directory contains review reports and planning memos for Hikari Agent. Use
-this index to pick a small related set of files for the next planning pass
-instead of loading every report at once.
+This directory contains independent second-pass review reports for Hikari
+Agent. Use this index to pick a small related set of files for planning instead
+of loading every report at once.
 
-## How To Use
+## Current Status
 
-- Start with `top-system-review-and-roadmap-2026-05-23.md` when planning across
-  the whole system.
-- Pick one planning slice below, then read only the listed files.
-- Use the tags to find reports by concern: architecture, security, tools,
-  product UX, ops, cleanup, runtime/persona, modernity, priority, or roadmap.
-- When a deep dive extends an earlier report, prefer the deep dive for current
-  planning and use the earlier report for context.
+- Active second-pass reports: 10.
+- Prior 2026-05-23 reports were intentionally removed before this run.
+- Missing expected domains: Non-Google integrations and sprint coverage.
+- Treat each report as an independent current-working-tree review, not as a
+  proof that older findings were right or wrong.
 
 ## Planning Slices
 
-### Foundation / Reliability
+### Runtime / Reliability
 
-Use when planning runtime invariants, message persistence, proactive behavior,
-approval lifecycle, Graphiti/Kuzu durability, or system ownership boundaries.
+Use when planning live Claude SDK session ownership, user/proactive/internal
+control split, final-sent persistence, send/retry behavior, media outbox
+semantics, and message continuity after file/document turns.
 
-- `top-system-review-and-roadmap-2026-05-23.md`
-- `deep-architecture-review-2026-05-23.md`
-- `architecture-review-2026-05-23.md`
-- `prompt_persona_deep_dive.md`
+- `second-pass-runtime-reliability-message-persistence-2026-05-24.md`
+- `second-pass-media-pipeline-2026-05-24.md`
+- `second-pass-conversation-evals-2026-05-24.md`
 
-Tags: `#roadmap` `#architecture` `#runtime` `#memory` `#approvals`
-`#proactive` `#persona`
+Tags: `#runtime` `#reliability` `#session` `#proactive` `#persistence`
+`#media` `#conversation-quality`
 
-### Ops / Immortality
+### Tool Trust / Security
 
-Use when planning how to keep Hikari alive, observable, restartable,
-recoverable, backed up, and restorable on a new machine.
+Use when planning gatekeeper previews, approval UX, registry fail-closed
+behavior, external MCP auth, Apple Events policy, Google Workspace write gates,
+and prompt/config drift.
 
-- `ops-production-runbook-2026-05-23.md`
-- `top-system-review-and-roadmap-2026-05-23.md`
-- `deep-architecture-review-2026-05-23.md`
-- `security-solo-dev-deep-dive-2026-05-23.md`
+- `second-pass-tool-security-2026-05-24.md`
+- `second-pass-google-workspace-tool-surface-2026-05-24.md`
+- `second-pass-ops-production-2026-05-24.md`
 
-Tags: `#ops` `#production` `#runbook` `#launchd` `#backup`
-`#restore` `#health-checks` `#cloudflare`
+Tags: `#security` `#tools` `#mcp` `#permissions` `#approvals`
+`#google-workspace` `#oauth`
 
-### Tool Trust / Permissions
+### Telegram Operator Surface
 
-Use when planning registry hardening, Google Workspace write gates, subagent
-tool scope, external MCP drift, local side effects, or approval previews.
+Use when planning what the owner can inspect or control directly from Telegram:
+status, tools, audit, approvals, memory, proactive behavior, reminders, daily
+check-ins, command menus, inline buttons, and cockpit accuracy.
 
-- `tool-subagent-risk-deep-dive-2026-05-23.md`
-- `tool-subagent-inventory-2026-05-23.md`
-- `tool-surface-deep-dive-2026-05-23.md`
-- `security-review-2026-05-23.md`
+- `second-pass-telegram-ux-2026-05-24.md`
+- `second-pass-product-capabilities-2026-05-24.md`
+- `second-pass-google-workspace-tool-surface-2026-05-24.md`
+- `second-pass-ops-production-2026-05-24.md`
 
-Tags: `#tools` `#subagents` `#security` `#registry` `#mcp`
-`#google-workspace` `#approvals`
+Tags: `#telegram` `#ux` `#operator-control` `#observability`
+`#approvals` `#reminders`
 
-### Non-Google Integrations
+### Memory / Personalization
 
-Use when planning Notion, GitHub, Playwright, Apple Events, Apple Shortcuts,
-DuckDB/MotherDuck, YouTube Transcript, YouTube Music, Linear, Apple Notes, Link
-Shelf, OpenRouter photo generation, Whisper STT, translation, weather, places,
-currency, or arXiv.
+Use when planning Graphiti-vs-SQLite authority, fact correction/forgetting,
+open-loop tasks, session search, provenance, reflection, media memory, and
+recall trust.
 
-- `non-google-integrations-deep-review-2026-05-23.md`
-- `other-tools-review-2026-05-23.md`
-- `tool-subagent-risk-deep-dive-2026-05-23.md`
-- `security-review-2026-05-23.md`
+- `second-pass-memory-graph-2026-05-24.md`
+- `second-pass-conversation-evals-2026-05-24.md`
+- `second-pass-media-pipeline-2026-05-24.md`
+- `second-pass-product-capabilities-2026-05-24.md`
 
-Tags: `#non-google` `#integrations` `#notion` `#github`
-`#apple-events` `#apple-shortcuts` `#duckdb` `#youtube` `#linear`
-
-### Solo-Dev Security
-
-Use when choosing the smallest security changes that matter for a single-user
-local Telegram agent: prompt injection, local secret reads, package pinning,
-approval preview safety, backup/token handling, and local automation.
-
-- `security-solo-dev-deep-dive-2026-05-23.md`
-- `security-review-2026-05-23.md`
-- `tool-subagent-risk-deep-dive-2026-05-23.md`
-
-Tags: `#security` `#solo-dev` `#prompt-injection` `#secrets`
-`#supply-chain` `#approvals`
-
-### Google / Tool Expansion
-
-Use when deciding what tools to add next and what to avoid. This slice is useful
-for Google Tasks, Contacts/People, Workspace Events, `gws`, Hermes/OpenClaw
-patterns, session search, and tool observability. Start with the correction
-memo if the question is product priority rather than Google-specific safety.
-
-- `tool-priority-correction-2026-05-23.md`
-- `tool-surface-deep-dive-2026-05-23.md`
-- `tool-surface-google-hermes-openclaw-2026-05-23.md`
-- `tool-subagent-inventory-2026-05-23.md`
-
-Tags: `#tools` `#google-workspace` `#gws` `#hermes` `#openclaw`
-`#mcp` `#observability` `#priority`
-
-### Product Tool Priorities
-
-Use when deciding which tool family actually matters next for Hikari's core
-companion loop. This slice is the counterweight to Google-heavy planning: it
-prioritizes status/audit, memory/session search, Readwise/Reader, briefings,
-shift logistics, coding workflow, link intake, and local OS policy.
-
-- `tool-priority-correction-2026-05-23.md`
-- `ux-review-what-user-wants-2026-05-23.md`
-- `top-system-review-and-roadmap-2026-05-23.md`
-- `tool-surface-deep-dive-2026-05-23.md`
-
-Tags: `#priority` `#tools` `#product` `#memory` `#readwise`
-`#briefings` `#shifts` `#coding-workflow` `#audit`
-
-### Non-Google Product Capabilities
-
-Use when planning Hikari-native capabilities rather than raw connectors:
-status/audit visibility, session search, memory controls, Readwise/Reader,
-link/wiki intake, briefings, shifts, project workflow, local OS policy, and
-optional media/taste tools.
-
-- `other-tools-review-2026-05-23.md`
-- `tool-priority-correction-2026-05-23.md`
-- `ux-review-what-user-wants-2026-05-23.md`
-- `top-system-review-and-roadmap-2026-05-23.md`
-
-Tags: `#product` `#tools` `#readwise` `#briefings` `#shifts`
-`#project-workflow` `#link-shelf` `#wiki` `#memory`
-
-### Product / User Control Surface
-
-Use when planning Telegram commands, inline buttons, proactive controls, memory
-ledger UX, integration health, approval history, and "why did you say this?"
-surfaces.
-
-- `telegram-ux-design-2026-05-23.md`
-- `ux-review-what-user-wants-2026-05-23.md`
-- `top-system-review-and-roadmap-2026-05-23.md`
-- `tool-surface-deep-dive-2026-05-23.md`
-
-Tags: `#ux` `#telegram` `#memory` `#proactive` `#product`
-`#observability`
+Tags: `#memory` `#graphiti` `#recall` `#personalization`
+`#provenance` `#evals`
 
 ### Conversation / Media Quality
 
-Use when planning Hikari's visible conversation quality: voice/persona evals,
-golden chats, proactive usefulness, memory-grounded answers, tool transparency,
-refusal recovery, voice notes, photos, documents, attachments, generated
-photos, stickers, and media persistence.
+Use when planning generated conversation evals, voice drift scoring, refusal
+recovery, belief-frame handling, photo/voice/document handling, generated
+photos, stickers, EXIF/privacy controls, and media auditability.
 
-- `conversation-quality-evals-review-2026-05-23.md`
-- `voice-photo-media-pipeline-review-2026-05-23.md`
-- `prompt_persona_deep_dive.md`
-- `telegram-ux-design-2026-05-23.md`
+- `second-pass-conversation-evals-2026-05-24.md`
+- `second-pass-media-pipeline-2026-05-24.md`
+- `second-pass-runtime-reliability-message-persistence-2026-05-24.md`
 
-Tags: `#evals` `#persona` `#conversation-quality` `#voice`
-`#photos` `#media` `#attachments` `#telegram`
+Tags: `#evals` `#conversation-quality` `#persona` `#media`
+`#voice` `#photos` `#attachments`
 
-### Cleanup / Test Debt
+### Ops / Immortality
 
-Use when planning dead-code removal, stale schema cleanup, unused helpers,
-compatibility shim deletion, stale tests, and a realistic check/CI contract.
+Use when planning launchd supervision, backup/restore, dead-man checks,
+startup health, `/status` parity, Cloudflare/external MCP operations, secrets,
+credential rotation, and disaster recovery drills.
 
-- `dead-code-dead-tests-deep-dive-2026-05-23.md`
-- `dead-code-dead-tests-review-2026-05-23.md`
-- `2026-05-23-modernity-architecture-review.md`
+- `second-pass-ops-production-2026-05-24.md`
+- `second-pass-cleanup-ci-packaging-2026-05-24.md`
+- `second-pass-tool-security-2026-05-24.md`
 
-Tags: `#cleanup` `#tests` `#dead-code` `#schema` `#ci` `#ruff`
+Tags: `#ops` `#production` `#backup` `#restore` `#launchd`
+`#cloudflare` `#health-checks`
 
-### Modernity / Platform Choices
+### Product Workflow
 
-Use when deciding whether to keep custom orchestration, adopt durable runtime
-patterns, update MCP authorization, fix packaging, or compare current design
-against LangGraph, Pydantic AI, Google ADK, OpenAI Agents SDK, Letta, Graphiti,
-Mem0, Hermes, or OpenClaw.
+Use when planning user-facing leverage: link shelf, Readwise/Reader, briefings,
+shifts, wiki filing, reminders, daily check-ins, day receipts, coding workflow,
+status/audit, and proactive source ownership.
 
-- `2026-05-23-modernity-architecture-review.md`
-- `top-system-review-and-roadmap-2026-05-23.md`
-- `tool-surface-google-hermes-openclaw-2026-05-23.md`
-- `deep-architecture-review-2026-05-23.md`
+- `second-pass-product-capabilities-2026-05-24.md`
+- `second-pass-telegram-ux-2026-05-24.md`
+- `second-pass-memory-graph-2026-05-24.md`
+- `second-pass-google-workspace-tool-surface-2026-05-24.md`
 
-Tags: `#modernity` `#architecture` `#mcp` `#packaging` `#durability`
-`#frameworks`
+Tags: `#product` `#workflow` `#briefings` `#shifts` `#readwise`
+`#wiki` `#link-shelf`
+
+### Cleanup / CI / Packaging
+
+Use when planning test debt, stale code deletion, package shape, CI validity,
+MCP server validation, eval runner freshness, duplicated skills, and whether
+this repo should be a local app or a real installable package.
+
+- `second-pass-cleanup-ci-packaging-2026-05-24.md`
+- `second-pass-conversation-evals-2026-05-24.md`
+- `second-pass-ops-production-2026-05-24.md`
+
+Tags: `#cleanup` `#tests` `#ci` `#packaging` `#dead-code`
 
 ## File Catalog
 
-### `top-system-review-and-roadmap-2026-05-23.md`
+### `second-pass-runtime-reliability-message-persistence-2026-05-24.md`
 
-Whole-system roadmap and prioritization memo. It synthesizes local reviews,
-Hermes comparison, verification results, current strengths, top risks, and
-five execution waves.
+Independent review of runtime entrypoints, session lifecycle, proactive
+persistence, `send_and_persist`, media outbox semantics, and visible Telegram
+reply persistence.
 
-Use for: choosing sprint order, deciding what makes Hikari a "top system",
-turning scattered findings into a sequenced roadmap.
+Use for: runtime invariants, live session ownership, document-turn continuity,
+durable outbound text, and direct Telegram send bypasses.
 
-Tags: `#roadmap` `#top-system` `#architecture` `#security` `#memory`
-`#product` `#evals`
+Tags: `#runtime` `#reliability` `#session` `#proactive` `#persistence`
 
-### `ops-production-runbook-2026-05-23.md`
+### `second-pass-tool-security-2026-05-24.md`
 
-Operational runbook review for making Hikari durable as a single-user local
-macOS Telegram companion with optional Cloudflare-exposed external MCP. It
-covers launchd supervision, restart/recovery, health checks, backups, restore
-drills, new-machine rebuilds, Cloudflare/external MCP operations, Telegram
-silence debugging, credential rotation, logging, alerting, and an immortality
-ladder.
+Independent review of tool registry policy, gatekeeper approval previews,
+Google/Notion/GitHub write gates, Apple Events, external OAuth, Playwright
+policy, and cockpit auth-precheck drift.
 
-Use for: making Hikari restartable, observable, recoverable, and boring to run
-for months.
+Use for: consent boundaries, approval preview truthfulness, MCP registry
+hardening, and prompt/config policy drift.
 
-Tags: `#ops` `#production` `#runbook` `#launchd` `#backup`
-`#restore` `#health-checks` `#cloudflare` `#telegram`
+Tags: `#security` `#tools` `#mcp` `#permissions` `#approvals`
 
-### `deep-architecture-review-2026-05-23.md`
+### `second-pass-google-workspace-tool-surface-2026-05-24.md`
 
-Deep invariant review focused on where system ownership is unclear: inbound
-event ledger semantics, durable side effects, approval architecture, policy
-registry, internal control prompts, Graph memory contract, capability health,
-and SDK lifecycle locking.
+Independent review of Google Workspace MCP pinning, read/write registry
+coverage, auth precheck, scope probing, daily check-in adapters, and Google
+prompt drift.
 
-Use for: making runtime behavior explicit before adding more memory,
-proactive, approval, or tool-adapter features.
+Use for: Gmail/Calendar/Drive safety, Google OAuth health, daily check-in
+reliability, and Google tool expansion planning.
 
-Tags: `#architecture` `#runtime` `#invariants` `#messages`
-`#approvals` `#memory` `#proactive`
+Tags: `#google-workspace` `#tools` `#oauth` `#calendar` `#gmail`
 
-### `architecture-review-2026-05-23.md`
+### `second-pass-telegram-ux-2026-05-24.md`
 
-Earlier architecture review centered on ownership boundaries and side channels.
-Key topics are Graphiti/Kuzu as a non-durable sidecar, split approval state
-machines, utility auto-discovery bypassing policy registration, prompt-mediated
-scheduled workflows, background dispatch resumption, and oversized modules.
+Independent review of Telegram command UX and operator cockpit coverage:
+`/status`, `/tools`, `/audit`, `/settings`, `/memory`, `/approvals`,
+`/proactive`, reminders, daily check-ins, and missing callback/button flows.
 
-Use for: context before the deep architecture review, especially Graphiti/Kuzu,
-approval, and modularity planning.
+Use for: Telegram-native control, command discoverability, approval UX,
+settings accuracy, and owner trust without SSH.
 
-Tags: `#architecture` `#graphiti` `#memory` `#approvals` `#scheduler`
-`#modularity`
+Tags: `#telegram` `#ux` `#operator-control` `#observability`
 
-### `prompt_persona_deep_dive.md`
+### `second-pass-conversation-evals-2026-05-24.md`
 
-State-boundary review for what Telegram showed, what SQLite persisted, and what
-the Claude SDK resumed session remembered. It identifies divergence between
-visible messages, logged messages, and hidden control prompts.
+Independent review of conversation quality and eval coverage: runtime split,
+belief framing, generated Hikari conversations, refusal persistence, Layer C
+rubrics, golden chats, sycophancy/voice checks, and stale drift references.
 
-Use for: planning final-message persistence, proactive/session boundaries,
-reflection safety, handoff correctness, and persona continuity fixes.
-
-Tags: `#runtime` `#persona` `#messages` `#sqlite` `#session`
-`#reflection` `#proactive`
-
-### `security-review-2026-05-23.md`
-
-General security review covering tool approval previews, DuckDB, `python_run`,
-floating MCP dependencies, attachment delimiter escaping, Apple automation,
-OAuth token storage, backups, external MCP OAuth/DCR routes, and scope precheck.
-
-Use for: broad security hardening, regression-test planning, and confirming
-which controls already exist.
-
-Tags: `#security` `#tools` `#oauth` `#secrets` `#attachments`
-`#sandboxing` `#mcp`
-
-### `security-solo-dev-deep-dive-2026-05-23.md`
-
-Security review recalibrated for a solo developer running one local personal
-agent. It frames realistic attack chains and separates "fix now", "fix soon",
-and "accept for now" work.
-
-Use for: picking the smallest high-leverage security sprint without importing
-enterprise security machinery.
-
-Tags: `#security` `#solo-dev` `#prompt-injection` `#secrets`
-`#supply-chain` `#apple-events`
-
-### `non-google-integrations-deep-review-2026-05-23.md`
-
-Deep review of the non-Google integration surface: Notion, GitHub, Playwright,
-Apple Events, Apple Shortcuts, DuckDB/MotherDuck, YouTube Transcript, YouTube
-Music, Linear, Apple Notes, Link Shelf, OpenRouter photo generation, Whisper
-STT, translation, weather, places, currency, and arXiv. It maps auth, exposed
-tools, writes/destructive actions, gate policy, wrapping, coverage, and
-cross-cutting risks.
-
-Use for: tightening non-Google connector policy and deciding which integrations
-deserve product work versus safety cleanup.
-
-Tags: `#non-google` `#integrations` `#tools` `#notion` `#github`
-`#apple-events` `#apple-shortcuts` `#duckdb` `#youtube` `#linear`
-
-### `tool-subagent-inventory-2026-05-23.md`
-
-Inventory of the tool and subagent surface: in-process MCP servers, utility
-tools, external MCP servers, Google Workspace detail, scheduled/indirect flows,
-operator scripts, external remote MCP, and observed test coverage.
-
-Use for: understanding the current tool map before changing registry policy,
-subagent grants, or MCP server configuration.
-
-Tags: `#tools` `#subagents` `#inventory` `#registry` `#mcp`
-`#google-workspace` `#tests`
-
-### `tool-subagent-risk-deep-dive-2026-05-23.md`
-
-Risk-focused follow-up to the inventory. It prioritizes wildcard external
-grants, Google/Notion/GitHub write fallthrough, registry validation, local side
-effects, hard deletes, Apple automation, package pinning, and observability.
-
-Use for: planning the next permission-model PR and writing regression tests for
-tool policy drift.
-
-Tags: `#tools` `#subagents` `#security` `#registry` `#wildcards`
-`#side-effects` `#approvals`
-
-### `tool-surface-deep-dive-2026-05-23.md`
-
-Current tool-roadmap memo. It argues for a narrower, better-specified tool
-contract before expansion: explicit Google write gates, smaller Google helpers,
-session/tool audit surfaces, event/routine tools after lifecycle work, and
-curated `gws` use instead of raw exposure.
-
-Use for: planning tool expansion, especially Google Workspace and tool-call
-observability.
-
-Tags: `#tools` `#google-workspace` `#gws` `#observability`
-`#roadmap` `#mcp`
-
-### `tool-surface-google-hermes-openclaw-2026-05-23.md`
-
-Earlier tool-surface research comparing local Hikari tools with Google
-Workspace CLI, Hermes Agent, and OpenClaw. It identifies useful external
-patterns and candidate tools such as Tasks, People/Contacts, Workspace Events,
-and Google helper workflows.
-
-Use for: external inspiration and comparison before deciding what Hikari should
-copy, adapt, or avoid.
-
-Tags: `#tools` `#google-workspace` `#gws` `#hermes` `#openclaw`
-`#research`
-
-### `tool-priority-correction-2026-05-23.md`
-
-Correction memo for the tool roadmap. It says the previous tool deep dives
-were right to treat Google as a safety risk, but wrong to treat Google as the
-highest-value product expansion. It ranks status/audit, memory/session search,
-Readwise/Reader, brief sources, shift logistics, coding workflow, link shelf
-hardening, Apple/local OS policy, then Google cleanup and selected Google
-additions.
-
-Use for: choosing the next product-oriented tool sprint and preventing the
-roadmap from over-rotating on Google just because Google is the sharpest
-existing risk surface.
-
-Tags: `#priority` `#tools` `#product` `#memory` `#readwise`
-`#briefings` `#shifts` `#coding-workflow` `#audit` `#google-workspace`
-
-### `other-tools-review-2026-05-23.md`
-
-Non-Google product/tool roadmap. It ranks visibility/trust, memory/session
-search, Readwise/Reader, link/wiki intake, brief source registry, shifts,
-health/fitness logs, GitHub/Linear/project workflow, background worker
-observability, Apple local OS policy, Telegram UX, optional Slack/Discord,
-creator workflow, DuckDB analytics, and finance.
-
-Use for: choosing practical non-Google capabilities that make Hikari more
-continuous and useful in daily life.
-
-Tags: `#tools` `#product` `#non-google` `#readwise` `#briefings`
-`#shifts` `#project-workflow` `#link-shelf` `#wiki` `#apple-shortcuts`
-
-### `ux-review-what-user-wants-2026-05-23.md`
-
-Product and UX review. It argues that backend capability is ahead of the user
-surface, and recommends Telegram-native commands/buttons, proactive source
-controls, memory ledger UX, trust/tool transparency, integration health, and a
-small cockpit only if Telegram becomes too dense.
-
-Use for: planning the next user-visible control surface and making existing
-capabilities discoverable.
-
-Tags: `#ux` `#telegram` `#product` `#memory` `#proactive`
-`#approvals` `#integration-health`
-
-### `telegram-ux-design-2026-05-23.md`
-
-Detailed Telegram-first UX specification. It defines command surfaces,
-owner-only menu commands, callback data contracts, inline button layouts,
-approval flow, `/status`, `/tools`, `/audit`, `/memory`, `/proactive`,
-daily check-in, reminders, settings, failure-message copy, implementation
-waves, and test plans.
-
-Use for: implementing Hikari's Telegram cockpit before a Mini App or web UI.
-
-Tags: `#ux` `#telegram` `#commands` `#inline-buttons` `#approvals`
-`#status` `#audit` `#memory` `#proactive`
-
-### `conversation-quality-evals-review-2026-05-23.md`
-
-Conversation-quality and eval-system review. It covers current persona and
-voice tests, sycophancy resistance, proactive usefulness, memory-grounded
-answers, tool transparency, refusal/recovery, drift detection, missing eval
-dimensions, golden chat design, scoring rubrics, automation phases, and CI
-versus manual evaluation.
-
-Use for: building a measurable quality harness for Hikari's personality,
-memory use, tool behavior, and long-run continuity.
+Use for: eval roadmap, final-text persistence in edge paths, prompt leakage
+tests, and quality gates for warmth, honesty, memory grounding, and tool
+transparency.
 
 Tags: `#evals` `#conversation-quality` `#persona` `#memory`
-`#proactive` `#golden-chats` `#drift`
 
-### `voice-photo-media-pipeline-review-2026-05-23.md`
+### `second-pass-media-pipeline-2026-05-24.md`
 
-Media pipeline review for Telegram voice notes, transcription, user photos,
-generated photos, document/image attachments, sticker handling, persistence,
-media safety, prompt injection, final-message persistence, and Graphiti/memory
-behavior around media events.
+Independent review of voice/photo/document/media handling, generated photos,
+stickers, untrusted file ingest, MIME trust, EXIF privacy, media outbox, and
+media memory/auditability.
 
-Use for: hardening media ingestion and making media turns durable, safe, and
-consistent with text-message persistence.
+Use for: voice/photo/media pipeline planning, document follow-up continuity,
+privacy controls, and generated-photo provider drift.
 
-Tags: `#media` `#voice` `#photos` `#attachments` `#stickers`
-`#transcription` `#prompt-injection` `#memory`
+Tags: `#media` `#voice` `#photos` `#attachments` `#privacy`
 
-### `dead-code-dead-tests-review-2026-05-23.md`
+### `second-pass-memory-graph-2026-05-24.md`
 
-Initial dead-code and stale-test review. It identifies fully dead Notion cache
-code, removed SPASM/persona-drift probe leftovers, orphaned Day Receipt helpers,
-small unused helpers, duplicated skill folders, stale live voice test gating,
-and unused import/local cleanup.
+Independent review of SQLite memory, Graphiti outbox, recall precedence,
+fact invalidation, task injection, provenance, session search, and `/memory`
+surfaces.
 
-Use for: first-pass cleanup planning and removing obvious stale surfaces.
+Use for: Graphiti authority decisions, correction/forget workflows, open-loop
+task sanitization, and memory provenance.
 
-Tags: `#cleanup` `#dead-code` `#tests` `#schema` `#notion`
-`#day-receipt`
+Tags: `#memory` `#graphiti` `#recall` `#personalization`
 
-### `dead-code-dead-tests-deep-dive-2026-05-23.md`
+### `second-pass-ops-production-2026-05-24.md`
 
-Deeper cleanup pass covering compatibility shims kept alive by tests, dead
-`voice_critic_log` schema, write-only consolidation summaries/relation edges,
-orphan OAuth cleanup, test-only budget counters, test-only analytics readbacks,
-Graphiti boot test quality, and unused import/local growth.
+Independent review of production durability: launchd services, encrypted
+backup, restore, dead-man monitor, startup health, `/status`, external MCP,
+Cloudflare, Keychain, credential rotation, and polling tradeoffs.
 
-Use for: cleanup sequencing after the initial dead-code report, especially
-where tests preserve old contracts.
+Use for: making the system recoverable, restartable, observable, and boring to
+operate for months.
 
-Tags: `#cleanup` `#dead-code` `#tests` `#schema` `#compatibility`
-`#graphiti`
+Tags: `#ops` `#production` `#backup` `#restore` `#launchd`
 
-### `2026-05-23-modernity-architecture-review.md`
+### `second-pass-cleanup-ci-packaging-2026-05-24.md`
 
-Modernity review against current agent/tooling ecosystem. It flags MCP
-authorization spec drift, non-green advertised quality gates, incomplete
-packaging, custom orchestration vs durable runtimes, and private tool semantics
-that should also use standard MCP annotations.
+Independent review of tests, Ruff, CI, MCP validation, wheel packaging,
+duplicated skills, stale modules, dead schema, copied test snippets, and
+determinism issues.
 
-Use for: deciding whether to invest in packaging, CI/check cleanup, MCP spec
-updates, or durable orchestration patterns.
+Use for: cleanup sprints, CI trust, packaging decisions, and deleting stale
+features without weakening coverage.
 
-Tags: `#modernity` `#architecture` `#mcp` `#oauth` `#ci`
-`#packaging` `#frameworks`
+Tags: `#cleanup` `#tests` `#ci` `#packaging` `#dead-code`
 
-## Tag Index
+### `second-pass-product-capabilities-2026-05-24.md`
 
-- `#approvals`: `prompt_persona_deep_dive.md`,
-  `security-review-2026-05-23.md`,
-  `security-solo-dev-deep-dive-2026-05-23.md`,
-  `telegram-ux-design-2026-05-23.md`,
-  `tool-subagent-risk-deep-dive-2026-05-23.md`,
-  `ux-review-what-user-wants-2026-05-23.md`
-- `#architecture`: `architecture-review-2026-05-23.md`,
-  `deep-architecture-review-2026-05-23.md`,
-  `2026-05-23-modernity-architecture-review.md`,
-  `top-system-review-and-roadmap-2026-05-23.md`
-- `#cleanup`: `dead-code-dead-tests-review-2026-05-23.md`,
-  `dead-code-dead-tests-deep-dive-2026-05-23.md`
-- `#conversation-quality`: `conversation-quality-evals-review-2026-05-23.md`
-- `#evals`: `conversation-quality-evals-review-2026-05-23.md`,
-  `top-system-review-and-roadmap-2026-05-23.md`
-- `#google-workspace`: `tool-subagent-inventory-2026-05-23.md`,
-  `tool-subagent-risk-deep-dive-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`,
-  `tool-surface-deep-dive-2026-05-23.md`,
-  `tool-surface-google-hermes-openclaw-2026-05-23.md`
-- `#memory`: `architecture-review-2026-05-23.md`,
-  `conversation-quality-evals-review-2026-05-23.md`,
-  `deep-architecture-review-2026-05-23.md`,
-  `other-tools-review-2026-05-23.md`,
-  `prompt_persona_deep_dive.md`,
-  `telegram-ux-design-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`,
-  `top-system-review-and-roadmap-2026-05-23.md`,
-  `ux-review-what-user-wants-2026-05-23.md`
-- `#media`: `voice-photo-media-pipeline-review-2026-05-23.md`
-- `#mcp`: `2026-05-23-modernity-architecture-review.md`,
-  `non-google-integrations-deep-review-2026-05-23.md`,
-  `ops-production-runbook-2026-05-23.md`,
-  `security-review-2026-05-23.md`,
-  `tool-subagent-inventory-2026-05-23.md`,
-  `tool-subagent-risk-deep-dive-2026-05-23.md`,
-  `tool-surface-deep-dive-2026-05-23.md`
-- `#non-google`: `non-google-integrations-deep-review-2026-05-23.md`,
-  `other-tools-review-2026-05-23.md`
-- `#ops`: `ops-production-runbook-2026-05-23.md`
-- `#photos`: `voice-photo-media-pipeline-review-2026-05-23.md`
-- `#proactive`: `deep-architecture-review-2026-05-23.md`,
-  `conversation-quality-evals-review-2026-05-23.md`,
-  `prompt_persona_deep_dive.md`,
-  `telegram-ux-design-2026-05-23.md`,
-  `top-system-review-and-roadmap-2026-05-23.md`,
-  `ux-review-what-user-wants-2026-05-23.md`
-- `#security`: `security-review-2026-05-23.md`,
-  `security-solo-dev-deep-dive-2026-05-23.md`,
-  `tool-subagent-risk-deep-dive-2026-05-23.md`
-- `#tests`: `2026-05-23-modernity-architecture-review.md`,
-  `dead-code-dead-tests-review-2026-05-23.md`,
-  `dead-code-dead-tests-deep-dive-2026-05-23.md`,
-  `tool-subagent-inventory-2026-05-23.md`
-- `#tools`: `tool-subagent-inventory-2026-05-23.md`,
-  `non-google-integrations-deep-review-2026-05-23.md`,
-  `other-tools-review-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`,
-  `tool-subagent-risk-deep-dive-2026-05-23.md`,
-  `tool-surface-deep-dive-2026-05-23.md`,
-  `tool-surface-google-hermes-openclaw-2026-05-23.md`
-- `#telegram`: `ops-production-runbook-2026-05-23.md`,
-  `telegram-ux-design-2026-05-23.md`,
-  `ux-review-what-user-wants-2026-05-23.md`,
-  `voice-photo-media-pipeline-review-2026-05-23.md`
-- `#ux`: `telegram-ux-design-2026-05-23.md`,
-  `ux-review-what-user-wants-2026-05-23.md`
-- `#voice`: `conversation-quality-evals-review-2026-05-23.md`,
-  `voice-photo-media-pipeline-review-2026-05-23.md`
-- `#priority`: `tool-priority-correction-2026-05-23.md`,
-  `other-tools-review-2026-05-23.md`,
-  `top-system-review-and-roadmap-2026-05-23.md`
-- `#readwise`: `other-tools-review-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`
-- `#briefings`: `other-tools-review-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`
-- `#shifts`: `other-tools-review-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`
-- `#audit`: `tool-priority-correction-2026-05-23.md`,
-  `other-tools-review-2026-05-23.md`,
-  `tool-surface-deep-dive-2026-05-23.md`
-- `#project-workflow`: `other-tools-review-2026-05-23.md`,
-  `tool-priority-correction-2026-05-23.md`
+Independent review of user-facing workflow leverage: cockpit/status, memory
+review, link shelf, reminders, day receipts, daily check-ins, morning brief,
+coding workflow, Readwise/Reader, wiki filing, shifts, and proactive source
+ownership.
+
+Use for: product roadmap, workflow priorities, proactive source dedupe,
+Readwise/Reader MVP planning, and Telegram actions/buttons.
+
+Tags: `#product` `#workflow` `#readwise` `#briefings` `#shifts`
+
+## Still Uncovered
+
+These expected review domains do not have second-pass files yet:
+
+- Non-Google integrations:
+  `second-pass-non-google-integrations-2026-05-24.md`
+- Sprint coverage synthesis:
+  `second-pass-sprint-coverage-2026-05-24.md`
+
+After those land, update this index with catalog entries and add them to the
+planning slices above.
