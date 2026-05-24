@@ -277,6 +277,18 @@ CREATE TABLE IF NOT EXISTS reminders (
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
 
+-- Legacy table kept only so the validity-columns migration can ALTER it on
+-- fresh DBs. Dropped by _migrate_drop_episode_summaries_and_fact_relations.
+CREATE TABLE IF NOT EXISTS fact_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_fact_id INTEGER NOT NULL,
+    predicate TEXT NOT NULL,
+    object_fact_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (subject_fact_id) REFERENCES facts(id),
+    FOREIGN KEY (object_fact_id) REFERENCES facts(id)
+);
+
 -- Phase 11: weekly sleep-time consolidation archive (Letta sleep-time pattern,
 -- Apr 2025). The current week's consolidation lives in core_blocks under the
 -- ``weekly_consolidation`` label so it flows into the system prompt every turn;
@@ -687,21 +699,7 @@ def _migrate_fact_relations_validity(conn: sqlite3.Connection) -> None:
     """Bi-temporal fact_relations: when a fact transitions to 'superseded',
     every relation touching it gets stamped with valid_to + the new fact's
     id. Recall filters valid_to IS NOT NULL. Graphiti pattern (Zep,
-    arxiv 2501.13956).
-
-    The fact_relations table is dropped by a later migration
-    (_migrate_drop_episode_summaries_and_fact_relations). On fresh DBs the
-    table never exists; this migration is a no-op in that case.
-    """
-    tables = {
-        row["name"]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='fact_relations'"
-        ).fetchall()
-    }
-    if not tables:
-        return
+    arxiv 2501.13956)."""
     existing = {
         row["name"]
         for row in conn.execute(
