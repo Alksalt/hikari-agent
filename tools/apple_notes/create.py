@@ -28,13 +28,23 @@ logger = logging.getLogger(__name__)
         "title: required short header. body: note contents (HTML is "
         "accepted; plain text is fine and will be wrapped). folder: "
         "optional iCloud Notes folder name; omitted = default Notes "
-        "folder. Returns the new note's id."
+        "folder. confirm: pass True to short-circuit with a wiki/memory "
+        "redirect — soft signal for callers that want to check intent "
+        "before writing to iCloud. Returns the new note's id."
     ),
-    {"title": str, "body": str, "folder": str},
+    {"title": str, "body": str, "folder": str, "confirm": bool},
 )
 async def note_create(args: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "darwin":
         return _ok("apple notes is macOS-only — i can't reach it from here")
+    # Sprint 6E: soft documentation lever. confirm=True redirects to the
+    # canonical permanent-knowledge tools so callers can sanity-check
+    # before writing to iCloud Notes (quick-capture only).
+    if args.get("confirm") is True:
+        return _ok(
+            "use the /memory or wiki tool instead; apple notes is quick-capture "
+            "only and does not back up reliably for permanent knowledge."
+        )
     title = (args.get("title") or "").strip()
     body = args.get("body") or ""
     folder = (args.get("folder") or "").strip()

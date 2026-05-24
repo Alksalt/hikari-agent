@@ -62,12 +62,71 @@ _TOP_COMMENT = (
 )
 
 
+class UnpinnedPackageError(RuntimeError):
+    """Raised when a bucket-3 MCP server arg references a package without a pin."""
+
+
+def _assert_pinned(name: str, args: list[str]) -> None:
+    """Sprint 6E: refuse to write a bucket-3 entry whose package args float
+    to latest. Bare ``@latest`` or no ``@version`` on npm packages and no
+    ``==version`` on uvx ``--from`` args make every restart a supply-chain
+    gamble. The validator looks for the package token (the one immediately
+    after ``-y`` for npx, or after ``--from`` for uvx) and asserts a pin
+    is present.
+
+    Git refs (``git+https://...@<sha-or-tag>``) and local paths (``./``,
+    ``/``) are accepted as-is.
+    """
+    if not args:
+        return
+
+    def _has_pin(token: str) -> bool:
+        # Git URLs: require an explicit @<ref> after the URL path.
+        if token.startswith("git+"):
+            # everything after the last '@' that's not part of '://'.
+            tail = token.rsplit("@", 1)[-1]
+            return bool(tail) and "/" not in tail and tail != token
+        # Local paths: not relevant.
+        if token.startswith(("./", "../", "/")):
+            return True
+        # npm scoped @scope/pkg@x.y.z
+        if token.startswith("@"):
+            # split off the leading scope @
+            rest = token[1:]
+            # need at least one more '@' for the version
+            if "@" not in rest:
+                return False
+            # forbid @latest as a pin
+            return not rest.endswith("@latest")
+        # uvx --from form: pkg==x.y.z
+        if "==" in token:
+            return True
+        # npm bare package: pkg@x.y.z
+        if "@" in token:
+            return not token.endswith("@latest")
+        return False
+
+    # Look for the package token: after '-y' for npx, after '--from' for uvx.
+    for i, a in enumerate(args):
+        if a in ("-y", "--from") and i + 1 < len(args):
+            pkg = args[i + 1]
+            if not _has_pin(pkg):
+                raise UnpinnedPackageError(
+                    f"MCP server {name!r}: package arg {pkg!r} has no version "
+                    f"pin. Pin via e.g. '{pkg}@1.2.3' (npm) or "
+                    f"'{pkg}==1.2.3' (uvx --from) in config/tools.yaml."
+                )
+            return
+    # No -y or --from in args — not a package launch; nothing to pin.
+
+
 def build_mcp_json(registry) -> dict:
     """Build the .mcp.json dict from bucket-3 server specs."""
     servers: dict[str, dict] = {}
     for name, spec in sorted(registry.mcp_servers().items()):
         if spec.bucket != 3:
             continue
+        _assert_pinned(name, list(spec.args))
         entry: dict = {}
         if name in _SERVER_COMMENTS:
             entry["_comment"] = _SERVER_COMMENTS[name]
