@@ -37,6 +37,7 @@ def test_all_destructive_tools_routed_through_gatekeeper():
 
 
 def test_no_defer_gated_tools_remain():
+    """Phase 6C: gate='defer' is dead — no tools should use it."""
     registry = load_registry()
     deferred = {t.id for t in registry.specs() if t.gate == "defer"}
     assert not deferred, f"defer-gated tools still present: {deferred}"

@@ -20,7 +20,6 @@ from the raw spec data.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -54,7 +53,7 @@ class ToolSpec:
     id: str
     bucket: int
     server: str | None
-    gate: str | None                   # null | defer | gatekeeper
+    gate: str | None                   # null | gatekeeper
     gate_timeout_sec: int | None       # per-tool approval timeout override
     untrusted_output: bool
     wrap_patterns: tuple[str, ...]
@@ -62,6 +61,10 @@ class ToolSpec:
     scopes_required: tuple[str, ...]   # e.g. ["https://...gmail.modify"]
     scopes_action: str | None          # human-readable action for voice error messages
     access_mode: str | None            # read | write | destructive (for wildcard policy)
+    # Informational fields (non-enforcing at runtime; Sprint 6F will use for MCP ToolAnnotations)
+    read_only: bool = False
+    destructive: bool = False
+    external_io: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,24 +164,6 @@ class ToolRegistry:
             if name not in seen:
                 seen.add(name)
                 out.append(name)
-        return out
-
-    def defer_gated_patterns(self) -> list[str]:
-        """Regex patterns for tools gated with ``gate: defer``.
-
-        Replaces ``approvals.defer_gated_tools`` in engagement.yaml.
-        Returns fullmatch-style patterns — exact same shape that
-        ``_is_defer_gated`` expects.
-        """
-        out: list[str] = []
-        for spec in self._tools:
-            if spec.gate == "defer":
-                if spec.id.endswith("*"):
-                    # Convert wildcard to regex prefix
-                    prefix = re.escape(spec.id[:-1])
-                    out.append(f"^{prefix}.*$")
-                else:
-                    out.append(f"^{re.escape(spec.id)}$")
         return out
 
     def wrap_patterns(self) -> list[str]:
@@ -334,6 +319,9 @@ def _parse_tool(raw: dict) -> ToolSpec:
         scopes_required=tuple(scopes_block.get("required") or []),
         scopes_action=scopes_block.get("action"),
         access_mode=access_mode,
+        read_only=bool(raw.get("read_only", False)),
+        destructive=bool(raw.get("destructive", False)),
+        external_io=bool(raw.get("external_io", False)),
     )
 
 

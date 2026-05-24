@@ -53,14 +53,6 @@ def test_notion_write_tools_are_gatekeeper_gated(tool_name):
     )
 
 
-@pytest.mark.parametrize("tool_name", _NOTION_WRITE_TOOLS)
-def test_notion_write_tools_not_in_defer_patterns(tool_name):
-    """Phase E: Notion write tools must NOT appear in defer_gated_patterns."""
-    from tools._tools_yaml import load_registry
-    defer_patterns = load_registry().defer_gated_patterns()
-    assert not any(tool_name in pat or pat in tool_name for pat in defer_patterns), (
-        f"{tool_name!r} must not be in defer_gated_patterns after Phase E."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -84,14 +76,6 @@ def test_github_create_tools_are_gatekeeper_gated(tool_name):
     )
 
 
-@pytest.mark.parametrize("tool_name", _GITHUB_CREATE_TOOLS)
-def test_github_tools_not_in_defer_patterns(tool_name):
-    """Phase E: GitHub tools must NOT appear in defer_gated_patterns."""
-    from tools._tools_yaml import load_registry
-    defer_patterns = load_registry().defer_gated_patterns()
-    assert not any(tool_name in pat or pat in tool_name for pat in defer_patterns), (
-        f"{tool_name!r} must not be in defer_gated_patterns after Phase E."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,18 +173,4 @@ def test_gmail_bulk_delete_is_gatekeeper_gated():
     assert spec is not None
     assert spec.gate == "gatekeeper", (
         "gmail_bulk_delete_messages must have gate: gatekeeper after Phase E migration"
-    )
-    from tools._tools_yaml import load_registry as _lr
-    defer_patterns = _lr().defer_gated_patterns()
-    assert not any(
-        "gmail_bulk_delete" in pat for pat in defer_patterns
-    ), "gmail_bulk_delete_messages must NOT be in defer_gated_patterns after Phase E"
-
-
-def test_no_defer_gated_tools_remain():
-    """Phase E: defer_gated_patterns() must return empty — all tools migrated."""
-    from tools._tools_yaml import load_registry
-    patterns = load_registry().defer_gated_patterns()
-    assert patterns == [], (
-        f"Expected no defer-gated tools after Phase E; got: {patterns}"
     )

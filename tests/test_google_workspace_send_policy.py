@@ -38,12 +38,12 @@ _GATEKEEPER_GATED_TOOLS = [
 ]
 
 
-def test_defer_gated_patterns_empty_after_phase_e():
-    """Phase E: defer_gated_patterns() must be empty — all tools migrated to gatekeeper."""
+def test_no_defer_gated_tools_remain():
+    """Phase 6C: gate='defer' is dead — all tools must use 'gatekeeper' or null."""
     from tools._tools_yaml import load_registry
-    patterns = load_registry().defer_gated_patterns()
-    assert patterns == [], (
-        f"Expected empty defer_gated_patterns after Phase E migration; got: {patterns}"
+    deferred = [t.id for t in load_registry().specs() if t.gate == "defer"]
+    assert not deferred, (
+        f"Unexpected gate:defer tools (dead path): {deferred}"
     )
 
 

@@ -11,7 +11,6 @@ importable without side effects and must work across concurrent turns.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -20,9 +19,30 @@ from agents import config as cfg
 
 logger = logging.getLogger(__name__)
 
+_CRITICAL_FIELDS = {
+    # recipients / addressees
+    "recipients", "to", "cc", "bcc", "addressees", "target_email", "bcc_list",
+    # filesystem / object identity (anything that names what gets touched/deleted)
+    "file_paths", "paths", "path", "files",
+    "object_id", "page_id", "block_id", "issue_number", "pull_number", "pullNumber",
+    "branch", "from_branch", "ref", "base", "head",
+    "draft_id", "message_id", "event_id", "calendar_id", "file_id", "folder_id",
+    "document_id", "spreadsheet_id", "presentation_id", "slide_id", "reminder_id",
+    "data_source_id", "parent",
+    # repo identity
+    "owner", "repo", "repository",
+    # executable / queries
+    "executable_code", "code", "query", "sql",
+    # payloads the operator must read in full to consent (body/content can hide
+    # malicious tail past a 100-char truncation)
+    "body", "html_body", "content", "text", "message",
+    "title", "subject", "name",
+    "values", "range",
+}
+
 
 def _gate_for(tool_name: str) -> str | None:
-    """Return the gate kind for a tool ('gatekeeper', 'defer', None)."""
+    """Return the gate kind for a tool ('gatekeeper' or None)."""
     try:
         from tools._tools_yaml import load_registry
         reg = load_registry()
@@ -82,19 +102,47 @@ def _resolve_chat_id() -> int:
 
 
 def _summarize(tool_name: str, input_args: dict) -> str:
-    # Per-tool readable summary first; fall back to JSON dump if unmapped.
+    """Render a human-readable approval preview for a tool call.
+
+    Per-tool summarizer wins if available. Fallback renders each arg
+    individually: critical fields (recipients, paths, body, code, etc.) are
+    shown in full so the operator can consent on what's actually happening;
+    other fields are truncated to 100 chars. If the critical fields alone
+    exceed the 2000-char cap, we REFUSE to render values at all and force
+    the operator to reject — better blind rejection than rubber-stamped
+    half-shown payload. If critical fields fit but non-critical pushes over,
+    we keep critical in full and elide the rest with a sentinel.
+    """
     try:
         from tools.gatekeeper import summarize as _per_tool_summary
         return _per_tool_summary(tool_name, input_args)
     except (ImportError, NotImplementedError):
         pass
-    try:
-        pretty = json.dumps(input_args, ensure_ascii=False)
-    except (TypeError, ValueError):
-        pretty = str(input_args)
-    if len(pretty) > 200:
-        pretty = pretty[:197] + "..."
-    return f"{tool_name}: {pretty}"
+    crit_parts: list[str] = []
+    other_parts: list[str] = []
+    for key, value in input_args.items():
+        if key in _CRITICAL_FIELDS:
+            crit_parts.append(f"{key}: {value!r}")
+        else:
+            v_str = str(value)
+            if len(v_str) > 100:
+                v_str = v_str[:100] + "…"
+            other_parts.append(f"{key}: {v_str}")
+    crit_body = "\n  ".join(crit_parts)
+    if len(crit_body) > 2000:
+        return (
+            f"{tool_name}:\n"
+            f"  ⚠ CRITICAL FIELDS EXCEED 2000 CHARS — REFUSE THIS APPROVAL "
+            f"AND ASK HIKARI TO SPLIT THE CALL\n"
+            f"  field_names: {sorted(input_args)}"
+        )
+    body = "  " + "\n  ".join(crit_parts + other_parts)
+    if len(body) > 2000:
+        body = (
+            "  " + crit_body
+            + "\n  …\n  ⚠ NON-CRITICAL FIELDS ELIDED — critical fields shown in full above"
+        )
+    return f"{tool_name}:\n{body}"
 
 
 async def gatekeeper_can_use_tool(

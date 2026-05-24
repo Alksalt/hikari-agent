@@ -180,14 +180,12 @@ def test_gmail_bulk_delete_gate_is_gatekeeper():
     assert spec.gate == "gatekeeper"
 
 
-def test_gmail_bulk_delete_not_in_defer_patterns():
-    """gmail_bulk_delete_messages must NOT appear in defer_gated_patterns()."""
+def test_gmail_bulk_delete_is_gatekeeper_gated():
+    """Phase 6C: gmail_bulk_delete_messages must be gatekeeper-gated (not defer, which is dead)."""
     from tools._tools_yaml import load_registry
     reg = load_registry()
-    patterns = reg.defer_gated_patterns()
-    import re
-    tool = "mcp__google_workspace__gmail_bulk_delete_messages"
-    for pat in patterns:
-        assert not re.fullmatch(pat, tool), (
-            f"gmail_bulk_delete_messages unexpectedly matched defer pattern {pat!r}"
-        )
+    spec = reg._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
+    assert spec is not None
+    assert spec.gate == "gatekeeper", (
+        "gmail_bulk_delete_messages must have gate: gatekeeper"
+    )

@@ -118,19 +118,18 @@ class TestAllowedToolNames:
 
 
 # ---------------------------------------------------------------------------
-# defer_gated_patterns()
+# Gatekeeper-gated tool coverage (Phase E / 6C)
+# defer_gated_patterns() removed in Phase 6C — the defer gate is dead code.
 # ---------------------------------------------------------------------------
 
-class TestDeferGatedPatterns:
-    def test_defer_gated_patterns_empty_after_phase_e(self, registry):
-        """Phase E: all tools migrated from defer → gatekeeper. No defer patterns remain."""
-        patterns = registry.defer_gated_patterns()
-        assert patterns == [], (
-            f"Expected no defer-gated tools after Phase E migration; got: {patterns}"
-        )
+class TestGatekeeperGated:
+    def test_no_defer_gated_tools(self, registry):
+        """Phase 6C: gate='defer' is a dead value — no tools should use it."""
+        deferred = [s.id for s in registry.specs() if s.gate == "defer"]
+        assert not deferred, f"Unexpected gate:defer tools (dead path): {deferred}"
 
     def test_dispatch_is_gatekeeper_gated(self, registry):
-        """Phase E: dispatch_claude_session is now gatekeeper-gated, not defer-gated."""
+        """Phase E: dispatch_claude_session is now gatekeeper-gated."""
         spec = registry._resolve("mcp__hikari_dispatch__dispatch_claude_session")
         assert spec is not None
         assert spec.gate == "gatekeeper", (
@@ -166,31 +165,6 @@ class TestDeferGatedPatterns:
         assert spec is not None and spec.gate == "gatekeeper", (
             "python_run must have gate: gatekeeper after Phase E"
         )
-
-    def test_matches_engagement_yaml_gate_list(self):
-        """Phase E: engagement.yaml approvals.defer_gated_tools may still list
-        patterns (for config-override compatibility), but the registry has zero
-        defer-gated tools. Both sources should agree."""
-        from agents import config as cfg
-        old_patterns = cfg.get("approvals.defer_gated_tools") or []
-
-        from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
-        reg = _load_yaml(DEFAULT_YAML_PATH)
-        new_patterns = reg.defer_gated_patterns()
-
-        # New registry must be empty after Phase E.
-        assert new_patterns == [], (
-            f"Registry defer_gated_patterns() must be empty after Phase E; got: {new_patterns}"
-        )
-        # If the config also has entries, the test environment may have a legacy
-        # engagement.yaml — log but don't fail (config override is intentional).
-        if old_patterns:
-            import warnings
-            warnings.warn(
-                f"engagement.yaml still has approvals.defer_gated_tools: {old_patterns} "
-                "— this is a legacy override; Phase F will clean this up.",
-                stacklevel=1,
-            )
 
 
 # ---------------------------------------------------------------------------

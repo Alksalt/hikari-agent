@@ -71,30 +71,8 @@ approvals:
   # Bare "n"/"no" intentionally excluded — too common as conversational
   # replies ("no I disagree"). Explicit "cancel"/"stop" only.
   reject_phrases: ["cancel", "stop", "abort"]
-  # defer_gated_tools DELETED (Phase A, step 9) — now sourced from
-  # config/tools.yaml via tools._tools_yaml.load_registry().defer_gated_patterns().
-  # Arg-conditional defer. Map qualified tool name → condition spec.
-  # Spec keys: key (str, arg name), contains_any (list of substring needles),
-  # case_insensitive (bool, default true). If the named arg's string form
-  # contains any of the needles, defer. Otherwise auto-allow (even though the
-  # tool is in defer_gated_tools). Tools NOT in this map always defer when
-  # their pattern matches.
-  defer_when_args_match:
-    "mcp__hikari_dispatch__dispatch_claude_session":
-      key: "allowed_tools"
-      contains_any: ["Edit", "Write", "Bash"]
-      case_insensitive: true
-  defer_resume_prompt_template: |
-    [system: the deferred tool call {tool_use_id} ({tool_name}) was approved
-    by the owner. execute it now by calling {confirmed_tool} with these args:
-    {tool_input}. do not ask for confirmation; do not paraphrase the args.]
-  # Map gated tool → post-approval sibling that bypasses the gate. Sibling
-  # lives on a separate "_confirmed" MCP server attached only during the
-  # resume turn, so its schema isn't in the manifest on normal turns.
-  defer_confirmed_tools:
-    "mcp__hikari_dispatch__dispatch_claude_session": "mcp__hikari_dispatch_confirmed__dispatch_claude_session_confirmed"
-  # When resurfacing a deferred approval after a bot restart, prepend this:
-  defer_restart_resurface_suffix: " (still waiting on this from before the restart.)"
+  # Defer-gate config removed in Sprint 6C — defer path is dead. All destructive
+  # tools route through `gate: gatekeeper` in config/tools.yaml.
 
 voice:
   enabled: true

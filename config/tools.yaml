@@ -167,7 +167,7 @@ mcp_servers:
 #
 # Explicit ids win over wildcard patterns (longest-prefix match for wildcards).
 #
-# gate: null | defer | gatekeeper
+# gate: null | gatekeeper  (defer was removed in Phase 6C — all gated tools use gatekeeper)
 # untrusted_output: true if this tool's output must be wrapped before model sees it
 # wrap_patterns: list of regex patterns (the PostToolUse wrap hook uses these)
 #

@@ -654,102 +654,6 @@ async def log_tool_failure(
     return {}
 
 
-def _is_defer_gated(tool_name: str, tool_input: dict[str, Any] | None = None) -> bool:
-    """Decide whether a tool call must be deferred for owner approval.
-
-    Phase 8: ``defer_gated_tools`` entries are *regex patterns* matched against
-    the full qualified tool name. A match always defers unless the tool has a
-    per-arg condition in ``defer_when_args_match`` — in which case the call
-    only defers when the named arg contains one of the configured needles.
-
-    Phase A (step 4): the gated-tool pattern list is sourced from
-    ``tools._tools_yaml.load_registry().defer_gated_patterns()`` with
-    ``approvals.defer_gated_tools`` from engagement.yaml as fallback.
-    ``defer_when_args_match`` remains in engagement.yaml.
-
-    Returns True iff the call should be deferred.
-    """
-    # Source the gated patterns from the registry; fall back to config.
-    cfg_gated = cfg.get("approvals.defer_gated_tools")
-    if cfg_gated is not None:
-        gated = list(cfg_gated)
-    else:
-        try:
-            from tools._tools_yaml import load_registry
-            gated = load_registry().defer_gated_patterns()
-        except Exception:
-            gated = []
-    if not gated:
-        return False
-
-    matched_pattern: str | None = None
-    for pat in gated:
-        try:
-            if re.fullmatch(str(pat), tool_name):
-                matched_pattern = str(pat)
-                break
-        except re.error:
-            logger.warning("defer_gated_tools: invalid regex %r", pat)
-            continue
-
-    if matched_pattern is None:
-        return False
-
-    arg_specs = cfg.get("approvals.defer_when_args_match") or {}
-    # Phase 8 / review-H1: arg-spec keys are matched against the tool name with
-    # the SAME regex semantics as ``defer_gated_tools``, so a wildcard pattern
-    # like ``^mcp__hikari_dispatch__.*$`` in the gated list still finds its
-    # condition spec under a key that matches that name. Exact-string keys
-    # remain valid (they're trivially regex-valid).
-    spec = None
-    for key, candidate in arg_specs.items():
-        try:
-            if re.fullmatch(str(key), tool_name):
-                spec = candidate
-                break
-        except re.error:
-            logger.warning("defer_when_args_match: invalid regex key %r", key)
-            continue
-    if not spec:
-        return True  # unconditional defer
-
-    if not isinstance(tool_input, dict):
-        return True  # be conservative when args are missing
-
-    key = str(spec.get("key") or "")
-    needles_raw = spec.get("contains_any") or []
-    case_insensitive = bool(spec.get("case_insensitive", True))
-    if not key or not needles_raw:
-        return True
-
-    raw_val = tool_input.get(key)
-    haystack = str(raw_val) if raw_val is not None else ""
-    if case_insensitive:
-        haystack = haystack.lower()
-        needles = [str(n).lower() for n in needles_raw]
-    else:
-        needles = [str(n) for n in needles_raw]
-
-    return any(n and n in haystack for n in needles)
-
-
-def _tier_for_tool(tool_name: str) -> int:  # noqa: ARG001
-    """Phase 8: single-tier model. Everything that defers uses tier 2
-    (CONFIRM-SEND). Kept as a function for backwards compatibility with the
-    legacy approval row schema."""
-    return 2
-
-
-def _summary_for_defer(tool_name: str, tool_input: dict[str, Any]) -> str:
-    """Render a one-line human-readable summary of the pending tool call.
-    The args are JSON-truncated; user sees enough to make an informed yes/no."""
-    import json
-    pretty = json.dumps(tool_input, ensure_ascii=False)
-    if len(pretty) > 240:
-        pretty = pretty[:237] + "..."
-    return f"{tool_name}\nargs: {pretty}"
-
-
 async def _precheck_scopes(
     tool_name: str,
     tool_input: dict[str, Any],
@@ -834,12 +738,13 @@ async def defer_gated_tools(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """PreToolUse hook — scope precheck + legacy defer-gated observation log.
+    """PreToolUse hook — scope precheck.
 
     Phase F: all destructive tools are gatekeeper-gated (gate: gatekeeper in
-    tools.yaml). The defer path no longer fires for any registered tool.
-    This hook runs scope precheck (shadow/enforce mode) and returns {} for
-    everything else so gatekeeper can_use_tool handles the actual gate.
+    tools.yaml). This hook runs scope precheck (shadow/enforce mode) and returns
+    {} for everything else so gatekeeper can_use_tool handles the actual gate.
+
+    Phase 6C: dead defer path fully removed.
     """
     if not isinstance(input_data, dict):
         return {}
@@ -852,15 +757,5 @@ async def defer_gated_tools(
     precheck_result = await _precheck_scopes(tool_name, input_dict)
     if precheck_result is not None:
         return precheck_result
-
-    # Legacy defer gate — returns False for all tools after Phase E/F since
-    # every gated tool has gate: gatekeeper. Kept for observability: a non-zero
-    # result here would indicate a misconfigured tool.
-    if tool_name and _is_defer_gated(tool_name, input_dict):
-        logger.warning(
-            "defer_gated_tools: tool %s is still defer-gated — "
-            "migrate it to gate: gatekeeper in tools.yaml",
-            tool_name,
-        )
 
     return {}
