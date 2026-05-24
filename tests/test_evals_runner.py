@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from evals.conversation import load_case, run_layer_a, run_layer_b, run_layer_c
+from evals.conversation import load_case, run_layer_a, run_layer_c
+from evals.conversation.runner import run_layer_b
 
 CASES_DIR = Path(__file__).resolve().parent.parent / "evals" / "conversation" / "cases"
 
@@ -44,14 +45,13 @@ def test_layer_a_all_cases_pass():
     assert not failures, "\n".join(failures)
 
 
-def test_layer_b_raises_not_implemented():
-    import asyncio
+def test_layer_b_runs_without_error():
+    """Layer B runner returns (passed, total, errors) tuple without raising."""
     layer_b = CASES_DIR / "layer_b"
-    case_files = sorted(layer_b.glob("*.yaml"))
-    assert case_files, "no Layer B cases found"
-    case = load_case(case_files[0])
-    with pytest.raises(NotImplementedError):
-        asyncio.run(run_layer_b(case))
+    assert layer_b.exists(), "layer_b cases dir not found"
+    passed, total, errors = run_layer_b(layer_b)
+    assert total > 0, "no Layer B cases discovered"
+    assert errors == [], f"Layer B failures: {errors}"
 
 
 def test_layer_c_raises_not_implemented():

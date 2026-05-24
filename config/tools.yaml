@@ -241,6 +241,7 @@ tools:
     bucket: 1
     server: hikari_memory
     gate: null
+    access_mode: write
     untrusted_output: false
     wrap_patterns: []
 
@@ -248,6 +249,7 @@ tools:
     bucket: 1
     server: hikari_memory
     gate: null
+    access_mode: write
     untrusted_output: false
     wrap_patterns: []
 

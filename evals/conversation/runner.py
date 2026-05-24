@@ -155,11 +155,23 @@ def run_layer_a(case: Case) -> EvalResult:
     )
 
 
-async def run_layer_b(case: Case) -> EvalResult:
-    """Golden chat fixture runner — drives run_isolated_turn, scores via judge."""
-    raise NotImplementedError(
-        "Layer B scaffolding only — wire to run_isolated_turn + scorer in next phase"
-    )
+def run_layer_b(cases_dir: Path) -> tuple[int, int, list[str]]:
+    """Deterministic Layer B runner — injection + bypass corpus.
+
+    Returns (passed, total, error_messages). No live LLM required.
+    """
+    from evals.conversation.runner_layer_b import discover_cases, run_layer_b_isolated_turn
+
+    cases = discover_cases(cases_dir)
+    passed = 0
+    errors: list[str] = []
+    for case_path in cases:
+        result = run_layer_b_isolated_turn(case_path)
+        if result.passed:
+            passed += 1
+        else:
+            errors.append(f"{result.case_name} ({result.kind}): {result.reason}")
+    return passed, len(cases), errors
 
 
 async def run_layer_c(case: Case) -> EvalResult:

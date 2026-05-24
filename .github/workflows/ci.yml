@@ -31,7 +31,9 @@ jobs:
 
       - name: Evals Layer A (hard assertions)
         run: uv run python scripts/run_evals.py --layer a
-        continue-on-error: true
+
+      - name: Evals Layer B (injection + bypass corpus)
+        run: uv run python scripts/run_evals.py --layer b --kind injection,bypass
 
       - name: Validate tool registry
         run: uv run python scripts/validate_tool_registry.py
