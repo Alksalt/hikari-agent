@@ -284,6 +284,8 @@ def _format_open_tasks() -> str:
 def _format_lexicon() -> str:
     """Inject top lexicon entry as a private-language hint. Sparing — at most
     one per turn, gated by score threshold."""
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
+
     if not cfg.get("lexicon.enabled", True):
         return ""
     n = int(cfg.get("lexicon.inject_top_n_per_turn", 1))
@@ -299,8 +301,25 @@ def _format_lexicon() -> str:
         return ""
     lines = ["# memory: shared lexicon (private phrases between you and them)"]
     for e in eligible:
-        lines.append(f"- \"{e['phrase'][:100]}\" (source: {e['source'][:40]})")
-    return "\n".join(lines)
+        raw_phrase = str(e.get("phrase") or "")[:100]
+        raw_source = str(e.get("source") or "")[:40]
+        try:
+            safe_phrase_text = sanitize(raw_phrase, kind="observation")
+        except MemoryInstructionShape:
+            logger.warning("_format_lexicon: phrase failed sanitizer; skipping entry")
+            continue
+        try:
+            safe_source_text = sanitize(raw_source, kind="observation")
+        except MemoryInstructionShape:
+            logger.warning("_format_lexicon: source failed sanitizer; skipping entry")
+            continue
+        safe_phrase = escape_remembered_tags(safe_phrase_text)
+        safe_source = escape_remembered_tags(safe_source_text)
+        lines.append(f"- \"{safe_phrase}\" (source: {safe_source})")
+    if len(lines) == 1:
+        return ""
+    rendered = "\n".join(lines)
+    return f'<remembered name="lexicon">{escape_remembered_tags(rendered)}</remembered>'
 
 
 def _format_session_handoff() -> str:

@@ -125,4 +125,13 @@ async def reserve_and_send(
             event_id, status="sent", telegram_message_id=tg_id,
             payload_json=payload_json,   # commit full payload only on success
         )
+
+        # 5. Post-send hooks keyed on dedup_key prefix.
+        if dedup_key and dedup_key.startswith("decision_resolve_due:"):
+            try:
+                decision_id = int(dedup_key.split(":", 1)[1])
+                db.decision_mark_asked(decision_id)
+            except Exception:
+                logger.exception("decision_mark_asked failed for %r", dedup_key)
+
         return ReservationResult("sent", None, tg_id, event_id, final_text)

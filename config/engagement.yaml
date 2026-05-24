@@ -36,7 +36,6 @@ proactive:
   default_enabled_sources:
     - gmail_unread_threshold
     - calendar_event_prep
-    - reminder_fire
     - wiki_new_file
     - decision_resolve_due
 
@@ -896,7 +895,7 @@ engagement:
   calendar_new_invite:
     enabled: false
   reminder_fire:
-    enabled: true
+    enabled: false
   decision_resolve_due:
     enabled: true
   callback_episode:

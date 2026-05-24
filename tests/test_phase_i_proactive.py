@@ -5,7 +5,7 @@ Coverage:
   - Selector: highest-score wins, disabled sources excluded, pool cap respected.
   - Guard: generic opener, missing anchor, well-formed, question-pattern.
   - /proactive command: status listing, on/off toggle, default count.
-  - Config: default_enabled_sources has exactly 5 entries.
+  - Config: default_enabled_sources has exactly 4 entries.
 """
 from __future__ import annotations
 
@@ -166,10 +166,26 @@ class TestProducerReminderFire:
         with patch("storage.db.reminder_due", return_value=[]):
             assert reminder_fire.collect() == []
 
-    def test_collect_returns_candidate_for_due_reminder(self):
+    def test_collect_returns_empty_when_disabled(self):
+        # reminder_fire producer is disabled in config/engagement.yaml (9C-1 single-owner fix).
+        # proactive.fire_due_reminders is the sole firing path.
         from agents.engagement.producers import reminder_fire
         due = [{"id": 1, "text": "call dentist", "fire_at": datetime.now(UTC).isoformat()}]
         with patch("storage.db.reminder_due", return_value=due):
+            results = reminder_fire.collect()
+        assert results == [], (
+            "reminder_fire producer must return empty when disabled in config"
+        )
+
+    def test_collect_returns_candidate_when_enabled_override(self):
+        # Verify the producer still works when explicitly enabled (e.g. for testing).
+        from agents.engagement.producers import reminder_fire
+        from agents import config as _cfg
+        due = [{"id": 1, "text": "call dentist", "fire_at": datetime.now(UTC).isoformat()}]
+        with (
+            patch("storage.db.reminder_due", return_value=due),
+            patch.object(_cfg, "get", side_effect=lambda k, d=None: True if k == "engagement.reminder_fire.enabled" else d),
+        ):
             results = reminder_fire.collect()
         assert len(results) == 1
         assert results[0].source == "reminder_fire"
@@ -528,6 +544,9 @@ class TestProactiveCommand:
         assert "proactive sources:" in call_args
         for src in sorted(DEFAULT_ENABLED_SOURCES):
             assert f"[✓] {src}" in call_args
+        assert "[✓] reminder_fire" not in call_args, (
+            "reminder_fire must not show as enabled in /proactive status"
+        )
 
     @pytest.mark.asyncio
     async def test_on_adds_source_to_runtime(self):
@@ -606,8 +625,8 @@ class TestProactiveCommand:
 # ============================================================================
 
 class TestConfig:
-    def test_default_enabled_is_5(self):
+    def test_default_enabled_is_4(self):
         from agents import config as cfg
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
-        assert len(list(sources)) == 5
+        assert len(list(sources)) == 4

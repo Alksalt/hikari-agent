@@ -6,8 +6,8 @@ producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
 All 15 producers:
-  Default-on (5):
-    gmail_unread_threshold, calendar_event_prep, reminder_fire,
+  Default-on (4):
+    gmail_unread_threshold, calendar_event_prep,
     wiki_new_file, decision_resolve_due
 
   Opt-in (10):
@@ -57,7 +57,6 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
 DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "gmail_unread_threshold",
     "calendar_event_prep",
-    "reminder_fire",
     "wiki_new_file",
     "decision_resolve_due",
 })

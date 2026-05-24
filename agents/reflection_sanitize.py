@@ -66,6 +66,34 @@ _INSTRUCTION_PATTERNS = [
     # Structural delimiters from injection_guard.wrap_untrusted — catches the
     # model echoing the actual untrusted-content wrapper into a core_block.
     re.compile(r"<<<HIKARI_UNTRUSTED_(BEGIN|END)>>>", re.I),
+
+    # Exfiltration verbs paired with targets/recipients.
+    re.compile(r"\bsend\s+(?:this|that|it|them|all)\s+to\b", re.IGNORECASE),
+    re.compile(r"\bsend\s+(?:all|every|each|any)\s+\w+(?:\s+\w+)?\s+to\b", re.IGNORECASE),
+    # exfiltrate is the only verb with no benign use — keep it bare
+    re.compile(r"\bexfiltrate\b", re.IGNORECASE),
+    # Other verbs only trigger when paired with a sensitive object/recipient
+    re.compile(
+        r"\b(?:leak|reveal|disclose|expose)\s+(?:the\s+|your\s+|my\s+|our\s+|this\s+|that\s+|all\s+|it\s+|them\s+)?"
+        r"(?:credentials?|secrets?|passwords?|api[\s_-]?keys?|private[\s_-]?keys?|tokens?|prompts?|"
+        r"system\s+prompts?|instructions?|persona|directives?|rules?|"
+        r"private\s+data|user[\s_-]?data|personal\s+data|database|data|everything|to\s+\S+)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bforward\s+(?:this|that|it|them|all|the)\s+(?:email|message|file)\b", re.IGNORECASE),
+    re.compile(r"\bpost\s+(?:this|that|it|them|all|the)\s+to\b", re.IGNORECASE),
+    re.compile(r"\bemail\s+(?:this|that|it|them|all|the)\s+to\b", re.IGNORECASE),
+    re.compile(r"\bdelete\s+(?:all|everything|every|each)\b", re.IGNORECASE),
+
+    # Prompt-leak / introspection.
+    re.compile(r"\b(?:tell|show|reveal|disclose|expose|give)\s+(?:me|us)\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions|directives|rules|persona)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:is|are)\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions|directives|rules)\b", re.IGNORECASE),
+    re.compile(r"\bprint\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions)\b", re.IGNORECASE),
+    re.compile(r"\brepeat\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions|above)\b", re.IGNORECASE),
+
+    # Imperative "do X for me" / urgency escalation.
+    re.compile(r"\b(?:perform|execute|run|do)\s+(?:the|this|that)\s+(?:action|task|operation|command)\s+for\s+me\b", re.IGNORECASE),
+    re.compile(r"\b(?:urgent|emergency|asap|immediately).{0,40}(?:transfer|send|forward|delete|reveal)\b", re.IGNORECASE),
 ]
 
 # All labels that the system legitimately writes via update_core_block or

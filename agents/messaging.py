@@ -35,6 +35,7 @@ EphemeralReason = Literal[
     "start_error", "cancel", "tasks",
     "memory_cmd", "approvals_cmd", "stickers_cmd",
     "location_ack", "proactive_cmd", "cockpit_cmd", "cost_cmd",
+    "reminders_cmd", "checkin_cmd",
 ]
 
 _MAX_TYPING_SLEEP = 2.5  # seconds
