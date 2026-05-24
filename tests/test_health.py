@@ -12,6 +12,7 @@ from agents.health import (
     _check_graph_outbox,
     _check_last_backup,
     _check_mcp_warm_pool,
+    _check_media_outbox,
     _check_recent_log_errors,
     _check_scheduler,
     collect_startup_report,
@@ -224,6 +225,7 @@ async def test_collect_startup_report_returns_all_keys():
         "mcp_warm_pool",
         "oauth_google",
         "graph_outbox_pending",
+        "media_outbox_pending",
         "last_backup_age_h",
         "log_recent_errors",
     }
@@ -260,3 +262,40 @@ async def test_collect_startup_report_never_raises():
     assert report["scheduler_jobs"]["ok"] is False
     assert report["oauth_google"]["ok"] is False
     assert report["graph_outbox_pending"]["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# media_outbox check
+# ---------------------------------------------------------------------------
+
+def test_media_outbox_under_threshold_ok():
+    with patch("storage.db.media_outbox_stats", return_value={"pending": 5, "sent": 3, "failed": 0, "aborted": 0}):
+        result = _check_media_outbox()
+    assert result.ok is True
+    assert result.value == 5
+
+
+def test_media_outbox_over_threshold_degraded():
+    with patch("storage.db.media_outbox_stats", return_value={"pending": 25, "sent": 10, "failed": 2, "aborted": 1}):
+        result = _check_media_outbox()
+    assert result.ok is False
+    assert result.value == 25
+    assert result.reason is not None
+
+
+def test_media_outbox_exception_returns_degraded():
+    with patch("storage.db.media_outbox_stats", side_effect=RuntimeError("db dead")):
+        result = _check_media_outbox()
+    assert result.ok is False
+
+
+@pytest.mark.asyncio
+async def test_collect_startup_report_includes_media_outbox_key():
+    """collect_startup_report must include 'media_outbox_pending' key."""
+    fake_sched = MagicMock()
+    fake_sched.get_jobs.return_value = [MagicMock(id="x")]
+    with patch("agents.google_health.probe_google_token", new=AsyncMock(return_value=(True, ""))), \
+         patch("storage.db.media_outbox_stats", return_value={"pending": 0, "sent": 0, "failed": 0, "aborted": 0}):
+        report = await collect_startup_report(scheduler=fake_sched)
+    assert "media_outbox_pending" in report
+    assert report["media_outbox_pending"]["ok"] is True

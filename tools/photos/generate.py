@@ -65,4 +65,14 @@ async def generate_photo(args: dict[str, Any]) -> dict[str, Any]:
     path = OUTBOX / fname
     path.write_bytes(img_bytes)
     _record_photo_sent()
+    # Insert a media_outbox row so the drainer uses the DB queue, not filesystem scan.
+    try:
+        ikey = f"photo_generated_{fname}"
+        db.media_outbox_insert(
+            "photo",
+            ikey,
+            {"path": str(path), "caption": "", "chat_id": None},
+        )
+    except Exception:
+        pass  # non-fatal: bridge will reconcile orphan on next boot
     return {"content": [{"type": "text", "text": f"queued {path.name} ({len(img_bytes)} bytes)"}]}

@@ -487,6 +487,21 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     checksum TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'run' CHECK(source IN ('run','backfill'))
 );
+
+CREATE TABLE IF NOT EXISTS media_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK(kind IN ('text','photo','sticker','document')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed','aborted')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    processed_at TEXT,
+    telegram_message_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_media_outbox_status ON media_outbox(status);
+CREATE INDEX IF NOT EXISTS idx_media_outbox_kind_status ON media_outbox(kind, status);
 """
 
 
@@ -4090,6 +4105,98 @@ def graph_outbox_stats() -> dict:
         ).fetchall():
             stats[row["status"]] = row["n"]
     return stats
+
+
+# ---------- media_outbox ----------
+
+def media_outbox_insert(
+    kind: str,
+    idempotency_key: str,
+    payload: dict,
+    *,
+    conn=None,
+) -> int | None:
+    """INSERT OR IGNORE into media_outbox. Returns row id if inserted, None on dedup."""
+    import json as _json
+    sql = (
+        "INSERT OR IGNORE INTO media_outbox "
+        "(kind, idempotency_key, payload_json, created_at) "
+        "VALUES (?, ?, ?, ?)"
+    )
+    args = (kind, idempotency_key, _json.dumps(payload, ensure_ascii=False), _now())
+    if conn is not None:
+        cur = conn.execute(sql, args)
+        return cur.lastrowid if cur.rowcount else None
+    with _conn() as c:
+        cur = c.execute(sql, args)
+        return cur.lastrowid if cur.rowcount else None
+
+
+def media_outbox_pending(kind: str | None = None, limit: int = 50) -> list[dict]:
+    """Return pending rows ordered oldest-first. Optional kind filter."""
+    sql = "SELECT * FROM media_outbox WHERE status='pending'"
+    args: list = []
+    if kind is not None:
+        sql += " AND kind=?"
+        args.append(kind)
+    sql += " ORDER BY created_at ASC, id ASC LIMIT ?"
+    args.append(int(limit))
+    with _conn() as c:
+        rows = c.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def media_outbox_mark_sent(row_id: int, telegram_message_id: int | None = None) -> None:
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "UPDATE media_outbox SET status='sent', processed_at=?, "
+            "telegram_message_id=? WHERE id=?",
+            (now, telegram_message_id, int(row_id)),
+        )
+
+
+def media_outbox_mark_failed(row_id: int, error: str) -> None:
+    """Increment attempts; flip to status='failed' when attempts+1 >= 5."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE media_outbox SET "
+            "attempts = attempts + 1, "
+            "last_error = ?, "
+            "status = CASE WHEN attempts + 1 >= 5 THEN 'failed' ELSE status END "
+            "WHERE id = ?",
+            (str(error)[:500], int(row_id)),
+        )
+
+
+def media_outbox_mark_aborted(row_id: int, reason: str) -> None:
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "UPDATE media_outbox SET status='aborted', last_error=?, processed_at=? WHERE id=?",
+            (str(reason)[:500], now, int(row_id)),
+        )
+
+
+def media_outbox_stats() -> dict:
+    """Return {status: count} dict. Zero-fills all known statuses."""
+    stats = {"pending": 0, "sent": 0, "failed": 0, "aborted": 0}
+    with _conn() as c:
+        for row in c.execute(
+            "SELECT status, COUNT(*) AS n FROM media_outbox GROUP BY status"
+        ).fetchall():
+            stats[row["status"]] = row["n"]
+    return stats
+
+
+def proactive_events_stale_reserved(cutoff_iso: str) -> list[dict]:
+    """Return proactive_events rows with status='reserved' created before cutoff_iso."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM proactive_events WHERE status='reserved' AND sent_at < ?",
+            (cutoff_iso,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def fact_by_id(fact_id: int) -> dict[str, Any] | None:

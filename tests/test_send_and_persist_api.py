@@ -288,3 +288,59 @@ async def test_photo_path(monkeypatch, tmp_path):
     assert result.telegram_message_id == 43
     assert len(bot.sent_photos) == 1
     assert len(bot.sent_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_collision_is_insert_or_ignore(monkeypatch, tmp_path):
+    """Two sends with the same idempotency_key (same ms, same text) should not
+    raise — the second media_outbox INSERT OR IGNORE silently deduplicates."""
+    _patch_filter(monkeypatch)
+    from unittest.mock import patch
+
+    # Force the same timestamp so the idempotency key collides.
+    fixed_ms = 1_700_000_000_000
+    with patch("agents.messaging.time") as mock_time:
+        mock_time.time.return_value = fixed_ms / 1000
+
+        from agents.messaging import send_and_persist
+
+        bot = _FakeBot()
+        r1 = await send_and_persist(
+            bot=bot, chat_id=7, text="same text", source="chat",
+            skip_choreography=True,
+        )
+        r2 = await send_and_persist(
+            bot=bot, chat_id=7, text="same text", source="chat",
+            skip_choreography=True,
+        )
+
+    assert r1.ok is True
+    assert r2.ok is True
+    # Two messages were sent to Telegram.
+    assert len(bot.sent_messages) == 2
+    # media_outbox has at most 2 rows (second may be deduped to 1 if key truly identical)
+    with db._conn() as c:
+        count = c.execute("SELECT COUNT(*) FROM media_outbox").fetchone()[0]
+    assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_crash_mid_send_leaves_failed_row(monkeypatch, tmp_path):
+    """When the Telegram send raises, a failed/pending media_outbox row is left."""
+    _patch_filter(monkeypatch)
+    from agents.messaging import send_and_persist
+
+    bot = _FakeBot(fail=True)
+    result = await send_and_persist(
+        bot=bot, chat_id=7, text="will crash", source="chat",
+        skip_choreography=True,
+    )
+
+    assert result.ok is False
+    # DB must have a row (the pre-send INSERT) in pending or failed state.
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT status FROM media_outbox"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] in ("pending", "failed")

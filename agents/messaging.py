@@ -7,8 +7,10 @@ the sequence.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import pathlib
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -87,6 +89,11 @@ async def send_and_persist(
     if not text and photo_path is None:
         return SendResult("", None, False)
 
+    _db = db
+    if _db is None:
+        from storage import db as _db_mod
+        _db = _db_mod
+
     final_text = text
 
     # Apply post-filter only when there is text to filter.
@@ -98,6 +105,28 @@ async def send_and_persist(
             final_text = await rewrite_or_fallback(text, result, mood=None)
         else:
             final_text = result.text
+
+    # Compute idempotency key from stable inputs BEFORE the Telegram call.
+    created_at_ms = int(time.time() * 1000)
+    kind_str = "photo" if photo_path is not None else "text"
+    _ikey_raw = f"{kind_str}{final_text or ''}{created_at_ms}"
+    idempotency_key = hashlib.sha256(_ikey_raw.encode()).hexdigest()[:32]
+
+    # Insert media_outbox row BEFORE the Telegram call (crash-safe durability).
+    _outbox_row_id: int | None = None
+    try:
+        _outbox_row_id = _db.media_outbox_insert(
+            kind_str,
+            idempotency_key,
+            {
+                "chat_id": chat_id,
+                "source": source,
+                "text": final_text,
+                "photo_path": str(photo_path) if photo_path is not None else None,
+            },
+        )
+    except Exception:
+        logger.exception("send_and_persist: media_outbox pre-insert failed (non-fatal)")
 
     # Typing choreography: best-effort, non-fatal.
     if not skip_choreography and text and hasattr(bot, "send_chat_action"):
@@ -122,18 +151,26 @@ async def send_and_persist(
             tg_msg = await reply_to.reply_text(final_text)
         else:
             tg_msg = await bot.send_message(chat_id=chat_id, text=final_text)
-    except Exception:
+    except Exception as _exc:
         logger.exception("send_and_persist: Telegram send failed")
+        if _outbox_row_id is not None:
+            try:
+                _db.media_outbox_mark_failed(_outbox_row_id, str(_exc))
+            except Exception:
+                logger.exception("send_and_persist: media_outbox_mark_failed failed (non-fatal)")
         return SendResult(final_text, None, False)
 
     tg_msg_id: int | None = getattr(tg_msg, "message_id", None)
 
+    # Mark outbox row sent.
+    if _outbox_row_id is not None:
+        try:
+            _db.media_outbox_mark_sent(_outbox_row_id, tg_msg_id)
+        except Exception:
+            logger.exception("send_and_persist: media_outbox_mark_sent failed (non-fatal)")
+
     # Persist to DB after a confirmed send.
     if persist and final_text:
-        _db = db
-        if _db is None:
-            from storage import db as _db_mod
-            _db = _db_mod
         try:
             if tg_msg_id is not None:
                 _db.append_message_with_telegram_id(

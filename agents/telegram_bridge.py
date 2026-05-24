@@ -156,32 +156,64 @@ class TypingHeartbeat:
             return
 
 
-async def _drain_photo_outbox(bot, chat_id: int) -> int:
-    """Send and delete every file in the photo outbox. Returns count sent."""
+def _reconcile_photo_outbox_orphans() -> None:
+    """One-shot boot reconciler: insert media_outbox rows for photo files on disk
+    that have no corresponding DB row (legacy files predating 7A)."""
     if not PHOTO_OUTBOX.exists():
-        return 0
-    sent = 0
+        return
     for path in sorted(PHOTO_OUTBOX.iterdir()):
         if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
             continue
+        ikey = f"photo_legacy_{path.name}"
         try:
-            from agents.messaging import send_and_persist  # noqa: PLC0415
-            result = await send_and_persist(
-                bot=bot,
-                chat_id=chat_id,
-                text="",                # photo has no caption text
-                source="proactive",
-                photo_path=path,
-                persist=False,          # photos don't write a messages row
-                run_hooks=False,
-                skip_choreography=True,
+            db.media_outbox_insert(
+                "photo",
+                ikey,
+                {"path": str(path), "caption": "", "chat_id": None},
             )
-            if not result.ok:
-                logger.warning("failed to send photo %s (send_and_persist not ok)", path.name)
-                continue
+        except Exception:
+            logger.debug("_reconcile_photo_outbox_orphans: insert failed for %s", path.name)
+
+
+async def _drain_photo_outbox(bot, chat_id: int) -> int:
+    """Send pending photo media_outbox rows. Returns count sent.
+
+    Strategy: query media_outbox_pending(kind='photo'), send each file directly
+    via bot.send_photo, then mark_sent + unlink. The photo file at payload['path']
+    is the artifact; the DB row is the durable queue entry.
+    """
+    rows = db.media_outbox_pending(kind="photo")
+    sent = 0
+    for row in rows:
+        import json as _json  # noqa: PLC0415
+        try:
+            payload = _json.loads(row["payload_json"])
+        except (ValueError, KeyError):
+            logger.warning("_drain_photo_outbox: bad payload_json on row %s", row["id"])
+            db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+            continue
+        path_str = payload.get("path")
+        if not path_str:
+            db.media_outbox_mark_aborted(row["id"], "missing_path")
+            continue
+        path = __import__("pathlib").Path(path_str)
+        if not path.is_file():
+            db.media_outbox_mark_aborted(row["id"], "file_missing")
+            continue
+        caption = payload.get("caption") or ""
+        try:
+            with open(path, "rb") as photo_fh:
+                tg_msg = await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_fh,
+                    caption=caption or None,
+                )
+            tg_msg_id = getattr(tg_msg, "message_id", None)
+            db.media_outbox_mark_sent(row["id"], tg_msg_id)
             sent += 1
         except Exception:
-            logger.exception("failed to send photo %s", path.name)
+            logger.exception("_drain_photo_outbox: failed to send photo row %s", row["id"])
+            db.media_outbox_mark_failed(row["id"], "send_photo raised")
             continue
         try:
             path.unlink()
@@ -2296,6 +2328,17 @@ def main() -> None:
                 skip_choreography=True,
             )
             return result.final_text, result.telegram_message_id, result.ok
+
+        # 7A: reconcile any photo files written before 7A (one-shot, idempotent).
+        _reconcile_photo_outbox_orphans()
+
+        # 7A: flip stale proactive_events 'reserved' rows to 'aborted' before
+        # the scheduler starts dispatching new events.
+        try:
+            from agents import proactive_reaper  # noqa: PLC0415
+            await proactive_reaper.reap_stale_reservations()
+        except Exception:
+            logger.exception("proactive_reaper failed (non-fatal)")
 
         scheduler = build_scheduler(send_text)
         scheduler.start()

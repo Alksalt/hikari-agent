@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _OUTBOX_PENDING_WARN = 50
 _BACKUP_AGE_WARN_HOURS = 30
 _LOG_RECENT_ERRORS_WARN = 5
+_MEDIA_OUTBOX_PENDING_WARN = 20
 
 # Where the daily backup writes (scripts/backup.sh:15).
 _BACKUP_DIR = Path.home() / (
@@ -119,6 +120,20 @@ def _check_graph_outbox() -> CheckResult:
             ok=count <= _OUTBOX_PENDING_WARN,
             value=count,
             reason=None if count <= _OUTBOX_PENDING_WARN else f"backlog>{_OUTBOX_PENDING_WARN}",
+        )
+    except Exception as e:
+        return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
+
+
+def _check_media_outbox() -> CheckResult:
+    try:
+        stats = db.media_outbox_stats()
+        pending = stats.get("pending", 0)
+        ok = pending <= _MEDIA_OUTBOX_PENDING_WARN
+        return CheckResult(
+            ok=ok,
+            value=pending,
+            reason=None if ok else f"backlog>{_MEDIA_OUTBOX_PENDING_WARN}",
         )
     except Exception as e:
         return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
@@ -216,6 +231,7 @@ async def collect_startup_report(
         "mcp_warm_pool": _check_mcp_warm_pool().to_dict(),
         "oauth_google": (await _check_oauth_google(oauth_google_prefetched)).to_dict(),
         "graph_outbox_pending": _check_graph_outbox().to_dict(),
+        "media_outbox_pending": _check_media_outbox().to_dict(),
         "last_backup_age_h": _check_last_backup().to_dict(),
         "log_recent_errors": _check_recent_log_errors().to_dict(),
     }

@@ -19,8 +19,10 @@ State is kept in runtime_state:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
+import time
 from typing import TYPE_CHECKING
 
 from storage import db
@@ -112,11 +114,33 @@ async def force_send_sticker(bot: Bot, chat_id: int) -> str | None:
         logger.warning("force_send_sticker: pool is empty — cannot fall back")
         return None
     file_id = random.choice(pool)
+    sent_at_ms = int(time.time() * 1000)
+    ikey = "sticker_" + hashlib.sha256(f"{file_id}{sent_at_ms}".encode()).hexdigest()[:24]
+    row_id: int | None = None
     try:
-        await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+        row_id = db.media_outbox_insert(
+            "sticker",
+            ikey,
+            {"file_id": file_id, "chat_id": chat_id, "context": "force_send"},
+        )
+    except Exception:
+        logger.debug("force_send_sticker: media_outbox pre-insert failed (non-fatal)")
+    try:
+        tg_msg = await bot.send_sticker(chat_id=chat_id, sticker=file_id)
     except Exception:
         logger.exception("force_send_sticker: send failed (non-fatal)")
+        if row_id is not None:
+            try:
+                db.media_outbox_mark_failed(row_id, "send_sticker raised")
+            except Exception:
+                pass
         return None
+    if row_id is not None:
+        try:
+            tg_msg_id = getattr(tg_msg, "message_id", None)
+            db.media_outbox_mark_sent(row_id, tg_msg_id)
+        except Exception:
+            pass
     # NOTE: deliberately do NOT call _record_sticker — a forced send must not
     # reset the regular probability-gate cooldown.
     return file_id
@@ -134,10 +158,32 @@ async def maybe_send_sticker(bot: Bot, chat_id: int, outbound_counter: int) -> s
     file_id = pick_sticker_file_id()
     if file_id is None:
         return None
+    sent_at_ms = int(time.time() * 1000)
+    ikey = "sticker_" + hashlib.sha256(f"{file_id}{sent_at_ms}".encode()).hexdigest()[:24]
+    row_id: int | None = None
     try:
-        await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+        row_id = db.media_outbox_insert(
+            "sticker",
+            ikey,
+            {"file_id": file_id, "chat_id": chat_id, "context": "maybe_send"},
+        )
+    except Exception:
+        logger.debug("maybe_send_sticker: media_outbox pre-insert failed (non-fatal)")
+    try:
+        tg_msg = await bot.send_sticker(chat_id=chat_id, sticker=file_id)
     except Exception:
         logger.exception("stickers: send_sticker failed (non-fatal)")
+        if row_id is not None:
+            try:
+                db.media_outbox_mark_failed(row_id, "send_sticker raised")
+            except Exception:
+                pass
         return None
+    if row_id is not None:
+        try:
+            tg_msg_id = getattr(tg_msg, "message_id", None)
+            db.media_outbox_mark_sent(row_id, tg_msg_id)
+        except Exception:
+            pass
     _record_sticker(outbound_counter)
     return file_id
