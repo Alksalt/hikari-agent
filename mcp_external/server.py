@@ -74,15 +74,20 @@ def _derive_approved_by() -> str:
 
     OAuth-authenticated calls attribute to ``oauth:<client_id>`` so the audit
     log distinguishes individual OAuth clients from the legacy service-token
-    path (which keeps the old ``external_mcp`` label).
+    path (which keeps the old ``external_mcp`` label).  Hashed-bearer tokens
+    attribute to ``bearer_hashed:<owner>``.
     """
     info = _auth_context.get()
     if not info:
         # No middleware context — direct in-process call (tests, scripts).
         return _audit_label()
-    if info.get("auth_method") == "oauth":
+    method = info.get("auth_method")
+    if method == "oauth":
         client_id = info.get("oauth_client_id") or "unknown"
         return f"oauth:{client_id}"
+    if method == "bearer_hashed":
+        owner = info.get("oauth_owner") or "unknown"
+        return f"bearer_hashed:{owner}"
     # Bearer / service-token path keeps the historical label.
     return _audit_label()
 

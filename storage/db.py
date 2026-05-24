@@ -502,6 +502,18 @@ CREATE TABLE IF NOT EXISTS media_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_media_outbox_status ON media_outbox(status);
 CREATE INDEX IF NOT EXISTS idx_media_outbox_kind_status ON media_outbox(kind, status);
+
+-- Sprint 7F: sha256-hashed bearer token surface. Stores only the hash.
+-- Plaintext token is returned once at create time and never persisted.
+-- For simple bearer tokens created via oauth_token_create.
+-- The full OAuth 2.1 dance uses the oauth_tokens table above.
+CREATE TABLE IF NOT EXISTS oauth_token_hashes (
+    token_hash TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    scopes TEXT
+);
 """
 
 
@@ -532,6 +544,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_entities_and_provenance",
     "migrate_messages_fts",
     "migrate_graph_outbox",
+    "migrate_oauth_tokens_to_hash",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -661,6 +674,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_entities_and_provenance", _migrate_entities_and_provenance)
     run_once(conn, "migrate_messages_fts", _migrate_messages_fts)
     run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
+    run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -3635,7 +3649,39 @@ def oauth_token_mint(client_id: str, token_type: str,
 
 
 def oauth_token_validate(token: str) -> dict[str, Any] | None:
-    """Return the token row if active (unexpired AND unrevoked), else None.
+    """Validate a bearer token by sha256 hash lookup against oauth_token_hashes.
+
+    Returns metadata dict ``{owner, expires_at, scopes}`` on success, or None
+    if the token is unknown or expired. Uses hmac.compare_digest for
+    constant-time confirmation of the hash match.
+
+    NOTE: This validates tokens created via ``oauth_token_create``. For the
+    full OAuth 2.1 dance tokens (oauth_tokens table) use
+    ``_oauth2_token_validate``.
+    """
+    import hmac
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    row = _get_pooled_conn().execute(
+        "SELECT token_hash, owner, expires_at, scopes FROM oauth_token_hashes "
+        "WHERE token_hash = ?",
+        (token_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    # Constant-time PK confirmation (defensive against timing side-channels if
+    # the query planner ever takes a different path).
+    if not hmac.compare_digest(row["token_hash"], token_hash):
+        return None
+    # Check expiry — None means no expiry set (non-expiring token).
+    if row["expires_at"] is not None and row["expires_at"] < _now():
+        return None
+    return {"owner": row["owner"], "expires_at": row["expires_at"],
+            "scopes": row["scopes"]}
+
+
+def _oauth2_token_validate(token: str) -> dict[str, Any] | None:
+    """Validate a full OAuth 2.1 access token from the oauth_tokens table.
+    Returns the row if active (unexpired AND unrevoked), else None.
     Bumps ``last_used_at`` on the validated row."""
     with _conn() as c:
         row = c.execute(
@@ -3652,14 +3698,44 @@ def oauth_token_validate(token: str) -> dict[str, Any] | None:
     return dict(row)
 
 
-def oauth_token_revoke(token: str) -> None:
-    """Mark a single token revoked (idempotent)."""
+def oauth_token_create(
+    owner: str,
+    scopes: str | None = None,
+    expires_at: str | None = None,
+) -> str:
+    """Generate a fresh bearer token, hash it, insert the hash, and return
+    the plaintext token. This is the ONLY time the plaintext is visible —
+    the caller MUST save it immediately.
+
+    The token is a URL-safe random 32-byte value (256 bits of entropy). Only
+    the sha256 hash is stored; the plaintext is never persisted.
+    """
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
     with _conn() as c:
         c.execute(
-            "UPDATE oauth_tokens SET revoked_at = ? "
-            "WHERE token = ? AND revoked_at IS NULL",
-            (_now(), token),
+            "INSERT INTO oauth_token_hashes(token_hash, owner, created_at, expires_at, scopes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (token_hash, owner, _now(), expires_at, scopes),
         )
+    return token  # operator MUST save this; it is never recoverable
+
+
+def oauth_token_revoke(token: str) -> bool:
+    """Revoke a hashed bearer token from oauth_token_hashes by hash.
+
+    Returns True if a row was deleted, False if no matching token was found.
+    For full OAuth 2.1 token revocation, use ``oauth_token_revoke_family`` or
+    the direct ``oauth_tokens`` table operations.
+    """
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM oauth_token_hashes WHERE token_hash = ?",
+            (token_hash,),
+        )
+    return cur.rowcount > 0
 
 
 def oauth_token_consume_refresh(token: str, client_id: str) -> dict[str, Any] | None:
@@ -3735,8 +3811,9 @@ def oauth_audit(event_type: str, client_id: str | None = None,
 
 
 def oauth_cleanup_expired(revoked_retention_days: int = 30) -> int:
-    """Sweep expired oauth_codes (consumed or past TTL) and expired/old-revoked
-    oauth_tokens. Called from daily reflection. Returns total rows deleted.
+    """Sweep expired oauth_codes (consumed or past TTL), expired/old-revoked
+    oauth_tokens, and expired oauth_token_hashes. Called from daily reflection.
+    Returns total rows deleted.
 
     Comparisons use Python isoformat strings, not ``datetime('now')`` —
     expires_at / revoked_at are written via ``_now()`` (Python isoformat with
@@ -3759,7 +3836,12 @@ def oauth_cleanup_expired(revoked_retention_days: int = 30) -> int:
             "OR (revoked_at IS NOT NULL AND revoked_at < ?)",
             (now_iso, revoked_cutoff),
         ).rowcount
-    return int(n1 or 0) + int(n2 or 0)
+        n3 = c.execute(
+            "DELETE FROM oauth_token_hashes "
+            "WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (now_iso,),
+        ).rowcount
+    return int(n1 or 0) + int(n2 or 0) + int(n3 or 0)
 
 
 # ---------- future_letters (Ghost-of-Future-Self monthly letter) ----------
@@ -4040,6 +4122,41 @@ def _migrate_graph_outbox(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX idx_graph_outbox_source "
         "ON graph_outbox(source_table, source_id)"
     )
+
+
+def _migrate_oauth_tokens_to_hash(conn: sqlite3.Connection) -> None:
+    """Sprint 7F: copy plaintext oauth_tokens rows to sha256-hashed surface.
+
+    Reads any existing rows from the oauth_tokens table and inserts hashed
+    representations into oauth_token_hashes. The oauth_tokens table is NOT
+    dropped — the full OAuth 2.1 dance (oauth_token_mint, _oauth2_token_validate)
+    continues to use it. This migration is a one-time back-fill that seeds
+    oauth_token_hashes from existing access tokens so callers that validate
+    via hash can still find pre-existing tokens.
+
+    Safe no-op when oauth_tokens is empty or doesn't exist.
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='oauth_tokens'"
+    )
+    if not cur.fetchone():
+        return  # nothing to migrate (fresh DB)
+    rows = conn.execute(
+        "SELECT token, client_id, created_at, expires_at, scope FROM oauth_tokens"
+    ).fetchall()
+    for row in rows:
+        token = row[0]
+        owner = str(row[1])  # use client_id as owner
+        created_at = row[2]
+        expires_at = row[3]
+        scopes = row[4]
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        conn.execute(
+            "INSERT OR IGNORE INTO oauth_token_hashes"
+            "(token_hash, owner, created_at, expires_at, scopes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (token_hash, owner, created_at, expires_at, scopes),
+        )
 
 
 def graph_outbox_insert(source_table: str, source_id: int, payload_json: str,

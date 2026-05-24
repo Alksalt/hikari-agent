@@ -15,6 +15,22 @@ PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME"
 SERVICE_NAME="gui/$(id -u)/com.hikari.backup"
 SCRIPT_PATH="$REPO_DIR/scripts/backup.sh"
 
+# Sprint 7F: require age encryption key before installing
+RECIPIENT_KEY="${HIKARI_BACKUP_AGE_RECIPIENT:-$HOME/.config/hikari/backup_age.pub}"
+if [ ! -f "$RECIPIENT_KEY" ] && [ -z "${HIKARI_BACKUP_AGE_RECIPIENT:-}" ]; then
+    echo "error: age recipient key not found at $RECIPIENT_KEY" >&2
+    echo "       Generate one with: bash $REPO_DIR/scripts/age_keygen.sh" >&2
+    echo "       Or set HIKARI_BACKUP_AGE_RECIPIENT to point at an existing public key." >&2
+    exit 1
+fi
+
+# Verify age binary is on PATH
+if ! command -v age >/dev/null 2>&1; then
+    echo "error: 'age' binary not found in PATH" >&2
+    echo "       Install via: brew install age" >&2
+    exit 1
+fi
+
 if [ "${1:-}" = "--uninstall" ]; then
     echo "uninstalling $SERVICE_NAME ..."
     launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
@@ -68,10 +84,14 @@ cat > "$PLIST_PATH" <<EOF
     <dict>
         <key>PATH</key>
         <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HIKARI_BACKUP_AGE_RECIPIENT</key>
+        <string>$RECIPIENT_KEY</string>
     </dict>
 </dict>
 </plist>
 EOF
+
+chmod 600 "$PLIST_PATH"
 
 echo "wrote $PLIST_PATH"
 

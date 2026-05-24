@@ -164,6 +164,32 @@ def test_last_backup_fresh_ok(tmp_path: Path):
     assert result.value < 1.0  # fresh, less than 1h old
 
 
+def test_last_backup_picks_up_tar_age(tmp_path: Path):
+    """Fix 1: _check_last_backup must detect .tar.age files (Sprint 7F format)."""
+    f = tmp_path / "hikari-20260524.tar.age"
+    f.write_bytes(b"encrypted")
+    with patch("agents.health._BACKUP_DIR", tmp_path):
+        result = _check_last_backup()
+    assert result.ok is True
+    assert result.value < 1.0  # fresh
+
+
+def test_last_backup_tar_age_preferred_over_legacy_db(tmp_path: Path):
+    """Fix 1: when both .tar.age and .db exist, .tar.age is used (break after first pattern)."""
+    import os
+    age_file = tmp_path / "hikari-20260524.tar.age"
+    age_file.write_bytes(b"encrypted")
+    # A stale .db file that would appear degraded if selected
+    db_file = tmp_path / "hikari-20260520.db"
+    db_file.write_bytes(b"x")
+    old = time.time() - 48 * 3600
+    os.utime(db_file, (old, old))
+    with patch("agents.health._BACKUP_DIR", tmp_path):
+        result = _check_last_backup()
+    # Should be fresh — the .tar.age is recent, not the old .db
+    assert result.ok is True
+
+
 def test_last_backup_stale_degraded(tmp_path: Path):
     f = tmp_path / "hikari-20260520.db"
     f.write_bytes(b"x")

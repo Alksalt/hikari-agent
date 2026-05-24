@@ -144,13 +144,17 @@ def _check_last_backup() -> CheckResult:
         if not _BACKUP_DIR.exists():
             return CheckResult(ok=False, value=None, reason="backup_dir_missing")
         latest_mtime: float | None = None
-        for p in _BACKUP_DIR.glob("hikari-*.db"):
-            try:
-                mt = p.stat().st_mtime
-            except OSError:
-                continue
-            if latest_mtime is None or mt > latest_mtime:
-                latest_mtime = mt
+        patterns = ("hikari-*.tar.age", "hikari-*.db")
+        for pattern in patterns:
+            for p in _BACKUP_DIR.glob(pattern):
+                try:
+                    mt = p.stat().st_mtime
+                except OSError:
+                    continue
+                if latest_mtime is None or mt > latest_mtime:
+                    latest_mtime = mt
+            if latest_mtime is not None:
+                break  # found .tar.age — don't fall back to legacy
         if latest_mtime is None:
             return CheckResult(ok=False, value=None, reason="no_backups_found")
         age_hours = round((time.time() - latest_mtime) / 3600, 1)

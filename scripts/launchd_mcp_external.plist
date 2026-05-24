@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.hikari.mcp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/__OPERATOR__/.local/bin/uv</string>
+    <string>run</string>
+    <string>python</string>
+    <string>-m</string>
+    <string>mcp_external.launch</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/__OPERATOR__/agents/hikari-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/__OPERATOR__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/__OPERATOR__/agents/hikari-agent/data/logs/mcp_external.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/__OPERATOR__/agents/hikari-agent/data/logs/mcp_external.err.log</string>
+</dict>
+</plist>

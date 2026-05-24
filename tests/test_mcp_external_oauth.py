@@ -438,8 +438,8 @@ def test_oauth_cleanup_sweeper_removes_expired_and_revoked():
     keep_token = db.oauth_token_mint(cid, "access", ttl_seconds=600)
     n = db.oauth_cleanup_expired()
     assert n == 2
-    # Fresh token still validates.
-    assert db.oauth_token_validate(keep_token) is not None
+    # Fresh token still validates (OAuth 2.1 path — checks oauth_tokens table).
+    assert db._oauth2_token_validate(keep_token) is not None
 
 
 def test_oauth_token_consume_refresh_atomic():
@@ -456,7 +456,7 @@ def test_oauth_token_consume_refresh_atomic():
     assert first is not None
     assert second is None  # racing caller loses
     # Child access also revoked in the same transaction.
-    assert db.oauth_token_validate(access_child) is None
+    assert db._oauth2_token_validate(access_child) is None
 
 
 def test_oauth_token_consume_refresh_wrong_client_rejected():
@@ -464,8 +464,8 @@ def test_oauth_token_consume_refresh_wrong_client_rejected():
     reg2 = db.oauth_client_register("b", ["http://localhost/cb"])
     refresh = db.oauth_token_mint(reg1["client_id"], "refresh", ttl_seconds=600)
     assert db.oauth_token_consume_refresh(refresh, reg2["client_id"]) is None
-    # And it must NOT have been revoked by the failed attempt.
-    assert db.oauth_token_validate(refresh) is not None
+    # And it must NOT have been revoked by the failed attempt (OAuth 2.1 path).
+    assert db._oauth2_token_validate(refresh) is not None
 
 
 # ---------- /token: refresh_token grant + rotation ----------
@@ -494,11 +494,12 @@ def test_refresh_token_rotates_and_revokes_old_family():
     assert access2 != access1
     assert refresh2 != refresh1
     # Old refresh AND old access (its child) are revoked.
-    assert db.oauth_token_validate(refresh1) is None
-    assert db.oauth_token_validate(access1) is None
+    # These use the OAuth 2.1 path (oauth_tokens table) since they were minted via oauth_token_mint.
+    assert db._oauth2_token_validate(refresh1) is None
+    assert db._oauth2_token_validate(access1) is None
     # New pair works.
-    assert db.oauth_token_validate(access2)
-    assert db.oauth_token_validate(refresh2)
+    assert db._oauth2_token_validate(access2)
+    assert db._oauth2_token_validate(refresh2)
 
 
 def test_refresh_token_reuse_after_rotation_rejected():

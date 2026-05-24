@@ -163,15 +163,40 @@ OAuth, `external_mcp` for bearer).
 ## Making both services restart-resilient (LaunchAgent)
 
 Both `uv run python -m mcp_external.launch` and `cloudflared tunnel run` are
-long-running processes that should restart on reboot/crash. The simplest
-pattern is two separate LaunchAgents next to the existing `com.hikari.agent.plist`:
+long-running processes that should restart on reboot/crash. Install both as
+LaunchAgents next to the existing `com.hikari.agent.plist`:
 
-- `~/Library/LaunchAgents/com.hikari.mcp.plist` — runs the MCP server
-- `~/Library/LaunchAgents/com.hikari.tunnel.plist` — runs cloudflared
+```bash
+# Install the external MCP server (com.hikari.mcp):
+bash scripts/install_external_mcp_launchd.sh
 
-Both should set `KeepAlive` and `RunAtLoad`. Use the same template style as
-`scripts/install_launchd.sh` (the existing bot agent). One-time script TBD —
-for now run them manually under tmux/screen until the workflow stabilizes.
+# Install the cloudflared tunnel (com.hikari.tunnel):
+bash scripts/install_cloudflared_launchd.sh
+```
+
+Both scripts are idempotent — re-running is safe. They write plists to
+`~/Library/LaunchAgents/` and `launchctl bootstrap` them immediately.
+
+| Label                  | Purpose                                                  |
+|------------------------|----------------------------------------------------------|
+| `com.hikari.mcp`       | runs `uv run python -m mcp_external.launch`              |
+| `com.hikari.tunnel`    | runs `cloudflared tunnel run hikari-mcp`                 |
+
+Common ops:
+
+```bash
+# status
+launchctl print gui/$(id -u)/com.hikari.mcp
+launchctl print gui/$(id -u)/com.hikari.tunnel
+
+# restart
+launchctl kickstart -k gui/$(id -u)/com.hikari.mcp
+launchctl kickstart -k gui/$(id -u)/com.hikari.tunnel
+
+# uninstall
+bash scripts/install_external_mcp_launchd.sh --uninstall
+bash scripts/install_cloudflared_launchd.sh --uninstall
+```
 
 ## Security notes
 

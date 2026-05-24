@@ -122,17 +122,30 @@ class AuthMiddleware:
             ):
                 auth_info = {"auth_method": "bearer"}
 
-        # Path 2: OAuth access token (only if bearer didn't match).
+        # Path 2a: hashed bearer token (oauth_token_hashes table).
         if auth_info is None and token:
             try:
                 row = db.oauth_token_validate(token)
             except Exception:  # pragma: no cover — DB hiccup shouldn't 500 to 401
-                logger.exception("auth middleware: oauth_token_validate failed")
+                logger.exception("auth middleware: oauth_token_validate (hashed) failed")
                 row = None
-            if row and row.get("token_type") == "access":
+            if row:
+                auth_info = {
+                    "auth_method": "bearer_hashed",
+                    "oauth_owner": row.get("owner"),
+                }
+
+        # Path 2b: full OAuth 2.1 access token (oauth_tokens table).
+        if auth_info is None and token:
+            try:
+                row2 = db._oauth2_token_validate(token)
+            except Exception:  # pragma: no cover — DB hiccup shouldn't 500 to 401
+                logger.exception("auth middleware: _oauth2_token_validate failed")
+                row2 = None
+            if row2 and row2.get("token_type") == "access":
                 auth_info = {
                     "auth_method": "oauth",
-                    "oauth_client_id": row.get("client_id"),
+                    "oauth_client_id": row2.get("client_id"),
                 }
 
         if auth_info is None:

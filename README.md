@@ -41,18 +41,32 @@ voice. Anthropic console shows $0 API spend — quota deducts from Max.
 
 ## Service management (launchd)
 
-Hikari runs as a per-user LaunchAgent. Two plists:
+Hikari runs as a per-user LaunchAgent. Five plists:
 
-| Label                  | Purpose                                            |
-|------------------------|----------------------------------------------------|
-| `com.hikari.agent`     | the bot itself; runs `uv run hikari-agent`         |
-| `com.hikari.backup`    | daily SQLite backup at 03:00 local                 |
+| Label                  | Purpose                                                   |
+|------------------------|-----------------------------------------------------------|
+| `com.hikari.agent`     | the bot itself; runs `uv run hikari-agent`                |
+| `com.hikari.backup`    | daily encrypted backup at 03:00 local (Sprint 7F)         |
+| `com.hikari.deadman`   | liveness monitor, fires every 5 min (Sprint 7F)           |
+| `com.hikari.mcp`       | external MCP server (optional, Sprint 7/14)               |
+| `com.hikari.tunnel`    | cloudflared tunnel for MCP server (optional, Sprint 7/14) |
 
-Install both plists (idempotent — re-running is safe):
+Install plists (idempotent — re-running is safe):
 
 ```bash
+# Core (required):
 ./scripts/install_launchd.sh
+
+# Encrypted backup (requires age keypair — generate first):
+bash scripts/age_keygen.sh    # one-time: generates ~/.config/hikari/backup_age.{key,pub}
 ./scripts/install_backup.sh
+
+# Dead-man monitor (requires HIKARI_DEADMAN_BOT_TOKEN + OWNER_TELEGRAM_ID in env):
+./scripts/install_deadman.sh
+
+# External MCP server + cloudflared tunnel (optional, only if cross-device sync is needed):
+./scripts/install_external_mcp_launchd.sh
+./scripts/install_cloudflared_launchd.sh
 ```
 
 Common ops:
@@ -152,18 +166,38 @@ Both store in Keychain; `.env` fallbacks (`NOTION_TOKEN`,
 
 ## Backup + restore
 
-`scripts/backup.sh` (run nightly at 03:00 via `com.hikari.backup`):
+`scripts/backup.sh` (run nightly at 03:00 via `com.hikari.backup`) — Sprint 7F:
 
-- Source: `data/hikari.db`
-- Destination: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-YYYYMMDD.db`
-- Uses SQLite `.backup` (atomic, WAL-safe — `cp` would corrupt a WAL DB)
-- Retains 14 most-recent backups; prunes older.
+- Source: `data/hikari.db` (via sqlite3 `.backup` — WAL-safe), `.env`, `secrets/`, keychain export, `~/.cloudflared/`
+- Destination: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-YYYYMMDD.tar.age`
+- Encrypted with [age](https://age-encryption.org/) using a recipient public key at `~/.config/hikari/backup_age.pub`
+- Retains 14 most-recent encrypted archives; prunes older.
 
-### Verify a backup
+### First-time backup setup (Sprint 7F)
 
 ```bash
-sqlite3 ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-$(date +%Y%m%d).db "PRAGMA quick_check"
-# should print "ok"
+# 1. generate age keypair (one-time per machine)
+bash scripts/age_keygen.sh
+# output: ~/.config/hikari/backup_age.{key,pub}
+# IMPORTANT: copy backup_age.key somewhere OFF this machine immediately
+
+# 2. install the backup service
+bash scripts/install_backup.sh
+
+# manual test run
+bash scripts/backup.sh
+ls ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/
+```
+
+### Restore drill
+
+```bash
+# DRY_RUN=1 walks through all steps without touching the filesystem:
+DRY_RUN=1 bash scripts/restore.sh ~/path/to/hikari-YYYYMMDD.tar.age
+
+# Live restore (decrypts + extracts to /tmp/hikari-restored/, then manual):
+bash scripts/restore.sh ~/path/to/hikari-YYYYMMDD.tar.age
+# Then follow the printed steps to copy files into place.
 ```
 
 ### New-machine restore
@@ -172,25 +206,38 @@ sqlite3 ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projec
 # 1. install repo + deps
 git clone https://github.com/<you>/hikari-agent && cd hikari-agent && uv sync
 
-# 2. restore DB from iCloud
-mkdir -p data
-cp ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-LATEST.db data/hikari.db
-sqlite3 data/hikari.db "PRAGMA quick_check"
+# 2. restore from encrypted backup
+bash scripts/restore.sh ~/path/to/hikari-YYYYMMDD.tar.age
+# follow the steps printed; copy hikari.db, .env, secrets/ into place
 
-# 3. restore .env
-cp ~/path/to/.env-backup .env
-
-# 4. restore Keychain secrets — re-run the auth grants
+# 3. re-grant OAuth
 uv run python -m scripts.auth google grant
 uv run python -m scripts.auth notion grant
 uv run python -m scripts.auth github paste
 
-# 5. install launchd
+# 4. install launchd
 ./scripts/install_launchd.sh
+bash scripts/age_keygen.sh   # if new machine — generate fresh keypair
 ./scripts/install_backup.sh
 
-# 6. send a /status message in Telegram — startup digest will surface anything still broken
+# 5. send a /status message in Telegram — startup digest will surface anything still broken
 ```
+
+### Dead-man monitor (Sprint 7F)
+
+Runs every 5 min via `com.hikari.deadman`. Checks: agent running, DB mtime fresh,
+backup fresh (<30h), MCP external alive, cloudflared tunnel running. Posts a
+Telegram alert via a SEPARATE bot token if any check fails.
+
+```bash
+# test run (dry-run, no Telegram)
+uv run python scripts/dead_man.py --dry-run
+
+# install (requires HIKARI_DEADMAN_BOT_TOKEN + OWNER_TELEGRAM_ID in env)
+bash scripts/install_deadman.sh
+```
+
+See `docs/credential_rotation.md` for rotation procedures.
 
 ---
 
@@ -243,10 +290,12 @@ Then `launchctl kickstart -k gui/$(id -u)/com.hikari.agent` to restart.
 
 ```bash
 sqlite3 data/hikari.db "PRAGMA quick_check"
-# if NOT ok, restore from iCloud backup:
+# if NOT ok, restore from the latest encrypted backup:
 launchctl bootout gui/$(id -u)/com.hikari.agent
 mv data/hikari.db data/hikari.db.broken
-cp ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-LATEST.db data/hikari.db
+LATEST=$(ls -t ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/alt-wiki/projects/hikari-agent/backups/hikari-*.tar.age | head -1)
+bash scripts/restore.sh "$LATEST"
+# follow restore.sh's printed steps to copy hikari.db into place
 launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 ```
 
@@ -303,18 +352,20 @@ launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 
 ## Credential rotation
 
-Quick refs:
+Quick refs (full procedures in `docs/credential_rotation.md`):
 
 | Secret                          | Rotate via                                          |
 |---------------------------------|-----------------------------------------------------|
 | `CLAUDE_CODE_OAUTH_TOKEN`       | `claude setup-token` → replace in `.env`            |
 | `TELEGRAM_BOT_TOKEN`            | `@BotFather` → `/revoke` → `/token` → `.env`        |
-| Google Workspace refresh token  | `scripts/setup_google_oauth.py` (or `scripts.auth google grant`) |
+| `HIKARI_DEADMAN_BOT_TOKEN`      | @BotFather (new bot) → `.env` → `install_deadman.sh`|
+| Google Workspace refresh token  | `scripts.auth google grant`                         |
 | Notion integration token        | `scripts.auth notion grant`                         |
 | GitHub PAT                      | github.com/settings/tokens → `scripts.auth github paste` |
 | `OPENROUTER_API_KEY`            | openrouter.ai/keys → `.env`                         |
-| `HIKARI_MCP_SECRET` (Phase 7/14)| `openssl rand -hex 32` → `.env` → restart           |
+| `HIKARI_MCP_SECRET` (Phase 7/14)| `secrets.token_urlsafe(32)` → `.env` → restart      |
 | `HIKARI_OAUTH_OWNER_PASSPHRASE` | `openssl rand -base64 24` → `.env` → restart        |
+| age backup key pair             | `bash scripts/age_keygen.sh` → `install_backup.sh`  |
 
 After any rotation: `launchctl kickstart -k gui/$(id -u)/com.hikari.agent`.
 
