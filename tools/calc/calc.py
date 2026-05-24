@@ -12,6 +12,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.calc._shared import _run_asteval
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
     "Examples: '17.5 * 2400 / 100', '(date(2026,5,19) - date(2026,1,1)).days', "
     "'sum(range(100))'.",
     {"expr": str},
+    annotations=annotations_for("calc"),
 )
 async def calc(args: dict[str, Any]) -> dict[str, Any]:
     expr = (args.get("expr") or "").strip()

@@ -7,6 +7,7 @@ from claude_agent_sdk import tool
 
 from storage import db
 from tools import embeddings
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -23,6 +24,7 @@ from tools._response import ok as _ok
         "importance": int, "confidence": float,
         "on_conflict": str,
     },
+    annotations=annotations_for("remember"),
 )
 async def remember(args: dict[str, Any]) -> dict[str, Any]:
     subject = (args.get("subject") or "").strip()

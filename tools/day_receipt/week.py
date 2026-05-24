@@ -7,6 +7,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.day_receipt import _db as _receipt_db
 from tools.day_receipt._render import RenderOptions, render_week
@@ -22,6 +23,7 @@ from tools.day_receipt._render import RenderOptions, render_week
         "width: optional column width (default 46)."
     ),
     {"days": int, "width": int},
+    annotations=annotations_for("receipt_week"),
 )
 async def receipt_week(args: dict[str, Any]) -> dict[str, Any]:
     raw_days = args.get("days")

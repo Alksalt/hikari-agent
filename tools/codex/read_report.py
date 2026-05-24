@@ -13,6 +13,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents.injection_guard import wrap_untrusted
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.codex._shared import _MAX_READ_BYTES, _reports_dir, _safe_name
 
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
     "Don't use this for general file reading (use the `Read` tool) — this is "
     "scoped to the codex/ reports dir only.",
     {"name": str},
+    annotations=annotations_for("read_codex_report"),
 )
 async def read_codex_report(args: dict[str, Any]) -> dict[str, Any]:
     raw_name = (args.get("name") or "").strip()

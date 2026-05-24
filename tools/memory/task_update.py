@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -16,6 +17,7 @@ from tools._response import ok as _ok
     "task_update(id, 'completed'). Don't use this to create new tasks (use `task_create`) "
     "or to invalidate a fact (use `mark_fact_invalid`).",
     {"task_id": int, "status": str},
+    annotations=annotations_for("task_update"),
 )
 async def task_update(args: dict[str, Any]) -> dict[str, Any]:
     task_id = int(args.get("task_id") or 0)

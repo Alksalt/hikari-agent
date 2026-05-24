@@ -9,6 +9,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
     "to cs.LG, cs.AI, cs.CL, stat.ML. days defaults to 14 (recency filter). "
     "limit defaults to 10. Returns title, abstract, authors, url for each match.",
     {"query": str, "categories": list, "days": int, "limit": int},
+    annotations=annotations_for("arxiv_search"),
 )
 async def arxiv_search(args: dict[str, Any]) -> dict[str, Any]:
     # Heavy dep — lazy-loaded so boot doesn't pay the import cost when

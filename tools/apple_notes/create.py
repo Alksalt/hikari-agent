@@ -7,6 +7,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.apple_notes._shared import (
     _ACCOUNT_ERRORS,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
         "before writing to iCloud. Returns the new note's id."
     ),
     {"title": str, "body": str, "folder": str, "confirm": bool},
+    annotations=annotations_for("note_create"),
 )
 async def note_create(args: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "darwin":

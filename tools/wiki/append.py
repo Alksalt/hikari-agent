@@ -7,6 +7,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.wiki._shared import _do_wiki_append, invalidate_vault
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
     "e.g. user says 'add this to my notes on rust' → wiki_append('rust', None, '<text>'). "
     "Don't use this to store a fact about the user (use `remember`) or to read (use `wiki_read`).",
     {"path": str, "section_heading": str, "content": str},
+    annotations=annotations_for("wiki_append"),
 )
 async def wiki_append(args: dict[str, Any]) -> dict[str, Any]:
     path_arg = (args.get("path") or "").strip()

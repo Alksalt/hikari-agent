@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -14,6 +15,7 @@ from tools._response import ok as _ok
     "Cancel a reminder by id. Idempotent — cancelling an already-fired or "
     "already-cancelled reminder is a no-op.",
     {"reminder_id": int},
+    annotations=annotations_for("reminder_cancel"),
 )
 async def reminder_cancel(args: dict[str, Any]) -> dict[str, Any]:
     rid = int(args.get("reminder_id") or 0)

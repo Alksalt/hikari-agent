@@ -32,6 +32,8 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
+
 
 def lazy_tool(
     *,
@@ -43,7 +45,9 @@ def lazy_tool(
     """Build a ``@tool``-decorated stub that defers handler import.
 
     Returns the decorated callable, ready to be added to a feature's
-    ``ALL_TOOLS`` list.
+    ``ALL_TOOLS`` list. MCP ToolAnnotations are looked up from
+    ``tools/_annotations.py`` (Sprint 6F) so lazy tools surface the same
+    hints external clients see for eager @tool decorators.
     """
     if ":" not in impl:
         raise ValueError(
@@ -51,7 +55,7 @@ def lazy_tool(
         )
     module_path, func_name = impl.split(":", 1)
 
-    @tool(name, description, schema)
+    @tool(name, description, schema, annotations=annotations_for(name))
     async def _stub(args: dict[str, Any]) -> dict[str, Any]:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, func_name)

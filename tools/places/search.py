@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools.places._shared import _places_search_impl
 
 
@@ -18,6 +19,7 @@ from tools.places._shared import _places_search_impl
     "Don't use this when you already know the specific place name (use `place_open_now` "
     "for a focused 'is X open?' check).",
     {"query": str, "lat": float, "lon": float, "radius_m": int},
+    annotations=annotations_for("places_search"),
 )
 async def places_search(args: dict[str, Any]) -> dict[str, Any]:
     return await _places_search_impl(args)

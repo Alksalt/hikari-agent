@@ -9,6 +9,7 @@ from __future__ import annotations
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.decision_log._shared import TOOL_NAME
 
@@ -24,6 +25,7 @@ from tools.decision_log._shared import TOOL_NAME
         "resolve_by": str,
         "reasoning": str,
     },
+    annotations=annotations_for(TOOL_NAME),
 )
 async def decision_log_capture(args: dict) -> dict:
     """args: statement (str), predicted_p (float in [0,1]), resolve_by (ISO

@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -18,6 +19,7 @@ from tools._response import ok as _ok
     "Don't use this for time-bound reminders ('in 30 min', 'tomorrow at 9') — use "
     "`reminder_create` so a real push fires. Don't use this for a fact (use `remember`).",
     {"subject": str, "description": str, "due_at": str},
+    annotations=annotations_for("task_create"),
 )
 async def task_create(args: dict[str, Any]) -> dict[str, Any]:
     subject = (args.get("subject") or "").strip()

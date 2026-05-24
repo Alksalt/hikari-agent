@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -18,6 +19,7 @@ from tools._response import ok as _ok
     "Don't use this when you're inserting a new replacing fact in the same step — "
     "use `remember` with on_conflict='supersede' instead (one call, not two).",
     {"fact_id": int, "reason": str, "superseded_by": int},
+    annotations=annotations_for("mark_fact_invalid"),
 )
 async def mark_fact_invalid(args: dict[str, Any]) -> dict[str, Any]:
     fact_id = int(args.get("fact_id") or 0)

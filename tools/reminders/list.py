@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -14,6 +15,7 @@ from tools._response import ok as _ok
     "List reminders. active_only=True (default) returns only those still pending. "
     "Returns id, fire_at, text, lead_minutes, repeat, status.",
     {"active_only": bool},
+    annotations=annotations_for("reminder_list"),
 )
 async def reminder_list(args: dict[str, Any]) -> dict[str, Any]:
     active_only = bool(args.get("active_only", True))

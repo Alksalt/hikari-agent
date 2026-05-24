@@ -21,6 +21,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.calc._shared import REPO_ROOT, _sandbox_exec_profile
 
@@ -55,6 +56,7 @@ def _run_sandboxed(cmd: list[str], timeout: float, cwd: str,
     "Optional input_files: list of absolute paths inside data/user_photos or "
     "data/user_documents that the snippet may read.",
     {"code": str, "input_files": list},
+    annotations=annotations_for("python_run"),
 )
 async def python_run(args: dict[str, Any]) -> dict[str, Any]:
     if not bool(cfg.get("calc.python_run_enabled", True)):

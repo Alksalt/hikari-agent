@@ -7,6 +7,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.apple_notes._shared import (
     _DEFAULT_SEARCH_LIMIT,
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
         "(default 10). Returns id, title, modification date."
     ),
     {"query": str, "limit": int},
+    annotations=annotations_for("note_search"),
 )
 async def note_search(args: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "darwin":

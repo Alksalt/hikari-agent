@@ -12,6 +12,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.ytmusic import _shared
 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
     "Search the YouTube Music catalog. filter one of {songs, albums, artists, "
     "playlists, videos}; default 'songs'. limit default 10.",
     {"query": str, "filter": str, "limit": int},
+    annotations=annotations_for("ytmusic_search"),
 )
 async def ytmusic_search(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get("query") or "").strip()

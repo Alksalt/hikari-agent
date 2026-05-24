@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.day_receipt import _db as _receipt_db
 from tools.day_receipt._shared import parse_date
@@ -30,6 +31,7 @@ def _entry_dict(e) -> dict[str, Any]:
         "optional note, and every entry. No rendering."
     ),
     {"date": str},
+    annotations=annotations_for("receipt_get"),
 )
 async def receipt_get(args: dict[str, Any]) -> dict[str, Any]:
     date_arg = args.get("date") or ""

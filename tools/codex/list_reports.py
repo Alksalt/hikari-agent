@@ -12,6 +12,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.codex._shared import _MAX_LIMIT, _reports_dir
 
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
     "list first, then `read_codex_report` for the chosen filename. "
     "Don't use this to run a new review or to read arbitrary files (use `Read`).",
     {"limit": int},
+    annotations=annotations_for("list_codex_reports"),
 )
 async def list_codex_reports(args: dict[str, Any]) -> dict[str, Any]:
     limit = max(1, min(_MAX_LIMIT, int(args.get("limit") or 10)))

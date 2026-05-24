@@ -6,6 +6,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.wiki._shared import _vault
 
@@ -19,6 +20,7 @@ from tools.wiki._shared import _vault
     "Don't use this for Hikari's private memory of chats (use `recall`) or for "
     "current-events / public-web lookup (use the `research` subagent).",
     {"query": str, "limit": int},
+    annotations=annotations_for("wiki_search"),
 )
 async def wiki_search(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get("query") or "").strip()

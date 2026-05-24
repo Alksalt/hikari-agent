@@ -7,6 +7,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.reminders._shared import _parse_iso
 
@@ -16,6 +17,7 @@ from tools.reminders._shared import _parse_iso
     "Push a reminder's fire time forward by N minutes. Useful when the user says "
     "'remind me in 30 min instead'.",
     {"reminder_id": int, "by_minutes": int},
+    annotations=annotations_for("reminder_snooze"),
 )
 async def reminder_snooze(args: dict[str, Any]) -> dict[str, Any]:
     rid = int(args.get("reminder_id") or 0)

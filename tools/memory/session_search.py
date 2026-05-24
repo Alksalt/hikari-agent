@@ -11,6 +11,7 @@ from claude_agent_sdk import tool
 
 from agents import injection_guard
 from storage import db as _db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -21,6 +22,7 @@ from tools._response import ok as _ok
     "role (optional 'user' or 'assistant'). Use this when the lead asks 'what did i say "
     "about X' or 'when did i first mention Y' — NOT for stored facts (use recall).",
     {"query": str, "limit": int, "since_iso": str, "role": str},
+    annotations=annotations_for("session_search"),
 )
 async def session_search(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get("query") or "").strip()

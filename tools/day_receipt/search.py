@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.day_receipt import _db as _receipt_db
 
@@ -31,6 +32,7 @@ def _entry_dict(e) -> dict[str, Any]:
         "text, tags, created_at), newest first."
     ),
     {"query": str, "limit": int},
+    annotations=annotations_for("receipt_search"),
 )
 async def receipt_search(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get("query") or "").strip()

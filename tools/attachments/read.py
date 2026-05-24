@@ -12,6 +12,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ _MAX_BYTES = 8 * 1024 * 1024  # 8 MiB cap
         "general filesystem Read/Glob/Grep are not available."
     ),
     {"path": str},
+    annotations=annotations_for("read_attachment"),
 )
 async def read_attachment(args: dict[str, Any]) -> dict[str, Any]:
     raw = (args.get("path") or "").strip()

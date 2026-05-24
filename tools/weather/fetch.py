@@ -11,6 +11,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.weather._shared import fetch_forecast, wmo_label
 
@@ -23,6 +24,7 @@ from tools.weather._shared import fetch_forecast, wmo_label
     "Merged across 2 free sources (open-meteo + met.no) with per-field "
     "median consensus + disagreement flags.",
     {"lat": float, "lon": float, "label": str},
+    annotations=annotations_for("weather_fetch"),
 )
 async def weather_fetch(args: dict[str, Any]) -> dict[str, Any]:
     lat = float(args.get("lat") or 0)

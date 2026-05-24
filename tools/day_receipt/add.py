@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.day_receipt import _db as _receipt_db
 from tools.day_receipt._shared import CATEGORIES, parse_date
@@ -24,6 +25,7 @@ from tools.day_receipt._shared import CATEGORIES, parse_date
         "tags: optional list of short topic tags for later search."
     ),
     {"category": str, "text": str, "date": str, "tags": list},
+    annotations=annotations_for("receipt_add"),
 )
 async def receipt_add(args: dict[str, Any]) -> dict[str, Any]:
     category = (args.get("category") or "").strip().lower()

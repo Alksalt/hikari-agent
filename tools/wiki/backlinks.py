@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.wiki._shared import _vault
 
@@ -18,6 +19,7 @@ from tools.wiki._shared import _vault
     "Don't use this for text search across notes (use `wiki_search`) — backlinks "
     "follow [[wikilink]] edges, not content matches.",
     {"topic": str, "limit": int},
+    annotations=annotations_for("wiki_backlinks"),
 )
 async def wiki_backlinks(args: dict[str, Any]) -> dict[str, Any]:
     topic = (args.get("topic") or "").strip()

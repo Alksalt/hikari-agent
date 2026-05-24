@@ -6,6 +6,7 @@ from typing import Any
 import frontmatter
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.wiki._shared import VAULT_ROOT, _icloud_materialize, _resolve_note
 
@@ -18,6 +19,7 @@ from tools.wiki._shared import VAULT_ROOT, _icloud_materialize, _resolve_note
     "e.g. after `wiki_search` returns a path you want to inspect → wiki_read(path). "
     "Don't use this to browse — search first. Don't use this to write (use `wiki_append`).",
     {"path": str},
+    annotations=annotations_for("wiki_read"),
 )
 async def wiki_read(args: dict[str, Any]) -> dict[str, Any]:
     from agents.injection_guard import wrap_untrusted

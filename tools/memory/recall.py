@@ -28,6 +28,7 @@ from agents import injection_guard
 from storage import db as _db
 from storage import graph as _graph
 from storage import retrieval
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ def _score_to_bucket(score: float) -> tuple[str, str]:
     "Don't use this for the user's own notes (use wiki_search) or for public-web / "
     "current-events lookups (use the `research` subagent).",
     {"query": str, "limit": int},
+    annotations=annotations_for("recall"),
 )
 async def recall(args: dict[str, Any]) -> dict[str, Any]:
     from agents import config as cfg

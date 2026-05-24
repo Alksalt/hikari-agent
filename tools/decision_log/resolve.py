@@ -5,6 +5,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 TOOL_NAME = "decision_log_resolve"
@@ -17,6 +18,7 @@ TOOL_NAME = "decision_log_resolve"
     "same outcome re-applied is a no-op; a DIFFERENT outcome is refused "
     "to protect the calibration ledger from prompt-injected revisions.",
     {"decision_id": int, "outcome": int},
+    annotations=annotations_for(TOOL_NAME),
 )
 async def decision_log_resolve(args: dict[str, Any]) -> dict[str, Any]:
     try:

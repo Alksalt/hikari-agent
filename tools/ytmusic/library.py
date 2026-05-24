@@ -12,6 +12,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.ytmusic import _shared
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
     "ytmusic_library",
     "List saved/library songs. limit default 25.",
     {"limit": int},
+    annotations=annotations_for("ytmusic_library"),
 )
 async def ytmusic_library(args: dict[str, Any]) -> dict[str, Any]:
     limit = int(args.get("limit") or 25)

@@ -5,6 +5,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.places._shared import _OPEN_NOW_RADIUS_M, _places_search_impl
 
@@ -16,6 +17,7 @@ from tools.places._shared import _OPEN_NOW_RADIUS_M, _places_search_impl
     "e.g. user asks 'is Blue Bottle on 5th open' → place_open_now('Blue Bottle', …). "
     "Don't use this to browse options (use `places_search` with an amenity type).",
     {"name": str, "lat": float, "lon": float},
+    annotations=annotations_for("place_open_now"),
 )
 async def place_open_now(args: dict[str, Any]) -> dict[str, Any]:
     name = (args.get("name") or "").strip()

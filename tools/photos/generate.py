@@ -8,6 +8,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools.photos._shared import (
     DAILY_CAP,
     DEFAULT_MODEL,
@@ -33,6 +34,7 @@ IMAGE_GEN_FAILURE_KEY = "image_gen_last_failure_ts"
     "irritable), daily-capped. Pass mood='' to read from core_blocks. Returns 'queued' "
     "on success or 'refused: <reason>'.",
     {"mood": str},
+    annotations=annotations_for("generate_photo"),
 )
 async def generate_photo(args: dict[str, Any]) -> dict[str, Any]:
     mood = _resolve_mood(str(args.get("mood") or ""))

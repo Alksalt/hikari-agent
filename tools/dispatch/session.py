@@ -11,6 +11,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools.dispatch._shared import WORK_DIR_ROOT, _do_dispatch
 
 
@@ -26,6 +27,7 @@ from tools.dispatch._shared import WORK_DIR_ROOT, _do_dispatch
     "Don't use this to answer a question with public-web info (use `research`) or "
     "to look up something in the user's notes (use `wiki_search`).",
     {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
+    annotations=annotations_for("dispatch_claude_session"),
 )
 async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:
     return await _do_dispatch(args)

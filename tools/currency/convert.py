@@ -7,6 +7,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
     "Convert an amount between two ISO currency codes via frankfurter.app "
     "(ECB daily rates). Example: amount=100, from_ccy='USD', to_ccy='NOK'.",
     {"amount": float, "from_ccy": str, "to_ccy": str},
+    annotations=annotations_for("currency_convert"),
 )
 async def currency_convert(args: dict[str, Any]) -> dict[str, Any]:
     # Heavy network dep — lazy import so the manifest import is cheap.

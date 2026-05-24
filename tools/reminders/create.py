@@ -15,6 +15,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.reminders._shared import _VALID_REPEAT, _parse_iso
 
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
     ),
     {"when_iso": str, "text": str, "lead_minutes": int, "repeat": str,
      "sync_to_gcal": bool, "sync_to_apple": bool},
+    annotations=annotations_for("reminder_create"),
 )
 async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
     when_iso = (args.get("when_iso") or "").strip()

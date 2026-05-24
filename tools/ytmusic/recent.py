@@ -15,6 +15,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.ytmusic import _shared
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
     "Get the most recently played tracks on YouTube Music. limit default 5. "
     "Note: no true 'now playing' API exists — this is recent history.",
     {"limit": int},
+    annotations=annotations_for("ytmusic_recent"),
 )
 async def ytmusic_recent(args: dict[str, Any]) -> dict[str, Any]:
     limit = int(args.get("limit") or cfg.get("ytmusic.default_history_limit") or 5)

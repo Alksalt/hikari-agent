@@ -7,6 +7,7 @@ from claude_agent_sdk import tool
 
 from agents.reflection_sanitize import MemoryInstructionShape, sanitize
 from storage import db
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 
@@ -19,6 +20,7 @@ from tools._response import ok as _ok
     "Don't use this for one-off facts (use `remember`) or for transient open loops "
     "(use `task_create`).",
     {"label": str, "content": str},
+    annotations=annotations_for("update_core_block"),
 )
 async def update_core_block(args: dict[str, Any]) -> dict[str, Any]:
     label = (args.get("label") or "").strip()

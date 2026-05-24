@@ -11,6 +11,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.wiki._shared import VAULT_ROOT
 
@@ -53,6 +54,7 @@ def _entries_at(path: Path) -> tuple[list[dict], list[dict]]:
     "<folder>' or 'is there anything new in X'. For a multi-level view use "
     "wiki_tree.",
     {"path": str},
+    annotations=annotations_for("wiki_list"),
 )
 async def wiki_list(args: dict[str, Any]) -> dict[str, Any]:
     rel = (args.get("path") or "").strip().strip("/")
@@ -95,6 +97,7 @@ async def wiki_list(args: dict[str, Any]) -> dict[str, Any]:
     "tree-shaped summary. If the total entry count exceeds 200, the result "
     "is truncated and a note records how many were dropped.",
     {"path": str, "max_depth": int},
+    annotations=annotations_for("wiki_tree"),
 )
 async def wiki_tree(args: dict[str, Any]) -> dict[str, Any]:
     rel = (args.get("path") or "").strip().strip("/")

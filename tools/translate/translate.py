@@ -8,6 +8,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import config as cfg
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.translate._shared import (
     _SUPPORTED,
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
     "returns Japanese AND a romaji (Hepburn) transliteration so the user can read "
     "it without kana. Uses DeepL Free (if DEEPL_API_KEY set) else LibreTranslate.",
     {"text": str, "target": str, "source": str},
+    annotations=annotations_for("translate"),
 )
 async def translate(args: dict[str, Any]) -> dict[str, Any]:
     text = (args.get("text") or "").strip()

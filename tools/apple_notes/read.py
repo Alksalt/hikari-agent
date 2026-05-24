@@ -7,6 +7,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.apple_notes._shared import (
     _OSASCRIPT_TIMEOUT_SEC,
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
         "title string."
     ),
     {"title_or_id": str},
+    annotations=annotations_for("note_read"),
 )
 async def note_read(args: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "darwin":

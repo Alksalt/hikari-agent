@@ -16,6 +16,7 @@ from typing import Any
 import bm25s
 from claude_agent_sdk import tool
 
+from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def rebuild_index() -> None:
     "that you don't already have in your hands. After calling, dispatch the right "
     "subagent or call the surfaced tool directly. Don't list capabilities — just search.",
     {"query": str, "limit": int},
+    annotations=annotations_for("tool_search"),
 )
 async def tool_search(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get("query") or "").strip()
