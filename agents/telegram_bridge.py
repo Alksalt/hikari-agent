@@ -251,6 +251,19 @@ async def _send_outbox_photo(bot, chat_id: int, row: dict) -> int | None:  # noq
             )
         tg_msg_id = getattr(tg_msg, "message_id", None)
         db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        # Record durable history before the file is gone.
+        try:
+            import hashlib as _hashlib
+            raw = real.read_bytes()
+            content_hash = _hashlib.sha256(raw).hexdigest()
+            db.media_events_insert(
+                "photo",
+                telegram_message_id=tg_msg_id,
+                caption=caption or None,
+                content_hash=content_hash,
+            )
+        except Exception:
+            logger.exception("media_events_insert failed for photo row %s (non-fatal)", row["id"])
         try:
             path.unlink()
         except OSError:
@@ -279,6 +292,10 @@ async def _send_outbox_text(bot, chat_id: int, row: dict) -> int | None:  # noqa
         tg_msg = await bot.send_message(chat_id=chat_id, text=text)  # noqa: HIKARI001
         tg_msg_id = getattr(tg_msg, "message_id", None)
         db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        try:
+            db.media_events_insert("text", telegram_message_id=tg_msg_id)
+        except Exception:
+            logger.exception("media_events_insert failed for text row %s (non-fatal)", row["id"])
         return tg_msg_id
     except Exception:
         logger.exception("_drain_media_outbox: failed to send text row %s", row["id"])
@@ -303,6 +320,10 @@ async def _send_outbox_sticker(bot, chat_id: int, row: dict) -> int | None:  # n
         tg_msg = await bot.send_sticker(chat_id=chat_id, sticker=file_id)  # noqa: HIKARI001
         tg_msg_id = getattr(tg_msg, "message_id", None)
         db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        try:
+            db.media_events_insert("sticker", telegram_message_id=tg_msg_id)
+        except Exception:
+            logger.exception("media_events_insert failed for sticker row %s (non-fatal)", row["id"])
         return tg_msg_id
     except Exception:
         logger.exception("_drain_media_outbox: failed to send sticker row %s", row["id"])
@@ -344,6 +365,10 @@ async def _send_outbox_document(bot, chat_id: int, row: dict) -> int | None:  # 
             )
         tg_msg_id = getattr(tg_msg, "message_id", None)
         db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        try:
+            db.media_events_insert("document", telegram_message_id=tg_msg_id, caption=caption or None)
+        except Exception:
+            logger.exception("media_events_insert failed for document row %s (non-fatal)", row["id"])
         return tg_msg_id
     except Exception:
         logger.exception("_drain_media_outbox: failed to send document row %s", row["id"])
@@ -771,7 +796,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reason="photo_error", reply_to=message,
             )
             return
-        # Record an episode so we can callback later ("how's the plant?").
+
+        elapsed = hb.elapsed
+    if reply:
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
+        # Episode write is deferred until after confirmed send so a failed
+        # Telegram call leaves no orphan episode row.
         try:
             from datetime import date as _date
             summary = (
@@ -781,12 +813,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             db.insert_episode(_date.today().isoformat(), summary, importance=4)
         except Exception:
             logger.exception("photo episode write failed (non-fatal)")
-
-        elapsed = hb.elapsed
-    if reply:
-        await _send_with_choreography(
-            context.bot, message, reply, elapsed_real=elapsed,
-        )
     await _drain_media_outbox(context.bot, chat.id)
 
 
@@ -905,6 +931,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
+        elapsed = hb.elapsed
+
+    if reply:
+        await _send_with_choreography(
+            context.bot, message, reply, elapsed_real=elapsed,
+        )
+        # Episode write deferred until after confirmed send (mirrors text path).
         try:
             from datetime import date as _date
             summary = (
@@ -914,13 +947,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             db.insert_episode(_date.today().isoformat(), summary, importance=4)
         except Exception:
             logger.exception("voice episode write failed (non-fatal)")
-
-        elapsed = hb.elapsed
-
-    if reply:
-        await _send_with_choreography(
-            context.bot, message, reply, elapsed_real=elapsed,
-        )
     await _drain_media_outbox(context.bot, chat.id)
 
 
@@ -1089,6 +1115,23 @@ def _extract_exif_gps(file_bytes: bytes) -> tuple[float, float, str | None] | No
     return lat, lon, str(taken_at) if taken_at else None
 
 
+def _apply_gps_precision(lat: float, lon: float) -> tuple[float, float]:
+    """Zero out sub-city precision if the config asks for it.
+
+    ``location.exif_gps_precision`` controls the decimal places kept:
+      - ``full``   (default-off): keep all digits — exact street-level position.
+      - ``city``   (default): round to 2dp ≈ ~1km, city-level only.
+    The config key is ``location.exif_gps_city_precision_only`` (bool, default true).
+    """
+    city_only = cfg.get("location.exif_gps_city_precision_only")
+    if city_only is None:
+        city_only = True
+    if city_only:
+        lat = round(lat, 2)
+        lon = round(lon, 2)
+    return lat, lon
+
+
 async def _reverse_geocode_label(lat: float, lon: float) -> str | None:
     """Reverse-geocode (lat, lon) via Nominatim. Free, no key, rate-limited
     to ~1 req/sec by Nominatim ToS — caller is responsible for not hammering
@@ -1096,11 +1139,19 @@ async def _reverse_geocode_label(lat: float, lon: float) -> str | None:
     import httpx
     try:
         timeout = cfg.get("telegram.http_timeout_sec") or 10.0
+        nominatim_ua = (
+            cfg.get("location.nominatim_user_agent")
+            or "hikari-agent/0.1 (contact: hikari-bot@localhost)"
+        )
+        nominatim_endpoint = (
+            cfg.get("location.reverse_geocode_endpoint")
+            or "https://nominatim.openstreetmap.org/reverse"
+        )
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(
-                "https://nominatim.openstreetmap.org/reverse",
-                params={"lat": lat, "lon": lon, "format": "json", "zoom": 16},
-                headers={"User-Agent": "hikari-agent/0.1"},
+                nominatim_endpoint,
+                params={"lat": lat, "lon": lon, "format": "json", "zoom": 10},
+                headers={"User-Agent": nominatim_ua},
             )
             if r.status_code != 200:
                 logger.info("photo exif: nominatim HTTP %s", r.status_code)
@@ -1132,6 +1183,7 @@ async def _try_ingest_document_photo(message) -> str | None:
     if not gps:
         return None
     lat, lon, taken_at = gps
+    lat, lon = _apply_gps_precision(lat, lon)
     label = await _reverse_geocode_label(lat, lon)
     try:
         db.photo_location_insert(
@@ -1144,6 +1196,32 @@ async def _try_ingest_document_photo(message) -> str | None:
         lat, lon, label, taken_at,
     )
     return label
+
+
+def _check_magic_bytes(raw: bytes, mime: str) -> bool:
+    """Return True if the file's magic bytes are consistent with the declared MIME type.
+
+    Allowlist enforces that the actual bytes match what Telegram said the file is.
+    Mismatches indicate disguised executables or format confusion — reject.
+    """
+    if mime == "application/pdf":
+        if raw[:4] != b"%PDF":
+            return False
+        if b"MZ" in raw[:1024]:
+            return False
+        return True
+    if mime in ("image/jpeg", "image/jpg"):
+        return raw[:3] == b"\xff\xd8\xff"
+    if mime == "image/png":
+        return raw[:4] == b"\x89PNG"
+    if mime == "image/gif":
+        return raw[:4] in (b"GIF8", b"GIF9")
+    if mime == "image/webp":
+        # RIFF....WEBP: bytes 0-3 "RIFF", bytes 8-11 "WEBP"
+        return raw[:4] == b"RIFF" and len(raw) >= 12 and raw[8:12] == b"WEBP"
+    # Other MIME types are not magic-byte-checked here — their path is
+    # text or explicit handler which doesn't need binary validation.
+    return True
 
 
 def _build_ingest_block(path: Path, mime: str, fname: str):
@@ -1159,7 +1237,13 @@ def _build_ingest_block(path: Path, mime: str, fname: str):
     mime = mime.split(";", 1)[0].strip().lower()
 
     if mime == "application/pdf":
-        data = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+        raw = path.read_bytes()
+        if not _check_magic_bytes(raw, mime):
+            logger.warning(
+                "_build_ingest_block: PDF magic-byte mismatch for %r — rejecting", fname
+            )
+            return None, "rejected: file declared as PDF but bytes don't match PDF magic."
+        data = base64.standard_b64encode(raw).decode("ascii")
         return (
             {
                 "type": "document",
@@ -1191,7 +1275,14 @@ def _build_ingest_block(path: Path, mime: str, fname: str):
                 logger.exception("HEIC→PNG conversion failed; falling back")
                 return None, "image saved; not inline-attachable, use read_attachment."
         else:
-            data = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+            raw_img = path.read_bytes()
+            if not _check_magic_bytes(raw_img, mime):
+                logger.warning(
+                    "_build_ingest_block: image magic-byte mismatch for %r mime=%r — rejecting",
+                    fname, mime,
+                )
+                return None, f"rejected: file declared as {mime} but bytes don't match."
+            data = base64.standard_b64encode(raw_img).decode("ascii")
             media_type = mime
         return (
             {
@@ -1757,7 +1848,8 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not sub:
         await _mem_ack(
             "/memory: recent [N] | search <q> | fact <id> | forget <id> | "
-            "correct <id> <new> | tasks | session <q> | why <id> | debug <q>"
+            "correct <id> <new> | tasks | session <q> | why <id> | debug <q> | "
+            "locations [list | delete <id>]"
         )
         return
 
@@ -1932,6 +2024,38 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # Route to cmd_memory_diff — pass the remaining args as context.args
         context.args = args[1:]
         await cmd_memory_diff(update, context)
+        return
+
+    # ---- locations ----
+    if sub == "locations":
+        action = args[1].lower() if len(args) > 1 else "list"
+        if action == "list":
+            rows = db.photo_locations_recent(limit=20)
+            if not rows:
+                await _mem_ack("no photo locations recorded yet.")
+                return
+            lines = [f"photo locations ({len(rows)}):"]
+            for r in rows:
+                label = (r.get("label") or "unknown")[:60]
+                ts = (r.get("received_at") or "")[:10]
+                lines.append(f"  #{r['id']} [{ts}] lat={r['lat']:.4f} lon={r['lon']:.4f} {label}")
+            await _mem_ack("\n".join(lines)[:3900])
+        elif action == "delete":
+            if len(args) < 3:
+                await _mem_ack("usage: /memory locations delete <id>")
+                return
+            try:
+                loc_id = int(args[2])
+            except ValueError:
+                await _mem_ack("id must be an integer.")
+                return
+            deleted = db.photo_location_delete(loc_id)
+            if deleted:
+                await _mem_ack(f"location #{loc_id} deleted.")
+            else:
+                await _mem_ack(f"location #{loc_id}: not found.")
+        else:
+            await _mem_ack("usage: /memory locations [list | delete <id>]")
         return
 
     # ---- unknown ----

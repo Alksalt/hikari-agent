@@ -196,6 +196,25 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
             "may not actually answer the question. tell the lead you're blanking."
         )
 
+    # Supplement graph hits with SQLite-only hits (photo/voice episodes) so
+    # media memories are not silently dropped when graph has unrelated results.
+    # We keep graph as the primary answer but append SQLite hits not already
+    # covered by an active_edge's fact_id.
+    covered_fact_ids = {
+        getattr(e, "_sqlite_fact_id", None) for e in active_edges
+    } - {None}
+    try:
+        sqlite_hits = await asyncio.to_thread(retrieval.legacy_retrieve, query, limit)
+        extra = [h for h in (sqlite_hits or [])
+                 if getattr(h, "fact_id", None) not in covered_fact_ids]
+        if extra:
+            lines.append(f"  --- also from sqlite ({len(extra)}) ---")
+            for h in extra[:4]:
+                snippet = str(getattr(h, "text", "") or h)[:120]
+                lines.append(f"  [sqlite] {snippet}")
+    except Exception:
+        logger.debug("recall: supplementary sqlite hits failed for %r (non-fatal)", query)
+
     body = injection_guard.wrap_untrusted("recall.graph", "\n".join(lines))
     return _ok(
         body,

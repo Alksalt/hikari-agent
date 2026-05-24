@@ -369,6 +369,28 @@ async def format_status(app) -> str:
     except Exception as exc:
         lines.append(f"graph outbox: error ({exc})")
 
+    # media_events totals
+    try:
+        media_counts = _db.media_events_counts()
+        if media_counts:
+            mc_str = "  ".join(f"{k}:{v}" for k, v in sorted(media_counts.items()))
+            lines.append(f"media events: {mc_str}")
+        else:
+            lines.append("media events: none recorded")
+    except Exception as exc:
+        lines.append(f"media events: error ({exc})")
+
+    # sticker pool health
+    try:
+        from agents import config as _cfg
+        pool = _cfg.get("stickers.pool") or []
+        if not pool:
+            lines.append("stickers: degraded (pool empty — /status shows no file_ids)")
+        else:
+            lines.append(f"stickers: {len(pool)} in pool")
+    except Exception as exc:
+        lines.append(f"stickers: error ({exc})")
+
     return _truncate_3900("\n".join(lines))
 
 
@@ -507,7 +529,27 @@ def format_audit(subcmd: str, args: list[str]) -> str:
             body = "\n".join(lines)
         return _truncate_3900(body)
 
-    return f"unknown audit subcommand: {subcmd!r}. try: recent [N] | tools | approvals | id <id>"
+    if subcmd == "media":
+        try:
+            rows = _db.media_events_recent(20)
+            counts = _db.media_events_counts()
+        except Exception as exc:
+            return f"media_events: error ({exc})"
+        if not rows:
+            return "media_events: no records yet."
+        total_str = "  ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
+        lines = [f"media events — totals: {total_str}", "last 20:"]
+        for r in rows:
+            ts = (r.get("created_at") or "")[:16]
+            kind = r.get("kind") or "?"
+            tg_id = r.get("telegram_message_id")
+            cap = (r.get("caption") or "")[:40]
+            tg_note = f" tg={tg_id}" if tg_id else ""
+            cap_note = f" cap={cap!r}" if cap else ""
+            lines.append(f"  {ts}  {kind}{tg_note}{cap_note}")
+        return _truncate_3900("\n".join(lines))
+
+    return f"unknown audit subcommand: {subcmd!r}. try: recent [N] | tools | approvals | id <id> | media"
 
 
 def format_settings(subcmd: str, args: list[str]) -> str:

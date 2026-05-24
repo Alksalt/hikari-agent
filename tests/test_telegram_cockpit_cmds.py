@@ -445,3 +445,33 @@ def test_selector_skips_snoozed():
     )
     result = select([candidate], ctx)
     assert result is None, "snoozed source should not be selected"
+
+
+# ---------------------------------------------------------------------------
+# 17. /audit media → empty DB
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_audit_media_empty():
+    from agents.telegram_bridge import cmd_audit
+    update, context = _make_update(_owner_id(), args=["media"])
+    await cmd_audit(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "media" in text.lower() and ("no records" in text.lower() or "yet" in text.lower())
+
+
+# ---------------------------------------------------------------------------
+# 18. /audit media → with data shows kind + caption
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_audit_media_with_data():
+    db.media_events_insert("photo", telegram_message_id=42, caption="test cap")
+    from agents.telegram_bridge import cmd_audit
+    update, context = _make_update(_owner_id(), args=["media"])
+    await cmd_audit(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "photo" in text
+    assert "test cap" in text

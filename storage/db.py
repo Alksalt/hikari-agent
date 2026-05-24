@@ -546,6 +546,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_graph_outbox",
     "migrate_oauth_tokens_to_hash",
     "migrate_background_tasks_cancel",
+    "migrate_media_events",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -677,6 +678,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
     run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
     run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel)
+    run_once(conn, "migrate_media_events", _migrate_media_events)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -3594,6 +3596,15 @@ def photo_locations_recent(limit: int = 10) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def photo_location_delete(location_id: int) -> bool:
+    """Delete a photo_locations row by id. Returns True if a row was deleted."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM photo_locations WHERE id = ?", (int(location_id),)
+        )
+        return cur.rowcount > 0
+
+
 # ---------- Phase 14: OAuth 2.1 + PKCE + DCR (external MCP) ----------
 
 def _oauth_random_token(byte_len: int = 32) -> str:
@@ -4241,6 +4252,84 @@ def _migrate_oauth_tokens_to_hash(conn: sqlite3.Connection) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             (token_hash, owner, created_at, expires_at, scopes),
         )
+
+
+def _migrate_media_events(conn: sqlite3.Connection) -> None:
+    """Create the durable media_events history table if it doesn't exist.
+
+    Records every outbound photo/voice/document after confirmed delivery.
+    Indexes live here per the migration-ordering rule.
+    """
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    if "media_events" in existing:
+        return
+    conn.execute("""
+        CREATE TABLE media_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            source_turn_message_id INTEGER,
+            telegram_message_id INTEGER,
+            caption TEXT,
+            content_hash TEXT,
+            retention_policy TEXT NOT NULL DEFAULT 'standard',
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX idx_media_events_kind_created "
+        "ON media_events(kind, created_at)"
+    )
+    conn.commit()
+
+
+def media_events_insert(
+    kind: str,
+    *,
+    source_turn_message_id: int | None = None,
+    telegram_message_id: int | None = None,
+    caption: str | None = None,
+    content_hash: str | None = None,
+    retention_policy: str = "standard",
+) -> int:
+    """Record a delivered media event. Returns new row id."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO media_events "
+            "(kind, source_turn_message_id, telegram_message_id, caption, "
+            " content_hash, retention_policy, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                kind,
+                source_turn_message_id,
+                telegram_message_id,
+                caption,
+                content_hash,
+                retention_policy,
+                _now(),
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def media_events_recent(limit: int = 20) -> list[dict[str, Any]]:
+    """Return the most recent media_events rows, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM media_events ORDER BY created_at DESC, id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def media_events_counts() -> dict[str, int]:
+    """Return {kind: count} totals from media_events."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT kind, COUNT(*) AS n FROM media_events GROUP BY kind"
+        ).fetchall()
+    return {r["kind"]: r["n"] for r in rows}
 
 
 def graph_outbox_insert(source_table: str, source_id: int, payload_json: str,

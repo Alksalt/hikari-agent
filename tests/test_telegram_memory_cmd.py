@@ -312,3 +312,46 @@ async def test_memory_fact_null_ts_no_crash():
     update, context = _make_update(_owner_id(), args=["fact", str(fid)])
     await cmd_memory(update, context)
     update.message.reply_text.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 13. /memory locations — list empty
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_memory_locations_list_empty():
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["locations"])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "no photo locations" in text
+
+
+# ---------------------------------------------------------------------------
+# 14. /memory locations delete <id> → not found when id missing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_memory_locations_delete_not_found():
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["locations", "delete", "9999"])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "not found" in text
+
+
+# ---------------------------------------------------------------------------
+# 15. /memory locations delete <id> → deleted when row exists
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_memory_locations_delete_existing():
+    loc_id = db.photo_location_insert(35.6762, 139.6503, label="Tokyo")
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["locations", "delete", str(loc_id)])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "deleted" in text

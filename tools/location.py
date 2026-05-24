@@ -58,7 +58,7 @@ def _weather_endpoint() -> str:
 
 
 def _user_agent() -> str:
-    return str(cfg.get("location.nominatim_user_agent", "hikari-agent/0.1"))
+    return str(cfg.get("location.nominatim_user_agent", "hikari-agent/0.1 (contact: hikari-bot@localhost)"))
 
 
 async def record_share(lat: float, lon: float) -> dict[str, Any]:

@@ -674,6 +674,9 @@ location:
   weather_endpoint: "https://api.open-meteo.com/v1/forecast"
   # Nominatim ToS requires contact info in the UA. Override per-deployment.
   nominatim_user_agent: "hikari-agent/0.1 (contact: hikari-bot@localhost)"
+  # EXIF GPS precision: true = round to 2 decimal places (~1km city-level).
+  # Set false only if you need street-level accuracy in photo_locations.
+  exif_gps_city_precision_only: true
   # In-voice acks for location share. Bare phrases — Hikari doesn't enthuse.
   ack_pool:
     - "noted."
