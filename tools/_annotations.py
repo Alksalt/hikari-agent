@@ -71,6 +71,7 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "wiki_backlinks": ANN_READ_LOCAL,
     "wiki_tree": ANN_READ_LOCAL,
     "wiki_append": ANN_WRITE_LOCAL,
+    "morning_brief": ANN_READ_LOCAL,
     # --- codex reports (filesystem) ---
     "list_codex_reports": ANN_READ_LOCAL,
     "read_codex_report": ANN_READ_LOCAL,

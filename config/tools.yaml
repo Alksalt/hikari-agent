@@ -329,6 +329,13 @@ tools:
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__wiki_tree$"]
 
+  - id: "mcp__hikari_wiki__morning_brief"
+    bucket: 1
+    server: hikari_wiki
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_wiki__morning_brief$"]
+
   # --------------------------------------------------------------------------
   # hikari_dispatch (bucket 1)
   # --------------------------------------------------------------------------
@@ -1922,6 +1929,7 @@ subagents:
       - "mcp__hikari_wiki__wiki_backlinks"
       - "mcp__hikari_wiki__wiki_list"
       - "mcp__hikari_wiki__wiki_tree"
+      - "mcp__hikari_wiki__morning_brief"
     description_path: "agents/subagents/prompts/wiki.description.md"
     prompt_path: "agents/subagents/prompts/wiki.prompt.md"
 

@@ -97,7 +97,17 @@ def _brctl_download(path: Path, timeout: int) -> None:
 
 async def _icloud_materialize(path: Path, timeout: int = 30) -> None:
     """Force iCloud to download a placeholder file. No-op if already materialized.
-    Runs brctl off the event loop via asyncio.to_thread."""
+    Runs brctl off the event loop via asyncio.to_thread.
+
+    Refuses paths that resolve outside ``VAULT_ROOT`` — the brctl subprocess
+    receives the path as an argv element so a traversal through `..` could
+    materialize files anywhere on disk. Per-tool input validation is the
+    primary guard; this is defense-in-depth so any future caller is safe."""
+    try:
+        path.resolve().relative_to(VAULT_ROOT.resolve())
+    except ValueError:
+        logger.warning("_icloud_materialize: refused path outside vault: %s", path)
+        return
     if not path.exists() and not path.with_name(f".{path.name}.icloud").exists():
         return
     await asyncio.to_thread(_brctl_download, path, timeout)
