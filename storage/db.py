@@ -4184,6 +4184,7 @@ def graph_outbox_mark_failed(row_id: int, error: str) -> None:
     _TRANSIENT_PREFIXES = (
         "OPENROUTER_API_KEY",
         "GRAPHITI_ENABLED",
+        "add_episode_safe returned False",  # infra failure (kuzu init, graphiti init, etc.)
     )
     is_transient = any(p in error for p in _TRANSIENT_PREFIXES)
     if is_transient:

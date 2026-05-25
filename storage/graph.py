@@ -69,6 +69,25 @@ async def get_graph() -> Graphiti:
         client = OpenAIGenericClient(config=llm_config)
         embedder = FastembedAdapter()
         driver = KuzuDriver(db=str(graph_path))
+        # graphiti_core ≥0.29 checks driver._database before cloning for group routing,
+        # but KuzuDriver never initialises this attribute.  Pin it so the check is a no-op.
+        driver._database = "hikari_chat"
+        # graphiti_core 0.29 added kuzu FTS indices in graph_queries.py but omitted them
+        # from KuzuDriver.setup_schema() and made build_indices_and_constraints() a no-op.
+        # Create them explicitly; ignore errors if they already exist on a reopened DB.
+        import kuzu as _kuzu
+        _fts_conn = _kuzu.Connection(driver.db)
+        for _fts_q in [
+            "CALL CREATE_FTS_INDEX('Episodic', 'episode_content', ['content', 'source', 'source_description']);",
+            "CALL CREATE_FTS_INDEX('Entity', 'node_name_and_summary', ['name', 'summary']);",
+            "CALL CREATE_FTS_INDEX('Community', 'community_name', ['name']);",
+            "CALL CREATE_FTS_INDEX('RelatesToNode_', 'edge_name_and_fact', ['name', 'fact']);",
+        ]:
+            try:
+                _fts_conn.execute(_fts_q)
+            except Exception:
+                pass  # already exists on a reopened database
+        _fts_conn.close()
         g = Graphiti(graph_driver=driver, llm_client=client, embedder=embedder)
         await g.build_indices_and_constraints()
         # Lock down the kuzu file once Kuzu has created it.
