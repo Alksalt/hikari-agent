@@ -409,7 +409,7 @@ async def _drain_photo_outbox(bot, chat_id: int) -> int:
 
 
 async def _send_with_choreography(
-    bot, message, reply_text: str, elapsed_real: float = 0.0,
+    bot, message, reply_text: str, elapsed_real: float = 0.0, *, user_msg: str = "",
 ) -> None:
     """Phase 13 (Stream C) — filter, send, THEN persist.
 
@@ -554,7 +554,9 @@ async def _send_with_choreography(
     try:
         stickers_mod._bump_outbound_counter()
         outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
-        await stickers_mod.maybe_send_sticker(bot, chat_id, outbound_counter)
+        await stickers_mod.maybe_send_sticker(
+            bot, chat_id, outbound_counter, user_msg=user_msg, reply=reply_text,
+        )
     except Exception:
         logger.exception("stickers: maybe_send_sticker failed (non-fatal)")
         outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
@@ -701,7 +703,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elapsed = hb.elapsed
     if reply:
         await _send_with_choreography(
-            context.bot, message, reply, elapsed_real=elapsed,
+            context.bot, message, reply, elapsed_real=elapsed, user_msg=user_text,
         )
     drain_counts = await _drain_media_outbox(context.bot, chat.id)
     n = drain_counts.get("photo", 0)

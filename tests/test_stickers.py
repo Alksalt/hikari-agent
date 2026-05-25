@@ -35,7 +35,8 @@ def _write_cfg(tmp_path: Path, monkeypatch, yaml_text: str) -> None:
     config.reload()
 
 
-def test_stickers_empty_pool_returns_false_and_none(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_stickers_empty_pool_returns_false_and_none(monkeypatch, tmp_path):
     _write_cfg(tmp_path, monkeypatch,
         "stickers:\n"
         "  enabled: true\n"
@@ -44,7 +45,7 @@ def test_stickers_empty_pool_returns_false_and_none(monkeypatch, tmp_path):
         "  mood_blocklist: []\n"
         "  pool: []\n"
     )
-    assert stickers.pick_sticker_file_id() is None
+    assert await stickers.pick_sticker_file_id() is None
     assert not stickers.should_send_sticker(now_counter=100)
 
 
@@ -109,14 +110,16 @@ def test_stickers_disabled_returns_false(monkeypatch, tmp_path):
     assert not stickers.should_send_sticker(now_counter=100)
 
 
-def test_stickers_pick_file_id_from_pool(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_stickers_pick_file_id_from_pool(monkeypatch, tmp_path):
     _write_cfg(tmp_path, monkeypatch,
         "stickers:\n"
         "  enabled: true\n"
         "  pool: ['ID_A', 'ID_B']\n"
     )
+    # No user_msg/reply → falls back to random.choice without LLM call.
     for _ in range(20):
-        fid = stickers.pick_sticker_file_id()
+        fid = await stickers.pick_sticker_file_id()
         assert fid in ("ID_A", "ID_B")
 
 
