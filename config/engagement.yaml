@@ -33,6 +33,9 @@ proactive:
   user_active_skip_minutes: 60
   reengage_min_hours: 2
   reengage_max_hours: 6
+  # Pre-run gate for the engagement_tick scheduler job: check quiet hours +
+  # silence before running any producers. Set false to disable (useful in dev).
+  scheduler_gate_enabled: true
   default_enabled_sources:
     - gmail_unread_threshold
     - calendar_event_prep

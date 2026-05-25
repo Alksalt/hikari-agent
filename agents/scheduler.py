@@ -268,6 +268,11 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
         from storage import db
 
+        # Pre-run gate: skip the whole tick during quiet hours or silence.
+        if not guard.should_wake():
+            logger.debug("engagement_tick: gate=skip (quiet/silenced)")
+            return
+
         # Resolve enabled sources: runtime override wins over config default.
         raw_override = db.runtime_get("proactive_enabled_sources_override")
         if raw_override:

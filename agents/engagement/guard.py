@@ -1,9 +1,54 @@
-"""Guard: rejects generic openers and missing anchor tokens. Returns (ok, reason)."""
+"""Guard: rejects generic openers and missing anchor tokens. Returns (ok, reason).
+Also exposes should_wake() for the scheduler to short-circuit engagement ticks."""
 from __future__ import annotations
 
+import logging
 import re
 
 from agents.engagement.triggers import TriggerCandidate
+
+logger = logging.getLogger(__name__)
+
+
+def should_wake(source_id: str | None = None) -> bool:
+    """Return True if the engagement tick should proceed.
+
+    Checks:
+    - scheduler_gate_enabled config flag (default True)
+    - quiet hours (canonical _is_quiet_now from agents.proactive)
+    - global silence window from runtime_state
+
+    Optional per-source min_interval check lives in selector._hard_interval_blocked;
+    this gate is the tick-level fast-path that skips the whole producer scan.
+    """
+    from agents import config as _cfg
+    if not bool(_cfg.get("proactive.scheduler_gate_enabled", True)):
+        return True  # gate disabled — always wake
+
+    try:
+        from agents.proactive import _is_quiet_now
+        if _is_quiet_now():
+            logger.debug("should_wake: quiet hours active — skip")
+            return False
+    except Exception:
+        pass  # non-fatal; proceed
+
+    try:
+        from datetime import UTC, datetime
+        from storage import db as _db
+        iso = _db.runtime_get("silence_until")
+        if iso:
+            until = datetime.fromisoformat(iso)
+            if until.tzinfo is None:
+                from datetime import timezone
+                until = until.replace(tzinfo=UTC)
+            if datetime.now(UTC) < until:
+                logger.debug("should_wake: global silence active — skip")
+                return False
+    except Exception:
+        pass  # non-fatal; proceed
+
+    return True
 
 _GENERIC_OPENER = re.compile(
     r"^(hey|hi|just checking|how are you|what'?s up|good morning,?\s*$)",
