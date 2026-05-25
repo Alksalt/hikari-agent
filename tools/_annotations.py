@@ -129,6 +129,13 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "link_list": ANN_READ_LOCAL,
     "link_update": ANN_WRITE_LOCAL,
     "link_delete": ANN_DESTRUCTIVE_LOCAL,
+    # --- skill management (read/write local .agents/skills/ + DB) ---
+    "skill_list": ANN_READ_LOCAL,
+    "skill_read": ANN_READ_LOCAL,
+    "skill_create": ANN_WRITE_LOCAL,
+    "skill_approve": ANN_WRITE_LOCAL,
+    # run_skill executes arbitrary skill content which may call external tools
+    "run_skill": ANN_WRITE_EXTERNAL,
 }
 
 

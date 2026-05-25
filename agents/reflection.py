@@ -527,6 +527,13 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("oauth_cleanup_expired failed (non-blocking)")
 
+    # Phase 15: skill auto-promotion — scan thoughts for repeating patterns.
+    try:
+        from agents.skill_promoter import maybe_promote_skill
+        await maybe_promote_skill()
+    except Exception:
+        logger.exception("skill_promoter: maybe_promote_skill failed (non-fatal)")
+
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
