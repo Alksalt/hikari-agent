@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,25 @@ from tools._response import ok as _ok
 logger = logging.getLogger(__name__)
 
 _SKILLS_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills"
+_SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _validate_skill_id(skill_id: str) -> str | None:
+    """Return error string if skill_id is unsafe; None if OK."""
+    if not skill_id or not _SKILL_ID_RE.match(skill_id):
+        return (
+            "error: skill_id must be kebab/snake-case, "
+            "1-64 chars, [a-z0-9_-], starting with [a-z0-9]"
+        )
+    return None
 
 
 def _skill_path(skill_id: str) -> Path:
-    return _SKILLS_ROOT / skill_id / "SKILL.md"
+    candidate = (_SKILLS_ROOT / skill_id / "SKILL.md").resolve()
+    root = _SKILLS_ROOT.resolve()
+    if not str(candidate).startswith(str(root) + "/"):
+        raise ValueError(f"skill_id escapes skills root: {skill_id!r}")
+    return candidate
 
 
 @tool(
@@ -54,8 +70,9 @@ async def skill_list(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def skill_read(args: dict[str, Any]) -> dict[str, Any]:
     skill_id = (args.get("skill_id") or "").strip()
-    if not skill_id:
-        return _ok("error: skill_id required")
+    err = _validate_skill_id(skill_id)
+    if err:
+        return _ok(err)
     path = _skill_path(skill_id)
     if not path.exists():
         return _ok(f"error: skill {skill_id!r} not found")
@@ -73,10 +90,13 @@ async def skill_read(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def skill_create(args: dict[str, Any]) -> dict[str, Any]:
     skill_id = (args.get("skill_id") or "").strip()
+    err = _validate_skill_id(skill_id)
+    if err:
+        return _ok(err)
     description = (args.get("description") or "").strip()
     content = (args.get("content") or "").strip()
-    if not skill_id or not content:
-        return _ok("error: skill_id and content are required")
+    if not content:
+        return _ok("error: content is required")
     from storage import db as _db
     session_id = _db.get_session_id() or "pending"
     payload = json.dumps({
@@ -105,8 +125,9 @@ async def skill_create(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def skill_approve(args: dict[str, Any]) -> dict[str, Any]:
     skill_id = (args.get("skill_id") or "").strip()
-    if not skill_id:
-        return _ok("error: skill_id required")
+    err = _validate_skill_id(skill_id)
+    if err:
+        return _ok(err)
     from storage import db as _db
     topic = f"staged_skill:{skill_id}"
     try:
@@ -134,6 +155,11 @@ async def skill_approve(args: dict[str, Any]) -> dict[str, Any]:
             conn.execute("DELETE FROM session_scratch WHERE id = ?", (row_id,))
     except Exception:
         logger.warning("skill_approve: failed to clean up session_scratch row %s", row_id)
+        return _ok(
+            f"skill {skill_id!r} saved to {target} "
+            f"(note: staged scratch row #{row_id} could not be cleaned up — "
+            f"will be swept by scratch_cleanup_old)"
+        )
     return _ok(f"skill {skill_id!r} saved to {target}")
 
 
@@ -147,9 +173,10 @@ async def skill_approve(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def run_skill(args: dict[str, Any]) -> dict[str, Any]:
     skill_id = (args.get("skill_id") or "").strip()
+    err = _validate_skill_id(skill_id)
+    if err:
+        return _ok(err)
     skill_args = args.get("args") or {}
-    if not skill_id:
-        return _ok("error: skill_id required")
     path = _skill_path(skill_id)
     if not path.exists():
         return _ok(f"error: skill {skill_id!r} not found")

@@ -55,10 +55,13 @@ async def run_compound_turn(tasks: list[dict]) -> str:
         waves = [[i] for i in range(len(tasks))]
 
     results: dict[int, str] = {}
+    total_successes = 0
+    first_exc: Exception | None = None
     for wave in waves:
         if len(wave) == 1:
             idx = wave[0]
             results[idx] = await run_internal_control(tasks[idx]["task"])
+            total_successes += 1
         else:
             wave_results = await asyncio.gather(
                 *[run_internal_control(tasks[idx]["task"]) for idx in wave],
@@ -67,9 +70,15 @@ async def run_compound_turn(tasks: list[dict]) -> str:
             for idx, res in zip(wave, wave_results):
                 if isinstance(res, Exception):
                     logger.warning("compound_turn: task %d raised: %s", idx, res)
-                    results[idx] = f"(task {idx + 1} failed: {res})"
+                    if first_exc is None:
+                        first_exc = res
+                    results[idx] = ""
                 else:
                     results[idx] = str(res)
+                    total_successes += 1
+
+    if total_successes == 0 and first_exc is not None:
+        raise first_exc
 
     parts = [results[i].strip() for i in range(len(tasks)) if results.get(i, "").strip()]
     return "\n\n".join(parts)

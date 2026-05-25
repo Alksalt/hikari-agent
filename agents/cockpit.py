@@ -139,6 +139,8 @@ def _write_proactive_enabled(value: str) -> None:
 
 def _patch_yaml_key(dotted_key: str, value: object) -> None:
     """Write a value at a dotted key path in engagement.yaml and reload config."""
+    import os
+    import tempfile
     import yaml
     from agents.config import _config_path
     path = _config_path()
@@ -151,8 +153,19 @@ def _patch_yaml_key(dotted_key: str, value: object) -> None:
             node[part] = {}
         node = node[part]
     node[parts[-1]] = value
-    with open(path, "w") as _f:
-        yaml.dump(data, _f, default_flow_style=False, allow_unicode=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w") as _f:
+            yaml.dump(data, _f, default_flow_style=False, allow_unicode=True)
+            _f.flush()
+            os.fsync(_f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     from agents import config as _cfg
     _cfg.reload()
 

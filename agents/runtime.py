@@ -117,12 +117,25 @@ async def _call_aux_llm(prompt: str, *, system: str = _AUX_REFLECTION_SYSTEM) ->
         api_key = os.environ.get("OPENROUTER_API_KEY", "")
         if api_key:
             messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
-            async with httpx.AsyncClient(timeout=60.0) as _client:
-                resp = await _client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
-                )
+            for attempt in (1, 2):
+                async with httpx.AsyncClient(timeout=60.0) as _client:
+                    resp = await _client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
+                    )
+                if resp.status_code in (429, 503) and attempt == 1:
+                    logger.warning(
+                        "aux_llm: openrouter %s on attempt 1 — body=%r — retrying in 2s",
+                        resp.status_code, resp.text[:200],
+                    )
+                    await asyncio.sleep(2.0)
+                    continue
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "aux_llm: openrouter HTTP %s — body=%r",
+                        resp.status_code, resp.text[:200],
+                    )
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"].strip()
         logger.warning("aux_model.provider=openrouter but OPENROUTER_API_KEY not set; using haiku")

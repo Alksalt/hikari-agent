@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 OBS_KEY = "pending_surfaced_observation_ids"
 NOT_KEY = "pending_surfaced_noticing_ids"
+DEFER_KEY = "pending_consumed_defer_ids"
 
 _WS_RE = re.compile(r"\s+")
 
@@ -96,6 +97,8 @@ def mark_pending_surfaced(sent_text: str = "") -> None:
             _restash(OBS_KEY, obs_id)
         for not_id in _pop_ids(NOT_KEY):
             _restash(NOT_KEY, not_id)
+        # Defer rows keep their IDs for next turn re-injection on send failure.
+        # _format_deferred_proactives clears the stash on next invocation.
         return
 
     sent_norm = _normalize(sent_text)
@@ -119,3 +122,17 @@ def mark_pending_surfaced(sent_text: str = "") -> None:
                 _restash(NOT_KEY, not_id)
         except Exception:
             logger.exception("postsend: noticing_mark_surfaced failed id=%s", not_id)
+
+    # Delete deferred proactive rows that were injected and delivered.
+    defer_ids = _pop_ids(DEFER_KEY)
+    if defer_ids:
+        try:
+            placeholders = ",".join("?" * len(defer_ids))
+            with db._conn() as conn:
+                conn.execute(
+                    f"DELETE FROM session_scratch WHERE id IN ({placeholders})",
+                    defer_ids,
+                )
+            logger.debug("postsend: cleaned %d deferred proactive row(s)", len(defer_ids))
+        except Exception:
+            logger.exception("postsend: failed to delete deferred proactive rows %s", defer_ids)

@@ -162,7 +162,7 @@ async def test_run_compound_turn_sequential_dependent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_compound_turn_handles_subtask_exception(monkeypatch):
-    """A failing subtask should not crash the whole compound turn."""
+    """Partial failure: successful results returned, error text NOT surfaced to user."""
     from agents.compound_turn import run_compound_turn
 
     async def _fake_ric(prompt, **_kwargs):
@@ -177,4 +177,23 @@ async def test_run_compound_turn_handles_subtask_exception(monkeypatch):
     ]
     result = await run_compound_turn(tasks)
     assert "[good]" in result
-    assert "failed" in result or "bad" in result
+    # Error strings must NOT be surfaced as user-facing reply.
+    assert "failed" not in result
+    assert "boom" not in result
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_all_fail_raises(monkeypatch):
+    """All tasks fail → exception propagates so outer handler sends 'brain hit a wall'."""
+    from agents.compound_turn import run_compound_turn
+
+    async def _always_fail(prompt, **_kwargs):
+        raise RuntimeError("everything broke")
+
+    monkeypatch.setattr("agents.runtime.run_internal_control", _always_fail)
+    tasks = [
+        {"task": "a", "depends_on": []},
+        {"task": "b", "depends_on": []},
+    ]
+    with pytest.raises(RuntimeError, match="everything broke"):
+        await run_compound_turn(tasks)

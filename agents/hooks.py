@@ -592,15 +592,26 @@ def _format_unresolved_decisions() -> str | None:
 
 
 def _format_deferred_proactives() -> str | None:
-    """Return any deferred proactive items (defer:next_turn) from session_scratch."""
+    """Return any deferred proactive items (defer:next_turn) from session_scratch.
+
+    IDs are stashed in pending_consumed_defer_ids; postsend.py deletes the rows
+    after a confirmed Telegram delivery so budget-dropped blocks are not silently lost.
+    """
     try:
         import json as _json
+        from agents.reflection_sanitize import (
+            MemoryInstructionShape,
+            escape_remembered_tags,
+            sanitize,
+        )
+        # Clear any stale pending IDs from a prior turn that never delivered.
+        db.runtime_set("pending_consumed_defer_ids", None)
         session_id = db.get_session_id() or ""
         if not session_id:
             return None
         with db._conn() as conn:
             rows = conn.execute(
-                "SELECT payload_json FROM session_scratch "
+                "SELECT id, payload_json FROM session_scratch "
                 "WHERE session_id = ? AND topic = 'defer:next_turn' "
                 "ORDER BY id ASC LIMIT 5",
                 (session_id,),
@@ -608,23 +619,32 @@ def _format_deferred_proactives() -> str | None:
         if not rows:
             return None
         items = []
+        consumed_ids: list[int] = []
         for row in rows:
             try:
                 p = _json.loads(row["payload_json"])
-                src = p.get("source", "?")
-                txt = p.get("text", "")[:200]
-                items.append(f"  [{src}] {txt}")
+                src_raw = str(p.get("source", "?"))[:40]
+                txt_raw = str(p.get("text", ""))[:200]
+                try:
+                    sanitize(src_raw, kind="observation")
+                    sanitize(txt_raw, kind="observation")
+                except MemoryInstructionShape as exc:
+                    logger.warning(
+                        "_format_deferred_proactives: skipping row — "
+                        "matched instruction pattern %r", str(exc),
+                    )
+                    consumed_ids.append(int(row["id"]))
+                    continue
+                safe_src = escape_remembered_tags(src_raw)
+                safe_txt = escape_remembered_tags(txt_raw)
+                items.append(f"  [{safe_src}] {safe_txt}")
+                consumed_ids.append(int(row["id"]))
             except Exception:
                 continue
         if not items:
             return None
-        # Consume: delete the rows so they only surface once.
-        with db._conn() as conn:
-            conn.execute(
-                "DELETE FROM session_scratch "
-                "WHERE session_id = ? AND topic = 'defer:next_turn'",
-                (session_id,),
-            )
+        # Stash IDs for post-send deletion (postsend.mark_pending_surfaced).
+        db.runtime_set("pending_consumed_defer_ids", _json.dumps(consumed_ids))
         return (
             "# deferred for this turn:\n"
             + "\n".join(items)
@@ -694,6 +714,8 @@ async def inject_memory(
             db.runtime_set("pending_surfaced_observation_ids", None)
         if "noticings" not in selected_keys:
             db.runtime_set("pending_surfaced_noticing_ids", None)
+        if "deferred_proactives" not in selected_keys:
+            db.runtime_set("pending_consumed_defer_ids", None)
 
         logger.debug(
             "inject_memory: %d/%d blocks, %d chars (cap=%d)",

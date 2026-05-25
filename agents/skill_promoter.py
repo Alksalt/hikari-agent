@@ -76,12 +76,16 @@ async def maybe_promote_skill() -> None:
     from agents.runtime import _call_aux_llm
     from storage import db as _db
 
+    def _set_cooldown() -> None:
+        _db.runtime_set("skill_promoter.last_run", datetime.now(UTC).isoformat())
+
     sample = "\n---\n".join(thoughts[-40:])
     prompt = f"Diary entries (recent {_THOUGHT_WINDOW_DAYS} days):\n\n{sample}"
     try:
         raw = await _call_aux_llm(prompt, system=_SCAN_SYSTEM)
     except Exception:
         logger.exception("skill_promoter: run_reflection_call failed")
+        _set_cooldown()
         return
 
     raw = raw.strip()
@@ -92,12 +96,13 @@ async def maybe_promote_skill() -> None:
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
-        logger.debug("skill_promoter: non-JSON response — skip")
+        logger.warning("skill_promoter: non-JSON response — applying cooldown")
+        _set_cooldown()
         return
 
     if not result.get("found"):
         logger.debug("skill_promoter: no repeating pattern found")
-        _db.runtime_set("skill_promoter.last_run", datetime.now(UTC).isoformat())
+        _set_cooldown()
         return
 
     skill_id = str(result.get("skill_id") or "").strip()
@@ -105,6 +110,7 @@ async def maybe_promote_skill() -> None:
     content = str(result.get("content") or "").strip()
     if not skill_id or not content:
         logger.warning("skill_promoter: LLM returned found=true but incomplete fields")
+        _set_cooldown()
         return
 
     session_id = _db.get_session_id() or "pending"
@@ -122,6 +128,7 @@ async def maybe_promote_skill() -> None:
         logger.info("skill_promoter: drafted skill %r → session_scratch", skill_id)
     except Exception:
         logger.exception("skill_promoter: failed to write staged skill")
+        _set_cooldown()
         return
 
-    _db.runtime_set("skill_promoter.last_run", datetime.now(UTC).isoformat())
+    _set_cooldown()

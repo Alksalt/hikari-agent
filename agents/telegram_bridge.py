@@ -678,10 +678,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if should_extract(user_text):
                 _tasks = await extract_tasks(user_text)
                 if len(_tasks) > 1:
+                    reply = await run_compound_turn(_tasks)
                     _mid = db.append_message("user", user_text)
                     db.runtime_set("last_user_message", db._now())
                     db.runtime_set("last_user_message_id", str(_mid))
-                    reply = await run_compound_turn(_tasks)
                 else:
                     reply = await respond(
                         user_text, internal_belief_context=internal_belief_context

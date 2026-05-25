@@ -10,13 +10,13 @@ from agents.proactive_gate import reserve_and_send
 
 logger = logging.getLogger(__name__)
 
-_DEFER_PATTERN = re.compile(r"\[\[defer:(next_turn|reflect)\]\]", re.IGNORECASE)
+_DEFER_PATTERN = re.compile(r"\[\[defer:(next_turn)\]\]", re.IGNORECASE)
 
 
 def _handle_defer(text: str, candidate) -> tuple[str | None, str]:
-    """Detect [[defer:next_turn]] or [[defer:reflect]] in text.
+    """Detect [[defer:next_turn]] in text.
 
-    Returns (kind, clean_text) where kind is 'next_turn'|'reflect'|None.
+    Returns (kind, clean_text) where kind is 'next_turn'|None.
     clean_text has the sentinel stripped.
     """
     m = _DEFER_PATTERN.search(text)
@@ -27,8 +27,8 @@ def _handle_defer(text: str, candidate) -> tuple[str | None, str]:
     return kind, clean
 
 
-def _write_defer_scratch(kind: str, text: str, candidate) -> None:
-    """Write a deferred proactive item to session_scratch for later surfacing."""
+def _write_defer_scratch(kind: str, text: str, candidate) -> bool:
+    """Write a deferred proactive item to session_scratch. Returns True on success."""
     from storage import db as _db
     session_id = _db.get_session_id() or "pending"
     payload = json.dumps({
@@ -44,8 +44,10 @@ def _write_defer_scratch(kind: str, text: str, candidate) -> None:
                 "INSERT INTO session_scratch (session_id, topic, payload_json) VALUES (?, ?, ?)",
                 (session_id, topic, payload),
             )
+        return True
     except Exception:
         logger.exception("sender: failed to write defer scratch for %s", candidate.source)
+        return False
 
 
 async def send(text, candidate, send_text_fn) -> int | None:
@@ -57,14 +59,18 @@ async def send(text, candidate, send_text_fn) -> int | None:
     on None — otherwise producer sticky state would mark untouched triggers
     as 'handled'.
     """
-    # Detect [[defer:next_turn]] or [[defer:reflect]] sentinel from the
-    # proactive composer. Strip it from the text and write to session_scratch;
-    # don't send this turn.
+    # Detect [[defer:next_turn]] sentinel from the proactive composer.
+    # Strip it from the text and write to session_scratch; don't send this turn.
+    # On scratch write failure, fall through to send immediately.
     defer_kind, text = _handle_defer(text or "", candidate)
     if defer_kind:
-        _write_defer_scratch(defer_kind, text, candidate)
-        logger.info("sender: deferred %s (%s) to session_scratch", candidate.source, defer_kind)
-        return None
+        if _write_defer_scratch(defer_kind, text, candidate):
+            logger.info("sender: deferred %s (%s) to session_scratch", candidate.source, defer_kind)
+            return None
+        logger.warning(
+            "sender: defer scratch failed for %s — falling through to send",
+            candidate.source,
+        )
 
     payload = json.dumps(getattr(candidate, "payload", {}) or {}, default=str)
     result = await reserve_and_send(
