@@ -18,6 +18,8 @@ import re
 from functools import cache
 from pathlib import Path
 
+import httpx
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -80,6 +82,71 @@ MODEL_FALLBACK = (
     or cfg.get("runtime.model_fallback")
     or "claude-haiku-4-5"
 )
+
+_AUX_REFLECTION_SYSTEM = (
+    "You are a structured-output assistant. "
+    "Follow the instructions in the user message exactly. "
+    "Produce only the requested YAML — no prose, no markdown fences "
+    "unless the instructions ask for them, no explanations."
+)
+
+
+def _aux_provider() -> str:
+    return str(cfg.get("aux_model.provider", "haiku_subscription"))
+
+
+def _aux_model_id() -> str:
+    return str(cfg.get("aux_model.model", "deepseek/deepseek-v4-flash"))
+
+
+def _aux_sdk_model() -> str:
+    """SDK model ID to use for internal-control / SDK-based reflection calls."""
+    if _aux_provider() == "haiku_subscription":
+        return "claude-haiku-4-5"
+    # openrouter path not usable with SDK tools — fall back to haiku subscription
+    return "claude-haiku-4-5"
+
+
+async def _call_aux_llm(prompt: str, *, system: str = _AUX_REFLECTION_SYSTEM) -> str:
+    """Cheap LLM call for reflection and other no-tool ops.
+
+    Routes to OpenRouter (httpx) when provider=openrouter, otherwise uses
+    the Claude SDK with the haiku subscription model.
+    """
+    if _aux_provider() == "openrouter":
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if api_key:
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+            async with httpx.AsyncClient(timeout=60.0) as _client:
+                resp = await _client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+        logger.warning("aux_model.provider=openrouter but OPENROUTER_API_KEY not set; using haiku")
+
+    opts = ClaudeAgentOptions(
+        model="claude-haiku-4-5",
+        cwd=str(REPO_ROOT),
+        system_prompt=system,
+        allowed_tools=[],
+        mcp_servers={},
+        max_turns=3,
+        max_budget_usd=0.10,
+        permission_mode="acceptEdits",
+        resume=None,
+    )
+    parts: list[str] = []
+    async with ClaudeSDKClient(options=opts) as _sdk:
+        await _sdk.query(prompt)
+        async for msg in _sdk.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+    return "".join(parts).strip()
 
 
 def _inject_keychain_tokens_to_env() -> None:
@@ -276,6 +343,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
                    max_budget_usd: float | None = 0.50,
                    extra_allowed_tools: list[str] | None = None,
                    inject_memory_enabled: bool = True,
+                   model: str | None = None,
                    ) -> ClaudeAgentOptions:
     allowed = list(_base_allowed_tools())
     if extra_allowed_tools:
@@ -333,7 +401,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     # that mock the registry still work; the callable itself is stateless.
     from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
     return ClaudeAgentOptions(
-        model=MODEL_PRIMARY,
+        model=model or MODEL_PRIMARY,
         fallback_model=MODEL_FALLBACK,
         cwd=str(REPO_ROOT),
         setting_sources=["project"],
@@ -446,6 +514,7 @@ async def _invoke_sdk(
     retry_on_process_error: bool = True,
     inject_memory_enabled: bool = True,
     use_persistent_live: bool = False,
+    model: str | None = None,
 ) -> str:
     """Phase 13 (Stream C) — single private SDK invocation helper.
 
@@ -484,6 +553,7 @@ async def _invoke_sdk(
             max_budget_usd=max_budget_usd,
             extra_allowed_tools=extra_allowed_tools,
             inject_memory_enabled=inject_memory_enabled,
+            model=model,
         )
         parts = []
         try:
@@ -667,6 +737,7 @@ async def run_internal_control(
         extra_allowed_tools=extra_allowed_tools,
         retry_on_process_error=False,
         inject_memory_enabled=False,
+        model=_aux_sdk_model(),
     )
 
 
@@ -738,37 +809,8 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
 async def run_reflection_call(prompt: str) -> str:
     """Single LLM call for the daily reflection (no tool use expected).
 
-    Uses a stripped-down ClaudeAgentOptions with a neutral system prompt —
-    NOT the Hikari persona — so the model produces raw YAML rather than
-    staying in character. No MCP servers, no hooks, no session resume.
+    Routes to the aux model (openrouter deepseek or haiku subscription) —
+    NOT Sonnet — so reflection is cheap. Neutral system prompt, no MCP
+    servers, no hooks, no session resume.
     """
-    options = ClaudeAgentOptions(
-        model=MODEL_PRIMARY,
-        fallback_model=MODEL_FALLBACK,
-        cwd=str(REPO_ROOT),
-        system_prompt=(
-            "You are a structured-output assistant. "
-            "Follow the instructions in the user message exactly. "
-            "Produce only the requested YAML — no prose, no markdown fences "
-            "unless the instructions ask for them, no explanations."
-        ),
-        allowed_tools=[],
-        mcp_servers={},
-        max_turns=3,
-        max_budget_usd=0.30,
-        permission_mode="acceptEdits",
-        # No resume — reflection is stateless; don't fork the chat session.
-        resume=None,
-    )
-    parts: list[str] = []
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        parts.append(block.text)
-            elif isinstance(msg, ResultMessage):
-                if msg.subtype != "success":
-                    logger.warning("reflection call ended subtype=%s", msg.subtype)
-    return "".join(parts).strip()
+    return await _call_aux_llm(prompt)

@@ -17,7 +17,7 @@ from storage import db
 logger = logging.getLogger(__name__)
 
 _DEDUP_KEY = "engagement.gmail_unread_threshold.last_notified_count"
-_MCP_SERVER = "claude_ai_Gmail"
+_MCP_SERVER = "google_workspace"
 
 
 def collect() -> list[TriggerCandidate]:
