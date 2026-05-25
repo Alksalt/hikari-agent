@@ -54,7 +54,8 @@ async def test_get_graph_creates_kuzu_parent_dir(tmp_path: Path, monkeypatch):
     with patch("storage.graph.Graphiti", return_value=mock_g), \
          patch("storage.graph.KuzuDriver"), \
          patch("storage.graph.OpenAIGenericClient"), \
-         patch("storage.graph.LLMConfig"):
+         patch("storage.graph.LLMConfig"), \
+         patch("kuzu.Connection"):
         await graph_mod.get_graph()
 
     # The kuzu file path is `tmp_path / "hikari.kuzu"` — Kuzu creates that file
@@ -78,7 +79,8 @@ async def test_add_episode_safe_round_trip(tmp_path: Path, monkeypatch):
     with patch("storage.graph.Graphiti", return_value=mock_g), \
          patch("storage.graph.KuzuDriver"), \
          patch("storage.graph.OpenAIGenericClient"), \
-         patch("storage.graph.LLMConfig"):
+         patch("storage.graph.LLMConfig"), \
+         patch("kuzu.Connection"):
         ok = await graph_mod.add_episode_safe(
             name="fact_42",
             episode_body="user likes coffee",

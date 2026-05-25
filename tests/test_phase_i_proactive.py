@@ -629,4 +629,4 @@ class TestConfig:
         from agents import config as cfg
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
-        assert len(list(sources)) == 4
+        assert len(list(sources)) == 5

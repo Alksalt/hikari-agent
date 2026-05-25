@@ -40,6 +40,7 @@ class TestBackupRefusesWithoutRecipient:
         env = {
             **os.environ,
             "HIKARI_BACKUP_AGE_RECIPIENT": str(tmp_path / "nonexistent.pub"),
+            "HIKARI_BACKUP_DIR": str(tmp_path / "backups"),
         }
         result = subprocess.run(
             ["/bin/zsh", str(BACKUP_SH)],
