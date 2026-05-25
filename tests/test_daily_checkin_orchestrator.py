@@ -22,6 +22,13 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _gate_open(monkeypatch):
+    import agents.proactive_gate as _gate
+    monkeypatch.setattr(_gate, "_is_quiet_now", lambda _db=None: False)
+    monkeypatch.setattr(_gate, "_silence_active", lambda _db: False)
+
+
 def _at_target(hh: int = 7, mm: int = 0) -> datetime:
     import zoneinfo
     tz = zoneinfo.ZoneInfo("Europe/Berlin")
