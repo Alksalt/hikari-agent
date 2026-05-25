@@ -136,6 +136,87 @@ def _write_proactive_enabled(value: str) -> None:
         _db.runtime_set("proactive_enabled_sources_override", json.dumps(sorted(sources)))
 
 
+def _patch_yaml_key(dotted_key: str, value: object) -> None:
+    """Write a value at a dotted key path in engagement.yaml and reload config."""
+    import yaml
+    from agents.config import _config_path
+    path = _config_path()
+    with open(path) as _f:
+        data = yaml.safe_load(_f) or {}
+    parts = dotted_key.split(".")
+    node = data
+    for part in parts[:-1]:
+        if part not in node or not isinstance(node[part], dict):
+            node[part] = {}
+        node = node[part]
+    node[parts[-1]] = value
+    with open(path, "w") as _f:
+        yaml.dump(data, _f, default_flow_style=False, allow_unicode=True)
+    from agents import config as _cfg
+    _cfg.reload()
+
+
+def _read_quiet_start_hour() -> str:
+    from agents import config as _cfg
+    return str(_cfg.get("proactive.quiet_start_hour", 23))
+
+
+def _write_quiet_start_hour(value: str) -> None:
+    n = int(value)
+    if not (0 <= n <= 23):
+        raise ValueError(f"quiet_start_hour must be 0-23, got {n}")
+    _patch_yaml_key("proactive.quiet_start_hour", n)
+
+
+def _read_quiet_end_hour() -> str:
+    from agents import config as _cfg
+    return str(_cfg.get("proactive.quiet_end_hour", 8))
+
+
+def _write_quiet_end_hour(value: str) -> None:
+    n = int(value)
+    if not (0 <= n <= 23):
+        raise ValueError(f"quiet_end_hour must be 0-23, got {n}")
+    _patch_yaml_key("proactive.quiet_end_hour", n)
+
+
+def _read_aux_model_provider() -> str:
+    from agents import config as _cfg
+    return str(_cfg.get("aux_model.provider", "openrouter"))
+
+
+def _write_aux_model_provider(value: str) -> None:
+    v = value.strip().lower()
+    if v not in ("openrouter", "haiku_subscription"):
+        raise ValueError(f"aux_model.provider must be openrouter|haiku_subscription, got {v!r}")
+    _patch_yaml_key("aux_model.provider", v)
+
+
+def _read_aux_model_name() -> str:
+    from agents import config as _cfg
+    return str(_cfg.get("aux_model.model", "deepseek/deepseek-v4-flash"))
+
+
+def _write_aux_model_name(value: str) -> None:
+    v = value.strip()
+    if not v:
+        raise ValueError("aux_model.model cannot be empty")
+    _patch_yaml_key("aux_model.model", v)
+
+
+def _read_scheduler_gate_enabled() -> str:
+    from agents import config as _cfg
+    return str(bool(_cfg.get("proactive.scheduler_gate_enabled", True))).lower()
+
+
+def _write_scheduler_gate_enabled(value: str) -> None:
+    v = value.strip().lower()
+    if v not in ("true", "false", "1", "0"):
+        raise ValueError(f"scheduler_gate_enabled must be true/false, got {v!r}")
+    enabled = v not in ("false", "0")
+    _patch_yaml_key("proactive.scheduler_gate_enabled", enabled)
+
+
 _SETTINGS_ALLOWLIST: dict[str, dict] = {
     "silence.default_minutes": {
         "type": "int",
@@ -164,6 +245,41 @@ _SETTINGS_ALLOWLIST: dict[str, dict] = {
         "reader": _read_proactive_enabled,
         "writer": _write_proactive_enabled,
         "doc": "true/false (global toggle) or JSON list of enabled source ids",
+    },
+    "quiet_start_hour": {
+        "type": "int[0-23]",
+        "validate": lambda v: v.strip().isdigit() and 0 <= int(v.strip()) <= 23,
+        "reader": _read_quiet_start_hour,
+        "writer": _write_quiet_start_hour,
+        "doc": "hour (0-23, UTC) when quiet hours begin — no proactive messages",
+    },
+    "quiet_end_hour": {
+        "type": "int[0-23]",
+        "validate": lambda v: v.strip().isdigit() and 0 <= int(v.strip()) <= 23,
+        "reader": _read_quiet_end_hour,
+        "writer": _write_quiet_end_hour,
+        "doc": "hour (0-23, UTC) when quiet hours end — proactives resume",
+    },
+    "aux_model.provider": {
+        "type": "enum[openrouter,haiku_subscription]",
+        "validate": lambda v: v.strip().lower() in ("openrouter", "haiku_subscription"),
+        "reader": _read_aux_model_provider,
+        "writer": _write_aux_model_provider,
+        "doc": "LLM provider for cheap aux ops (reflection, task extraction)",
+    },
+    "aux_model.model": {
+        "type": "str",
+        "validate": lambda v: bool(v.strip()),
+        "reader": _read_aux_model_name,
+        "writer": _write_aux_model_name,
+        "doc": "model ID for aux_model.provider=openrouter (e.g. deepseek/deepseek-v4-flash)",
+    },
+    "proactive.scheduler_gate_enabled": {
+        "type": "bool",
+        "validate": lambda v: v.strip().lower() in ("true", "false", "1", "0"),
+        "reader": _read_scheduler_gate_enabled,
+        "writer": _write_scheduler_gate_enabled,
+        "doc": "enable/disable the wakeAgent quiet-hours gate for scheduled engagement ticks",
     },
 }
 
