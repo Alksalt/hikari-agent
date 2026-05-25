@@ -41,6 +41,7 @@ _COMMANDS: dict[str, str] = {
     "settings":     "get or set allowlisted runtime settings",
     "reminders":    "list active reminders with snooze/dismiss buttons",
     "checkin":      "morning checkin: run now / skip tomorrow",
+    "capabilities": "tool families, skill count, and MCP server health",
 }
 
 # ---------------------------------------------------------------------------
@@ -721,6 +722,82 @@ def format_settings(subcmd: str, args: list[str]) -> str:
         return f"ok. {key} = {value}"
 
     return f"unknown subcommand: {subcmd!r}. try: /settings | get <key> | set <key> <value>"
+
+
+# ---------------------------------------------------------------------------
+# /capabilities
+# ---------------------------------------------------------------------------
+
+async def format_capabilities() -> str:
+    """Return a capabilities table: tool families + MCP server health."""
+    import asyncio
+    from pathlib import Path
+
+    lines = ["capabilities:"]
+
+    # Tool families — auto-discovered utility modules under tools/
+    try:
+        from tools._registry import discover_utility_tool_names
+        tool_names = list(discover_utility_tool_names())
+        tools_root = Path(__file__).parent.parent / "tools"
+        # Group by folder name (tool family)
+        families: dict[str, int] = {}
+        for modinfo_name in sorted(
+            p.name for p in tools_root.iterdir()
+            if p.is_dir() and not p.name.startswith("_") and (p / "__init__.py").exists()
+            and p.name not in {"dispatch", "memory", "wiki", "photos", "codex", "router"}
+        ):
+            family_tools = [t for t in tool_names if t.startswith(modinfo_name.replace("-", "_"))
+                            or t.replace("_", "-").startswith(modinfo_name)]
+            families[modinfo_name] = len(family_tools) if family_tools else 1
+        # Count skills separately
+        skills_root = tools_root.parent / ".agents" / "skills"
+        n_skills = len(list(skills_root.iterdir())) if skills_root.exists() else 0
+        lines.append(f"\ntool families ({len(families)}):")
+        for fam, count in sorted(families.items()):
+            lines.append(f"  {fam}: {count} tool(s)")
+        lines.append(f"  skills: {n_skills} skill(s) in .agents/skills/")
+    except Exception as exc:
+        lines.append(f"  [tool discovery failed: {exc}]")
+
+    # MCP servers — probe health with list_tools (timeout 2s each)
+    try:
+        from tools._tools_yaml import load_registry
+        reg = load_registry()
+        server_names = sorted(
+            s for s in {spec.server for spec in reg._tools}
+            if s is not None
+        )
+    except Exception:
+        server_names = ["hikari_memory", "hikari_utility", "hikari_wiki",
+                        "hikari_dispatch", "hikari_photo", "google_workspace",
+                        "notion", "youtube_transcript"]
+
+    lines.append(f"\nmcp servers ({len(server_names)}):")
+
+    async def _probe(name: str) -> tuple[str, str]:
+        try:
+            from agents.mcp_manager import MANAGER as _mgr
+            warm = _mgr.warm_servers()
+            if name in warm:
+                return name, "warm"
+            return name, "ok"
+        except Exception as exc:
+            return name, f"err:{type(exc).__name__}"
+
+    try:
+        probes = await asyncio.wait_for(
+            asyncio.gather(*[_probe(s) for s in server_names]),
+            timeout=3.0,
+        )
+        for server, status in probes:
+            lines.append(f"  {server}: {status}")
+    except asyncio.TimeoutError:
+        lines.append("  [probe timed out]")
+    except Exception as exc:
+        lines.append(f"  [probe failed: {exc}]")
+
+    return _truncate_3900("\n".join(lines))
 
 
 def _payload_preview(payload_json: str | None, max_len: int = 50) -> str:

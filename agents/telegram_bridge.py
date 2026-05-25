@@ -2315,6 +2315,19 @@ async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_capabilities(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/capabilities — tool families + MCP server health."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    text = await cockpit.format_capabilities()
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, text,
+        reason="cockpit_cmd", reply_to=message,
+    )
+
+
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/settings [get <key>|set <key> <value>] — allowlisted runtime settings."""
     user = update.effective_user
@@ -2879,6 +2892,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("capabilities", cmd_capabilities))
     # Phase 9: sticker-pack install — owner sends stickers while capture mode
     # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
