@@ -591,6 +591,51 @@ def _format_unresolved_decisions() -> str | None:
         return None
 
 
+def _format_deferred_proactives() -> str | None:
+    """Return any deferred proactive items (defer:next_turn) from session_scratch."""
+    try:
+        import json as _json
+        session_id = db.get_session_id() or ""
+        if not session_id:
+            return None
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM session_scratch "
+                "WHERE session_id = ? AND topic = 'defer:next_turn' "
+                "ORDER BY id ASC LIMIT 5",
+                (session_id,),
+            ).fetchall()
+        if not rows:
+            return None
+        items = []
+        for row in rows:
+            try:
+                p = _json.loads(row["payload_json"])
+                src = p.get("source", "?")
+                txt = p.get("text", "")[:200]
+                items.append(f"  [{src}] {txt}")
+            except Exception:
+                continue
+        if not items:
+            return None
+        # Consume: delete the rows so they only surface once.
+        with db._conn() as conn:
+            conn.execute(
+                "DELETE FROM session_scratch "
+                "WHERE session_id = ? AND topic = 'defer:next_turn'",
+                (session_id,),
+            )
+        return (
+            "# deferred for this turn:\n"
+            + "\n".join(items)
+            + "\n(these were proactive items saved from the last session; "
+            "surface naturally if the conversation allows.)"
+        )
+    except Exception:
+        logger.exception("inject_memory: _format_deferred_proactives failed (non-fatal)")
+        return None
+
+
 async def inject_memory(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -619,6 +664,7 @@ async def inject_memory(
             ("tools_available",     1, _format_tools_available()),
             ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
             ("unresolved_decisions", 2, _format_unresolved_decisions()),
+            ("deferred_proactives", 2, _format_deferred_proactives()),
         ]
 
         candidates: list[_Block] = []
