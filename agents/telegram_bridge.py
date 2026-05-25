@@ -673,9 +673,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # already in hand.
     async with TypingHeartbeat(context.bot, chat.id) as hb:
         try:
-            reply = await respond(
-                user_text, internal_belief_context=internal_belief_context
-            )
+            from tools.dispatch.task_extractor import extract_tasks, should_extract
+            from agents.compound_turn import run_compound_turn
+            if should_extract(user_text):
+                _tasks = await extract_tasks(user_text)
+                if len(_tasks) > 1:
+                    _mid = db.append_message("user", user_text)
+                    db.runtime_set("last_user_message", db._now())
+                    db.runtime_set("last_user_message_id", str(_mid))
+                    reply = await run_compound_turn(_tasks)
+                else:
+                    reply = await respond(
+                        user_text, internal_belief_context=internal_belief_context
+                    )
+            else:
+                reply = await respond(
+                    user_text, internal_belief_context=internal_belief_context
+                )
         except Exception:
             logger.exception("agent failed for: %r", message.text[:80])
             await send_ephemeral_ack(
@@ -922,7 +936,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
         try:
-            reply = await run_user_turn(prompt)
+            from tools.dispatch.task_extractor import extract_tasks, should_extract
+            from agents.compound_turn import run_compound_turn
+            if should_extract(transcript):
+                _tasks = await extract_tasks(transcript)
+                if len(_tasks) > 1:
+                    reply = await run_compound_turn(_tasks)
+                else:
+                    reply = await run_user_turn(prompt)
+            else:
+                reply = await run_user_turn(prompt)
         except Exception:
             logger.exception("agent failed on inbound voice note")
             await send_ephemeral_ack(
