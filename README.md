@@ -346,23 +346,44 @@ launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 
 ## Telegram commands
 
+The Telegram autocomplete menu is sourced from `agents/cockpit.py:_COMMANDS`
+ordered by usage tier (most-used first). `/start`, `/grab_stickers`,
+`/memory_diff` are hidden from the autocomplete menu but still callable
+when typed manually.
+
+**Tier 1 — daily**
 | Command       | What it does                                              |
 |---------------|-----------------------------------------------------------|
-| `/help`       | list of registered commands                               |
-| `/start`      | bootstrap message (Sprint 4 onwards)                      |
-| `/silence`    | mute proactive messages for N minutes (default 60)        |
+| `/silence`    | mute proactive messages for N minutes (default 120)       |
 | `/unsilence`  | resume proactive messages immediately                     |
-| `/tasks`      | list open tasks (memory-tracked open loops)               |
-| `/cancel`     | cancel a pending in-flight tool call                      |
-| `/memory`     | inspect / correct / forget memory + session search (5B)   |
-| `/memory_diff`| SQLite vs Graphiti reconciliation (5D)                    |
-| `/approvals`  | list pending gatekeeper approvals                         |
+| `/checkin`    | morning checkin: run now / skip tomorrow                  |
+| `/memory`     | inspect / correct / forget memory + session search        |
+
+**Tier 2 — weekly / when needed**
+| Command       | What it does                                              |
+|---------------|-----------------------------------------------------------|
+| `/reminders`  | list active reminders with snooze/dismiss buttons         |
+| `/status`     | structured health + activity dump                         |
 | `/proactive`  | `recent` / `why <id>` / `snooze <source> <duration>`      |
-| `/status`     | structured health + activity dump (6A + 6D)               |
+| `/tasks`      | list open background tasks                                |
+| `/cancel`     | cancel a pending in-flight tool call                      |
+| `/help`       | list of registered commands                               |
+
+**Tier 3 — monthly / debug**
+| Command       | What it does                                              |
+|---------------|-----------------------------------------------------------|
+| `/approvals`  | list pending gatekeeper approvals                         |
+| `/settings`   | runtime settings; `get <key>` / `set <key> <value>`       |
+| `/capabilities` | tool families, skill count, MCP server health           |
 | `/tools`      | tool registry by capability group; `recent` / `policy`    |
 | `/audit`      | audit log; `recent [N]` / `tools` / `approvals` / `id <id>`|
-| `/settings`   | runtime settings; `get <key>` / `set <key> <value>`       |
-| `/grab_stickers` | one-off: bulk-import a Telegram sticker pack into the local set |
+
+**Hidden (handler-only, type manually)**
+| Command          | What it does                                                  |
+|------------------|---------------------------------------------------------------|
+| `/start`         | bootstrap message — redundant with texting the bot            |
+| `/grab_stickers` | one-off: capture sticker file_ids and emit YAML snippet       |
+| `/memory_diff`   | dev-only: SQLite vs Graphiti reconciliation                   |
 
 ---
 

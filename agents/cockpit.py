@@ -23,25 +23,30 @@ logger = logging.getLogger(__name__)
 # Command registry — source of truth for /help AND /tools list
 # ---------------------------------------------------------------------------
 
+# Ordered by usage tier so the Telegram autocomplete menu surfaces
+# daily-use commands first (dict insertion order = menu order via
+# set_my_commands in telegram_bridge.py). Cuts: `/start` (redundant
+# with texting), `/grab_stickers` (one-time setup), `/memory_diff`
+# (dev-only) — handlers stay registered, just hidden from the menu.
 _COMMANDS: dict[str, str] = {
-    "start":        "wake up / confirm i'm here",
+    # Tier 1 — daily
     "silence":      "mute proactives for N minutes (default 120)",
     "unsilence":    "cancel active silence window",
+    "checkin":      "morning checkin: run now / skip tomorrow",
+    "memory":       "query / edit the fact + message memory",
+    # Tier 2 — weekly / when needed
+    "reminders":    "list active reminders with snooze/dismiss buttons",
+    "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
+    "proactive":    "manage proactive sources, see recent sends, snooze a source",
     "tasks":        "list open background tasks",
     "cancel":       "cancel a running background task by id",
-    "memory":       "query / edit the fact + message memory",
-    "memory_diff":  "diff two memory snapshots",
-    "approvals":    "list / cancel pending gatekeeper approvals",
-    "proactive":    "manage proactive sources, see recent sends, snooze a source",
-    "grab_stickers": "import sticker pack urls you pasted",
     "help":         "show this command list",
-    "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
+    # Tier 3 — monthly / debug
+    "approvals":    "list / cancel pending gatekeeper approvals",
+    "settings":     "get or set allowlisted runtime settings",
+    "capabilities": "tool families, skill count, and MCP server health",
     "tools":        "list tool registry (policy) / recent tool_calls (recent) / audit_log (audit)",
     "audit":        "paginate audit_log (recent / tools / approvals / id <id>)",
-    "settings":     "get or set allowlisted runtime settings",
-    "reminders":    "list active reminders with snooze/dismiss buttons",
-    "checkin":      "morning checkin: run now / skip tomorrow",
-    "capabilities": "tool families, skill count, and MCP server health",
 }
 
 # ---------------------------------------------------------------------------
