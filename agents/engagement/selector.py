@@ -95,9 +95,40 @@ def _mood_multiplier(mood: str, pattern: str) -> float:
     return 1.0  # focused
 
 
+_TIER_MULTIPLIER = {1: 1.5, 2: 1.0, 3: 0.6}
+
+
+def _hard_interval_blocked(source: str, last_send_per_source: dict[str, str]) -> bool:
+    """Return True if source fired more recently than its configured min_interval_minutes."""
+    from agents import config as _cfg
+    min_minutes = float(_cfg.get(f"engagement.{source}.min_interval_minutes", 0))
+    if min_minutes <= 0:
+        return False
+    iso = last_send_per_source.get(source)
+    if not iso:
+        return False
+    try:
+        last = datetime.fromisoformat(iso)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return False
+    age_minutes = (datetime.now(UTC) - last).total_seconds() / 60
+    return age_minutes < min_minutes
+
+
+def _priority_tier_multiplier(source: str) -> float:
+    """Return tier multiplier (1=1.5x, 2=1.0x, 3=0.6x) from config."""
+    from agents import config as _cfg
+    tier = int(_cfg.get(f"engagement.{source}.priority_tier", 2))
+    return _TIER_MULTIPLIER.get(tier, 1.0)
+
+
 def _recency_penalty(source: str, last_send_per_source: dict[str, str]) -> float:
-    """Returns a 0..1 penalty based on how recently this source sent.
-    Linear decay: 0 penalty after 24h, full 0.9 penalty if sent <1h ago."""
+    """Returns a 0..1 soft penalty based on how recently this source sent.
+    Linear decay: 0 penalty after 24h, full 0.9 penalty if sent <1h ago.
+    Applied after the hard interval gate — provides a gradient for sources
+    that passed the hard gate but still sent recently."""
     iso = last_send_per_source.get(source)
     if not iso:
         return 0.0
@@ -114,6 +145,8 @@ def _recency_penalty(source: str, last_send_per_source: dict[str, str]) -> float
 
 
 def score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
+    if _hard_interval_blocked(candidate.source, ctx.last_send_per_source):
+        return 0.0
     s = (
         candidate.novelty * 0.4
         + candidate.actionability * 0.25
@@ -123,6 +156,7 @@ def score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
     s *= _mood_multiplier(ctx.mood, candidate.pattern)
     s *= ctx.source_response_rate.get(candidate.source, 0.5) + 0.5
     s *= 1 - _recency_penalty(candidate.source, ctx.last_send_per_source)
+    s *= _priority_tier_multiplier(candidate.source)
     return s
 
 

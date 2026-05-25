@@ -885,38 +885,70 @@ sqlite:
   busy_timeout_ms: 5000
 
 engagement:
+  # priority_tier: 1=high (time-sensitive), 2=normal, 3=background
+  # min_interval_minutes: hard gate — source is silenced until this window elapses
   wiki_new_file:
     enabled: true
     max_per_24h: 2
+    priority_tier: 2
+    min_interval_minutes: 120
   gmail_unread_threshold:
     enabled: true
     min_unread: 5
+    priority_tier: 1
+    min_interval_minutes: 120
   gmail_important_thread:
     enabled: false
+    priority_tier: 1
+    min_interval_minutes: 60
   calendar_event_prep:
     enabled: true
+    priority_tier: 1
+    min_interval_minutes: 30
   calendar_new_invite:
     enabled: false
+    priority_tier: 1
+    min_interval_minutes: 60
   reminder_fire:
     enabled: false
+    priority_tier: 1
+    min_interval_minutes: 5
   decision_resolve_due:
     enabled: true
+    priority_tier: 2
+    min_interval_minutes: 1440
   callback_episode:
     enabled: false
+    priority_tier: 3
+    min_interval_minutes: 360
   drive_starred_new:
     enabled: false
+    priority_tier: 3
+    min_interval_minutes: 240
   notion_recent_edit:
     enabled: false
+    priority_tier: 3
+    min_interval_minutes: 120
   weather_alert:
     enabled: false
+    priority_tier: 1
+    min_interval_minutes: 60
   weirdly_good_mood_leak:
     enabled: false
+    priority_tier: 2
+    min_interval_minutes: 360
   reengage_silence:
     enabled: true
+    priority_tier: 2
+    min_interval_minutes: 120
   location_arrived_recurring:
     enabled: false
+    priority_tier: 2
+    min_interval_minutes: 120
   readwise_daily_review:
     enabled: false
+    priority_tier: 3
+    min_interval_minutes: 1440
 
 aux_model:
   # Cheap model for stateless LLM ops: run_reflection_call, run_internal_control.
