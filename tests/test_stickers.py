@@ -123,6 +123,48 @@ async def test_stickers_pick_file_id_from_pool(monkeypatch, tmp_path):
         assert fid in ("ID_A", "ID_B")
 
 
+@pytest.mark.asyncio
+async def test_stickers_pick_falls_back_on_aux_llm_failure(monkeypatch, tmp_path):
+    """Aux-LLM exceptions must fall back to random.choice (never None / never raise)."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  pool:\n"
+        "    - file_id: 'ID_A'\n"
+        "      description: 'a'\n"
+        "    - file_id: 'ID_B'\n"
+        "      description: 'b'\n"
+    )
+    async def _boom(prompt, system=""):
+        raise RuntimeError("openrouter down")
+
+    # Patch at the call-site module (stickers), not the origin (runtime) —
+    # stickers.py now imports _call_aux_llm at module level, so the function's
+    # binding lives on `agents.stickers`.
+    monkeypatch.setattr("agents.stickers._call_aux_llm", _boom)
+    fid = await stickers.pick_sticker_file_id(user_msg="hi", reply="hm")
+    assert fid in ("ID_A", "ID_B")
+
+
+@pytest.mark.asyncio
+async def test_stickers_pick_returns_none_when_llm_says_none(monkeypatch, tmp_path):
+    """Spec-critical: when the LLM returns the literal "none", veto the send.
+    A regression here would force a sticker on every gate pass and blow through
+    the once-per-20-exchanges budget the persona depends on."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  pool:\n"
+        "    - file_id: 'ID_A'\n"
+        "      description: 'a'\n"
+    )
+    async def _none(prompt, system=""):
+        return "none"
+
+    monkeypatch.setattr("agents.stickers._call_aux_llm", _none)
+    assert await stickers.pick_sticker_file_id(user_msg="hi", reply="hm") is None
+
+
 def test_stickers_bump_outbound_counter(monkeypatch, tmp_path):
     _write_cfg(tmp_path, monkeypatch, "stickers:\n  enabled: true\n  pool: []\n")
     # Counter starts at 0.

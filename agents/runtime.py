@@ -118,12 +118,28 @@ async def _call_aux_llm(prompt: str, *, system: str = _AUX_REFLECTION_SYSTEM) ->
         if api_key:
             messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             for attempt in (1, 2):
-                async with httpx.AsyncClient(timeout=60.0) as _client:
-                    resp = await _client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as _client:
+                        resp = await _client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
+                        )
+                except httpx.RequestError as exc:
+                    # Transport-level failure (DNS, TCP, TLS, timeout). Most common
+                    # OpenRouter failure mode — must be retried like 429/503.
+                    if attempt == 1:
+                        logger.warning(
+                            "aux_llm: openrouter transport error on attempt 1 (%s) — retrying in 2s",
+                            type(exc).__name__,
+                        )
+                        await asyncio.sleep(2.0)
+                        continue
+                    logger.warning(
+                        "aux_llm: openrouter transport error on attempt 2 (%s) — giving up",
+                        type(exc).__name__,
                     )
+                    raise
                 if resp.status_code in (429, 503) and attempt == 1:
                     logger.warning(
                         "aux_llm: openrouter %s on attempt 1 — body=%r — retrying in 2s",

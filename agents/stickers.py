@@ -27,6 +27,7 @@ import random
 import time
 from typing import TYPE_CHECKING
 
+from agents.runtime import _call_aux_llm
 from storage import db
 from storage.db import OUTBOUND_MSG_COUNTER_KEY
 
@@ -68,19 +69,36 @@ def _cooldown() -> int:
     return int(cfg.get("stickers.cooldown_min_messages", 12))
 
 
+_WARNED_BAD_POOL_ENTRIES: set[str] = set()
+
+
 def _pool() -> list[dict]:
     """Return pool entries as list of {file_id, description} dicts.
 
     Accepts both legacy flat strings and new dict format for backwards compat.
+    Malformed entries (missing file_id, wrong type) are dropped with a one-shot
+    warning per session — silent drops previously made a botched yaml edit
+    invisible (/status would still report the raw count).
     """
     raw = cfg.get("stickers.pool") or []
-    entries = []
-    for item in raw:
+    entries: list[dict] = []
+    for idx, item in enumerate(raw):
         if isinstance(item, dict) and item.get("file_id"):
             entries.append({"file_id": str(item["file_id"]), "description": str(item.get("description", ""))})
         elif isinstance(item, str) and item:
             entries.append({"file_id": item, "description": ""})
+        else:
+            key = f"{idx}:{type(item).__name__}"
+            if key not in _WARNED_BAD_POOL_ENTRIES:
+                _WARNED_BAD_POOL_ENTRIES.add(key)
+                logger.warning("stickers: pool entry %d malformed: %r", idx, item)
     return entries
+
+
+def pool_counts() -> dict[str, int]:
+    """Return {"raw": int, "valid": int} for /status visibility into pool health."""
+    raw = cfg.get("stickers.pool") or []
+    return {"raw": len(raw), "valid": len(_pool())}
 
 
 def _mood_blocklist() -> list[str]:
@@ -136,10 +154,15 @@ async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | Non
     prompt = f"User said: {user_msg[:300]}\n\nHikari replied: {reply[:300]}"
 
     try:
-        from agents.runtime import _call_aux_llm
         result = (await _call_aux_llm(prompt, system=system)).strip().strip('"')
-    except Exception:
-        logger.debug("pick_sticker_file_id: aux LLM failed — falling back to random")
+    except Exception as exc:
+        # Promoted to warning so an oncall can see "situational selection is
+        # silently degraded to random because aux LLM is down". Default INFO
+        # level swallowed this signal previously.
+        logger.warning(
+            "pick_sticker_file_id: aux LLM failed (%s) — falling back to random",
+            type(exc).__name__,
+        )
         return random.choice(pool)["file_id"]
 
     if result == "none":
@@ -149,7 +172,7 @@ async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | Non
     if result in valid_ids:
         return result
 
-    logger.debug("pick_sticker_file_id: LLM returned unknown id %r — skipping", result)
+    logger.warning("pick_sticker_file_id: LLM returned unknown id %r — skipping", result)
     return None
 
 

@@ -1636,18 +1636,24 @@ async def cmd_grab_stickers(
                 reason="stickers_cmd", reply_to=message, silent=True,
             )
             return
+        # Emit dict format so descriptions can be filled in. Pasting a
+        # flat-string snippet over the current pool wipes every description
+        # and degrades the situational LLM picker to random — situational
+        # selection depends on the description text.
         snippet_lines = ["stickers:", "  pool:"]
         for fid in pool:
             # Telegram file_ids today are alphanumeric + _ + -, but escape
             # double quotes + backslashes defensively in case a future
             # source emits anything weirder (review-F6).
             fid_safe = str(fid).replace("\\", "\\\\").replace('"', '\\"')
-            snippet_lines.append(f'    - "{fid_safe}"')
+            snippet_lines.append(f'    - file_id: "{fid_safe}"')
+            snippet_lines.append('      description: ""  # fill in or LLM picks at random')
         snippet = "\n".join(snippet_lines)
         await send_ephemeral_ack(
             context.bot, message.chat_id,
             f"captured {len(pool)} sticker(s). paste this into "
-            f"config/engagement.yaml (replace the existing `stickers.pool:`):\n\n"
+            f"config/engagement.yaml (replace the existing `stickers.pool:`). "
+            f"FILL IN the descriptions or situational selection won't work:\n\n"
             f"```\n{snippet}\n```",
             reason="stickers_cmd", reply_to=message, silent=True,
         )
@@ -2731,6 +2737,10 @@ async def _send_text_with_choreography(
     try:
         stickers_mod._bump_outbound_counter()
         outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
+        # Reaction turns are emoji-response pings, not full replies. We
+        # intentionally do NOT thread user_msg/reply through here — situational
+        # LLM picking only fires on the main text-reply path; random sticker
+        # is fine for reactions and saves an aux-LLM call per reaction.
         await stickers_mod.maybe_send_sticker(bot, chat_id, outbound_counter)
     except Exception:
         logger.exception("reaction-turn: maybe_send_sticker failed (non-fatal)")

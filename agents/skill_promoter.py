@@ -76,7 +76,11 @@ async def maybe_promote_skill() -> None:
     from agents.runtime import _call_aux_llm
     from storage import db as _db
 
-    def _set_cooldown() -> None:
+    def _set_cooldown(reason: str) -> None:
+        """Stamp the cooldown key and emit one canonical line so an oncall
+        scanning weekly logs can answer 'why no new skills' without grepping
+        five different message families."""
+        logger.info("skill_promoter: cooldown applied (%s)", reason)
         _db.runtime_set("skill_promoter.last_run", datetime.now(UTC).isoformat())
 
     sample = "\n---\n".join(thoughts[-40:])
@@ -85,7 +89,7 @@ async def maybe_promote_skill() -> None:
         raw = await _call_aux_llm(prompt, system=_SCAN_SYSTEM)
     except Exception:
         logger.exception("skill_promoter: run_reflection_call failed")
-        _set_cooldown()
+        _set_cooldown("aux_llm_failed")
         return
 
     raw = raw.strip()
@@ -95,14 +99,20 @@ async def maybe_promote_skill() -> None:
         raw = re.sub(r"\n?```$", "", raw.strip())
     try:
         result = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("skill_promoter: non-JSON response — applying cooldown")
-        _set_cooldown()
+        if not isinstance(result, dict):
+            # Valid JSON but not the {found:..., ...} shape we asked for
+            # (array, null, string, number). Without this guard, .get() raises
+            # AttributeError which escapes maybe_promote_skill and skips the
+            # cooldown — looping aux-LLM cost on every reflection cycle.
+            raise ValueError(f"expected dict, got {type(result).__name__}")
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("skill_promoter: non-dict response (%s) — applying cooldown", exc)
+        _set_cooldown("non_dict_response")
         return
 
     if not result.get("found"):
         logger.debug("skill_promoter: no repeating pattern found")
-        _set_cooldown()
+        _set_cooldown("no_pattern")
         return
 
     skill_id = str(result.get("skill_id") or "").strip()
@@ -110,7 +120,7 @@ async def maybe_promote_skill() -> None:
     content = str(result.get("content") or "").strip()
     if not skill_id or not content:
         logger.warning("skill_promoter: LLM returned found=true but incomplete fields")
-        _set_cooldown()
+        _set_cooldown("incomplete_fields")
         return
 
     session_id = _db.get_session_id() or "pending"
@@ -128,7 +138,7 @@ async def maybe_promote_skill() -> None:
         logger.info("skill_promoter: drafted skill %r → session_scratch", skill_id)
     except Exception:
         logger.exception("skill_promoter: failed to write staged skill")
-        _set_cooldown()
+        _set_cooldown("scratch_write_failed")
         return
 
-    _set_cooldown()
+    _set_cooldown("success")

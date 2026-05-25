@@ -509,14 +509,18 @@ async def format_status(app) -> str:
     except Exception as exc:
         lines.append(f"media events: error ({exc})")
 
-    # sticker pool health
+    # sticker pool health — show raw vs valid so a botched yaml edit
+    # (malformed dict entry, wrong type) doesn't hide behind the raw count.
     try:
-        from agents import config as _cfg
-        pool = _cfg.get("stickers.pool") or []
-        if not pool:
+        from agents import stickers as _stickers
+        counts = _stickers.pool_counts()
+        raw, valid = counts["raw"], counts["valid"]
+        if raw == 0:
             lines.append("stickers: degraded (pool empty — /status shows no file_ids)")
+        elif valid < raw:
+            lines.append(f"stickers: degraded ({valid}/{raw} valid — see logs for malformed entries)")
         else:
-            lines.append(f"stickers: {len(pool)} in pool")
+            lines.append(f"stickers: {valid} in pool")
     except Exception as exc:
         lines.append(f"stickers: error ({exc})")
 
