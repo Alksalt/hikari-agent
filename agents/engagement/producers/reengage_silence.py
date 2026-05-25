@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from datetime import time as dtime
-from zoneinfo import ZoneInfo
 
 from agents import config as cfg
 from agents.engagement.triggers import TriggerCandidate
+from agents.proactive import _is_quiet_now
 from storage import db
 
 logger = logging.getLogger(__name__)
@@ -29,19 +28,6 @@ def _parse_dt(iso: str | None) -> datetime | None:
         return d
     except (ValueError, TypeError):
         return None
-
-
-def _is_quiet_now() -> bool:
-    from agents import config as _cfg
-    from agents.hooks import _resolve_local_tz_name
-    p = _cfg.section("proactive")
-    start = dtime(int(p.get("quiet_start_hour", 23)), 0)
-    end = dtime(int(p.get("quiet_end_hour", 8)), 0)
-    tz = ZoneInfo(_resolve_local_tz_name())
-    now = datetime.now(tz).time()
-    if start <= end:
-        return start <= now < end
-    return now >= start or now < end
 
 
 def collect() -> list[TriggerCandidate]:

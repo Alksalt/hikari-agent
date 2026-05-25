@@ -64,16 +64,13 @@ _EVENING_PREFERRED = frozenset({
     "callback_episode",
     "weirdly_good_mood_leak",
 })
-_QUIET_HOURS_START = 23
-_QUIET_HOURS_END = 8
-
-
 def _time_of_day_multiplier(now_local: datetime, source: str) -> float:
     """Boost morning sources in the morning, evening sources in the evening,
-    and suppress everything during quiet hours (23:00-08:00)."""
-    h = now_local.hour
-    if h >= _QUIET_HOURS_START or h < _QUIET_HOURS_END:
+    and suppress everything during quiet hours (from engagement.yaml)."""
+    from agents.proactive import _is_quiet_now
+    if _is_quiet_now():
         return 0.1  # heavy suppression — cadence governor also blocks, this is a safety layer
+    h = now_local.hour
     if 8 <= h < 12 and source in _MORNING_PREFERRED:
         return 1.3
     if 18 <= h < 23 and source in _EVENING_PREFERRED:
