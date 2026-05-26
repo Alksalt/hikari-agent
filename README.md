@@ -342,6 +342,131 @@ uv run python scripts/setup_google_oauth.py
 launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 ```
 
+### Kuzu lock recovery
+
+**Symptom:** `RuntimeError: Could not set lock on file: data/hikari.kuzu`
+
+The Kuzu database lock wasn't released cleanly — another process still holds it.
+
+```bash
+# find the holder
+lsof data/hikari.kuzu
+
+# kill it (replace <pid> with the PID from lsof output)
+kill <pid>
+
+# restart the bot
+launchctl kickstart -k gui/$(id -u)/com.hikari.agent
+```
+
+**Expected outcome:** Bot restarts, Kuzu opens normally, no lock error in `hikari.err`.
+
+### Kuzu format mismatch
+
+**Symptom:** `RuntimeError: Database path cannot be a directory: data/hikari.kuzu`
+
+Kuzu 0.11.3+ requires a directory at the DB path; old versions wrote a single file. The two formats are incompatible.
+
+```bash
+# export the old single-file DB from a Python REPL
+uv run python - <<'EOF'
+import kuzu
+kuzu.Database("data/hikari.kuzu").export("/tmp/kuzu_dump")
+EOF
+
+# move the old file aside and create the directory
+mv data/hikari.kuzu data/hikari.kuzu.old
+mkdir data/hikari.kuzu
+
+# import the dump back into the new directory-format DB
+uv run python - <<'EOF'
+import kuzu
+db = kuzu.Database("data/hikari.kuzu")
+conn = kuzu.Connection(db)
+conn.execute("IMPORT DATABASE '/tmp/kuzu_dump'")
+EOF
+```
+
+**Expected outcome:** `data/hikari.kuzu` is now a directory; bot starts without format errors.
+
+### graph_outbox drain procedure
+
+**Symptom:** `/status` shows `graph_outbox_pending > 100` rows or Graphiti writes stalled.
+
+```bash
+# preferred: run the drain script
+uv run python -m scripts.drain_outbox
+
+# manual SQL fallback — mark rows older than 24 h as drained so they stop blocking
+sqlite3 data/hikari.db \
+  "UPDATE graph_outbox SET status='drained' WHERE status='pending' AND last_attempt_at < datetime('now','-24 hours')"
+```
+
+**Expected outcome:** Pending count drops in `/status`; Graphiti resumes normal writes on the next cycle.
+
+### .env recovery without backup
+
+**Symptom:** `.env` is missing after a system clean, reinstall, or accidental deletion.
+
+Rebuild from 1Password (see `.env.example` for the full key list). Minimal viable set:
+
+```
+OPENROUTER_API_KEY=...
+OPENAI_API_KEY=...
+HIKARI_BOT_TOKEN=...
+OWNER_TELEGRAM_ID=...
+CLAUDE_CODE_OAUTH_TOKEN=...
+```
+
+After populating `.env` (or `.envrc`):
+
+```bash
+direnv allow        # re-enables env-var injection for the shell
+launchctl kickstart -k gui/$(id -u)/com.hikari.agent
+```
+
+**Expected outcome:** Bot starts; `tail -20 ~/Library/Logs/hikari.err` shows no missing-key errors.
+
+### OAuth token renewal (SDK 401)
+
+**Symptom:** `SDK 401 unauthorized` errors in `hikari.err`; bot goes silent.
+
+The Claude Max OAuth token has expired or been revoked. Renew it from a **separate terminal** — do NOT run `claude auth login` inside this Claude Code session.
+
+```bash
+# in a NEW terminal (outside any Claude Code session)
+claude auth login
+# follow the browser prompt; copy the new token
+
+# paste the new token into .envrc (or .env):
+#   CLAUDE_CODE_OAUTH_TOKEN=<new-token>
+
+direnv allow
+launchctl kickstart -k gui/$(id -u)/com.hikari.agent
+```
+
+**Expected outcome:** Bot resumes; `startup_health` log line shows no `oauth` failure.
+
+### Migration ledger reset (break-glass)
+
+**Symptom:** `migration ledger checksum drift` in `hikari.err` at startup.
+
+A migration row in `_migrations` has the wrong checksum — usually from a hand-edit or a partially-applied migration. **Always back up first.**
+
+```bash
+# 1. backup (mandatory before touching _migrations)
+cp data/hikari.db data/hikari.db.bak-$(date +%Y%m%d)
+
+# 2. identify the offending migration name from the error log, then delete its row
+sqlite3 data/hikari.db \
+  "DELETE FROM _migrations WHERE name='<offending-migration-name>'"
+
+# 3. restart — the missing row triggers a replay of that migration
+launchctl kickstart -k gui/$(id -u)/com.hikari.agent
+```
+
+**Expected outcome:** Migration replays cleanly; `startup_health` passes `db_integrity`. If the migration fails on replay, the backup from step 1 is your rollback.
+
 ---
 
 ## Telegram commands
