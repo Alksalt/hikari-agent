@@ -79,10 +79,10 @@ _BG_TASKS: set[asyncio.Task] = set()  # GC guard: keeps fire-and-forget tasks al
 
 # Live bot accessor for out-of-bridge callers (progress tool, dispatch hooks).
 # Set in main() after application = Application.builder().build().
-_CURRENT_BOT: Any = None
+_CURRENT_BOT = None
 
 
-def _get_current_bot() -> Any:
+def _get_current_bot():
     """Return the live Telegram bot, or None if the bridge hasn't started yet."""
     return _CURRENT_BOT
 

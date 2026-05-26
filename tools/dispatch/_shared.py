@@ -187,7 +187,7 @@ def _build_dispatch_options(repo_path: Path, allowed_tools: list[str],
     """
     return ClaudeAgentOptions(
         model="claude-sonnet-4-6",
-        fallback_model="claude-sonnet-4-6",
+        fallback_model="claude-sonnet-4-5",
         cwd=str(repo_path),
         setting_sources=["project", "user"],
         skills="all",

@@ -117,7 +117,10 @@ MODEL_PRIMARY = (
     os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
 )
 
-_SONNET_DEFAULT_FALLBACK = "claude-sonnet-4-6"
+# Fallback must differ from MODEL_PRIMARY (SDK refuses identical model+fallback).
+# Use the prior Sonnet release — still non-haiku, satisfies the user rule, and
+# is a valid older-but-stable fallback when sonnet-4-6 is unavailable.
+_SONNET_DEFAULT_FALLBACK = "claude-sonnet-4-5"
 
 
 def _resolve_model_fallback() -> str:
