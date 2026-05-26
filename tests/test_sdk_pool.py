@@ -4,10 +4,10 @@ Tests verify:
 - startup() is idempotent (double-call is a no-op)
 - shutdown() is idempotent
 - get_live_client() returns same instance across calls (no reconnect)
-- get_haiku_judge() returns same instance across calls
 - reconnect on ProcessError clears suspect session_id
 - recycle threshold triggers reconnect (counter path)
 - is_live_persistent_path_enabled() respects cfg flag
+- get_haiku_judge is gone (drift judging routes via _call_aux_llm)
 """
 from __future__ import annotations
 
@@ -45,10 +45,8 @@ def fresh_pool(monkeypatch):
     # Reset global state between tests.
     monkeypatch.setattr(pool_mod, "_started", False)
     monkeypatch.setattr(pool_mod, "_live", pool_mod._Handle())
-    monkeypatch.setattr(pool_mod, "_judge", pool_mod._Handle())
     monkeypatch.setattr(pool_mod, "_startup_lock", asyncio.Lock())
     monkeypatch.setattr(pool_mod, "_live_recycle_pending", False)
-    monkeypatch.setattr(pool_mod, "_judge_recycle_pending", False)
     return pool_mod
 
 
@@ -80,24 +78,18 @@ def _make_fake_client(name: str = "fake") -> SimpleNamespace:
 async def test_startup_idempotent(fresh_pool, monkeypatch):
     """Double startup() is a no-op — connect called only once."""
     pool = fresh_pool
-    clients_created = {"live": 0, "judge": 0}
+    clients_created = {"live": 0}
 
     async def fake_connect_live(resume):
         clients_created["live"] += 1
         return _make_fake_client("live")
 
-    async def fake_connect_judge():
-        clients_created["judge"] += 1
-        return _make_fake_client("judge")
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
 
     await pool.startup()
     await pool.startup()  # second call — must be no-op
 
     assert clients_created["live"] == 1
-    assert clients_created["judge"] == 1
 
 
 @pytest.mark.asyncio
@@ -105,39 +97,28 @@ async def test_shutdown_idempotent(fresh_pool, monkeypatch):
     """Double shutdown() is safe."""
     pool = fresh_pool
     live_client = _make_fake_client("live")
-    judge_client = _make_fake_client("judge")
 
     async def fake_connect_live(resume):
         return live_client
 
-    async def fake_connect_judge():
-        return judge_client
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
 
     await pool.startup()
     assert pool._started
 
     # Track disconnects via the client's disconnect method.
     live_disc = {"n": 0}
-    judge_disc = {"n": 0}
 
     async def _live_disc():
         live_disc["n"] += 1
 
-    async def _judge_disc():
-        judge_disc["n"] += 1
-
     live_client.disconnect = _live_disc
-    judge_client.disconnect = _judge_disc
 
     await pool.shutdown()
     await pool.shutdown()  # second call — no-op
 
     # disconnect called at most once (first shutdown)
     assert live_disc["n"] <= 1
-    assert judge_disc["n"] <= 1
     assert not pool._started
 
 
@@ -150,11 +131,7 @@ async def test_get_live_client_same_instance(fresh_pool, monkeypatch):
     async def fake_connect_live(resume):
         return client
 
-    async def fake_connect_judge():
-        return _make_fake_client("judge")
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
 
     await pool.startup()
 
@@ -163,26 +140,11 @@ async def test_get_live_client_same_instance(fresh_pool, monkeypatch):
     assert c1 is c2 is client
 
 
-@pytest.mark.asyncio
-async def test_get_haiku_judge_same_instance(fresh_pool, monkeypatch):
-    """get_haiku_judge() returns same object without reconnect."""
-    pool = fresh_pool
-    judge = _make_fake_client("judge")
-
-    async def fake_connect_live(resume):
-        return _make_fake_client("live")
-
-    async def fake_connect_judge():
-        return judge
-
-    monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
-
-    await pool.startup()
-
-    j1 = await pool.get_haiku_judge()
-    j2 = await pool.get_haiku_judge()
-    assert j1 is j2 is judge
+def test_get_haiku_judge_is_gone(fresh_pool):
+    """get_haiku_judge no longer exists — drift judging routes via _call_aux_llm."""
+    assert not hasattr(fresh_pool, "get_haiku_judge"), (
+        "get_haiku_judge was removed; drift judging uses agents.runtime._call_aux_llm"
+    )
 
 
 @pytest.mark.asyncio
@@ -197,11 +159,7 @@ async def test_reconnect_clears_suspect_session_id(fresh_pool, monkeypatch):
         resumes_seen.append(resume)
         return _make_fake_client("live")
 
-    async def fake_connect_judge():
-        return _make_fake_client("judge")
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
 
     await pool.startup()
     # startup sees "suspect-session-abc"
@@ -225,11 +183,7 @@ async def test_recycle_threshold_triggers_reconnect(fresh_pool, monkeypatch):
         connects["live"] += 1
         return _make_fake_client("live")
 
-    async def fake_connect_judge():
-        return _make_fake_client("judge")
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
 
     # Force a very low threshold so we can hit it in the test.
     monkeypatch.setattr(pool, "_live_recycle_after", lambda: 3)
@@ -273,24 +227,20 @@ async def test_is_live_persistent_path_enabled_false(fresh_pool, monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_judge_counter_advances_per_call(fresh_pool, monkeypatch):
-    """_maybe_schedule_judge_recycle increments judge counter each call."""
+async def test_live_counter_advances_per_call(fresh_pool, monkeypatch):
+    """_maybe_schedule_live_recycle increments live counter each call."""
     pool = fresh_pool
 
     async def fake_connect_live(resume):
         return _make_fake_client("live")
 
-    async def fake_connect_judge():
-        return _make_fake_client("judge")
-
     monkeypatch.setattr(pool, "_connect_live", fake_connect_live)
-    monkeypatch.setattr(pool, "_connect_judge", fake_connect_judge)
     # Set threshold high so we don't trigger a recycle.
-    monkeypatch.setattr(pool, "_judge_recycle_after", lambda: 1000)
+    monkeypatch.setattr(pool, "_live_recycle_after", lambda: 1000)
 
     await pool.startup()
-    assert pool._judge.counter == 0
-    pool._maybe_schedule_judge_recycle()
-    assert pool._judge.counter == 1
-    pool._maybe_schedule_judge_recycle()
-    assert pool._judge.counter == 2
+    assert pool._live.counter == 0
+    pool._maybe_schedule_live_recycle()
+    assert pool._live.counter == 1
+    pool._maybe_schedule_live_recycle()
+    assert pool._live.counter == 2

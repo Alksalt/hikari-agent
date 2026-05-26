@@ -46,6 +46,14 @@ async def run_decision_resolver(send_text) -> int:
             text=line,
             payload_json=json.dumps({"decision_id": d["id"]}),
             dedup_key=f"decision_log:{d['id']}",
+            candidate={
+                "anchor": f"decision_{d['id']}",
+                "why_now": f"resolved_by {d['resolve_by']}",
+                "suggested_action": "yes/no",
+                "confidence": float(d["predicted_p"]),
+                "controls": {},
+                "data_checked": ["decisions"],
+            },
         )
         if result.status != "sent":
             logger.info(

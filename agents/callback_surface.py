@@ -249,17 +249,31 @@ def pick_callback_candidate(recent_user_text: str) -> dict | None:
         except Exception:
             logger.exception("callback_surface: dedup write failed")
 
-    # Compute framing_hint.  turn_counter is read from runtime_state; default
-    # to 0 if missing (DB failure is non-fatal — hint just won't be i_keep_thinking).
+    # Compute framing_hint.  turns_since_last is derived from the inbound-message
+    # counter delta so the 30-turn throttle resets after each emission.
     try:
-        turn_counter = db.runtime_get_int(_LAST_I_KEEP_THINKING_KEY, default=0)
+        current_counter = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
+        last_emit_at = db.runtime_get_int(_LAST_I_KEEP_THINKING_KEY, 0)
     except Exception:
-        turn_counter = 0
+        current_counter, last_emit_at = 0, 0
+    turns_since_last = current_counter - last_emit_at
 
     age_days = _age_days(best["date"])
     # Re-compute base score (without multipliers) for framing decision.
     base_score = _score(best["text"], recent_user_text)
-    framing_hint = _compute_framing_hint(base_score, age_days, turn_counter)
+    framing_hint = _compute_framing_hint(base_score, age_days, turns_since_last)
+
+    # Record the inbound counter at which we emitted, so the next call
+    # sees `turns_since_last < 30` until 30 more inbound messages elapse.
+    if framing_hint == "i_keep_thinking":
+        try:
+            current_counter = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
+            db.runtime_set(_LAST_I_KEEP_THINKING_KEY, current_counter)
+        except Exception:
+            logger.debug(
+                "callback_surface: failed to write %s (non-fatal)",
+                _LAST_I_KEEP_THINKING_KEY,
+            )
 
     # (approximate) annotation when score is low (below 0.5) so Hikari knows
     # to fuzz the recall — "wrong-but-close" tsundere rule.

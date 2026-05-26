@@ -12,7 +12,8 @@ import logging.handlers
 import os
 import random
 import time
-from datetime import UTC, datetime, timedelta
+from collections import deque
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -76,6 +77,10 @@ logger = logging.getLogger(__name__)
 _BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
 _SCHEDULER_REF = None  # Set after scheduler.start() in post_init
 _BG_TASKS: set[asyncio.Task] = set()  # GC guard: keeps fire-and-forget tasks alive
+
+# L4 character-silence: per-chat rolling window of rude-message flags.
+# 4-in-a-row triggers silenced_until_msg_id in runtime state.
+_RUDE_FLAGS: dict[int, deque[bool]] = {}
 
 # Live bot accessor for out-of-bridge callers (progress tool, dispatch hooks).
 # Set in main() after application = Application.builder().build().
@@ -672,6 +677,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Politeness gate — refuse rude turns in character, no LLM call. Cheap
     # deterministic check; misses get caught by the CLAUDE.md persona rule.
     rude, matched = is_rude(message.text)
+
+    # L4 character-silence setter: track rude-message streak per chat.
+    # 4 consecutive rude messages → set silenced_until_msg_id so the next
+    # incoming turn is silently ignored (thawed by topic-change heuristic above).
+    # Must run BEFORE the politeness early-return so rude=True messages are counted.
+    try:
+        _rude_flags = _RUDE_FLAGS.setdefault(message.chat_id, deque(maxlen=4))
+        _rude_flags.append(rude)
+        if len(_rude_flags) == 4 and all(_rude_flags):
+            db.runtime_set("silenced_until_msg_id", str(message.message_id))
+            db.runtime_set("silenced_set_at", datetime.now(timezone.utc).isoformat())
+            db.runtime_set(
+                "silenced_context",
+                " ".join((message.text or "").split()[:30]),
+            )
+            logger.info(
+                "character_silence: 4 rude messages in a row — set silence msg_id=%s",
+                message.message_id,
+            )
+            _rude_flags.clear()
+    except Exception:
+        logger.exception("L4 character-silence setter failed (non-fatal)")
+
     if rude:
         refusal = random_refusal()
         logger.info("politeness_gate: rude pattern matched=%r → refused", matched)
@@ -741,27 +769,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # already in hand.
     async with TypingHeartbeat(context.bot, chat.id) as hb:
         try:
-            from tools.dispatch.task_extractor import extract_tasks, should_extract
-            from agents.compound_turn import run_compound_turn
+            from tools.dispatch.task_extractor import should_extract
+            from agents.compound_turn import run_compound_turn_typed
+            from agents.runtime import _CURRENT_TURN_ID as _ctv
             if should_extract(user_text):
-                _tasks = await extract_tasks(user_text)
-                if len(_tasks) > 1:
-                    _mid = db.append_message("user", user_text)
-                    db.runtime_set("last_user_message", db._now())
-                    db.runtime_set("last_user_message_id", str(_mid))
-                    # Fast-path typing refresh before each compound wave so the
-                    # indicator stays alive across sub-2s inter-wave gaps.
-                    try:
-                        await context.bot.send_chat_action(
-                            chat_id=chat.id, action=ChatAction.TYPING,
-                        )
-                    except Exception:
-                        pass
-                    reply = await run_compound_turn(_tasks)
-                else:
-                    reply = await respond(
-                        user_text, internal_belief_context=internal_belief_context
+                _mid = db.append_message("user", user_text)
+                db.runtime_set("last_user_message", db._now())
+                db.runtime_set("last_user_message_id", str(_mid))
+                user_turn_id = f"turn_{_mid}"
+                # Set the ContextVar so the progress tool + i_keep_thinking
+                # writer see the correct turn id for this compound turn.
+                _ctv.set(user_turn_id)
+                # Fast-path typing refresh so the indicator stays alive
+                # across sub-2s inter-wave gaps.
+                try:
+                    await context.bot.send_chat_action(
+                        chat_id=chat.id, action=ChatAction.TYPING,
                     )
+                except Exception:
+                    pass
+                reply = await run_compound_turn_typed(
+                    user_text, user_turn_id=user_turn_id, is_voice=False,
+                )
             else:
                 reply = await respond(
                     user_text, internal_belief_context=internal_belief_context
@@ -981,6 +1010,27 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         rude, matched = is_rude(transcript)
+
+        # L4 character-silence setter (voice path): same deque tracking as text.
+        # Must run BEFORE the politeness early-return so rude=True messages are counted.
+        try:
+            _rude_flags_v = _RUDE_FLAGS.setdefault(message.chat_id, deque(maxlen=4))
+            _rude_flags_v.append(rude)
+            if len(_rude_flags_v) == 4 and all(_rude_flags_v):
+                db.runtime_set("silenced_until_msg_id", str(message.message_id))
+                db.runtime_set("silenced_set_at", datetime.now(timezone.utc).isoformat())
+                db.runtime_set(
+                    "silenced_context",
+                    " ".join(transcript.split()[:30]),
+                )
+                logger.info(
+                    "character_silence: 4 rude voice messages in a row — set silence msg_id=%s",
+                    message.message_id,
+                )
+                _rude_flags_v.clear()
+        except Exception:
+            logger.exception("L4 character-silence setter (voice) failed (non-fatal)")
+
         if rude:
             refusal = random_refusal()
             logger.info(
@@ -1010,6 +1060,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Record compact event row; use run_user_turn so conversational context
         # ("what did i say earlier") is available. run_user_turn does NOT append
         # the synthetic prompt as user text (codex H-3 fix).
+        _voice_mid: int | None = None
         try:
             event_text = (
                 f"[voice note {duration_sec:.0f}s] transcript: {transcript!r}"
@@ -1020,14 +1071,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
         try:
-            from tools.dispatch.task_extractor import extract_tasks, should_extract
-            from agents.compound_turn import run_compound_turn
-            if should_extract(transcript):
-                _tasks = await extract_tasks(transcript)
-                if len(_tasks) > 1:
-                    reply = await run_compound_turn(_tasks)
-                else:
-                    reply = await run_user_turn(prompt)
+            from tools.dispatch.task_extractor import should_extract
+            from agents.compound_turn import run_compound_turn_typed
+            from agents.runtime import _CURRENT_TURN_ID as _ctv
+            if should_extract(transcript) and _voice_mid is not None:
+                user_turn_id = f"turn_{_voice_mid}"
+                _ctv.set(user_turn_id)
+                reply = await run_compound_turn_typed(
+                    transcript, user_turn_id=user_turn_id, is_voice=True,
+                )
             else:
                 reply = await run_user_turn(prompt)
         except Exception:
@@ -2832,6 +2884,30 @@ async def cmd_diary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_cockpit_text(message, text)
 
 
+async def cmd_memorydump(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/memorydump [page] — paginated fact browser with per-fact inline buttons."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = (context.args or [])
+    page = int(args[0]) if args and args[0].isdigit() else 0
+    text, keyboard_rows = cockpit.format_memorydump(page=page)
+    if not keyboard_rows:
+        await _send_cockpit_text(message, text)
+        return
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+         for btn in row]
+        for row in keyboard_rows
+    ])
+    await context.bot.send_message(
+        chat_id=message.chat_id,
+        text=text[:4000],
+        reply_markup=markup,
+    )
+
+
 async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/links [search] — search bookmark shelf or list 10 most recent."""
     user = update.effective_user
@@ -3289,6 +3365,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("checkin", cmd_checkin))
     app.add_handler(CommandHandler("diary", cmd_diary))
+    app.add_handler(CommandHandler("memorydump", cmd_memorydump))
     app.add_handler(CommandHandler("links", cmd_links))
     app.add_handler(CommandHandler("receipt", cmd_receipt))
     app.add_handler(CommandHandler("decision", cmd_decision))

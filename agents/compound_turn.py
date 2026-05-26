@@ -264,6 +264,17 @@ async def run_compound_turn_typed(
     """
     from storage import db
     from tools.dispatch.task_extractor import extract_typed_nodes
+    from tools.runtime.progress import _PROGRESS_STATE
+    from tools.runtime.progress import progress as _progress
+    from agents.runtime import current_turn_id as _ctv
+
+    # Initialize rate-limit state for this turn so _progress can gate correctly.
+    _PROGRESS_STATE.set({
+        "turn_id": _ctv() or user_turn_id,
+        "count": 0,
+        "last_ts": 0.0,
+        "single_step": False,
+    })
 
     # 1. Extract typed nodes
     try:
@@ -280,6 +291,15 @@ async def run_compound_turn_typed(
     if errors:
         logger.warning("compound_turn_typed: validation errors %s — single-LLM fallback", errors)
         return await _fallback_single_llm(user_text)
+
+    # Single-step packets skip all progress beats — mark state and continue.
+    if len(nodes) <= 1:
+        state = _PROGRESS_STATE.get()
+        state["single_step"] = True
+        _PROGRESS_STATE.set(state)
+    else:
+        # Multi-step: emit first beat so the user sees activity immediately.
+        await _progress.handler({"message": "...looking that up.", "mode": "auto"})
 
     # If voice note flag came from the bridge but no node carries it, lift it.
     if is_voice:
@@ -348,6 +368,8 @@ async def run_compound_turn_typed(
                 )
 
     # 4b. Writes — sequential, with approval conversion for approve_required.
+    if writes:
+        await _progress.handler({"message": "ok. now the writes.", "mode": "auto"})
     for s in writes:
         node = s.node
         assert node is not None
@@ -362,6 +384,7 @@ async def run_compound_turn_typed(
             continue
         if node.risk_class == "approve_required":
             # Approval conversion: do NOT execute. Generate prompt + mark waiting.
+            await _progress.handler({"message": "...one needs your ok.", "surprise": True})
             prompt = _confirm_send_prompt(node)
             s.status = "waiting"
             db.work_packet_step_update(

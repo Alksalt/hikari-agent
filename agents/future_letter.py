@@ -577,12 +577,21 @@ async def run_future_letter(
     preamble = "i made you something. read it when you have a sec."
     chunks = _chunk_for_telegram(body, chunk_chars)
 
+    month = month_iso
     r_preamble = await reserve_and_send(
         send_text_fn=send_text,
         producer_id="future_letter",
         pattern="monthly",
         text=preamble,
         payload_json=json.dumps({"month": month_iso, "chunk": "preamble"}),
+        candidate={
+            "anchor": f"letter_{month}",
+            "why_now": "monthly letter",
+            "suggested_action": "read when ready",
+            "confidence": 1.0,
+            "controls": {"mute_source": "future_letter"},
+            "data_checked": ["letters"],
+        },
     )
     if r_preamble.status != "sent":
         logger.info("future_letter preamble skipped (%s)", r_preamble.reason)
@@ -596,6 +605,14 @@ async def run_future_letter(
             pattern="monthly",
             text=chunk,
             payload_json=json.dumps({"month": month_iso, "chunk": i}),
+            candidate={
+                "anchor": f"letter_{month}",
+                "why_now": "monthly letter",
+                "suggested_action": "read when ready",
+                "confidence": 1.0,
+                "controls": {"mute_source": "future_letter"},
+                "data_checked": ["letters"],
+            },
         )
         results.append(r)
         if r.status != "sent":

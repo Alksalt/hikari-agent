@@ -181,6 +181,7 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "cmd_approvals",
         "cmd_checkin",
         "cmd_reminders",
+        "cmd_memorydump",
     }
     violations: list[str] = []
 

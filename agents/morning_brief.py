@@ -181,12 +181,21 @@ async def maybe_send_morning_brief(send_text) -> bool:
     if not text or text.upper().startswith("NO_MESSAGE"):
         return False
     from agents.proactive_gate import reserve_and_send
+    today = datetime.now(UTC).date()
     result = await reserve_and_send(
         send_text_fn=send_text,
         producer_id="morning_brief",
         pattern="ceremony",
         text=text,
         payload_json="{}",
+        candidate={
+            "anchor": today.isoformat(),
+            "why_now": f"morning brief for {today}",
+            "suggested_action": "reply to engage",
+            "confidence": 0.9,
+            "controls": {},
+            "data_checked": ["briefings"],
+        },
     )
     if result.status != "sent":
         logger.info("morning_brief: skipped (%s)", result.reason)

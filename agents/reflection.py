@@ -483,6 +483,15 @@ async def run_daily_reflection() -> bool:
         except Exception:
             logger.exception("drift thought write failed (non-fatal)")
 
+    # Tonal recall — classify the previous session's emotional register so it
+    # is available to consolidation and diary writer below.
+    try:
+        from agents.tonal_recall import compute_session_register as _run_tonal_recall
+        _prev_session_id = db.get_session_id() or "unknown"
+        await _run_tonal_recall(_prev_session_id)
+    except Exception:
+        logger.exception("daily_reflection: tonal_recall failed (non-fatal)")
+
     # T3.3: consolidation pass — topic-cluster episode summaries +
     # near-dup fact dedup. Wrapped in try/except so consolidation failure
     # can't roll back the rest of the reflection (lexicon, peer model, etc.
@@ -1136,6 +1145,16 @@ async def _consolidate_yesterday() -> dict[str, int]:
                 continue
             if not summary:
                 continue
+            ep_id = db.insert_episode(
+                date.today().isoformat(),
+                f"[{topic} consolidation] {summary}",
+                importance=4,
+            )
+            try:
+                emb = await embeddings.aembed(summary)
+                db.set_vec_episode(ep_id, emb)
+            except Exception:
+                logger.exception("consolidation: embedding failed for topic=%s", topic)
             stats["summaries"] += 1
 
     # Near-dup dedup across new facts in the same window.
@@ -1402,14 +1421,19 @@ async def daily_life_seeder() -> None:
     try:
         raw = await run_aux_composition(prompt, max_tokens=256)
         raw = _strip_fences(raw).strip()
-        # Validate it parses.
+    except Exception:
+        logger.exception("daily_life_seeder: aux composition failed (non-fatal)")
+        return
+    try:
         world = json.loads(raw)
-        db.upsert_core_block("hikari_world", json.dumps(world))
-        logger.info("daily_life_seeder: hikari_world written")
     except json.JSONDecodeError:
         logger.warning("daily_life_seeder: LLM returned non-JSON: %r", raw[:200])
+        return
+    try:
+        db.upsert_core_block("hikari_world", json.dumps(world))
+        logger.info("daily_life_seeder: hikari_world written")
     except Exception:
-        logger.exception("daily_life_seeder: failed (non-fatal)")
+        logger.exception("daily_life_seeder: upsert failed (non-fatal)")
 
 
 async def maybe_trigger_diary_writer() -> None:

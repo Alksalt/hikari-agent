@@ -228,6 +228,14 @@ async def fire_due_reminders(send_text) -> int:
             text=text,
             payload_json=payload,
             dedup_key=f"reminder:{row['id']}",
+            candidate={
+                "anchor": str(row["id"]),
+                "why_now": f"reminder fires at {row['fire_at']}",
+                "suggested_action": "reply ok/snooze",
+                "confidence": 1.0,
+                "controls": {"snooze_hours": [1, 4, 24], "mute_source": "reminder"},
+                "data_checked": ["reminders"],
+            },
         )
         if result.status != "sent":
             logger.info("fire_due_reminders: skipped #%s (%s)", row["id"], result.reason)

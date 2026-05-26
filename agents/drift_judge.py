@@ -1,19 +1,21 @@
-"""Persona-drift telemetry — a Haiku judge that samples Hikari's outbound
-replies and scores them for voice integrity.
-
-The architect's recommendation was unambiguous: spin up a *bare*
-``ClaudeSDKClient`` (no session resume, no shared ``_RUN_LOCK``, no
-``log_to_memory``) fire-and-forget from inside ``_send_with_choreography``
-*after* the reply has shipped. That keeps the user's send path latency at
-zero while still capturing the telemetry.
+"""Persona-drift telemetry — scores Hikari's outbound replies for voice integrity.
 
 Backed by Anthropic Apr-2026 "assistant axis" research: drift toward
 generic-helpful is a measurable activation-space direction, and the
 literature-supported pattern is to make it a telemetry signal rather than
 a hand-tuned vibe check.
 
-All knobs in ``config/engagement.yaml -> drift_telemetry``. Best-effort:
-any failure (SDK error, malformed YAML, timeout) returns ``None`` and is
+Routing: ``agents.runtime._call_aux_llm`` → OpenRouter → DeepSeek V4 Flash
+(same path as every other aux LLM op: entity extraction, summarisers,
+classifiers). No SDK subprocess, no session resume, no shared _RUN_LOCK.
+Fire-and-forget from inside ``_send_with_choreography`` after the reply has
+shipped — user-facing send latency is zero.
+
+Model override: ``config/engagement.yaml -> drift_telemetry.model`` — must be
+an OpenRouter model ID. Defaults to ``deepseek/deepseek-v4-flash``.
+
+All other knobs in ``config/engagement.yaml -> drift_telemetry``. Best-effort:
+any failure (HTTP error, malformed YAML, timeout) returns ``None`` and is
 silently logged — drift judging never breaks the user-facing flow.
 """
 
@@ -24,15 +26,11 @@ import random
 from typing import Any
 
 import yaml
-from claude_agent_sdk import (
-    AssistantMessage,
-    TextBlock,
-)
 
 from storage import db
 
 from . import config as cfg
-from . import sdk_pool
+from .runtime import _call_aux_llm
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +51,16 @@ def _cooldown() -> int:
 
 def _daily_cap() -> int:
     return int(cfg.get("drift_telemetry.max_calls_per_day", 30))
+
+
+def _drift_model() -> str:
+    """OpenRouter model ID for drift judging.
+
+    Reads ``drift_telemetry.model`` from config; defaults to
+    ``deepseek/deepseek-v4-flash`` (the standard cheap aux-LLM path).
+    The config value must be an OpenRouter model ID, not a Claude model name.
+    """
+    return str(cfg.get("drift_telemetry.model", "deepseek/deepseek-v4-flash"))
 
 
 def _rubric() -> str:
@@ -90,12 +98,12 @@ def _strip_fences(raw: str) -> str:
 
 
 async def judge_outbound(text: str) -> dict[str, Any] | None:
-    """Score one outbound message via Haiku. Returns parsed dict or None on
-    any failure. **Never re-raises** — best-effort by design.
+    """Score one outbound message for voice integrity. Returns parsed dict or
+    None on any failure. **Never re-raises** — best-effort by design.
 
-    Uses the persistent Haiku judge client from sdk_pool.  Falls back to
-    a fresh ephemeral client if the pool is unavailable (startup not called
-    yet, or judge client failed to connect).
+    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash (same path
+    as entity extraction, summarisers, and all other aux LLM ops). No SDK
+    subprocess, no session resume, no shared _RUN_LOCK.
     """
     if not text or not text.strip():
         return None
@@ -103,19 +111,14 @@ async def judge_outbound(text: str) -> dict[str, Any] | None:
     if not rubric:
         return None
     try:
-        parts: list[str] = []
-        client = await sdk_pool.get_haiku_judge()
-        await client.query(f"Score this Hikari reply:\n\n{text[:1000]}")
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        parts.append(block.text)
-        raw = "".join(parts).strip()
-        # Advance recycle counter outside the lock.
-        sdk_pool._maybe_schedule_judge_recycle()
+        raw = await _call_aux_llm(
+            f"Score this Hikari reply:\n\n{text[:1000]}",
+            system=rubric,
+            model=_drift_model(),
+            max_tokens=256,
+        )
     except Exception:  # noqa: BLE001
-        logger.exception("drift_judge: judge_outbound SDK call failed (non-fatal)")
+        logger.exception("drift_judge: judge_outbound aux LLM call failed (non-fatal)")
         return None
     if not raw:
         return None
@@ -147,8 +150,8 @@ async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:
     judge outcome so the cooldown advances even on failures."""
     if not should_sample(outbound_counter):
         return
-    # Record the attempt BEFORE the SDK call so cooldown advances even if
-    # the judge crashes (prevents tight retry loops).
+    # Record the attempt BEFORE the LLM call so cooldown advances even if
+    # the call crashes (prevents tight retry loops).
     db.runtime_set("drift_last_sampled_at_counter", outbound_counter)
     result = await judge_outbound(text)
     if result is None:

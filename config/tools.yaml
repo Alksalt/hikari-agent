@@ -924,6 +924,20 @@ tools:
     example: "run_skill('morning-checkin')"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__progress"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+    domain: runtime
+    operation: write
+    risk_tier: low
+    credentials: null
+    description: "chain-of-actions progress beat for multi-step turns; rate-limited; routes sub-2s through sendChatAction(\"typing\"), >2s through bot.send_message"
+    example: "progress(message='...looking that up.', mode='auto')"
+    presentation_hint: null
+
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
   # for auto-discovered utility tools (calc, reminder_create, receipt_add, etc.).

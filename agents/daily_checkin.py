@@ -649,12 +649,21 @@ async def maybe_run_daily_checkin(send_text) -> bool:
         logger.info("daily_checkin: composer returned no question; skipping fire")
         return False
     from agents.proactive_gate import reserve_and_send
+    today = now_local.date()
     result = await reserve_and_send(
         send_text_fn=send_text,
         producer_id="daily_checkin",
         pattern="ceremony",
         text=text,
         payload_json="{}",
+        candidate={
+            "anchor": today.isoformat(),
+            "why_now": "daily check-in",
+            "suggested_action": "yes/no/skip",
+            "confidence": 0.9,
+            "controls": {},
+            "data_checked": ["sessions"],
+        },
     )
     if result.status != "sent":
         logger.info("daily_checkin: skipped (%s)", result.reason)

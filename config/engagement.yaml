@@ -569,7 +569,7 @@ drift_telemetry:
   enabled: true
   probability_per_outbound: 0.20
   cooldown_min_messages: 4
-  model: "claude-sonnet-4-6"
+  model: "deepseek/deepseek-v4-flash"
   max_budget_usd: 0.01
   # Defense against runaway sampling — caps total judge calls per UTC day.
   max_calls_per_day: 30
@@ -579,8 +579,8 @@ drift_telemetry:
   # Retention for drift samples — prune older than this many days at daily
   # reflection time.
   prune_older_than_days: 30
-  # Rubric the Haiku judge uses. References Hikari's hard opinion anchors so
-  # the scoring is grounded in her actual character, not generic vibes.
+  # Rubric sent to the drift judge (via _call_aux_llm → OpenRouter). References
+  # Hikari's hard opinion anchors so scoring is grounded in her actual character.
   rubric: |
     You are scoring a single outbound message for Hikari-voice integrity.
 

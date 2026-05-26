@@ -1556,12 +1556,21 @@ async def run_checkin_force(send_fn) -> str:
         if not text:
             return "checkin: composer returned no question."
         from agents.proactive_gate import reserve_and_send
+        today = datetime.now(UTC).date()
         result = await reserve_and_send(
             send_text_fn=send_fn,
             producer_id="daily_checkin",
             pattern="ceremony",
             text=text,
             payload_json="{}",
+            candidate={
+                "anchor": today.isoformat(),
+                "why_now": "manual checkin from cockpit",
+                "suggested_action": "yes/no/skip",
+                "confidence": 0.95,
+                "controls": {},
+                "data_checked": ["sessions"],
+            },
         )
         if result.status == "sent":
             from agents import cadence

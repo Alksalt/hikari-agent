@@ -1,22 +1,20 @@
 """Persistent SDK client pool.
 
-Two long-lived ClaudeSDKClient instances:
+One long-lived ClaudeSDKClient instance:
 
   live  — full MCP, full hooks, Hikari persona. Used by run_user_turn +
            run_visible_proactive. Cold-started with session resume from DB.
            Self-heals on ProcessError by reconnecting with the latest
            stored session_id.
 
-  judge — Haiku, max_turns=1, no MCP, no hooks, neutral system prompt.
-           Used by drift_judge.judge_outbound.
-
 Everything else (run_internal_control, run_reflection_call,
-run_isolated_turn, bounded_rewrite) stays ephemeral — different system
-prompts or intentionally fresh sessions.
+run_isolated_turn, bounded_rewrite, drift judging) stays ephemeral —
+different system prompts, intentionally fresh sessions, or the httpx
+OpenRouter path (drift_judge uses _call_aux_llm, not this pool).
 
 Pool state is module-level so importlib.reload(agents.runtime) doesn't
 reset handles.  The module is safe to import at any time; startup() must
-be awaited before get_live_client() / get_haiku_judge() are called.
+be awaited before get_live_client() is called.
 """
 
 from __future__ import annotations
@@ -50,11 +48,9 @@ class _Handle:
 # --------------------------------------------------------------------------- #
 
 _live: _Handle = _Handle()
-_judge: _Handle = _Handle()
 _started: bool = False
 _startup_lock: asyncio.Lock = asyncio.Lock()
 _live_recycle_pending: bool = False
-_judge_recycle_pending: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -98,30 +94,6 @@ def _build_live_options(resume: str | None) -> ClaudeAgentOptions:
     )
 
 
-def judge_options() -> ClaudeAgentOptions:
-    """ClaudeAgentOptions for the persistent Haiku judge.
-
-    Extracted from drift_judge.judge_outbound so sdk_pool can build the
-    same client without duplicating the option values.
-    """
-    from claude_agent_sdk import ClaudeAgentOptions
-
-    from agents import config as cfg
-    from agents.runtime import MODEL_FALLBACK
-
-    rubric = str(cfg.get("drift_telemetry.rubric") or "")
-    # max_budget_usd intentionally omitted: same reason as _build_live_options —
-    # the SDK applies this per CLI-subprocess lifetime, so a long-lived judge
-    # client exhausts even a small cap on its first call and then fails every
-    # subsequent judge call until the 100-call recycle.
-    return ClaudeAgentOptions(
-        model=str(cfg.get("drift_telemetry.model", MODEL_FALLBACK)),
-        max_turns=1,
-        system_prompt=rubric,
-        # No resume, no MCP, no hooks — isolated judging session.
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Recycle thresholds                                                           #
 # --------------------------------------------------------------------------- #
@@ -129,10 +101,6 @@ def judge_options() -> ClaudeAgentOptions:
 
 def _live_recycle_after() -> int:
     return int(cfg.get("runtime.live_client_recycle_after_turns", 500))
-
-
-def _judge_recycle_after() -> int:
-    return int(cfg.get("runtime.judge_client_recycle_after_calls", 100))
 
 
 # --------------------------------------------------------------------------- #
@@ -144,13 +112,6 @@ async def _connect_live(resume: str | None) -> ClaudeSDKClient:
     from claude_agent_sdk import ClaudeSDKClient
     options = _build_live_options(resume)
     client: ClaudeSDKClient = ClaudeSDKClient(options=options)
-    await client.connect()
-    return client
-
-
-async def _connect_judge() -> ClaudeSDKClient:
-    from claude_agent_sdk import ClaudeSDKClient
-    client: ClaudeSDKClient = ClaudeSDKClient(options=judge_options())
     await client.connect()
     return client
 
@@ -170,10 +131,13 @@ async def _disconnect(client: ClaudeSDKClient | None) -> None:
 
 
 async def startup() -> None:
-    """Idempotent startup — cold-connects both clients.
+    """Idempotent startup — cold-connects the live client.
 
     Called once from telegram_bridge post_init.  Safe to call multiple
     times; subsequent calls are no-ops.
+
+    Drift judging is handled by ``agents.runtime._call_aux_llm`` (httpx →
+    OpenRouter) and does not need a persistent client here.
     """
     global _started
     async with _startup_lock:
@@ -193,20 +157,11 @@ async def startup() -> None:
             )
             _live.client = None
 
-        try:
-            _judge.client = await _connect_judge()
-            logger.info("sdk_pool: judge client connected")
-        except Exception:
-            logger.exception(
-                "sdk_pool: judge client failed to connect — drift judging disabled until restart"
-            )
-            _judge.client = None
-
         _started = True
 
 
 async def shutdown() -> None:
-    """Idempotent shutdown — disconnects both clients."""
+    """Idempotent shutdown — disconnects the live client."""
     global _started
     async with _startup_lock:
         if not _started:
@@ -214,8 +169,6 @@ async def shutdown() -> None:
         logger.info("sdk_pool: shutting down")
         await _disconnect(_live.client)
         _live.client = None
-        await _disconnect(_judge.client)
-        _judge.client = None
         _started = False
 
 
@@ -261,22 +214,6 @@ async def _reconnect_live(reason: str, *, lock_run: bool = True) -> None:
             await _do_reconnect_live(reason)
 
 
-async def _reconnect_judge(reason: str) -> None:
-    """Reconnect judge client under connect_lock."""
-    async with _judge.connect_lock:
-        logger.info("sdk_pool: reconnecting judge client (reason=%s)", reason)
-        await _disconnect(_judge.client)
-        _judge.client = None
-        try:
-            _judge.client = await _connect_judge()
-            _judge.counter = 0
-            logger.info("sdk_pool: judge client reconnected")
-        except Exception:
-            logger.exception("sdk_pool: judge client reconnect failed")
-            _judge.client = None
-            raise
-
-
 # --------------------------------------------------------------------------- #
 # Public accessors                                                             #
 # --------------------------------------------------------------------------- #
@@ -288,14 +225,6 @@ async def get_live_client() -> ClaudeSDKClient:
         await _reconnect_live("client is None", lock_run=False)
     assert _live.client is not None, "sdk_pool: live client unavailable after reconnect attempt"
     return _live.client
-
-
-async def get_haiku_judge() -> ClaudeSDKClient:
-    """Return the judge client, reconnecting if dead or over recycle threshold."""
-    if _judge.client is None:
-        await _reconnect_judge("client is None")
-    assert _judge.client is not None, "sdk_pool: judge client unavailable after reconnect attempt"
-    return _judge.client
 
 
 # --------------------------------------------------------------------------- #
@@ -334,26 +263,3 @@ def _maybe_schedule_live_recycle() -> None:
         asyncio.create_task(_recycle_and_clear())
 
 
-def _maybe_schedule_judge_recycle() -> None:
-    """Increment call counter; schedule recycle if threshold exceeded.
-
-    The pending flag ensures only one recycle task is in-flight at a time.
-    """
-    global _judge_recycle_pending
-    _judge.counter += 1
-    threshold = _judge_recycle_after()
-    if _judge.counter >= threshold and not _judge_recycle_pending:
-        _judge_recycle_pending = True
-        logger.info(
-            "sdk_pool: scheduling judge recycle after %d calls",
-            threshold,
-        )
-
-        async def _recycle_and_clear():
-            global _judge_recycle_pending
-            try:
-                await _reconnect_judge(f"recycle after {threshold} calls")
-            finally:
-                _judge_recycle_pending = False
-
-        asyncio.create_task(_recycle_and_clear())
