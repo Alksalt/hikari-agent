@@ -41,7 +41,15 @@ def _graph_path() -> Path:
 
 
 async def get_graph() -> Graphiti:
-    """Return the singleton Graphiti instance. First call builds indices."""
+    """Return the singleton Graphiti instance. First call builds indices.
+
+    On partial-init failure (FTS index creation, build_indices_and_constraints,
+    etc.), explicitly tear down the KuzuDriver before raising — otherwise its
+    underlying kuzu.Database holds the file lock, and the NEXT get_graph() call
+    creates a SECOND Database against the same path, which Kuzu rejects with
+    the misleading "Database path cannot be a directory" message (it's actually
+    a same-process lock conflict).
+    """
     global _GRAPH
     if _GRAPH is not None:
         return _GRAPH
@@ -69,37 +77,62 @@ async def get_graph() -> Graphiti:
         )
         client = OpenAIGenericClient(config=llm_config)
         embedder = FastembedAdapter()
-        driver = KuzuDriver(db=str(graph_path))
-        # graphiti_core ≥0.29 checks driver._database before cloning for group routing,
-        # but KuzuDriver never initialises this attribute.  Pin it so the check is a no-op.
-        driver._database = "hikari_chat"
-        # graphiti_core 0.29 added kuzu FTS indices in graph_queries.py but omitted them
-        # from KuzuDriver.setup_schema() and made build_indices_and_constraints() a no-op.
-        # Create them explicitly; ignore errors if they already exist on a reopened DB.
-        import kuzu as _kuzu
-        _fts_conn = _kuzu.Connection(driver.db)
-        for _fts_q in [
-            "CALL CREATE_FTS_INDEX('Episodic', 'episode_content', ['content', 'source', 'source_description']);",
-            "CALL CREATE_FTS_INDEX('Entity', 'node_name_and_summary', ['name', 'summary']);",
-            "CALL CREATE_FTS_INDEX('Community', 'community_name', ['name']);",
-            "CALL CREATE_FTS_INDEX('RelatesToNode_', 'edge_name_and_fact', ['name', 'fact']);",
-        ]:
-            try:
-                _fts_conn.execute(_fts_q)
-            except Exception:
-                pass  # already exists on a reopened database
-        _fts_conn.close()
-        g = Graphiti(graph_driver=driver, llm_client=client, embedder=embedder)
-        await g.build_indices_and_constraints()
-        # Lock down the kuzu file once Kuzu has created it.
+        driver: KuzuDriver | None = None
         try:
-            if graph_path.exists():
-                graph_path.chmod(0o600)
-        except OSError:
-            pass
-        _GRAPH = g
-        logger.info("graph: ready (kuzu@%s) at %s", _kuzu_version(), graph_path)
-        return g
+            driver = KuzuDriver(db=str(graph_path))
+            # graphiti_core ≥0.29 checks driver._database before cloning for group routing,
+            # but KuzuDriver never initialises this attribute.  Pin it so the check is a no-op.
+            driver._database = "hikari_chat"
+            # graphiti_core 0.29 added kuzu FTS indices in graph_queries.py but omitted them
+            # from KuzuDriver.setup_schema() and made build_indices_and_constraints() a no-op.
+            # Create them explicitly; ignore errors if they already exist on a reopened DB.
+            import kuzu as _kuzu
+            _fts_conn = _kuzu.Connection(driver.db)
+            for _fts_q in [
+                "CALL CREATE_FTS_INDEX('Episodic', 'episode_content', ['content', 'source', 'source_description']);",
+                "CALL CREATE_FTS_INDEX('Entity', 'node_name_and_summary', ['name', 'summary']);",
+                "CALL CREATE_FTS_INDEX('Community', 'community_name', ['name']);",
+                "CALL CREATE_FTS_INDEX('RelatesToNode_', 'edge_name_and_fact', ['name', 'fact']);",
+            ]:
+                try:
+                    _fts_conn.execute(_fts_q)
+                except Exception:
+                    pass  # already exists on a reopened database
+            _fts_conn.close()
+            g = Graphiti(graph_driver=driver, llm_client=client, embedder=embedder)
+            await g.build_indices_and_constraints()
+            # Lock down the kuzu file once Kuzu has created it.
+            try:
+                if graph_path.exists():
+                    graph_path.chmod(0o600)
+            except OSError:
+                pass
+            _GRAPH = g
+            logger.info("graph: ready (kuzu@%s) at %s", _kuzu_version(), graph_path)
+            return g
+        except Exception:
+            # Tear down the partial driver so the next attempt can succeed.
+            # Without this, the failed driver's kuzu.Database stays alive and
+            # holds the file lock, causing every retry to hit Kuzu's
+            # "Database path cannot be a directory" same-process lock error.
+            if driver is not None:
+                try:
+                    db_obj = getattr(driver, "db", None)
+                    if db_obj is not None and hasattr(db_obj, "close"):
+                        db_obj.close()
+                except Exception:
+                    logger.exception("get_graph: kuzu.Database.close() failed during cleanup")
+                try:
+                    close_fn = getattr(driver, "close", None)
+                    if callable(close_fn):
+                        maybe_coro = close_fn()
+                        if hasattr(maybe_coro, "__await__"):
+                            await maybe_coro
+                except Exception:
+                    logger.exception("get_graph: KuzuDriver.close() failed during cleanup")
+                # Drop the reference so GC can run.
+                del driver
+            raise
 
 
 class FastembedAdapter(EmbedderClient):
