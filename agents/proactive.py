@@ -193,6 +193,8 @@ def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
 async def fire_due_reminders(send_text) -> int:
     """Drain reminder_due() — for each row, format + send + mark fired.
     If row has a repeat spec, insert the next occurrence as a fresh row.
+    If row has a recurrence_rule, UPDATE fire_at in-place (infinite loop
+    until user cancels — do NOT mark the row fired/cancelled).
     Returns count fired."""
     import json as _json
 
@@ -230,8 +232,35 @@ async def fire_due_reminders(send_text) -> int:
         if result.status != "sent":
             logger.info("fire_due_reminders: skipped #%s (%s)", row["id"], result.reason)
             continue
-        db.reminder_mark_fired(row["id"])
+
         fired += 1
+
+        # ---------- recurrence_rule: reschedule in-place (infinite loop) ----------
+        recurrence_rule = row.get("recurrence_rule") or ""
+        if recurrence_rule:
+            try:
+                from tools.reminders.recurrence import next_occurrence as _recurrence_next
+                current_due = datetime.fromisoformat(row["fire_at"])
+                if current_due.tzinfo is None:
+                    current_due = current_due.replace(tzinfo=UTC)
+                next_due = _recurrence_next(recurrence_rule, current_due)
+                db.reminder_update_fire_at(row["id"], next_due.isoformat())
+                logger.debug(
+                    "fire_due_reminders: rescheduled #%s via recurrence_rule=%r → %s",
+                    row["id"], recurrence_rule, next_due.isoformat(),
+                )
+            except Exception:
+                logger.exception(
+                    "fire_due_reminders: failed to reschedule #%s (recurrence_rule=%r)",
+                    row["id"], recurrence_rule,
+                )
+                # Fall through to mark fired so the row doesn't re-fire on
+                # every poll after a bad rule slips through.
+                db.reminder_mark_fired(row["id"])
+            continue  # Don't also run the legacy repeat logic below.
+
+        # ---------- legacy repeat: mark fired, insert next occurrence ----------
+        db.reminder_mark_fired(row["id"])
         nxt = _next_occurrence(row["fire_at"], row.get("repeat") or "")
         if nxt:
             db.reminder_insert(

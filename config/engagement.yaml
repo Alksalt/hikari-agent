@@ -930,6 +930,25 @@ engagement:
   # send_mode: proactive | observation | silent
   # min_value_score: 0.0–1.0 — discard tick if selector score < this threshold
   # interruption_right: low | medium | high — gates whether source may interrupt quiet hours
+
+  # Value rubric weights for value_score computation in the selector.
+  # anchor: does the candidate reference a real, named event/object? (+0.0–0.2)
+  # user_value: does the user benefit from receiving this? (+0.0–0.3)
+  # actionability: does it suggest a concrete next step? (+0.0–0.2)
+  # timing: is the current time slot suitable? (+0.0–0.15)
+  # interruption_cost: subtracted based on interruption_right level (0.0–0.15)
+  value_rubric:
+    weights:
+      anchor: 0.2
+      user_value: 0.3
+      actionability: 0.2
+      timing: 0.15
+      interruption_cost: 0.15
+    # interruption_right → base_cost (subtracted from value_score)
+    interruption_cost_map:
+      low: 0.05
+      medium: 0.10
+      high: 0.0  # high = user opted in, no cost
   wiki_new_file:
     enabled: true
     max_per_24h: 2

@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MISFIRE_GRACE_SEC = cfg.get("scheduler.default_misfire_grace_sec") or 300
 
+# time_texture phase boundaries: (start_hour_inclusive, end_hour_exclusive, phase_name)
+# 24h clock; 22-02 and 02-04 wrap midnight and are handled by the lookup function.
+_TIME_TEXTURE_PHASES = (
+    (4,  7,  "early_morning"),
+    (7,  11, "morning"),
+    (11, 14, "midday"),
+    (14, 18, "afternoon"),
+    (18, 22, "evening"),
+    (22, 26, "late_night"),   # 26 == next-day 02:00 (virtual)
+    (26, 28, "deep_night"),   # 26-28 == 02:00-04:00 (virtual)
+)
+
+
+def _hour_to_time_texture(hour: int) -> str:
+    """Return the time_texture phase name for a given 0-23 hour."""
+    # Normalise: midnight-wrap hours use virtual 24+ representation.
+    virtual = hour if hour >= 4 else hour + 24
+    for start, end, phase in _TIME_TEXTURE_PHASES:
+        if start <= virtual < end:
+            return phase
+    return "late_night"  # fallback (shouldn't be reached)
+
 
 def _add_graph_outbox_drain_job(scheduler: AsyncIOScheduler) -> None:
     """Idempotently register the graph_outbox_drain job on the given scheduler."""
@@ -36,6 +58,60 @@ def _add_graph_outbox_drain_job(scheduler: AsyncIOScheduler) -> None:
         id="graph_outbox_drain",
         coalesce=True, max_instances=1, misfire_grace_time=60,
     )
+
+
+async def _time_texture_job() -> None:
+    """Hourly job: write time_texture to runtime_state based on current local hour."""
+    import datetime as _dt
+
+    from storage import db
+
+    try:
+        tz_name = cfg.get("scheduler.timezone", "UTC")
+        try:
+            tz = zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("UTC")
+        now = _dt.datetime.now(tz)
+        phase = _hour_to_time_texture(now.hour)
+        db.runtime_set("time_texture", phase)
+        logger.info("time_texture: hour=%d -> %s", now.hour, phase)
+    except Exception:
+        logger.exception("time_texture_job: unexpected failure")
+
+
+async def _diary_writer_job() -> None:
+    """Daily 02:00 job: call diary.write_today_diary_if_significant() if available."""
+    try:
+        from agents import diary  # lazy import to avoid cycle
+        fn = getattr(diary, "write_today_diary_if_significant", None)
+        if fn is None:
+            logger.warning(
+                "diary_writer: agents.diary.write_today_diary_if_significant not found — skipping"
+            )
+            return
+        await fn()
+    except ImportError:
+        logger.warning("diary_writer: agents.diary not available — skipping")
+    except Exception:
+        logger.exception("diary_writer: unexpected failure")
+
+
+async def _interests_refresh_job() -> None:
+    """Monthly day-1 job: call reflection.interests_refresh() if available."""
+    try:
+        from agents import reflection  # lazy import to avoid cycle
+        fn = getattr(reflection, "interests_refresh", None)
+        if fn is None:
+            logger.warning(
+                "interests_refresh: agents.reflection.interests_refresh not found — skipping"
+            )
+            return
+        await fn()
+    except ImportError:
+        logger.warning("interests_refresh: agents.reflection not available — skipping")
+    except Exception:
+        logger.exception("interests_refresh: unexpected failure")
 
 
 def build_scheduler(send_text) -> AsyncIOScheduler:
@@ -265,6 +341,30 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    # Hourly time_texture: write the current time-of-day phase to runtime_state.
+    scheduler.add_job(
+        _time_texture_job,
+        IntervalTrigger(minutes=60),
+        id="time_texture",
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+
+    # Daily 02:00: diary writer — significant day entries.
+    scheduler.add_job(
+        _diary_writer_job,
+        CronTrigger(hour=2, minute=0),
+        id="diary_writer",
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+
+    # Monthly interests refresh: day 1, 05:00.
+    scheduler.add_job(
+        _interests_refresh_job,
+        CronTrigger(day=1, hour=5, minute=0),
+        id="interests_refresh",
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+
     # Phase I: unified engagement_tick — replaces the per-producer wiki_new_file_tick.
     # Runs every 60s, collects candidates from all enabled producers, selects the
     # highest-scoring one, composes + guards + sends it.
@@ -278,7 +378,14 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         from agents import cadence
         from agents.engagement import composer, guard, producers, selector, sender
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
+        from agents.runtime import _RUN_LOCK
         from storage import db
+
+        # Early-return while a user turn is in progress so the tick never
+        # queues behind the lock and never contends with the running turn.
+        if _RUN_LOCK.locked():
+            logger.info("engagement_tick: _RUN_LOCK held — skipping tick")
+            return
 
         # Pre-run gate: skip the whole tick during quiet hours or silence.
         if not guard.should_wake():

@@ -174,6 +174,10 @@ def test_scheduler_builds(monkeypatch):
         # Phase 5D: Graphiti outbox drain (every 30s, when GRAPHITI_ENABLED != 'false').
         "graph_outbox_drain",
         "media_outbox_drain",
+        # Sprint A: hourly time-of-day texture, daily diary, monthly interests pool refresh.
+        "time_texture",
+        "diary_writer",
+        "interests_refresh",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

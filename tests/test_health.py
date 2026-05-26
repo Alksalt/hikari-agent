@@ -10,6 +10,7 @@ import pytest
 
 from agents.health import (
     _check_graph_outbox,
+    _check_graphiti_reachable,
     _check_last_backup,
     _check_mcp_warm_pool,
     _check_media_outbox,
@@ -127,20 +128,28 @@ def test_mcp_warm_pool_handles_exception():
 
 
 def test_graph_outbox_under_threshold():
-    with patch("storage.db.graph_outbox_pending", return_value=[{"id": i} for i in range(3)]):
-        with patch("storage.db.graph_outbox_failed_stats", return_value={"count": 0, "last_error": None}):
-            result = _check_graph_outbox()
+    stats = {"pending": 3, "sent": 10, "failed": 0, "skipped": 0, "drained": 2}
+    with patch("storage.db.graph_outbox_stats", return_value=stats):
+        result = _check_graph_outbox()
     assert result.ok is True
     assert result.value == {"pending": 3, "failed": 0}
 
 
 def test_graph_outbox_over_threshold_degraded():
-    # The check uses limit = _OUTBOX_PENDING_WARN + 1 = 51
-    with patch("storage.db.graph_outbox_pending", return_value=[{"id": i} for i in range(51)]):
-        with patch("storage.db.graph_outbox_failed_stats", return_value={"count": 0, "last_error": None}):
-            result = _check_graph_outbox()
+    # pending > 10 → degraded; drained is NOT included in failed math
+    stats = {"pending": 15, "sent": 10, "failed": 0, "skipped": 0, "drained": 99}
+    with patch("storage.db.graph_outbox_stats", return_value=stats):
+        result = _check_graph_outbox()
     assert result.ok is False
-    assert "backlog>50" in (result.reason or "")
+    assert "backlog>10" in (result.reason or "")
+
+
+def test_graph_outbox_drained_excluded_from_failed():
+    # drained=99 must NOT push ok to False; only failed column matters
+    stats = {"pending": 0, "sent": 0, "failed": 0, "skipped": 0, "drained": 99}
+    with patch("storage.db.graph_outbox_stats", return_value=stats):
+        result = _check_graph_outbox()
+    assert result.ok is True
 
 
 def test_last_backup_missing_dir_degraded(tmp_path: Path):
@@ -222,11 +231,11 @@ def test_log_errors_under_threshold(tmp_path: Path):
 def test_log_errors_over_threshold_degraded(tmp_path: Path):
     log = tmp_path / "hikari.log"
     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-    lines = [f"{now_str} ERROR fail {i}\n" for i in range(10)]
+    lines = [f"{now_str} ERROR fail {i}\n" for i in range(11)]
     log.write_text("".join(lines))
     result = _check_recent_log_errors(log_path=log)
     assert result.ok is False
-    assert "errors>5/hr" in (result.reason or "")
+    assert "errors>10/hr" in (result.reason or "")
 
 
 def test_log_errors_ignores_old_timestamps(tmp_path: Path):
@@ -246,13 +255,17 @@ def test_log_errors_ignores_old_timestamps(tmp_path: Path):
 async def test_collect_startup_report_returns_all_keys():
     fake_sched = MagicMock()
     fake_sched.get_jobs.return_value = [MagicMock(id="x")]
-    with patch("agents.google_health.probe_google_token", new=AsyncMock(return_value=(True, ""))):
+    with patch("agents.google_health.probe_google_token", new=AsyncMock(return_value=(True, ""))), \
+         patch("agents.health._check_graphiti_reachable", new=AsyncMock(
+             return_value=MagicMock(to_dict=lambda: {"ok": True, "value": "ok", "reason": None})
+         )):
         report = await collect_startup_report(scheduler=fake_sched)
     assert set(report.keys()) == {
         "db_integrity",
         "scheduler_jobs",
         "mcp_warm_pool",
         "oauth_google",
+        "graphiti_reachable",
         "graph_outbox_pending",
         "media_outbox_pending",
         "last_backup_age_h",
@@ -285,7 +298,7 @@ async def test_collect_startup_report_never_raises():
     fake_sched = MagicMock()
     fake_sched.get_jobs.side_effect = RuntimeError("scheduler dead")
     with patch("agents.google_health.probe_google_token", new=AsyncMock(side_effect=RuntimeError("oauth dead"))), \
-         patch("storage.db.graph_outbox_pending", side_effect=RuntimeError("outbox dead")):
+         patch("storage.db.graph_outbox_stats", side_effect=RuntimeError("outbox dead")):
         report = await collect_startup_report(scheduler=fake_sched)
     assert isinstance(report, dict)
     assert report["scheduler_jobs"]["ok"] is False
@@ -298,22 +311,31 @@ async def test_collect_startup_report_never_raises():
 # ---------------------------------------------------------------------------
 
 def test_media_outbox_under_threshold_ok():
-    with patch("storage.db.media_outbox_stats", return_value={"pending": 5, "sent": 3, "failed": 0, "aborted": 0}):
+    counts = {"media_outbox": {"pending": 5, "sent": 3, "failed": 0}}
+    with patch("storage.db.status_counts", return_value=counts):
         result = _check_media_outbox()
     assert result.ok is True
     assert result.value == 5
 
 
 def test_media_outbox_over_threshold_degraded():
-    with patch("storage.db.media_outbox_stats", return_value={"pending": 25, "sent": 10, "failed": 2, "aborted": 1}):
+    counts = {"media_outbox": {"pending": 15, "sent": 10, "failed": 2}}
+    with patch("storage.db.status_counts", return_value=counts):
         result = _check_media_outbox()
     assert result.ok is False
-    assert result.value == 25
+    assert result.value == 15
     assert result.reason is not None
 
 
+def test_media_outbox_missing_key_defaults_zero():
+    with patch("storage.db.status_counts", return_value={}):
+        result = _check_media_outbox()
+    assert result.ok is True
+    assert result.value == 0
+
+
 def test_media_outbox_exception_returns_degraded():
-    with patch("storage.db.media_outbox_stats", side_effect=RuntimeError("db dead")):
+    with patch("storage.db.status_counts", side_effect=RuntimeError("db dead")):
         result = _check_media_outbox()
     assert result.ok is False
 
@@ -324,7 +346,49 @@ async def test_collect_startup_report_includes_media_outbox_key():
     fake_sched = MagicMock()
     fake_sched.get_jobs.return_value = [MagicMock(id="x")]
     with patch("agents.google_health.probe_google_token", new=AsyncMock(return_value=(True, ""))), \
-         patch("storage.db.media_outbox_stats", return_value={"pending": 0, "sent": 0, "failed": 0, "aborted": 0}):
+         patch("storage.db.status_counts", return_value={"media_outbox": {"pending": 0, "sent": 0, "failed": 0}}), \
+         patch("agents.health._check_graphiti_reachable", new=AsyncMock(
+             return_value=MagicMock(to_dict=lambda: {"ok": True, "value": "ok", "reason": None})
+         )):
         report = await collect_startup_report(scheduler=fake_sched)
     assert "media_outbox_pending" in report
     assert report["media_outbox_pending"]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# graphiti_reachable canary
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_graphiti_reachable_ok():
+    mock_graph = AsyncMock()
+    mock_graph.search = AsyncMock(return_value=[])
+    with patch("storage.graph.get_graph", new=AsyncMock(return_value=mock_graph)):
+        result = await _check_graphiti_reachable()
+    assert result.ok is True
+    assert result.value == "ok"
+
+
+@pytest.mark.asyncio
+async def test_graphiti_reachable_timeout():
+    import asyncio as _asyncio
+
+    # Raise TimeoutError synchronously to avoid unawaited-coroutine warnings.
+    def _raise_timeout(*a, **kw):
+        raise _asyncio.TimeoutError
+
+    with patch("asyncio.wait_for", side_effect=_raise_timeout):
+        result = await _check_graphiti_reachable()
+    assert result.ok is False
+    assert result.reason == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_graphiti_reachable_exception():
+    async def _fail():
+        raise RuntimeError("kuzu dead")
+
+    with patch("storage.graph.get_graph", new=_fail):
+        result = await _check_graphiti_reachable()
+    assert result.ok is False
+    assert "exception:RuntimeError" in (result.reason or "")

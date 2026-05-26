@@ -6,12 +6,17 @@ Scoring per architect spec §9.5:
           * mood_multiplier
           * (response_rate + 0.5)
           * (1 - recency_penalty)
+
+Extended with a value_score (rubric §engagement.value_rubric) that must meet
+per-source min_value_score to pass.  send_mode=="silent" sources are filtered
+before scoring.  Bundle co-firing guard: two candidates in the same 60s tick
+are merged or the second is held for 2h.
 """
 from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from agents.engagement.triggers import TriggerCandidate
@@ -144,6 +149,166 @@ def _recency_penalty(source: str, last_send_per_source: dict[str, str]) -> float
     return max(0.0, 0.9 * (1 - age_hours / 24))
 
 
+def _source_send_mode(source: str) -> str:
+    """Return send_mode for source from config (proactive|silent|observation). Default: proactive."""
+    from agents import config as _cfg
+    return str(_cfg.get(f"engagement.{source}.send_mode", "proactive"))
+
+
+def _source_min_value_score(source: str) -> float:
+    """Return min_value_score for source from config. Default: 0.0."""
+    from agents import config as _cfg
+    return float(_cfg.get(f"engagement.{source}.min_value_score", 0.0))
+
+
+def _source_interruption_right(source: str) -> str:
+    """Return interruption_right for source from config (low|medium|high). Default: low."""
+    from agents import config as _cfg
+    return str(_cfg.get(f"engagement.{source}.interruption_right", "low"))
+
+
+def _value_score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
+    """Compute a 0..1 value rubric score for a candidate.
+
+    Inputs:
+      anchor        — does the candidate reference a real, named event/object?
+      user_value    — does the user benefit from receiving this?
+      actionability — does it suggest a concrete next step?
+      timing        — is the current time slot suitable?
+      interruption_cost — subtracted based on interruption_right level
+
+    Weights are read from engagement.value_rubric.weights in config.
+    """
+    from agents import config as _cfg
+
+    weights: dict = _cfg.get("engagement.value_rubric.weights", {}) or {}
+    w_anchor       = float(weights.get("anchor", 0.2))
+    w_user_value   = float(weights.get("user_value", 0.3))
+    w_actionability = float(weights.get("actionability", 0.2))
+    w_timing       = float(weights.get("timing", 0.15))
+    w_int_cost     = float(weights.get("interruption_cost", 0.15))
+
+    cost_map: dict = _cfg.get("engagement.value_rubric.interruption_cost_map", {}) or {}
+    ir = _source_interruption_right(candidate.source)
+    interruption_cost = float(cost_map.get(ir, 0.05))
+
+    # anchor: True if any ANCHOR_TOKEN_PATHS key is present in payload with a non-empty value
+    from agents.engagement.guard import ANCHOR_TOKEN_PATHS
+    anchor_paths = ANCHOR_TOKEN_PATHS.get(candidate.source, ())
+    anchor = 1.0 if any(candidate.payload.get(p) for p in anchor_paths) else 0.0
+
+    # user_value: proxy — novelty (novel to the user = high value) combined with confidence
+    user_value = min(1.0, (candidate.novelty + candidate.confidence) / 2.0)
+
+    # actionability: take directly from candidate's actionability field
+    actionability = candidate.actionability
+
+    # timing: 1.0 during preferred hours, 0.5 off-hours, 0.1 quiet hours
+    h = ctx.now_local.hour
+    from agents.proactive import _is_quiet_now
+    try:
+        if _is_quiet_now():
+            timing = 0.1
+        elif (8 <= h < 12) or (18 <= h < 23):
+            timing = 1.0
+        else:
+            timing = 0.5
+    except Exception:
+        timing = 0.5
+
+    score = (
+        w_anchor * anchor
+        + w_user_value * user_value
+        + w_actionability * actionability
+        + w_timing * timing
+        - w_int_cost * interruption_cost
+    )
+    return max(0.0, min(1.0, score))
+
+
+# ---------------------------------------------------------------------------
+# Bundle co-firing guard state (in-process, per-tick)
+# ---------------------------------------------------------------------------
+
+# Tracks the last candidate that was selected and its send timestamp ISO string.
+# Written to runtime_state so it survives across ticks.
+_COFIRE_KEY = "proactive_last_selected_at"
+_COFIRE_SOURCE_KEY = "proactive_last_selected_source"
+_COFIRE_HOLD_KEY = "proactive_held_candidate"
+_COFIRE_WINDOW_SEC = 60        # same-tick window
+_COFIRE_HOLD_SEC = 7200        # 2h hold for #2
+
+
+def _get_cofire_state() -> tuple[str | None, str | None]:
+    """Return (last_selected_iso, last_source) from runtime_state."""
+    try:
+        from storage import db as _db
+        return _db.runtime_get(_COFIRE_KEY), _db.runtime_get(_COFIRE_SOURCE_KEY)
+    except Exception:
+        return None, None
+
+
+def _set_cofire_state(iso: str, source: str) -> None:
+    try:
+        from storage import db as _db
+        _db.runtime_set(_COFIRE_KEY, iso)
+        _db.runtime_set(_COFIRE_SOURCE_KEY, source)
+    except Exception:
+        logger.exception("_set_cofire_state: failed to write runtime state")
+
+
+def _hold_candidate(candidate: TriggerCandidate) -> None:
+    """Persist the co-fired candidate for 2h deferred delivery."""
+    try:
+        from storage import db as _db
+        hold_until = (datetime.now(UTC) + timedelta(seconds=_COFIRE_HOLD_SEC)).isoformat()
+        payload = json.dumps({
+            "source": candidate.source,
+            "pattern": candidate.pattern,
+            "text": None,
+            "payload": getattr(candidate, "payload", {}),
+            "hold_until": hold_until,
+        }, default=str)
+        _db.runtime_set(_COFIRE_HOLD_KEY, payload)
+        logger.info("selector: co-fire hold — %s held until %s", candidate.source, hold_until)
+    except Exception:
+        logger.exception("_hold_candidate: failed to persist held candidate")
+
+
+def _cofire_guard(
+    best: TriggerCandidate,
+    second: TriggerCandidate | None,
+) -> TriggerCandidate:
+    """Apply the 60s co-firing guard.
+
+    If best fires within 60s of the last selected candidate:
+      - merge texts if second is provided (concatenate with \\n\\n---\\n)
+      - otherwise hold second for 2h
+    Always updates co-fire state after selection.
+    """
+    now_iso = datetime.now(UTC).isoformat()
+    last_iso, last_source = _get_cofire_state()
+
+    if last_iso:
+        try:
+            last_dt = datetime.fromisoformat(last_iso)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=UTC)
+            age_sec = (datetime.now(UTC) - last_dt).total_seconds()
+            if age_sec < _COFIRE_WINDOW_SEC and second is not None:
+                # Two candidates co-fired: hold the second
+                _hold_candidate(second)
+                logger.info(
+                    "selector: co-fire detected (gap=%.1fs) — holding %s",
+                    age_sec, second.source,
+                )
+        except (ValueError, TypeError):
+            pass
+
+    _set_cofire_state(now_iso, best.source)
+    return best
+
+
 def score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
     if _hard_interval_blocked(candidate.source, ctx.last_send_per_source):
         return 0.0
@@ -162,7 +327,13 @@ def score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
 
 def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerCandidate | None:
     """Return the highest-scoring enabled candidate that fits within pool caps,
-    or None if nothing qualifies."""
+    passes send_mode and value_score filters, or None if nothing qualifies.
+
+    Extensions vs original:
+    - Filters out sources with send_mode == "silent".
+    - Computes value_score per candidate; filters below per-source min_value_score.
+    - Applies bundle co-firing guard on the top-2 finalists.
+    """
     if not candidates:
         return None
     enabled_sources: set[str] = ctx.enabled_sources
@@ -171,7 +342,7 @@ def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerC
         return None
     pool_caps: dict[str, bool] = ctx.pool_caps  # pool_name -> bool (can send)
 
-    scored: list[tuple[float, TriggerCandidate]] = []
+    scored: list[tuple[float, float, TriggerCandidate]] = []
     for c in candidates:
         if c.source not in enabled_sources:
             continue
@@ -179,12 +350,28 @@ def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerC
             continue
         if not pool_caps.get(c.pool, False):
             continue
+        # send_mode filter: silent sources never send
+        if _source_send_mode(c.source) == "silent":
+            logger.debug("selector: %s filtered — send_mode=silent", c.source)
+            continue
         s = score(c, ctx)
-        scored.append((s, c))
+        vs = _value_score(c, ctx)
+        min_vs = _source_min_value_score(c.source)
+        if vs < min_vs:
+            logger.debug(
+                "selector: %s filtered — value_score=%.3f < min_value_score=%.3f",
+                c.source, vs, min_vs,
+            )
+            continue
+        scored.append((s, vs, c))
 
     if not scored:
         return None
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    best_score, best = scored[0]
-    return best if best_score > 0 else None
+    best_score, _best_vs, best = scored[0]
+    if best_score <= 0:
+        return None
+
+    second: TriggerCandidate | None = scored[1][2] if len(scored) >= 2 else None
+    return _cofire_guard(best, second)

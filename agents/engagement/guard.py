@@ -30,8 +30,9 @@ def should_wake(source_id: str | None = None) -> bool:
         if _is_quiet_now():
             logger.debug("should_wake: quiet hours active — skip")
             return False
-    except Exception:
-        pass  # non-fatal; proceed
+    except Exception as exc:
+        logger.warning("quiet_hours check failed (fail-closed): %s", exc)
+        return False  # fail-closed: when in doubt, don't wake the user
 
     try:
         from datetime import UTC, datetime
@@ -45,8 +46,9 @@ def should_wake(source_id: str | None = None) -> bool:
             if datetime.now(UTC) < until:
                 logger.debug("should_wake: global silence active — skip")
                 return False
-    except Exception:
-        pass  # non-fatal; proceed
+    except Exception as exc:
+        logger.warning("quiet_hours check failed (fail-closed): %s", exc)
+        return False  # fail-closed: when in doubt, don't wake the user
 
     return True
 

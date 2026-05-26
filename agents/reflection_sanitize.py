@@ -119,6 +119,31 @@ _LABEL_ALLOWLIST: frozenset[str] = frozenset({
     "engagement_state",
     # Migration legacy labels (kept for forwards compat when old rows survive)
     "user_profile",
+    # Sprint A — relationship + cycle state
+    "cycle_state",
+    "composite_label",
+    "warmth_multiplier",
+    "relationship_stage",
+    # Sprint A — persona / world state
+    "hikari_world",
+    "hikari_currently_into",
+    "hikari_current_activity",
+    # Sprint A — runtime state labels (surfaced in core_blocks or runtime_state)
+    "time_texture",
+    "silenced_until_msg_id",
+    "sulking_until",
+    "deferred_observations",
+    "last_i_keep_thinking_at",
+    "action_lines_this_session",
+    # Sprint A — new tables / columns surfaced in context
+    "peer_insights",
+    "diary_entries",
+    "work_packets",
+    "proactive_source_scores",
+    "emotional_register",
+    "stage_at_time",
+    "turn_id",
+    "recurrence_rule",
 })
 
 # Per-label character caps. Labels not in this map fall back to _DEFAULT_CAP.
@@ -137,6 +162,28 @@ _LENGTH_LIMITS: dict[str, int] = {
     "interest_today": 400,
     "engagement_state": 500,
     "user_profile": 4000,
+    # Sprint A
+    "cycle_state": 500,
+    "composite_label": 100,
+    "warmth_multiplier": 50,
+    "relationship_stage": 20,
+    "hikari_world": 500,
+    "hikari_currently_into": 500,
+    "hikari_current_activity": 200,
+    "time_texture": 50,
+    "silenced_until_msg_id": 50,
+    "sulking_until": 50,
+    "deferred_observations": 800,
+    "last_i_keep_thinking_at": 200,
+    "action_lines_this_session": 200,
+    "peer_insights": 800,
+    "diary_entries": 2000,
+    "work_packets": 2000,
+    "proactive_source_scores": 500,
+    "emotional_register": 200,
+    "stage_at_time": 50,
+    "turn_id": 50,
+    "recurrence_rule": 200,
 }
 
 _DEFAULT_CAP: dict[Literal["core_block", "peer", "observation", "noticing"], int] = {

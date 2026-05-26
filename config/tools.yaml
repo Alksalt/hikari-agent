@@ -99,12 +99,14 @@ mcp_servers:
 
   github:
     bucket: 3
-    # Migrated from archived @modelcontextprotocol/server-github@1.0.1
-    # to the maintained @github/mcp-server (Sprint A).
+    # @modelcontextprotocol/server-github is deprecated upstream but still
+    # functional. The attempted Sprint A migration to @github/mcp-server hit
+    # a non-existent npm package; the canonical replacement is the Go binary
+    # github/github-mcp-server — migration deferred to Sprint B.
     command: "npx"
     args:
       - "-y"
-      - "@github/mcp-server@0.3.0"
+      - "@modelcontextprotocol/server-github@2025.4.8"
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: {from_env: GITHUB_PERSONAL_ACCESS_TOKEN}
     warm_pool_ttl_sec: 1800

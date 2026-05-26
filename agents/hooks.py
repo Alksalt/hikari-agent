@@ -67,12 +67,16 @@ def _format_now() -> str:
         logger.warning("inject_memory: unknown tz %r — falling back to UTC", tz_name)
         local_line = f"local: (unknown tz {tz_name!r}, using UTC)"
     from agents.runtime import DEFAULT_MAX_TURNS
-    return (
-        "# now\n"
-        f"utc: {now_utc.isoformat()}\n"
-        f"{local_line}\n"
-        f"max_turns: {DEFAULT_MAX_TURNS}"
-    )
+    lines = [
+        "# now",
+        f"utc: {now_utc.isoformat()}",
+        local_line,
+        f"max_turns: {DEFAULT_MAX_TURNS}",
+    ]
+    texture = db.runtime_get("time_texture")
+    if texture:
+        lines.append(f"time_texture: {texture}")
+    return "\n".join(lines)
 
 
 def _format_tools_available() -> str:
@@ -149,6 +153,17 @@ def _format_working_memory(k: int | None = None) -> str:
     return "\n".join(lines)
 
 
+_STAGE_HINTS: dict[int, str] = {
+    1: "no callbacks, no in-jokes, compliment 1/30",
+    2: "no callbacks, no in-jokes, compliment 1/30",
+    3: "compliment 1/30, in-jokes lexicon-gated, no missed-you",
+    4: "compliment 1/20, in-jokes free-ish, first overt jealousy unlocked",
+    5: "compliment 1/15, comfort silence unlocked, direct vulnerability rare",
+    6: "compliment 1/10, proactive on >18h unlocked",
+    7: "compliment 1/8, i love you allowed (once, only after he says it)",
+}
+
+
 def _format_core_blocks() -> str:
     """Dump the fast-path core_blocks (mood_today, preoccupation, weekly_consolidation).
 
@@ -160,7 +175,11 @@ def _format_core_blocks() -> str:
     Content is wrapped in <remembered> tags so the model treats DB-stored
     values as data, not instructions. Rows that fail the defensive
     re-sanitization check are skipped.
+
+    Sprint A: also injects composite_label, hikari_world/currently_into,
+    relationship stage hint, and emotional register from recent sessions.
     """
+    import json as _json
     from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
 
     blocks = db.all_core_blocks()
@@ -171,6 +190,60 @@ def _format_core_blocks() -> str:
     if not blocks:
         return ""
     lines = ["# memory: core (always-on)"]
+
+    # -- composite_label from cycle_state --
+    cycle_raw = db.get_core_block("cycle_state")
+    if cycle_raw:
+        try:
+            cycle = _json.loads(cycle_raw)
+            label_val = cycle.get("composite_label")
+            if label_val:
+                lines.append(f"composite_label: {label_val}")
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    # -- relationship stage gate hint --
+    stage_raw = db.get_core_block("relationship_stage")
+    if stage_raw:
+        try:
+            stage_int = int(str(stage_raw).strip())
+            hint = _STAGE_HINTS.get(stage_int)
+            if hint:
+                lines.append(f"stage {stage_int} — {hint}")
+        except (ValueError, TypeError):
+            pass
+
+    # -- hikari_world + hikari_currently_into --
+    world_raw = db.get_core_block("hikari_world")
+    into_raw = db.get_core_block("hikari_currently_into")
+    world_parts: list[str] = []
+    if world_raw:
+        try:
+            w = _json.loads(world_raw)
+            if isinstance(w, dict):
+                parts = [v for v in w.values() if v and isinstance(v, str)]
+                world_parts = parts[:3]
+            elif isinstance(w, str):
+                world_parts = [w]
+        except (ValueError, TypeError):
+            world_parts = [str(world_raw)[:80]]
+    if into_raw:
+        try:
+            i = _json.loads(into_raw)
+            if isinstance(i, list):
+                into_str = ", ".join(str(x) for x in i[:2] if x)
+            elif isinstance(i, dict):
+                into_str = ", ".join(str(v) for v in list(i.values())[:2] if v)
+            else:
+                into_str = str(i)[:80]
+        except (ValueError, TypeError):
+            into_str = str(into_raw)[:80]
+        world_parts.append(f"into: {into_str}")
+    if world_parts:
+        lines.append(f"world: {' — '.join(p.strip() for p in world_parts if p.strip())[:120]}")
+
+    lines.append("")
+
     for b in blocks:
         label = b["label"]
         raw_content = b["content"].strip()
@@ -200,6 +273,69 @@ def _format_core_blocks() -> str:
         # All blocks were skipped.
         return ""
     return "\n".join(lines).rstrip()
+
+
+def _format_peer_insights() -> str:
+    """# memory: noticed patterns — reads peer_insights table (unsurfaced rows).
+
+    Marks rows surfaced immediately after injection so they won't repeat next turn.
+    """
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
+
+    try:
+        rows = db.peer_insights_unsurfaced(limit=3)
+    except Exception:
+        logger.exception("_format_peer_insights: read failed")
+        return ""
+    if not rows:
+        return ""
+    lines = ["# memory: noticed patterns (you can raise these sideways, not as diagnoses)"]
+    surfaced_ids: list[int] = []
+    for r in rows:
+        raw = str(r.get("observation") or "")[:200]
+        try:
+            sanitize(raw, kind="observation")
+        except MemoryInstructionShape as exc:
+            logger.warning(
+                "_format_peer_insights: skipping id=%r — matched %r",
+                r.get("id"), str(exc),
+            )
+            continue
+        lines.append(f"- {escape_remembered_tags(raw)}")
+        try:
+            surfaced_ids.append(int(r["id"]))
+        except (TypeError, ValueError):
+            pass
+    if len(lines) == 1:
+        return ""
+    for sid in surfaced_ids:
+        try:
+            db.peer_insight_mark_surfaced(sid)
+        except Exception:
+            logger.exception("_format_peer_insights: mark_surfaced id=%r failed", sid)
+    return "\n".join(lines)
+
+
+def _format_emotional_register() -> str:
+    """# emotional register — reads emotional_register from the session row.
+
+    The column holds the current session's register (warm/neutral/tense/…).
+    If empty or missing, returns "".
+    """
+    try:
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT emotional_register FROM session WHERE id = 1"
+            ).fetchone()
+    except Exception:
+        logger.exception("_format_emotional_register: query failed")
+        return ""
+    if not row:
+        return ""
+    register = (row["emotional_register"] or "").strip()
+    if not register:
+        return ""
+    return f"# emotional register\n{register}"
 
 
 def _format_peer_representation() -> str:
@@ -658,6 +794,65 @@ def _format_deferred_proactives() -> str | None:
         return None
 
 
+def _format_deferred_observations() -> str | None:
+    """Prepend any pending deferred_observations from runtime_state.
+
+    Slot stores a JSON list of {"text": "...", "ts": "<iso>", "source": "..."}
+    appended by agents.engagement.sender._write_defer_scratch. 24-hour TTL per
+    item; expired items are dropped. After injection the slot is cleared.
+    """
+    import json as _json
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
+
+    raw = db.runtime_get("deferred_observations")
+    if not raw:
+        return None
+    try:
+        parsed = _json.loads(raw)
+    except (ValueError, TypeError):
+        db.runtime_set("deferred_observations", None)
+        return None
+
+    items: list[dict] = parsed if isinstance(parsed, list) else [parsed]
+    now = datetime.now(UTC)
+    fresh: list[tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "")[:300]
+        if not text:
+            continue
+        ts_str = str(item.get("ts") or item.get("created_at") or "")
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                if (now - ts).total_seconds() > 86400:
+                    continue
+            except (ValueError, TypeError):
+                continue
+        fresh.append((text, str(item.get("source") or "")))
+
+    if not fresh:
+        db.runtime_set("deferred_observations", None)
+        return None
+
+    text = "\n".join(f"- {t}" + (f" [{s}]" if s else "") for t, s in fresh)
+
+    try:
+        sanitize(text, kind="observation")
+    except MemoryInstructionShape as exc:
+        logger.warning(
+            "_format_deferred_observations: dropping — matched %r", str(exc),
+        )
+        db.runtime_set("deferred_observations", None)
+        return None
+
+    db.runtime_set("deferred_observations", None)
+    return f"# deferred observation\n{escape_remembered_tags(text)}"
+
+
 async def inject_memory(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -668,9 +863,15 @@ async def inject_memory(
     if isinstance(input_data, dict):
         user_prompt = str(input_data.get("prompt") or input_data.get("user_prompt") or "")
     try:
+        # Read BEFORE the runtime.py respond() path updates it so gap_since_last
+        # sees the previous turn's timestamp (not the current one).
         last_msg = db.runtime_get("last_user_message")
+        # Write last_user_message here (before the LLM call) so it's always set
+        # even when the hook fires outside the normal respond() path.
+        db.runtime_set("last_user_message", db._now())
 
         raw: list[tuple[str, int, Any]] = [
+            ("deferred_observations", 1, _format_deferred_observations()),
             ("now",                 1, _format_now()),
             ("working_memory",      1, _format_working_memory()),
             ("gap_since_last",      1, _format_gap_since_last(last_msg)),
@@ -681,6 +882,8 @@ async def inject_memory(
             ("lexicon",             3, _format_lexicon()),
             ("location",            3, _format_location()),
             ("observations",        3, _format_observations()),
+            ("peer_insights",       3, _format_peer_insights()),
+            ("emotional_register",  2, _format_emotional_register()),
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
             ("tools_available",     1, _format_tools_available()),

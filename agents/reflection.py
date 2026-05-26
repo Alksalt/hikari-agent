@@ -5,7 +5,9 @@ private 'thought' entry to the character_thoughts table (never injected).
 
 from __future__ import annotations
 
+import json
 import logging
+import random
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from storage import db
 from tools import embeddings
 
 from .reflection_sanitize import MemoryInstructionShape, sanitize, sanitize_core_block_value
-from .runtime import run_reflection_call
+from .runtime import run_aux_composition, run_reflection_call
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +536,29 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("skill_promoter: maybe_promote_skill failed (non-fatal)")
 
+    # Sprint A: cycle state + relationship stage (sync — cheap, no LLM).
+    try:
+        compute_cycle_state()
+    except Exception:
+        logger.exception("compute_cycle_state failed (non-fatal)")
+
+    try:
+        compute_relationship_stage()
+    except Exception:
+        logger.exception("compute_relationship_stage failed (non-fatal)")
+
+    # Sprint A: daily life seeder — aux LLM, one call per day.
+    try:
+        await daily_life_seeder()
+    except Exception:
+        logger.exception("daily_life_seeder failed (non-fatal)")
+
+    # Sprint A: trigger diary writer for significant sessions.
+    try:
+        await maybe_trigger_diary_writer()
+    except Exception:
+        logger.exception("maybe_trigger_diary_writer failed (non-fatal)")
+
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
@@ -1041,7 +1066,7 @@ def _dedup_near_duplicates(new_facts: list[dict]) -> int:
             if cand_id == new_id:
                 continue
             cand = db.get_fact(cand_id)
-            if not cand or cand.get("valid_to"):
+            if not cand or not db._fact_active(cand_id):
                 continue
             # Don't supersede something newer than us (sanity check).
             try:
@@ -1123,6 +1148,372 @@ async def _consolidate_yesterday() -> dict[str, int]:
             logger.exception("consolidation: _dedup_near_duplicates failed")
 
     return stats
+
+
+# ---------- Sprint A: cycle state, relationship stage, life seeder, interests ----------
+
+# Daily circadian phases keyed by hour (start of window).
+_CIRCADIAN_PHASES: list[tuple[int, int, str]] = [
+    (7, 10, "drag"),
+    (10, 14, "slope-up"),
+    (14, 20, "peak"),
+    (20, 22, "transition"),
+    (22, 27, "night-mode"),   # 22-02 (wraps midnight, 27 == 03:00)
+    (2, 7, "crashed"),
+]
+
+# Weekly label by weekday number (0=Mon).
+_WEEKLY_LABELS = {
+    0: "reset",
+    1: "mid-stride",
+    2: "mid-stride",
+    3: "friction",
+    4: "lift",
+    5: "unstructured",
+    6: "low",
+}
+
+# 28-day cycle phases: (start_day_1indexed, end_inclusive, label, warmth_mult).
+_CYCLE_28: list[tuple[int, int, str, float]] = [
+    (1, 13, "emergence", 1.2),
+    (14, 16, "peak-social", 1.5),
+    (17, 24, "inward", 1.0),
+    (25, 28, "low-tolerance", 0.5),
+]
+
+# Season by month (Oslo).
+def _oslo_season(month: int) -> tuple[str, float]:
+    if month in (12, 1, 2):
+        return "winter", 0.9
+    if month in (3, 4, 5):
+        return "spring", 1.1
+    if month in (6, 7, 8):
+        return "summer", 1.0
+    return "autumn", 0.95
+
+
+def _circadian_phase(hour: int) -> str:
+    h = hour % 24
+    # Treat 00-02 as part of night-mode window (22-02).
+    if h < 2:
+        return "night-mode"
+    for start, end, label in _CIRCADIAN_PHASES:
+        if start <= h < end:
+            return label
+    return "drag"
+
+
+def _cycle_28_phase(cycle_start: date, today: date) -> tuple[str, float]:
+    """Compute the 28-day cycle phase from cycle_start_date core_block.
+
+    Returns (phase_label, warmth_multiplier). Falls back to 'inward'/1.0 when
+    cycle_start_date is missing or malformed.
+    """
+    try:
+        day_of_cycle = ((today - cycle_start).days % 28) + 1
+    except (TypeError, ValueError):
+        return "inward", 1.0
+    for start, end, label, mult in _CYCLE_28:
+        if start <= day_of_cycle <= end:
+            return label, mult
+    return "inward", 1.0
+
+
+# Mood lookup: (cycle_phase, weekly_label) → mood_today.
+# Covers the most expressive combinations; everything else → "focused".
+_MOOD_TABLE: dict[tuple[str, str], str] = {
+    ("low-tolerance", "friction"): "irritable",
+    ("low-tolerance", "low"): "tired",
+    ("low-tolerance", "reset"): "tired",
+    ("low-tolerance", "mid-stride"): "irritable",
+    ("low-tolerance", "unstructured"): "tired",
+    ("peak-social", "lift"): "weirdly good",
+    ("peak-social", "mid-stride"): "weirdly good",
+    ("peak-social", "unstructured"): "weirdly good",
+    ("emergence", "lift"): "weirdly good",
+    ("emergence", "mid-stride"): "focused",
+    ("emergence", "reset"): "focused",
+    ("inward", "friction"): "tired",
+    ("inward", "low"): "tired",
+    ("inward", "unstructured"): "focused",
+}
+
+
+def compute_cycle_state() -> dict:
+    """Compose 4 temporal layers into a cycle_state core_block and derive mood_today.
+
+    Writes two core_blocks: 'cycle_state' (JSON) and 'mood_today' (string).
+    Returns the cycle_state dict so callers can inspect it.
+    """
+    now = datetime.now()
+    today = date.today()
+
+    daily_phase = _circadian_phase(now.hour)
+    weekly_label = _WEEKLY_LABELS.get(today.weekday(), "mid-stride")
+    season, season_mult = _oslo_season(today.month)
+
+    cycle_start_raw = db.get_core_block("cycle_start_date")
+    if cycle_start_raw:
+        try:
+            cycle_start = date.fromisoformat(cycle_start_raw.strip())
+        except ValueError:
+            cycle_start = today
+    else:
+        cycle_start = today
+
+    cycle_phase, cycle_mult = _cycle_28_phase(cycle_start, today)
+
+    warmth_multiplier = round(cycle_mult * season_mult, 3)
+
+    composite_label = (
+        f"{cycle_phase} / {season} / {weekly_label} / {daily_phase}"
+    )
+
+    state = {
+        "composite_label": composite_label,
+        "warmth_multiplier": warmth_multiplier,
+        "daily_phase": daily_phase,
+        "weekly_label": weekly_label,
+        "cycle_phase": cycle_phase,
+        "season": season,
+    }
+
+    try:
+        db.upsert_core_block("cycle_state", json.dumps(state))
+    except Exception:
+        logger.exception("compute_cycle_state: upsert cycle_state failed")
+
+    mood = _MOOD_TABLE.get((cycle_phase, weekly_label), "focused")
+    try:
+        db.upsert_core_block("mood_today", mood)
+    except Exception:
+        logger.exception("compute_cycle_state: upsert mood_today failed")
+
+    logger.info(
+        "compute_cycle_state: %s → mood=%s warmth=%.3f",
+        composite_label, mood, warmth_multiplier,
+    )
+    return state
+
+
+# Relationship stage thresholds: (min_sessions, stage_number, label).
+_STAGE_THRESHOLDS: list[tuple[int, int, str]] = [
+    (1200, 7, "inseparable"),
+    (700, 6, "deep"),
+    (350, 5, "close"),
+    (150, 4, "established"),
+    (60, 3, "familiar"),
+    (15, 2, "acquainted"),
+    (0, 1, "new"),
+]
+
+
+def compute_relationship_stage() -> int:
+    """Derive relationship_stage from distinct session count and write core_block.
+
+    Uses DISTINCT DATE(ts) on messages as a proxy for 'sessions' (each
+    calendar day with messages = one session). Also stamps episodes.stage_at_time
+    for episodes written today.
+
+    Returns the current stage number (1-7).
+    """
+    try:
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(DISTINCT DATE(ts)) AS n FROM messages"
+            ).fetchone()
+        session_count = int(row["n"]) if row else 0
+    except Exception:
+        logger.exception("compute_relationship_stage: session count query failed")
+        return 1
+
+    stage = 1
+    label = "new"
+    for min_sess, s_num, s_label in _STAGE_THRESHOLDS:
+        if session_count >= min_sess:
+            stage = s_num
+            label = s_label
+            break
+
+    try:
+        db.upsert_core_block("relationship_stage", str(stage))
+        db.upsert_core_block(
+            "relationship_stage_meta",
+            json.dumps({"label": label, "session_count": session_count}),
+        )
+    except Exception:
+        logger.exception("compute_relationship_stage: upsert failed")
+
+    # Stamp today's episodes with the current stage.
+    try:
+        with db._conn() as c:
+            c.execute(
+                "UPDATE episodes SET stage_at_time = ? WHERE date = ?",
+                (stage, date.today().isoformat()),
+            )
+    except Exception:
+        logger.exception("compute_relationship_stage: episodes stamp failed")
+
+    logger.info(
+        "compute_relationship_stage: sessions=%d → stage=%d (%s)",
+        session_count, stage, label,
+    )
+    return stage
+
+
+async def daily_life_seeder() -> None:
+    """Generate hikari_world core_block via a cheap aux-LLM call (DeepSeek).
+
+    Takes today's weekday, season, and a short episode summary to produce a
+    JSON object describing what Hikari has been doing / thinking today. One
+    call per daily cron run.
+    """
+    cycle_raw = db.get_core_block("cycle_state")
+    try:
+        cycle = json.loads(cycle_raw) if cycle_raw else {}
+    except (json.JSONDecodeError, TypeError):
+        cycle = {}
+
+    season = cycle.get("season", "unknown")
+    weekly = cycle.get("weekly_label", "unknown")
+    mood = db.get_core_block("mood_today") or "focused"
+
+    episodes = db.recent_episodes(limit=2)
+    ep_snippet = ""
+    if episodes:
+        ep_snippet = (episodes[0].get("summary") or "").strip()[:300]
+
+    weekday_name = date.today().strftime("%A")
+    prompt = (
+        f"Today is {weekday_name}. Season: {season}. Weekly energy: {weekly}. "
+        f"Hikari's mood: {mood}.\n\n"
+        "Recent context:\n"
+        f"{ep_snippet or '(no recent episodes)'}\n\n"
+        "Write a compact JSON object (no prose, no explanation) describing what "
+        "Hikari has been doing and thinking today. Fields:\n"
+        '  "activity": one-sentence present-tense description of what she is doing\n'
+        '  "thought_thread": one question or problem she keeps returning to\n'
+        '  "ambient_feeling": one adjective for her background emotional tone\n'
+        '  "small_detail": one concrete sensory or situational detail (food, weather, '
+        "something she noticed)\n\n"
+        "Output ONLY the JSON object, nothing else."
+    )
+
+    try:
+        raw = await run_aux_composition(prompt, max_tokens=256)
+        raw = _strip_fences(raw).strip()
+        # Validate it parses.
+        world = json.loads(raw)
+        db.upsert_core_block("hikari_world", json.dumps(world))
+        logger.info("daily_life_seeder: hikari_world written")
+    except json.JSONDecodeError:
+        logger.warning("daily_life_seeder: LLM returned non-JSON: %r", raw[:200])
+    except Exception:
+        logger.exception("daily_life_seeder: failed (non-fatal)")
+
+
+async def maybe_trigger_diary_writer() -> None:
+    """Trigger diary_writer for today if the session is flagged significant.
+
+    'Significant' = session.emotional_register == 'significant' (Sprint A
+    alter column). Calls agents/evening_diary.py if present; skips with
+    WARNING if not yet available.
+    """
+    try:
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT emotional_register FROM session WHERE id = 1"
+            ).fetchone()
+        emotional_register = row["emotional_register"] if row else None
+    except Exception:
+        logger.exception("maybe_trigger_diary_writer: emotional_register read failed")
+        return
+
+    if emotional_register != "significant":
+        return
+
+    try:
+        from agents import evening_diary
+    except ImportError:
+        logger.warning(
+            "maybe_trigger_diary_writer: agents/evening_diary.py not available — skipping"
+        )
+        return
+
+    try:
+        await evening_diary.run_evening_diary(today=date.today().isoformat())
+        logger.info("maybe_trigger_diary_writer: diary written for significant session")
+    except Exception:
+        logger.exception("maybe_trigger_diary_writer: evening_diary run failed (non-fatal)")
+
+
+def interests_refresh() -> None:
+    """Monthly: pick 4 interests (book/paper/artist/opinion) filtered by season.
+
+    Reads config/hikari_interests_pool.yaml, selects one entry per required
+    kind that matches current season, writes hikari_currently_into core_block.
+    """
+    pool_path = Path(__file__).parent.parent / "config" / "hikari_interests_pool.yaml"
+    try:
+        with open(pool_path, encoding="utf-8") as fh:
+            pool_data = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError):
+        logger.exception("interests_refresh: cannot load interests pool")
+        return
+
+    today = date.today()
+    _, season_mult = _oslo_season(today.month)
+    season = _oslo_season(today.month)[0]
+
+    entries: list[dict] = pool_data.get("interests") or []
+
+    def _eligible(entry: dict) -> bool:
+        s = entry.get("season", "any")
+        m = entry.get("month", "any")
+        season_ok = s == "any" or s == season
+        month_ok = m == "any" or int(m) == today.month
+        return season_ok and month_ok
+
+    by_kind: dict[str, list[dict]] = {}
+    for entry in entries:
+        if not _eligible(entry):
+            continue
+        kind = entry.get("kind", "opinion")
+        by_kind.setdefault(kind, []).append(entry)
+
+    # Try to pick one per target kind; fall back to any eligible entry.
+    target_kinds = ["book", "paper", "artist", "opinion"]
+    picks: list[dict] = []
+    for kind in target_kinds:
+        pool = by_kind.get(kind) or []
+        if pool:
+            picks.append(random.choice(pool))
+
+    # Fill to 4 from any eligible entries if a kind bucket was empty.
+    if len(picks) < 4:
+        all_eligible = [e for bucket in by_kind.values() for e in bucket]
+        already_ids = {p.get("id") for p in picks}
+        extras = [e for e in all_eligible if e.get("id") not in already_ids]
+        random.shuffle(extras)
+        picks.extend(extras[: 4 - len(picks)])
+
+    result = [
+        {
+            "id": p.get("id"),
+            "title": p.get("title"),
+            "kind": p.get("kind"),
+            "voice_annotation": p.get("voice_annotation"),
+        }
+        for p in picks[:4]
+    ]
+    try:
+        db.upsert_core_block("hikari_currently_into", json.dumps(result))
+        logger.info(
+            "interests_refresh: wrote %d interests for %s/%s",
+            len(result), season, today.strftime("%B"),
+        )
+    except Exception:
+        logger.exception("interests_refresh: upsert failed")
 
 
 # ---------- Phase 11: weekly sleep-time consolidation ----------

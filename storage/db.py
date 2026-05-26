@@ -514,6 +514,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_drop_episode_summaries_and_fact_relations",
     "migrate_graph_outbox_drained_status",
     "migrate_sprint_a_tables",
+    "migrate_fts_porter_tokenizer",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -651,6 +652,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
              _migrate_drop_episode_summaries_and_fact_relations)
     run_once(conn, "migrate_graph_outbox_drained_status", _migrate_graph_outbox_drained_status)
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
+    run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1256,6 +1258,92 @@ def _migrate_sprint_a_tables(conn: sqlite3.Connection) -> None:
         "ON facts(last_recalled_at DESC, recall_hit_count DESC) "
         "WHERE valid_to IS NULL AND status='active'"
     )
+    conn.commit()
+
+
+def _migrate_fts_porter_tokenizer(conn: sqlite3.Connection) -> None:
+    """Wave 2: migrate the ``fts`` virtual table from the default unicode61
+    tokenizer to ``porter unicode61``, matching ``messages_fts``.
+
+    Strategy: check current tokenizer via ``fts_config``; if already porter,
+    return early.  Otherwise drop + recreate with porter tokenizer and
+    repopulate from live facts and episodes rows.  Triggers and references to
+    the old ``fts`` table are unaffected — the table name stays the same.
+
+    Why this is safe: the ``fts`` virtual table is a non-content table (no
+    ``content=`` clause pointing elsewhere), so all indexed text must be
+    re-inserted.  We read from ``facts`` (active rows only) and ``episodes``
+    to repopulate.  Concurrent writers are safe because this migration runs
+    inside the single-writer boot-time migration pass.
+    """
+    # Check whether the fts table already uses porter tokenizer via fts_config.
+    try:
+        row = conn.execute(
+            "SELECT v FROM fts_config WHERE k = 'tokenize'"
+        ).fetchone()
+        if row and "porter" in str(row[0]):
+            return  # Already migrated.
+    except sqlite3.OperationalError:
+        # fts_config might not exist on very old DBs — proceed with migration.
+        pass
+
+    # Collect existing content before dropping.
+    try:
+        existing_rows = conn.execute(
+            "SELECT content, kind, ref_id FROM fts"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        existing_rows = []
+
+    # Drop the old table and shadow tables left by sqlite-fts5.
+    conn.execute("DROP TABLE IF EXISTS fts")
+
+    # Recreate with porter tokenizer.
+    conn.execute("""
+        CREATE VIRTUAL TABLE fts USING fts5(
+            content,
+            kind UNINDEXED,
+            ref_id UNINDEXED,
+            tokenize='porter unicode61'
+        )
+    """)
+
+    # Repopulate: prefer live data from source tables to avoid reindexing
+    # stale/deleted rows that may still be in the old fts (e.g. superseded facts).
+    # Active facts only (status='active', valid_to IS NULL or future).
+    try:
+        conn.execute(
+            "INSERT INTO fts (content, kind, ref_id) "
+            "SELECT subject || ' ' || predicate || ' ' || object, 'fact', id "
+            "FROM facts "
+            "WHERE status = 'active' "
+            "AND (valid_to IS NULL OR valid_to > datetime('now'))"
+        )
+    except sqlite3.OperationalError as exc:
+        logger.warning("fts porter migration: fact repopulate failed: %s", exc)
+        # Fall back to the pre-collected rows for facts.
+        conn.executemany(
+            "INSERT INTO fts (content, kind, ref_id) VALUES (?, ?, ?)",
+            [
+                (r[0], r[1], r[2]) for r in existing_rows if r[1] == "fact"
+            ],
+        )
+
+    # Episodes — no status column, repopulate all.
+    try:
+        conn.execute(
+            "INSERT INTO fts (content, kind, ref_id) "
+            "SELECT summary, 'episode', id FROM episodes"
+        )
+    except sqlite3.OperationalError as exc:
+        logger.warning("fts porter migration: episode repopulate failed: %s", exc)
+        conn.executemany(
+            "INSERT INTO fts (content, kind, ref_id) VALUES (?, ?, ?)",
+            [
+                (r[0], r[1], r[2]) for r in existing_rows if r[1] == "episode"
+            ],
+        )
+
     conn.commit()
 
 
@@ -3239,6 +3327,35 @@ def vec_search(table: str, query_vec: list[float], k: int = 30) -> list[dict[str
     return [dict(r) for r in rows]
 
 
+def vec_search_active_facts(query_vec: list[float], k: int = 30) -> list[dict[str, Any]]:
+    """KNN search over vec_facts pre-filtered to status='active' facts.
+
+    Wave 2: avoids wasting hydration work on already-invalidated/superseded rows.
+    The subquery restricts the vec0 search space before the KNN pass so only
+    active fact embeddings are considered — same result as post-fetch filtering
+    but with fewer rows hydrated.
+
+    Note: sqlite-vec vec0 supports id-range filtering in the WHERE clause
+    alongside the vec MATCH predicate.  We use a ``WHERE id IN (subquery)``
+    form that sqlite-vec evaluates as a pre-filter on the index.
+    """
+    if not query_vec or len(query_vec) != EMBEDDING_DIM:
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT v.id, v.distance FROM vec_facts v "
+            "WHERE v.vec MATCH ? AND v.k = ? "
+            "AND v.id IN ("
+            "  SELECT id FROM facts "
+            "  WHERE status = 'active' "
+            "  AND (valid_to IS NULL OR valid_to > datetime('now'))"
+            ") "
+            "ORDER BY v.distance",
+            (sqlite_vec.serialize_float32(query_vec), k),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def ids_without_embedding(table: str) -> list[int]:
     """Used by backfill — find rows in facts/episodes that lack a vec entry."""
     if table == "facts":
@@ -3319,16 +3436,17 @@ def bulk_insert_episodes(rows: Iterable[dict[str, Any]]) -> int:
 
 def reminder_insert(*, fire_at: str, text: str, lead_minutes: int = 0,
                     repeat: str | None = None,
+                    recurrence_rule: str | None = None,
                     gcal_event_id: str | None = None,
                     gcal_sync_pending: bool = False,
                     apple_sync_pending: bool = False) -> int:
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO reminders "
-            "(fire_at, lead_minutes, text, repeat, gcal_event_id, gcal_sync_pending, "
-            "apple_sync_pending) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (fire_at, lead_minutes, text, repeat, gcal_event_id,
+            "(fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id, "
+            "gcal_sync_pending, apple_sync_pending) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id,
              1 if gcal_sync_pending else 0,
              1 if apple_sync_pending else 0),
         )

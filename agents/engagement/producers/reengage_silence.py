@@ -36,6 +36,15 @@ def collect() -> list[TriggerCandidate]:
     if _is_quiet_now():
         return []
 
+    # Hard interval gate — same check used by the selector for all other sources.
+    # Prevents reengage_silence from bypassing the min_interval_minutes config.
+    from agents.engagement.selector import _hard_interval_blocked
+    from storage import db as _db_for_last_send
+    last_send_iso = _db_for_last_send.runtime_get("last_send_reengage_silence")
+    if _hard_interval_blocked("reengage_silence", {"reengage_silence": last_send_iso} if last_send_iso else {}):
+        logger.debug("reengage_silence: _hard_interval_blocked — skipping")
+        return []
+
     now = datetime.now(UTC)
 
     # Anchor the silence gap on the last inbound user message — proactive
@@ -76,3 +85,5 @@ def mark_consumed(candidate: TriggerCandidate) -> None:
     last_ts = candidate.payload.get("last_message_ts")
     if last_ts:
         db.runtime_set("reengage_sent_for_gap", str(last_ts))
+    # Record send time so _hard_interval_blocked can gate subsequent ticks.
+    db.runtime_set("last_send_reengage_silence", datetime.now(UTC).isoformat())

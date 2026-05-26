@@ -404,7 +404,10 @@ class TestSelector:
     def test_excludes_disabled_sources(self):
         from agents.engagement.selector import select
         high = _make_candidate("gmail_unread_threshold", novelty=0.99, actionability=0.99, confidence=0.99)
-        low = _make_candidate("wiki_new_file", novelty=0.1, actionability=0.1, confidence=0.1)
+        # Sprint A added per-source min_value_score (wiki_new_file=0.3); bump
+        # the only enabled candidate above threshold so we test the enabled
+        # filter, not the new value-score gate.
+        low = _make_candidate("wiki_new_file", novelty=0.6, actionability=0.6, confidence=0.6)
         # gmail_unread_threshold is NOT in enabled set
         ctx = _make_ctx(enabled={"wiki_new_file"})
         winner = select([high, low], ctx)
