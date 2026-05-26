@@ -374,7 +374,7 @@ async def bounded_rewrite(
         logger.exception("bounded_rewrite: prompt template format failed")
         return None
 
-    model = str(cfg.get("post_filter.rewrite_model", "claude-haiku-4-5"))
+    model = str(cfg.get("post_filter.rewrite_model", "claude-sonnet-4-6"))
     max_budget = float(cfg.get("post_filter.rewrite_max_budget_usd", 0.01))
 
     options = ClaudeAgentOptions(

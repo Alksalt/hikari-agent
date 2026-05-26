@@ -87,7 +87,19 @@ def _passphrase_window_seconds() -> int:
 
 def _public_base_url(request: Request) -> str:
     """Configured public origin (used in discovery docs) or fall back to the
-    inbound request's scheme+host. Trailing slash stripped."""
+    inbound request's scheme+host. Trailing slash stripped.
+
+    Resolution order:
+    1. ``mcp_external.public_base_url_env`` — name of an env var holding the URL.
+    2. ``mcp_external.public_base_url`` — legacy direct value (backward compat).
+    3. Derive from inbound request's scheme+host.
+    """
+    import os as _os
+    env_key = cfg.get("mcp_external.public_base_url_env")
+    if env_key:
+        val = _os.environ.get(str(env_key))
+        if val:
+            return val.rstrip("/")
     configured = cfg.get("mcp_external.public_base_url")
     if configured:
         return str(configured).rstrip("/")

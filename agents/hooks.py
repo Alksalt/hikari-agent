@@ -66,10 +66,12 @@ def _format_now() -> str:
     except ZoneInfoNotFoundError:
         logger.warning("inject_memory: unknown tz %r — falling back to UTC", tz_name)
         local_line = f"local: (unknown tz {tz_name!r}, using UTC)"
+    from agents.runtime import DEFAULT_MAX_TURNS
     return (
         "# now\n"
         f"utc: {now_utc.isoformat()}\n"
-        f"{local_line}"
+        f"{local_line}\n"
+        f"max_turns: {DEFAULT_MAX_TURNS}"
     )
 
 

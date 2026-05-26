@@ -21,12 +21,14 @@ from tools.dispatch._shared import WORK_DIR_ROOT, _do_dispatch
     "repo on the user's Mac Mini. NOT a way to answer a chat question — this fires "
     "an autonomous Claude Code worker on a codebase and the user gets progress + "
     "final via Telegram async (minutes, not seconds). Default allowed_tools is "
-    "read-only; adding Edit/Write/Bash triggers a CONFIRM-SEND owner gate. "
+    "read-only; adding Edit/Write/Bash requires write_mode=true AND triggers a "
+    "CONFIRM-SEND owner gate. Without write_mode=true any Bash/Edit/Write tool "
+    "name is silently dropped from allowed_tools. "
     f"repo_path must be absolute and under {WORK_DIR_ROOT}/. "
     "e.g. user says 'go look at the meria repo and patch the auth bug' → dispatch. "
     "Don't use this to answer a question with public-web info (use `research`) or "
     "to look up something in the user's notes (use `wiki_search`).",
-    {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int},
+    {"repo_path": str, "task": str, "allowed_tools": str, "max_turns": int, "write_mode": bool},
     annotations=annotations_for("dispatch_claude_session"),
 )
 async def dispatch_claude_session(args: dict[str, Any]) -> dict[str, Any]:

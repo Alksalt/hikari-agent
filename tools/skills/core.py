@@ -24,7 +24,21 @@ from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
-_SKILLS_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills"
+_SKILLS_ROOT = Path(__file__).parent.parent.parent / ".claude" / "skills"
+
+# Warn if the old stale tree still has content (don't auto-migrate — Sprint B).
+_LEGACY_SKILLS_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills"
+if _LEGACY_SKILLS_ROOT.exists():
+    _legacy_entries = [p.name for p in _LEGACY_SKILLS_ROOT.iterdir() if p.is_dir()]
+    if _legacy_entries:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "skills: legacy .agents/skills/ still has content (%s) — "
+            "active root is .claude/skills/; migrate in Sprint B",
+            ", ".join(sorted(_legacy_entries)),
+        )
+    del _legacy_entries
+
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 

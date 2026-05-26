@@ -772,13 +772,18 @@ async def format_capabilities() -> str:
             family_tools = [t for t in tool_names if t.startswith(modinfo_name.replace("-", "_"))
                             or t.replace("_", "-").startswith(modinfo_name)]
             families[modinfo_name] = len(family_tools) if family_tools else 1
-        # Count skills separately
-        skills_root = tools_root.parent / ".agents" / "skills"
-        n_skills = len(list(skills_root.iterdir())) if skills_root.exists() else 0
+        # Count skills from the authoritative root (Sprint A flipped to .claude/skills/)
+        from tools.skills.core import _SKILLS_ROOT as _active_skills_root
+        n_skills = (
+            sum(1 for p in _active_skills_root.iterdir()
+                if p.is_dir() and (p / "SKILL.md").exists())
+            if _active_skills_root.exists()
+            else 0
+        )
         lines.append(f"\ntool families ({len(families)}):")
         for fam, count in sorted(families.items()):
             lines.append(f"  {fam}: {count} tool(s)")
-        lines.append(f"  skills: {n_skills} skill(s) in .agents/skills/")
+        lines.append(f"  skills: {n_skills} skill(s) in .claude/skills/")
     except Exception as exc:
         lines.append(f"  [tool discovery failed: {exc}]")
 

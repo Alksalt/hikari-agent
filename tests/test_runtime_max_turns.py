@@ -30,9 +30,16 @@ def test_run_query_default_uses_constant():
     assert default == runtime.DEFAULT_MAX_TURNS
 
 
-def test_persona_text_carries_substituted_budget():
-    """_persona() should embed the live DEFAULT_MAX_TURNS via .replace()."""
+def test_persona_text_has_no_substitution_placeholders():
+    """_persona() is cached verbatim from CLAUDE.md. Per-turn values
+    (max_turns, time) live in the # now block, not in the cached persona."""
     text = runtime._persona()
-    assert str(runtime.DEFAULT_MAX_TURNS) in text
-    # And no unresolved {max_turns} placeholder.
     assert "{max_turns}" not in text
+
+
+def test_now_block_carries_live_max_turns():
+    """_format_now must surface the current DEFAULT_MAX_TURNS so Hikari
+    sees her budget per turn without busting the prompt cache."""
+    from agents.hooks import _format_now
+    now_block = _format_now()
+    assert f"max_turns: {runtime.DEFAULT_MAX_TURNS}" in now_block

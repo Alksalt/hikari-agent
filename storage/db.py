@@ -512,6 +512,8 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_media_events",
     "migrate_drop_persona_drift_probes",
     "migrate_drop_episode_summaries_and_fact_relations",
+    "migrate_graph_outbox_drained_status",
+    "migrate_sprint_a_tables",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -647,6 +649,8 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes)
     run_once(conn, "migrate_drop_episode_summaries_and_fact_relations",
              _migrate_drop_episode_summaries_and_fact_relations)
+    run_once(conn, "migrate_graph_outbox_drained_status", _migrate_graph_outbox_drained_status)
+    run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1110,6 +1114,159 @@ def _migrate_calendar_notifications(conn: sqlite3.Connection) -> None:
             (sig,),
         )
     conn.commit()
+
+
+def _migrate_graph_outbox_drained_status(conn: sqlite3.Connection) -> None:
+    """Add 'drained' to graph_outbox.status CHECK constraint.
+
+    SQLite cannot ALTER a CHECK in place; rebuild the table preserving rows.
+    Idempotent — if the CHECK already includes 'drained', this is a no-op.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='graph_outbox'"
+    ).fetchone()
+    if row is None or "'drained'" in (row[0] or ""):
+        return
+    conn.execute("""
+        CREATE TABLE graph_outbox_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_table TEXT NOT NULL,
+            source_id INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','sent','failed','skipped','drained')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            processed_at INTEGER
+        )
+    """)
+    conn.execute(
+        "INSERT INTO graph_outbox_new "
+        "(id, source_table, source_id, payload_json, status, attempts, last_error, created_at, processed_at) "
+        "SELECT id, source_table, source_id, payload_json, status, attempts, last_error, created_at, processed_at "
+        "FROM graph_outbox"
+    )
+    conn.execute("DROP TABLE graph_outbox")
+    conn.execute("ALTER TABLE graph_outbox_new RENAME TO graph_outbox")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_outbox_status_created "
+        "ON graph_outbox(status, created_at)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_outbox_source "
+        "ON graph_outbox(source_table, source_id)"
+    )
+
+
+def _migrate_sprint_a_tables(conn: sqlite3.Connection) -> None:
+    """Sprint A: new tables + ALTER columns + recurrence + emotional_register.
+
+    Five new tables:
+      - peer_insights: non-explicit observations from the dialectic extractor.
+      - diary_entries: Hikari's first-person diary (one per day).
+      - work_packets / work_packet_steps: typed durable plan for compound turns.
+      - proactive_source_scores: per-source EMA + feedback counters.
+
+    ALTER columns: sessions.emotional_register, episodes.stage_at_time,
+    tool_calls.turn_id, reminders.recurrence_rule, messages.relationship_stage.
+
+    Index/trigger references to ALTER-added columns live inside this fn, not
+    in _SCHEMA (test DBs only re-run _SCHEMA, not migrations)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS peer_insights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation TEXT NOT NULL,
+            surface_score REAL NOT NULL DEFAULT 0.5,
+            source TEXT,
+            created_at INTEGER NOT NULL,
+            surfaced_at INTEGER
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS peer_insights_score ON peer_insights(surface_score DESC, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS peer_insights_unsurfaced ON peer_insights(surfaced_at, surface_score DESC) WHERE surfaced_at IS NULL")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diary_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_date TEXT NOT NULL UNIQUE,
+            body TEXT NOT NULL,
+            sentiment TEXT,
+            session_ids_json TEXT,
+            created_at INTEGER NOT NULL
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS diary_entries_date ON diary_entries(entry_date DESC)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS work_packets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_turn_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'planning'
+                CHECK (status IN ('planning','running','done','failed','cancelled','waiting')),
+            summary TEXT,
+            created_at INTEGER NOT NULL,
+            finished_at INTEGER
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS work_packets_turn ON work_packets(user_turn_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS work_packets_status ON work_packets(status, created_at DESC)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS work_packet_steps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            packet_id INTEGER NOT NULL REFERENCES work_packets(id) ON DELETE CASCADE,
+            step_index INTEGER NOT NULL,
+            tool_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','waiting','failed','skipped','cancelled')),
+            input_json TEXT,
+            output_json TEXT,
+            error TEXT,
+            created_at INTEGER NOT NULL,
+            finished_at INTEGER
+        )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS work_packet_steps_unique ON work_packet_steps(packet_id, step_index)")
+    conn.execute("CREATE INDEX IF NOT EXISTS work_packet_steps_status ON work_packet_steps(status, packet_id)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS proactive_source_scores (
+            source TEXT PRIMARY KEY,
+            ema REAL NOT NULL DEFAULT 0.5,
+            n_pings INTEGER NOT NULL DEFAULT 0,
+            n_thumbs_up INTEGER NOT NULL DEFAULT 0,
+            n_thumbs_down INTEGER NOT NULL DEFAULT 0,
+            last_update INTEGER NOT NULL
+        )""")
+
+    def _has_col(table: str, col: str) -> bool:
+        return any(r["name"] == col for r in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+    if not _has_col("session", "emotional_register"):
+        conn.execute("ALTER TABLE session ADD COLUMN emotional_register TEXT")
+    if not _has_col("episodes", "stage_at_time"):
+        conn.execute("ALTER TABLE episodes ADD COLUMN stage_at_time INTEGER")
+    if not _has_col("tool_calls", "turn_id"):
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN turn_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS tool_calls_turn_id ON tool_calls(turn_id) WHERE turn_id IS NOT NULL")
+    if not _has_col("reminders", "recurrence_rule"):
+        conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_rule TEXT")
+    if not _has_col("messages", "relationship_stage"):
+        conn.execute("ALTER TABLE messages ADD COLUMN relationship_stage INTEGER")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS facts_recall_decay "
+        "ON facts(last_recalled_at DESC, recall_hit_count DESC) "
+        "WHERE valid_to IS NULL AND status='active'"
+    )
+    conn.commit()
+
+
+_RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
+    "time_texture",
+    "silenced_until_msg_id",
+    "sulking_until",
+    "deferred_observations",
+    "action_lines_this_session",
+    "last_i_keep_thinking_at",
+})
 
 
 def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
@@ -2790,49 +2947,6 @@ def approval_create(chat_id: int, tool_name: str, tier: int,
     return cur.lastrowid
 
 
-def approval_create_deferred(
-    chat_id: int,
-    tool_name: str,
-    tier: int,
-    summary: str,
-    args: dict[str, Any],
-    deferred_tool_use_id: str,
-    deferred_tool_input: dict[str, Any],
-) -> int:
-    """Phase 6: write an approval row tagged with SDK-defer fields.
-
-    The row carries the original tool_use_id + tool_input so the resume path
-    can reconstruct the call after the user replies. Distinguishable from a
-    legacy approval row by ``deferred_tool_use_id IS NOT NULL``.
-    """
-    import json
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO approvals "
-            "(chat_id, tool_name, tier, summary, args_json, status, created_at, "
-            " deferred_tool_use_id, deferred_tool_name, deferred_tool_input_json) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
-            (chat_id, tool_name, tier, summary, json.dumps(args), _now(),
-             deferred_tool_use_id, tool_name,
-             json.dumps(deferred_tool_input)),
-        )
-    return cur.lastrowid
-
-
-def approvals_pending_deferred() -> list[dict[str, Any]]:
-    """Return all pending approvals that carry a deferred_tool_use_id.
-
-    Used at bot startup to resurface prompts that were live when the bot died.
-    """
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM approvals "
-            "WHERE status = 'pending' AND deferred_tool_use_id IS NOT NULL "
-            "ORDER BY created_at"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def approval_get(row_id: int) -> dict[str, Any] | None:
     """Return a single approvals row by primary key, or None."""
     with _conn() as c:
@@ -4184,7 +4298,6 @@ def graph_outbox_mark_failed(row_id: int, error: str) -> None:
     _TRANSIENT_PREFIXES = (
         "OPENROUTER_API_KEY",
         "GRAPHITI_ENABLED",
-        "add_episode_safe returned False",  # infra failure (kuzu init, graphiti init, etc.)
     )
     is_transient = any(p in error for p in _TRANSIENT_PREFIXES)
     if is_transient:
@@ -4224,14 +4337,36 @@ def graph_outbox_failed_stats() -> dict:
 
 
 def graph_outbox_stats() -> dict:
-    """Return counts by status, zero-filling missing statuses."""
-    stats = {"pending": 0, "sent": 0, "failed": 0, "skipped": 0}
+    """Return counts by status, zero-filling missing statuses.
+
+    Returns ``{pending, sent, failed, skipped, drained}`` via COUNT(*) GROUP BY.
+    Drained rows are manual-drain (never retried); excluded from failed-count math.
+    """
+    stats = {"pending": 0, "sent": 0, "failed": 0, "skipped": 0, "drained": 0}
     with _conn() as c:
         for row in c.execute(
             "SELECT status, COUNT(*) AS n FROM graph_outbox GROUP BY status"
         ).fetchall():
             stats[row["status"]] = row["n"]
     return stats
+
+
+def graph_outbox_mark_drained(ids: Iterable[int]) -> int:
+    """Manually drain graph_outbox rows by writing status='drained'.
+
+    Drained rows are excluded from failed-count math and not retried.
+    Returns the number of rows updated.
+    """
+    id_list = [int(i) for i in ids]
+    if not id_list:
+        return 0
+    placeholders = ",".join("?" * len(id_list))
+    with _conn() as c:
+        cur = c.execute(
+            f"UPDATE graph_outbox SET status='drained' WHERE id IN ({placeholders})",
+            id_list,
+        )
+    return int(cur.rowcount or 0)
 
 
 # ---------- media_outbox ----------
@@ -4382,3 +4517,242 @@ def facts_text_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
             (q, q, q, int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ============================================================================
+# Sprint A — helper functions (peer_insights, diary, work_packets, scores)
+# ============================================================================
+
+def peer_insight_insert(observation: str, *, surface_score: float = 0.5,
+                        source: str | None = None) -> int:
+    """Record a non-explicit observation from the dialectic extractor."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO peer_insights (observation, surface_score, source, created_at) "
+            "VALUES (?, ?, ?, strftime('%s','now'))",
+            (observation, float(surface_score), source),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def peer_insights_unsurfaced(limit: int = 3) -> list[dict[str, Any]]:
+    """Top-N unsurfaced peer insights ordered by surface_score DESC."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM peer_insights WHERE surfaced_at IS NULL "
+            "ORDER BY surface_score DESC, created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def peer_insight_mark_surfaced(insight_id: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE peer_insights SET surfaced_at = strftime('%s','now') WHERE id = ?",
+            (int(insight_id),),
+        )
+
+
+def diary_entry_upsert(entry_date: str, body: str, *, sentiment: str | None = None,
+                       session_ids_json: str | None = None) -> int:
+    """One diary row per date (UNIQUE on entry_date). Upsert overwrites body."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO diary_entries (entry_date, body, sentiment, session_ids_json, created_at) "
+            "VALUES (?, ?, ?, ?, strftime('%s','now')) "
+            "ON CONFLICT(entry_date) DO UPDATE SET "
+            "body=excluded.body, sentiment=excluded.sentiment, session_ids_json=excluded.session_ids_json",
+            (entry_date, body, sentiment, session_ids_json),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def diary_entries_recent(limit: int = 5) -> list[dict[str, Any]]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM diary_entries ORDER BY entry_date DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def diary_entry_get(entry_date: str) -> dict[str, Any] | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM diary_entries WHERE entry_date = ?", (entry_date,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def work_packet_create(user_turn_id: str, *, summary: str | None = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO work_packets (user_turn_id, status, summary, created_at) "
+            "VALUES (?, 'planning', ?, strftime('%s','now'))",
+            (user_turn_id, summary),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def work_packet_update_status(packet_id: int, status: str, *, finished: bool = False) -> None:
+    finished_clause = ", finished_at = strftime('%s','now')" if finished else ""
+    with _conn() as c:
+        c.execute(
+            f"UPDATE work_packets SET status = ?{finished_clause} WHERE id = ?",
+            (status, int(packet_id)),
+        )
+
+
+def work_packet_step_insert(packet_id: int, step_index: int, tool_name: str,
+                            *, input_json: str | None = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO work_packet_steps "
+            "(packet_id, step_index, tool_name, status, input_json, created_at) "
+            "VALUES (?, ?, ?, 'pending', ?, strftime('%s','now'))",
+            (int(packet_id), int(step_index), tool_name, input_json),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def work_packet_step_update(step_id: int, *, status: str | None = None,
+                            output_json: str | None = None, error: str | None = None,
+                            finished: bool = False) -> None:
+    parts: list[str] = []
+    args: list[Any] = []
+    if status is not None:
+        parts.append("status = ?")
+        args.append(status)
+    if output_json is not None:
+        parts.append("output_json = ?")
+        args.append(output_json)
+    if error is not None:
+        parts.append("error = ?")
+        args.append(error)
+    if finished:
+        parts.append("finished_at = strftime('%s','now')")
+    if not parts:
+        return
+    args.append(int(step_id))
+    with _conn() as c:
+        c.execute(f"UPDATE work_packet_steps SET {', '.join(parts)} WHERE id = ?", args)
+
+
+def work_packet_steps(packet_id: int) -> list[dict[str, Any]]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM work_packet_steps WHERE packet_id = ? ORDER BY step_index",
+            (int(packet_id),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def proactive_source_score_upsert(source: str, *, ema: float | None = None,
+                                  thumbs_up: int = 0, thumbs_down: int = 0,
+                                  ping: bool = False) -> None:
+    """Update per-source score row. EMA overwrites if provided; counters increment."""
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO proactive_source_scores "
+            "(source, ema, n_pings, n_thumbs_up, n_thumbs_down, last_update) "
+            "VALUES (?, ?, ?, ?, ?, strftime('%s','now')) "
+            "ON CONFLICT(source) DO UPDATE SET "
+            " ema = COALESCE(?, proactive_source_scores.ema), "
+            " n_pings = proactive_source_scores.n_pings + ?, "
+            " n_thumbs_up = proactive_source_scores.n_thumbs_up + ?, "
+            " n_thumbs_down = proactive_source_scores.n_thumbs_down + ?, "
+            " last_update = strftime('%s','now')",
+            (source, ema if ema is not None else 0.5,
+             1 if ping else 0, int(thumbs_up), int(thumbs_down),
+             ema, 1 if ping else 0, int(thumbs_up), int(thumbs_down)),
+        )
+
+
+def proactive_source_scores_all() -> list[dict[str, Any]]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM proactive_source_scores ORDER BY ema DESC, last_update DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _fact_active(fact_id: int) -> bool:
+    """True iff the fact is active (valid_to IS NULL AND status='active')."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM facts WHERE id = ? AND valid_to IS NULL AND status = 'active'",
+            (int(fact_id),),
+        ).fetchone()
+    return row is not None
+
+
+def status_counts() -> dict[str, dict[str, int]]:
+    """Bucketed counts by status for cockpit-facing tables.
+
+    Returns ``{table_name: {status: count, ...}, ...}``.
+    Used by cockpit `/status` and observability paths.
+    """
+    out: dict[str, dict[str, int]] = {}
+    queries = (
+        ("graph_outbox", "SELECT status, COUNT(*) AS n FROM graph_outbox GROUP BY status"),
+        ("media_outbox", "SELECT status, COUNT(*) AS n FROM media_outbox GROUP BY status"),
+        ("facts", "SELECT status, COUNT(*) AS n FROM facts GROUP BY status"),
+        ("reminders", "SELECT status, COUNT(*) AS n FROM reminders GROUP BY status"),
+        ("proactive_events", "SELECT status, COUNT(*) AS n FROM proactive_events GROUP BY status"),
+        ("work_packets", "SELECT status, COUNT(*) AS n FROM work_packets GROUP BY status"),
+    )
+    with _conn() as c:
+        for table, sql in queries:
+            bucket: dict[str, int] = {}
+            try:
+                for row in c.execute(sql):
+                    bucket[str(row["status"] or "_null")] = int(row["n"])
+            except sqlite3.OperationalError:
+                continue
+            out[table] = bucket
+    return out
+
+
+def prune_tool_calls(older_than_days: int = 30) -> int:
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(UTC) - timedelta(days=int(older_than_days))).isoformat()
+    with _conn() as c:
+        cur = c.execute("DELETE FROM tool_calls WHERE started_at < ?", (cutoff_iso,))
+    return int(cur.rowcount or 0)
+
+
+def prune_graph_outbox_sent(older_than_days: int = 14) -> int:
+    cutoff = _now_epoch() - int(older_than_days) * 86400
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM graph_outbox WHERE status IN ('sent','drained','skipped') AND COALESCE(processed_at, created_at) < ?",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def prune_media_outbox_terminal(older_than_days: int = 14) -> int:
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(UTC) - timedelta(days=int(older_than_days))).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM media_outbox WHERE status IN ('sent','failed','aborted') AND created_at < ?",
+            (cutoff_iso,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def prune_proactive_events(older_than_days: int = 90) -> int:
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(UTC) - timedelta(days=int(older_than_days))).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM proactive_events WHERE sent_at < ?",
+            (cutoff_iso,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def _now_epoch() -> int:
+    return int(datetime.now(UTC).timestamp())

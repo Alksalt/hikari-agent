@@ -55,6 +55,57 @@ DEFAULT_MAX_TURNS = 80
 DEFAULT_BUDGET_USD = 3.00
 
 
+# ----------------------------------------------------------------------
+# Dispatch safety classifications
+# ----------------------------------------------------------------------
+# Two-tier allowlist for the LLM-supplied `allowed_tools` field:
+#
+#   _SAFE_DISPATCH_TOOLS         — read-only / investigative tools the LLM
+#                                  may always have inside a dispatched session
+#                                  without owner approval. These cannot mutate
+#                                  the filesystem, run shell commands, or
+#                                  exfiltrate over a side-channel.
+#
+#   _REQUIRES_EXPLICIT_OWNER_FLAG — code-mutation / shell / kernel-edit tools
+#                                  that need the dispatch caller to set
+#                                  ``write_mode=True`` AND the operator to
+#                                  have already typed CONFIRM-SEND for the
+#                                  enclosing dispatch_claude_session call.
+#                                  Filtered out silently when write_mode=False.
+#
+# Anything NOT in either set is filtered out — fail-safe deny. The bridge can
+# introspect these frozensets at startup to document the dispatch contract.
+
+_SAFE_DISPATCH_TOOLS: frozenset[str] = frozenset({
+    "Read", "Grep", "Glob",
+    "NotebookRead",
+    "WebFetch", "WebSearch",
+    "TodoWrite",  # in-session task list, no filesystem effect
+    "BashOutput",  # read existing background job output, doesn't spawn
+    "KillShell",  # terminate the dispatched shell only — local scope
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+})
+
+_REQUIRES_EXPLICIT_OWNER_FLAG: frozenset[str] = frozenset({
+    "Bash",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "Task",        # nested SDK subagent dispatch — same blast radius
+    "TaskCreate",  # background routine creation
+    "SlashCommand",  # can invoke arbitrary slash-defined workflows
+})
+
+
+# Background-task registry for fire-and-forget dispatched sessions. Without
+# this, Python's GC can drop the task reference mid-flight and the dispatched
+# session silently dies. Standard pattern: keep a strong ref in a set, then
+# discard on done.
+_BG_TASKS: set[asyncio.Task[Any]] = set()
+
+
 def set_owner_chat_id(chat_id: int) -> None:
     """Called once at bridge startup."""
     global _OWNER_CHAT_ID
@@ -79,13 +130,64 @@ def _validate_repo(repo_path: str) -> Path | None:
     return p
 
 
+def _filter_allowed_tools(
+    requested: list[str], *, write_mode: bool,
+) -> tuple[list[str], list[str]]:
+    """Filter the LLM-supplied allowed_tools against the safety tiers.
+
+    Returns ``(kept, dropped)``:
+      - Always-safe tools (``_SAFE_DISPATCH_TOOLS``) pass through.
+      - Write/shell tools (``_REQUIRES_EXPLICIT_OWNER_FLAG``) pass through
+        ONLY when ``write_mode=True``; otherwise they're dropped.
+      - Anything else is dropped (fail-safe deny: an LLM that asks for an
+        unknown tool name shouldn't get it).
+
+    Caller may log ``dropped`` so the owner can see what was filtered.
+    """
+    kept: list[str] = []
+    dropped: list[str] = []
+    for raw in requested:
+        name = raw.strip()
+        if not name:
+            continue
+        # Bare names ("Bash") and MCP-qualified names share the same policy:
+        # only allow exact membership in one of the two tiers.
+        if name in _SAFE_DISPATCH_TOOLS:
+            kept.append(name)
+        elif name in _REQUIRES_EXPLICIT_OWNER_FLAG:
+            if write_mode:
+                kept.append(name)
+            else:
+                dropped.append(name)
+        else:
+            # Unknown tool name — fail-safe deny. The dispatched session can
+            # still use any tool registered on the SDK server side by default
+            # unless allowed_tools is set; we just don't echo the unknown
+            # name back into the explicit allowlist.
+            dropped.append(name)
+    return kept, dropped
+
+
 def _build_dispatch_options(repo_path: Path, allowed_tools: list[str],
                             max_turns: int, max_budget_usd: float,
-                            resume: str | None) -> ClaudeAgentOptions:
-    """SDK options for a dispatched session. NO subagents (flat-only), no Hikari skills."""
+                            resume: str | None,
+                            *, write_mode: bool = False) -> ClaudeAgentOptions:
+    """SDK options for a dispatched session. NO subagents (flat-only), no Hikari skills.
+
+    ``write_mode`` determines the SDK permission_mode:
+      - False (default): ``permission_mode="default"`` — every Edit/Write/Bash
+        the dispatched LLM tries to use triggers an interactive prompt that,
+        in our headless dispatch context, will reject. This is intentional:
+        without explicit owner approval upstream, dispatched code must not
+        mutate anything.
+      - True: ``permission_mode="acceptEdits"`` — the dispatched LLM can
+        run Edit/Write/Bash autonomously. Callers MUST have already obtained
+        the operator's CONFIRM-SEND on the enclosing dispatch_claude_session
+        call before passing write_mode=True.
+    """
     return ClaudeAgentOptions(
         model="claude-sonnet-4-6",
-        fallback_model="claude-haiku-4-5",
+        fallback_model="claude-sonnet-4-6",
         cwd=str(repo_path),
         setting_sources=["project", "user"],
         skills="all",
@@ -98,7 +200,7 @@ def _build_dispatch_options(repo_path: Path, allowed_tools: list[str],
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
         resume=resume,
-        permission_mode="acceptEdits",
+        permission_mode="acceptEdits" if write_mode else "default",
     )
 
 
@@ -108,8 +210,15 @@ async def _emit(task_id: str, event_type: str, payload: dict[str, Any]) -> None:
 
 async def _run_session(task_id: str, repo_path: Path, task: str,
                        allowed_tools: list[str], max_turns: int,
-                       max_budget_usd: float) -> None:
-    """Run a dispatched session end-to-end. All output flows through DISPATCH_EVENTS."""
+                       max_budget_usd: float,
+                       *, write_mode: bool = False) -> None:
+    """Run a dispatched session end-to-end. All output flows through DISPATCH_EVENTS.
+
+    ``write_mode`` is forwarded to ``_build_dispatch_options`` to pick the
+    SDK ``permission_mode``. Default False = ``"default"`` (interactive
+    prompt that rejects in headless dispatch). True requires the caller to
+    have already obtained CONFIRM-SEND from the operator.
+    """
     db.bg_task_update(task_id, status="running")
     await _emit(task_id, "started", {"repo": str(repo_path), "task": task})
 
@@ -117,6 +226,7 @@ async def _run_session(task_id: str, repo_path: Path, task: str,
     options = _build_dispatch_options(
         repo_path=repo_path, allowed_tools=allowed_tools,
         max_turns=max_turns, max_budget_usd=max_budget_usd, resume=resume,
+        write_mode=write_mode,
     )
 
     tool_use_count = 0
@@ -195,11 +305,28 @@ async def _run_session(task_id: str, repo_path: Path, task: str,
 
 async def _do_dispatch(args: dict[str, Any]) -> dict[str, Any]:
     """Shared dispatch body — used by both the public (gated) and confirmed
-    (post-approval) tool variants. Returns the MCP envelope directly."""
+    (post-approval) tool variants. Returns the MCP envelope directly.
+
+    Safety gates layered here:
+      1. ``write_mode`` (bool, default False) — when False, any tool in
+         ``_REQUIRES_EXPLICIT_OWNER_FLAG`` is silently dropped from
+         ``allowed_tools`` AND the SDK permission_mode is forced to
+         ``"default"`` so the dispatched LLM can't autonomously mutate.
+      2. Unknown tool names are dropped (fail-safe deny).
+      3. The launched asyncio task is registered in ``_BG_TASKS`` so Python's
+         GC doesn't drop it mid-flight.
+    """
     repo_arg = (args.get("repo_path") or "").strip()
     task_text = (args.get("task") or "").strip()
-    allowed_raw = (args.get("allowed_tools") or "").strip() or DEFAULT_ALLOWED_TOOLS
+    allowed_raw_in = args.get("allowed_tools")
+    if isinstance(allowed_raw_in, list):
+        # Programmatic callers may pass a list already.
+        raw_tokens = [str(t).strip() for t in allowed_raw_in if str(t).strip()]
+    else:
+        allowed_raw = (str(allowed_raw_in or "")).strip() or DEFAULT_ALLOWED_TOOLS
+        raw_tokens = [t.strip() for t in allowed_raw.split(",") if t.strip()]
     max_turns = max(5, min(200, int(args.get("max_turns") or DEFAULT_MAX_TURNS)))
+    write_mode = bool(args.get("write_mode") or False)
 
     if not task_text:
         return _ok("dispatch: task is required.")
@@ -210,27 +337,55 @@ async def _do_dispatch(args: dict[str, Any]) -> dict[str, Any]:
             f"{WORK_DIR_ROOT}. specify an absolute path under work_dir."
         )
 
-    allowed_tools = [t.strip() for t in allowed_raw.split(",") if t.strip()]
+    allowed_tools, dropped = _filter_allowed_tools(raw_tokens, write_mode=write_mode)
+    if dropped:
+        logger.warning(
+            "dispatch: filtered allowed_tools (write_mode=%s): kept=%s dropped=%s",
+            write_mode, allowed_tools, dropped,
+        )
     task_id = uuid.uuid4().hex
     chat_id = _owner_chat_id()
 
     db.bg_task_create(
         task_id, "claude_session", chat_id, task_text,
-        meta={"repo": str(repo), "allowed_tools": allowed_tools, "max_turns": max_turns},
+        meta={
+            "repo": str(repo),
+            "allowed_tools": allowed_tools,
+            "dropped_tools": dropped,
+            "write_mode": write_mode,
+            "max_turns": max_turns,
+        },
     )
 
-    # Don't await — run in background.
-    asyncio.create_task(_run_session(
+    # Don't await — run in background. Register in _BG_TASKS so the
+    # task isn't garbage-collected mid-flight (asyncio holds only a
+    # weak reference once create_task returns).
+    bg_task = asyncio.create_task(_run_session(
         task_id=task_id, repo_path=repo, task=task_text,
         allowed_tools=allowed_tools, max_turns=max_turns,
         max_budget_usd=DEFAULT_BUDGET_USD,
+        write_mode=write_mode,
     ))
+    _BG_TASKS.add(bg_task)
+    bg_task.add_done_callback(_BG_TASKS.discard)
 
     # ETA heuristic: 30s base + 5s per estimated tool use; rough proxy from task length.
     est_uses = max(3, len(task_text) // 80)
     eta_min = max(1, (30 + 5 * est_uses) // 60)
-    return _ok(
+    summary = (
         f"dispatched task {task_id[:8]} → claude session in {repo.name}. "
-        f"eta ~{eta_min}m. you'll get progress + final.",
-        data={"task_id": task_id, "eta_minutes": eta_min, "repo": str(repo)},
+        f"eta ~{eta_min}m. you'll get progress + final."
+    )
+    if dropped:
+        summary += f" (filtered {len(dropped)} unsafe tool name(s) — write_mode={write_mode})"
+    return _ok(
+        summary,
+        data={
+            "task_id": task_id,
+            "eta_minutes": eta_min,
+            "repo": str(repo),
+            "allowed_tools": allowed_tools,
+            "dropped_tools": dropped,
+            "write_mode": write_mode,
+        },
     )

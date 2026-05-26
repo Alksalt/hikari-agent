@@ -22,16 +22,104 @@ unchanged with an empty hook output.
 from __future__ import annotations
 
 import logging
+import os
 import re
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 from storage import db
 
 from . import config as cfg
-from .injection_guard import wrap_untrusted
+from .injection_guard import extract_urls, wrap_untrusted
 
 logger = logging.getLogger(__name__)
+
+
+# URL taint tracking — every URL extracted from a wrapped (untrusted) tool
+# output is pushed into a chat-keyed deque. The gatekeeper's CONFIRM-SEND
+# prompt builder consults this set to flag outbound args whose URL/domain
+# was last seen inside attacker-touchable content.
+#
+# Deque cap = 50: enough to span a few dozen wrapped fetches per chat; old
+# entries fall off so a stale URL from yesterday doesn't keep tainting
+# forever. Keyed by `str(chat_id)` so tests can pass arbitrary keys.
+_URL_TAINT_CAP = 50
+_RECENTLY_SEEN_UNTRUSTED: dict[str, deque[str]] = {}
+
+
+def _push_untrusted_urls(chat_id: str, urls: list[str]) -> None:
+    """Append URLs (and their bare hostnames) to the chat's taint deque."""
+    if not chat_id or not urls:
+        return
+    bucket = _RECENTLY_SEEN_UNTRUSTED.setdefault(
+        chat_id, deque(maxlen=_URL_TAINT_CAP)
+    )
+    seen: set[str] = set(bucket)
+    for url in urls:
+        if url and url not in seen:
+            bucket.append(url)
+            seen.add(url)
+        # Also push the bare hostname so prompts that name the domain (without
+        # the full URL path) still match. injection_guard.extract_urls only
+        # returns strings matching `https?://…`, so split is safe.
+        try:
+            host = url.split("://", 1)[1].split("/", 1)[0]
+        except (IndexError, AttributeError):
+            host = ""
+        if host and host not in seen:
+            bucket.append(host)
+            seen.add(host)
+
+
+def get_recent_untrusted(chat_id: str) -> set[str]:
+    """Return the unique set of recently-seen-from-untrusted URLs + hosts
+    for this chat. Empty set when nothing's been wrapped yet."""
+    bucket = _RECENTLY_SEEN_UNTRUSTED.get(str(chat_id))
+    return set(bucket) if bucket else set()
+
+
+def _resolve_owner_for_taint() -> str | None:
+    """Return the owner chat id as a string, or None if unconfigured.
+
+    Single-owner deployment: the SDK PostToolUse hook fires inside Hikari's
+    process for the one owner. We resolve via env (matches the gatekeeper
+    can_use_tool path) and never raise — taint tracking is best-effort.
+    """
+    raw = os.environ.get("OWNER_TELEGRAM_ID")
+    if raw:
+        return raw
+    try:
+        owner = cfg.get("telegram.owner_chat_id")
+    except Exception:
+        return None
+    return str(owner) if owner else None
+
+
+def _record_taint_from_response(chat_id: str, tool_response: Any) -> None:
+    """Walk a (post-wrap) tool_response and push every URL into the taint
+    deque for this chat. Safe on any shape — silently no-ops on unexpected
+    inputs."""
+    if not chat_id:
+        return
+    text_blobs: list[str] = []
+    if isinstance(tool_response, dict):
+        content = tool_response.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    text_blobs.append(block["text"])
+        elif isinstance(content, str):
+            text_blobs.append(content)
+    elif isinstance(tool_response, str):
+        text_blobs.append(tool_response)
+    if not text_blobs:
+        return
+    urls: list[str] = []
+    for blob in text_blobs:
+        urls.extend(extract_urls(blob))
+    if urls:
+        _push_untrusted_urls(str(chat_id), urls)
 
 
 def _compile_patterns(patterns: list[str]) -> list[re.Pattern[str]]:
@@ -179,6 +267,23 @@ def make_post_tool_use_hook(
             return {}
 
         _audit_wrap(tool_name)
+
+        # Taint tracking: push every URL we just wrapped into the chat's
+        # recently-seen-untrusted deque. The gatekeeper consults this when
+        # building CONFIRM-SEND prompts so the operator gets a TAINT badge
+        # if outbound args reference a URL/domain that came from attacker
+        # content. Single-owner deployment → resolve chat id from env;
+        # tests / multi-owner setups can override via _resolve_owner_for_taint.
+        try:
+            owner = _resolve_owner_for_taint()
+            if owner:
+                _record_taint_from_response(owner, updated)
+        except Exception:
+            logger.debug(
+                "external_wrap_hook: taint record failed for %s", tool_name,
+                exc_info=True,
+            )
+
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",

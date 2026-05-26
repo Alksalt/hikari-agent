@@ -25,7 +25,9 @@ def _make_mock_graphiti() -> MagicMock:
     """Build a fully async-mocked Graphiti instance."""
     g = MagicMock()
     g.build_indices_and_constraints = AsyncMock(return_value=None)
-    g.add_episode = AsyncMock(return_value=None)
+    episode_result = MagicMock()
+    episode_result.episode = MagicMock(uuid="ep-test-uuid")
+    g.add_episode = AsyncMock(return_value=episode_result)
     g.search = AsyncMock(return_value=[MagicMock(fact="user likes coffee")])
     return g
 

@@ -83,7 +83,16 @@ async def maybe_promote_skill() -> None:
         logger.info("skill_promoter: cooldown applied (%s)", reason)
         _db.runtime_set("skill_promoter.last_run", datetime.now(UTC).isoformat())
 
-    sample = "\n---\n".join(thoughts[-40:])
+    capped: list[str] = []
+    for t in thoughts[-40:]:
+        if len(t) > 2000:
+            logger.warning(
+                "skill_promoter: truncating thought from %d to 2000 chars", len(t)
+            )
+            capped.append(t[:2000])
+        else:
+            capped.append(t)
+    sample = "\n---\n".join(capped)
     prompt = f"Diary entries (recent {_THOUGHT_WINDOW_DAYS} days):\n\n{sample}"
     try:
         raw = await _call_aux_llm(prompt, system=_SCAN_SYSTEM)

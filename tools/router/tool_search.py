@@ -1,19 +1,25 @@
 """Client-side tool_search MCP tool.
 
-BM25 ranks Bucket-2 + Bucket-3 tool ids against the user's query. Returns
-top-N tool ids + one-line descriptions so the model can decide which
-specific tool to invoke or which subagent to dispatch.
+Delegates to ``tools.catalog.Catalog`` which builds a BM25 index over
+rich semantic metadata (descriptions, tags, domain, operation, examples)
+rather than plain id-token expansion.
 
 Wired as an in-process MCP tool on the hikari_router MCP server.
 Bucket-1 tools stay on the always-on allowlist — tool_search does NOT
 need to find them; the model already has them in its toolbelt.
+
+Backward-compat note
+--------------------
+``_INDEX`` is a legacy shim retained for test compatibility.  Its keys
+``bm25``, ``tool_ids``, and ``tool_descs`` are populated after
+``rebuild_index()`` to reflect the catalog state.  Internal logic uses
+``tools.catalog.get_catalog()`` directly.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-import bm25s
 from claude_agent_sdk import tool
 
 from tools._annotations import annotations_for
@@ -21,6 +27,7 @@ from tools._response import ok as _ok
 
 logger = logging.getLogger(__name__)
 
+# Legacy shim — populated by rebuild_index() so existing tests can introspect.
 _INDEX: dict[str, Any] = {
     "bm25": None,
     "tool_ids": [],
@@ -30,43 +37,28 @@ _INDEX: dict[str, Any] = {
 
 
 def rebuild_index() -> None:
-    """Rebuild the BM25 corpus from the current registry. Call at boot
-    and whenever the registry reloads."""
-    from tools._tools_yaml import DEFAULT_YAML_PATH, _load_yaml
-    reg = _load_yaml(DEFAULT_YAML_PATH)
-    docs: list[str] = []
-    ids: list[str] = []
-    descs: list[str] = []
-    tags_all: list[list[str]] = []
-    for spec in reg.specs():
-        bucket = getattr(spec, "bucket", None)
-        if bucket == 1:
-            continue
-        # ToolSpec has no description or tags — derive from the tool id itself.
-        tool_id = spec.id
-        # Build a searchable doc: expanded id tokens only (no external description
-        # field exists on ToolSpec; the model's tool definitions carry the prose).
-        doc_text = (
-            tool_id.replace("mcp__", "").replace("__", " ").replace("_", " ").replace("-", " ")
-        )
-        ids.append(tool_id)
-        descs.append(doc_text)
-        tags_all.append([])
-        docs.append(doc_text)
-    if not docs:
-        _INDEX["bm25"] = None
-        _INDEX["tool_ids"] = []
-        _INDEX["tool_descs"] = []
-        _INDEX["tool_tags"] = []
-        logger.info("tool_search: no non-bucket-1 tools to index")
-        return
-    bm25 = bm25s.BM25()
-    bm25.index(bm25s.tokenize(docs, stopwords="en"))
-    _INDEX["bm25"] = bm25
-    _INDEX["tool_ids"] = ids
-    _INDEX["tool_descs"] = descs
-    _INDEX["tool_tags"] = tags_all
-    logger.info("tool_search: indexed %d tools (bucket 2+3)", len(ids))
+    """Rebuild the catalog index.  Call at boot and after registry reloads."""
+    from tools.catalog import _reset_catalog, get_catalog
+
+    _reset_catalog()
+    cat = get_catalog()
+
+    # Build the BM25 index eagerly so _INDEX reflects truth immediately.
+    cat._build_index()
+
+    # Populate legacy shim: only bucket-2/3 entries (bucket-1 stay on the
+    # always-on allowlist and are excluded from the deferred search index).
+    non_b1 = [e for e in cat.entries if e.bucket != 1]
+    _INDEX["bm25"] = cat._bm25
+    _INDEX["tool_ids"] = [e.name for e in non_b1]
+    _INDEX["tool_descs"] = [e.description for e in non_b1]
+    _INDEX["tool_tags"] = [e.tags for e in non_b1]
+
+    logger.info(
+        "tool_search: catalog rebuilt — %d tools total, %d in deferred index",
+        len(cat.entries),
+        len(non_b1),
+    )
 
 
 @tool(
@@ -84,22 +76,28 @@ async def tool_search(args: dict[str, Any]) -> dict[str, Any]:
     if not query:
         return _ok("tool_search: needs a non-empty query.")
     limit = max(1, min(20, int(args.get("limit") or 5)))
-    bm25 = _INDEX.get("bm25")
-    if bm25 is None:
-        rebuild_index()
-        bm25 = _INDEX.get("bm25")
-    if bm25 is None:
-        return _ok("tool_search: no indexable tools.", data={"hits": []})
-    results = bm25.retrieve(bm25s.tokenize(query, stopwords="en"), k=limit)
-    ids = _INDEX["tool_ids"]
-    descs = _INDEX["tool_descs"]
-    hits = []
-    for row_idx in results.documents[0]:
-        if row_idx < len(ids):
-            hits.append({
-                "tool_id": ids[row_idx],
-                "description": descs[row_idx],
-            })
+
+    from tools.catalog import get_catalog
+
+    cat = get_catalog()
+
+    # Search over the full catalog — the catalog includes bucket-1 tools but
+    # the model already has those in context, so we filter them out of results.
+    all_results = cat.search(query, k=limit + 20)
+    results = [e for e in all_results if e.bucket != 1][:limit]
+
+    if not results:
+        return _ok("tool_search: no results.", data={"hits": []})
+
+    hits = [
+        {
+            "tool_id": entry.name,
+            "description": entry.description,
+            "domain": entry.domain,
+        }
+        for entry in results
+    ]
+
     lines = [f"tool_search results for {query!r}:"]
     for h in hits:
         lines.append(f"- {h['tool_id']}: {h['description']}")

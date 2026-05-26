@@ -282,7 +282,7 @@ post_filter:
   # resume, no memory write. If the rewrite still drifts, fall back to a
   # deterministic short in-voice phrase from refusal_filter.short_replacements.
   rewrite_strategy: "bounded_retry"   # alt: "detection_only" (ship original, log)
-  rewrite_model: "claude-haiku-4-5"
+  rewrite_model: "claude-sonnet-4-6"
   rewrite_max_budget_usd: 0.01
   rewrite_prompt_template: |
     [the previous outbound reply broke Hikari's voice. {instruction}
@@ -539,7 +539,9 @@ mcp_external:
   # hostname. If left unset, falls back to the request's scheme+host (which
   # works behind a same-origin proxy but not when claude.ai's broker is the
   # only thing talking to us via a different hostname).
-  public_base_url: "https://hikari.alksalt.com"
+  # public_base_url migrated to env-var indirection (Sprint A).
+  # Set PUBLIC_BASE_URL in .env to override; falls back to request scheme+host.
+  public_base_url_env: PUBLIC_BASE_URL
   # Set true when the server runs behind a TLS-terminating proxy (Cloudflare
   # Tunnel terminates TLS at the edge and forwards HTTP to 127.0.0.1, so the
   # inbound scheme is always ``http`` even though the public URL is HTTPS).
@@ -559,7 +561,7 @@ mcp_external:
     passphrase_window_seconds: 300
 
 drift_telemetry:
-  # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Haiku,
+  # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Sonnet,
   # 1 turn, no session resume, no log_to_memory) to score how Hikari-like
   # the reply is. Logs to persona_drift_scores; daily reflection reads
   # window averages. Anthropic Apr-2026 "assistant axis" research: drift
@@ -567,7 +569,7 @@ drift_telemetry:
   enabled: true
   probability_per_outbound: 0.20
   cooldown_min_messages: 4
-  model: "claude-haiku-4-5"
+  model: "claude-sonnet-4-6"
   max_budget_usd: 0.01
   # Defense against runaway sampling — caps total judge calls per UTC day.
   max_calls_per_day: 30
@@ -733,8 +735,8 @@ prompt_injection:
   # config/tools.yaml via tools._tools_yaml.load_registry().untrusted_tools().
   # wrap_patterns DELETED (Phase A, step 9) — now sourced from
   # config/tools.yaml via tools._tools_yaml.load_registry().wrap_patterns().
-  canary_token_env: HIKARI_CANARY_TOKEN
-  flag_untrusted_urls: true
+  # canary_token_env DELETED (Sprint A) — dead key, no callers.
+  # flag_untrusted_urls DELETED (Sprint A) — dead key, no callers.
   # Any outbound action whose args contain content originating from an untrusted
   # tool gets flagged in the audit log with an "untrusted_origin" marker.
 
@@ -829,7 +831,7 @@ runtime:
   # Defaults previously hardcoded as module-level constants in agents/runtime.py.
   # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
   model_primary: "claude-sonnet-4-6"
-  model_fallback: "claude-haiku-4-5"
+  model_fallback: "claude-sonnet-4-6"
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
 
 reflection:
@@ -925,68 +927,116 @@ sqlite:
 engagement:
   # priority_tier: 1=high (time-sensitive), 2=normal, 3=background
   # min_interval_minutes: hard gate — source is silenced until this window elapses
+  # send_mode: proactive | observation | silent
+  # min_value_score: 0.0–1.0 — discard tick if selector score < this threshold
+  # interruption_right: low | medium | high — gates whether source may interrupt quiet hours
   wiki_new_file:
     enabled: true
     max_per_24h: 2
     priority_tier: 2
     min_interval_minutes: 120
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
   gmail_unread_threshold:
     enabled: true
     min_unread: 5
     priority_tier: 1
     min_interval_minutes: 120
+    send_mode: proactive
+    min_value_score: 0.5
+    interruption_right: low
   gmail_important_thread:
     enabled: false
     priority_tier: 1
     min_interval_minutes: 60
+    send_mode: proactive
+    min_value_score: 0.7
+    interruption_right: medium
   calendar_event_prep:
     enabled: true
     priority_tier: 1
     min_interval_minutes: 30
+    send_mode: proactive
+    min_value_score: 0.7
+    interruption_right: high
   calendar_new_invite:
     enabled: false
     priority_tier: 1
     min_interval_minutes: 60
+    send_mode: proactive
+    min_value_score: 0.6
+    interruption_right: medium
   reminder_fire:
     enabled: false
     priority_tier: 1
     min_interval_minutes: 5
+    send_mode: proactive
+    min_value_score: 0.9
+    interruption_right: high
   decision_resolve_due:
     enabled: true
     priority_tier: 2
     min_interval_minutes: 1440
+    send_mode: proactive
+    min_value_score: 0.5
+    interruption_right: low
   callback_episode:
     enabled: false
     priority_tier: 3
     min_interval_minutes: 360
+    send_mode: observation
+    min_value_score: 0.4
+    interruption_right: low
   drive_starred_new:
     enabled: false
     priority_tier: 3
     min_interval_minutes: 240
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
   notion_recent_edit:
     enabled: false
     priority_tier: 3
     min_interval_minutes: 120
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
   weather_alert:
     enabled: false
     priority_tier: 1
     min_interval_minutes: 60
+    send_mode: proactive
+    min_value_score: 0.8
+    interruption_right: high
   weirdly_good_mood_leak:
     enabled: false
     priority_tier: 2
     min_interval_minutes: 360
+    send_mode: proactive
+    min_value_score: 0.4
+    interruption_right: low
   reengage_silence:
     enabled: true
     priority_tier: 2
     min_interval_minutes: 120
+    send_mode: proactive
+    min_value_score: 0.5
+    interruption_right: low
   location_arrived_recurring:
     enabled: false
     priority_tier: 2
     min_interval_minutes: 120
+    send_mode: proactive
+    min_value_score: 0.5
+    interruption_right: low
   readwise_daily_review:
     enabled: false
     priority_tier: 3
     min_interval_minutes: 1440
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
 
 aux_model:
   # Cheap model for stateless LLM ops: run_reflection_call, run_internal_control.

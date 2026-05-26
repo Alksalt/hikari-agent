@@ -1,6 +1,7 @@
 """``generate_photo`` — queue a Hikari photo for the Telegram bridge."""
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +22,8 @@ from tools.photos._shared import (
     _scene_suffix,
 )
 
+logger = logging.getLogger(__name__)
+
 # Shared runtime_state flag — the bridge polls this after each LLM turn and,
 # if it's set within the last 60s, force-sends a sticker so the user gets
 # *something* visual instead of an empty "image gen down" abdication.
@@ -30,16 +33,25 @@ IMAGE_GEN_FAILURE_KEY = "image_gen_last_failure_ts"
 @tool(
     "generate_photo",
     "Generate a photo of Hikari (selfie or candid) and drop it in the outbox so the "
-    "Telegram bridge will send it with your next text reply. Mood-gated (refuses if "
-    "irritable), daily-capped. Pass mood='' to read from core_blocks. Returns 'queued' "
-    "on success or 'refused: <reason>'.",
-    {"mood": str},
+    "Telegram bridge will send it with your next text reply. Mood-gated: unprompted "
+    "sends require mood='weirdly good'; user-requested sends bypass the mood gate. "
+    "Daily-capped. Pass mood='' to read from core_blocks. "
+    "Pass unprompted=true when the call originates from a background/proactive path "
+    "(not from a user request). "
+    "Returns 'queued' on success or 'refused: <reason>'.",
+    {"mood": str, "unprompted": bool},
     annotations=annotations_for("generate_photo"),
 )
 async def generate_photo(args: dict[str, Any]) -> dict[str, Any]:
     mood = _resolve_mood(str(args.get("mood") or ""))
+    unprompted = bool(args.get("unprompted", False))
+
+    # Mood gate — irritable always blocks; unprompted requires 'weirdly good'.
     if mood == "irritable":
         return {"content": [{"type": "text", "text": "refused: mood is irritable"}]}
+    if unprompted and mood != "weirdly good":
+        return {"content": [{"type": "text", "text": f"refused: unprompted photo requires weirdly good mood (current: {mood})"}]}
+
     if _photos_sent_today() >= DAILY_CAP:
         return {"content": [{"type": "text", "text": f"refused: daily cap reached ({DAILY_CAP})"}]}
 
@@ -64,8 +76,6 @@ async def generate_photo(args: dict[str, Any]) -> dict[str, Any]:
     fname = f"{int(time.time() * 1000)}.png"
     path = OUTBOX / fname
     path.write_bytes(img_bytes)
-    _record_photo_sent()
-    # Insert a media_outbox row so the drainer uses the DB queue, not filesystem scan.
     try:
         ikey = f"photo_generated_{fname}"
         db.media_outbox_insert(
@@ -74,5 +84,14 @@ async def generate_photo(args: dict[str, Any]) -> dict[str, Any]:
             {"path": str(path), "caption": "", "chat_id": None},
         )
     except Exception:
-        pass  # non-fatal: bridge will reconcile orphan on next boot
+        logger.exception("generate_photo: media_outbox_insert failed; not bumping counter, removing orphan %s", fname)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"content": [{"type": "text", "text": (
+            "image_gen_down: outbox write failed. the bridge will send a sticker. "
+            "say nothing about image generation in your reply."
+        )}]}
+    _record_photo_sent()
     return {"content": [{"type": "text", "text": f"queued {path.name} ({len(img_bytes)} bytes)"}]}

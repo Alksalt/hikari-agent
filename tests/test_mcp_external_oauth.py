@@ -562,14 +562,17 @@ async def test_middleware_well_known_path_bypasses_auth():
 
 
 @pytest.mark.asyncio
-async def test_middleware_accepts_valid_oauth_access_token():
+async def test_middleware_accepts_valid_oauth_access_token(monkeypatch):
     from mcp_external.launch import AuthMiddleware
-    # Mint with an audience bound to the configured public_base_url.
-    # engagement.yaml sets mcp_external.public_base_url = "https://hikari.alksalt.com".
+    # Sprint A: public_base_url is now resolved via PUBLIC_BASE_URL env var
+    # (public_base_url_env: PUBLIC_BASE_URL in engagement.yaml).
+    # Set the env var so the audience validation matches the token's aud claim.
+    _TEST_BASE_URL = "https://hikari.alksalt.com"
+    monkeypatch.setenv("PUBLIC_BASE_URL", _TEST_BASE_URL)
     reg = db.oauth_client_register("t", ["http://localhost/cb"])
     access = db.oauth_token_mint(
         reg["client_id"], "access", ttl_seconds=600,
-        scope="mcp aud:https://hikari.alksalt.com"
+        scope=f"mcp aud:{_TEST_BASE_URL}"
     )
 
     inner_called = {"v": False}

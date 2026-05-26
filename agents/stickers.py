@@ -110,10 +110,8 @@ def _current_mood() -> str:
 
 
 def _bump_outbound_counter() -> int:
-    """Increment the shared outbound-message counter. Returns new value."""
-    n = db.runtime_get_int(OUTBOUND_MSG_COUNTER_KEY, 0) + 1
-    db.runtime_set(OUTBOUND_MSG_COUNTER_KEY, n)
-    return n
+    """Increment the shared outbound-message counter atomically. Returns new value."""
+    return db.runtime_increment(OUTBOUND_MSG_COUNTER_KEY, by=1)
 
 
 def _record_sticker(at_counter: int) -> None:
@@ -172,8 +170,23 @@ async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | Non
     if result in valid_ids:
         return result
 
-    logger.warning("pick_sticker_file_id: LLM returned unknown id %r — skipping", result)
-    return None
+    logger.warning(
+        "pick_sticker_file_id: LLM returned unknown id %r — "
+        "annotating diary and falling back to random",
+        result,
+    )
+    try:
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO character_thoughts (thought) VALUES (?)",
+                (
+                    f"[sticker] aux LLM hallucinated a sticker id that isn't in my pool: "
+                    f"{result!r}. falling back to random pick.",
+                ),
+            )
+    except Exception:
+        logger.debug("pick_sticker_file_id: could not write hallucination note to diary")
+    return random.choice(pool)["file_id"]
 
 
 async def force_send_sticker(bot: Bot, chat_id: int) -> str | None:

@@ -244,7 +244,19 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
                          int(cfg.get("retention.oauth_audit_log_days", 365)), "oauth_audit")
         n3 = _safe_prune(db.prune_calendar_notifications_older_than_days,
                          int(cfg.get("retention.calendar_notifications_days", 90)), "calendar")
-        logger.info("monthly_prune: messages=%d oauth_audit=%d calendar=%d", n1, n2, n3)
+        n4 = _safe_prune(db.prune_tool_calls,
+                         int(cfg.get("retention.tool_calls_days", 30)), "tool_calls")
+        n5 = _safe_prune(db.prune_graph_outbox_sent,
+                         int(cfg.get("retention.graph_outbox_sent_days", 14)), "graph_outbox_sent")
+        n6 = _safe_prune(db.prune_media_outbox_terminal,
+                         int(cfg.get("retention.media_outbox_terminal_days", 14)), "media_outbox_terminal")
+        n7 = _safe_prune(db.prune_proactive_events,
+                         int(cfg.get("retention.proactive_events_days", 90)), "proactive_events")
+        logger.info(
+            "monthly_prune: messages=%d oauth_audit=%d calendar=%d tool_calls=%d "
+            "graph_outbox_sent=%d media_outbox_terminal=%d proactive_events=%d",
+            n1, n2, n3, n4, n5, n6, n7,
+        )
 
     scheduler.add_job(
         _monthly_prune_job,

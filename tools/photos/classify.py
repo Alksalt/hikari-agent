@@ -86,7 +86,7 @@ _USER_PROMPT = (
     "details: <one short sentence>"
 )
 
-_MODEL = "claude-haiku-4-5"
+_MODEL = "claude-sonnet-4-6"
 _API_URL = "https://api.anthropic.com/v1/messages"
 _TIMEOUT_S = 15.0
 

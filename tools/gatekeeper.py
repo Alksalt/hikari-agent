@@ -439,11 +439,17 @@ def summarize(tool_name: str, tool_input: dict) -> str:
         task = tool_input.get("task") or tool_input.get("prompt") or ""
         repo_path = tool_input.get("repo_path") or ""
         allowed_tools = tool_input.get("allowed_tools") or []
-        parts = [f"dispatch claude session: {task!r}"]
+        write_mode = bool(tool_input.get("write_mode") or False)
+        header = (
+            "⚠ WRITE-MODE dispatch — worker can run Bash/Edit/Write autonomously"
+            if write_mode
+            else "read-only dispatch (write tools filtered out)"
+        )
+        parts = [f"dispatch claude session [{header}]:", f"  write_mode: {write_mode}", f"  task: {task!r}"]
         if repo_path:
-            parts.append(f"repo_path: {repo_path}")
+            parts.append(f"  repo_path: {repo_path}")
         if allowed_tools:
-            parts.append(f"allowed_tools: {allowed_tools!r}")
+            parts.append(f"  allowed_tools: {allowed_tools!r}")
         return "\n".join(parts)
 
     if tool_name == "mcp__hikari_utility__python_run":

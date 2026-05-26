@@ -13,6 +13,7 @@ import os as _os
 _os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
 import os
+import sqlite3
 from datetime import UTC
 from pathlib import Path
 
@@ -111,7 +112,7 @@ class FastembedAdapter(EmbedderClient):
             return await _embed.aembed(input_data)
         if isinstance(input_data, list) and input_data and isinstance(input_data[0], str):
             batch = await _embed.aembed_batch(input_data)
-            return batch[0] if batch else [0.0] * _embed.EMBEDDING_DIM
+            return batch if batch else [[0.0] * _embed.EMBEDDING_DIM for _ in input_data]
         raise TypeError(f"FastembedAdapter: unsupported input type {type(input_data).__name__}")
 
     async def create_batch(self, input_data_list):
@@ -150,7 +151,7 @@ async def add_episode_safe(
         source_description = f"fact_id:{fact_id}|{source_description}"
     try:
         g = await get_graph()
-        await g.add_episode(
+        result = await g.add_episode(
             name=name,
             episode_body=episode_body,
             source=source,
@@ -158,10 +159,18 @@ async def add_episode_safe(
             reference_time=reference_time,
             group_id=group_id,
         )
-        return True
     except Exception:
         logger.exception("graph.add_episode failed (non-fatal)")
         return False
+    if result is None:
+        logger.warning("graph.add_episode returned None — treating as failure (fact_id=%s name=%s)", fact_id, name)
+        return False
+    episode = getattr(result, "episode", result)
+    has_id = bool(getattr(episode, "uuid", None) or getattr(episode, "id", None))
+    if not has_id:
+        logger.warning("graph.add_episode returned without uuid/id (fact_id=%s name=%s repr=%r)", fact_id, name, result)
+        return False
+    return True
 
 
 def schedule_episode(
@@ -195,9 +204,11 @@ def schedule_episode(
     }
     try:
         return db.graph_outbox_insert("facts", source_id, _json.dumps(payload))
-    except Exception:
-        logger.debug("schedule_episode: outbox insert failed (non-fatal)", exc_info=True)
+    except sqlite3.IntegrityError:
         return None
+    except Exception:
+        logger.warning("schedule_episode: outbox insert failed (fact_id=%s)", source_id, exc_info=True)
+        raise
 
 
 async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:

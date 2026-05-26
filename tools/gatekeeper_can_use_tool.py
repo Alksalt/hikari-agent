@@ -7,6 +7,12 @@ else through immediately (PermissionResultAllow).
 This is a module-level callable — no closures over per-turn state. The
 persistent live client is built once at boot, so the can_use_tool must be
 importable without side effects and must work across concurrent turns.
+
+Sprint A addition: ``flag_args_with_untrusted_content`` deep-walks the
+outbound args against the chat's URL taint deque (populated by
+``agents.external_wrap_hook``) and the gate prepends a `⚠ TAINT` badge to
+the CONFIRM-SEND prompt when a match is found. Defense-in-depth on top of
+the existing canary tripwire.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from agents import config as cfg
 
@@ -99,6 +106,86 @@ def _resolve_chat_id() -> int:
     if not raw:
         raise RuntimeError("OWNER_TELEGRAM_ID / telegram.owner_chat_id not set")
     return int(raw)
+
+
+def _walk_strings(value: Any) -> list[str]:
+    """Deep-walk dicts/lists/tuples/sets and return every string scalar found.
+
+    Used by ``flag_args_with_untrusted_content`` so taint matching works on
+    nested args (e.g. ``{"message": {"body": "https://taint/…"}}``) — the
+    legacy single-level scan in injection_guard.py missed these.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return [bytes(value).decode("utf-8", errors="replace")]
+        except (UnicodeDecodeError, AttributeError):
+            return []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for k, v in value.items():
+            if isinstance(k, str):
+                out.append(k)
+            out.extend(_walk_strings(v))
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out = []
+        for item in value:
+            out.extend(_walk_strings(item))
+        return out
+    # Numbers / None / unknown types — nothing to match against.
+    return []
+
+
+def flag_args_with_untrusted_content(
+    args: Any,
+    *,
+    chat_id: str | None,
+) -> list[str]:
+    """Return the list of taint needles (URLs / hostnames) found in ``args``.
+
+    Pulls the chat's recently-seen-untrusted set from
+    ``agents.external_wrap_hook.get_recent_untrusted`` and deep-walks
+    ``args`` looking for any string scalar that *contains* a tainted
+    needle as a substring (URL or bare host).
+
+    Returns an empty list when:
+      - ``chat_id`` is None (no chat → no taint scope),
+      - the chat has no recorded untrusted URLs yet,
+      - none of the walked strings reference a tainted needle.
+
+    The CONFIRM-SEND prompt builder uses the returned list to prepend a
+    `⚠ TAINT` badge so the operator can read which URL/domain came from
+    untrusted content before they type CONFIRM-SEND.
+    """
+    if chat_id is None:
+        return []
+    try:
+        from agents.external_wrap_hook import get_recent_untrusted  # noqa: PLC0415
+        tainted = get_recent_untrusted(str(chat_id))
+    except Exception:
+        logger.debug(
+            "flag_args_with_untrusted_content: get_recent_untrusted failed",
+            exc_info=True,
+        )
+        return []
+    if not tainted:
+        return []
+    strings = _walk_strings(args)
+    if not strings:
+        return []
+    hits: list[str] = []
+    seen: set[str] = set()
+    for needle in tainted:
+        if not needle:
+            continue
+        for s in strings:
+            if needle in s and needle not in seen:
+                hits.append(needle)
+                seen.add(needle)
+                break
+    return hits
 
 
 def _summarize(tool_name: str, input_args: dict) -> str:
@@ -190,20 +277,46 @@ async def gatekeeper_can_use_tool(
         logger.error("gatekeeper_can_use_tool: cannot resolve chat_id: %s", e)
         return PermissionResultDeny(message=f"gatekeeper config error: {e}")
 
+    # Canary tripwire — definitive exfiltration indicator. Always hard-deny.
     try:
-        from agents.injection_guard import flag_args_with_untrusted_content  # noqa: PLC0415
-        taint_flag, taint_reason = flag_args_with_untrusted_content(input)
-        if taint_flag:
+        from agents.injection_guard import (  # noqa: PLC0415
+            flag_args_with_untrusted_content as _legacy_flag,
+        )
+        taint_flag, taint_reason = _legacy_flag(input)
+        if taint_flag and (taint_reason or "").startswith("canary_in"):
             logger.warning(
-                "gatekeeper_can_use_tool: args flagged untrusted-origin (%s) for %s",
-                taint_reason, tool_name,
+                "gatekeeper_can_use_tool: canary leak in outbound args for %s",
+                tool_name,
             )
             return PermissionResultDeny(
-                message=f"gatekeeper denied: untrusted-origin content in args ({taint_reason})"
+                message=f"gatekeeper denied: canary token in outbound args ({taint_reason})"
             )
     except Exception:
         logger.debug(
-            "gatekeeper_can_use_tool: taint check failed for %s", tool_name, exc_info=True
+            "gatekeeper_can_use_tool: canary check failed for %s", tool_name, exc_info=True
+        )
+
+    # URL-taint badge — surface to the operator in the CONFIRM-SEND prompt
+    # but don't hard-deny. Legitimate workflows (reply to an email that
+    # contained a URL, draft a doc that references a fetched page) need
+    # the operator's judgement, not a refusal.
+    try:
+        taint_hits = flag_args_with_untrusted_content(input, chat_id=str(chat_id))
+    except Exception:
+        logger.debug(
+            "gatekeeper_can_use_tool: url-taint check failed for %s", tool_name, exc_info=True
+        )
+        taint_hits = []
+    if taint_hits:
+        preview = ", ".join(taint_hits[:3])
+        more = f" +{len(taint_hits) - 3} more" if len(taint_hits) > 3 else ""
+        logger.warning(
+            "gatekeeper_can_use_tool: url-taint for %s: %s%s",
+            tool_name, preview, more,
+        )
+        summary = (
+            f"⚠ TAINT: these URLs/domains were last seen in untrusted "
+            f"content — verify intent.\n  hits: {preview}{more}\n\n{summary}"
         )
 
     try:

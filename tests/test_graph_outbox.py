@@ -168,9 +168,9 @@ def test_graph_outbox_mark_failed_increments():
 # ---------------------------------------------------------------------------
 
 def test_graph_outbox_stats_zero_filled():
-    """stats returns all four statuses even when the table is empty."""
+    """stats returns all statuses (including drained) even when the table is empty."""
     stats = db.graph_outbox_stats()
-    assert set(stats.keys()) == {"pending", "sent", "failed", "skipped"}
+    assert set(stats.keys()) == {"pending", "sent", "failed", "skipped", "drained"}
     assert all(v == 0 for v in stats.values())
 
 

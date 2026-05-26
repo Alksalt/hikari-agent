@@ -15,6 +15,8 @@ import asyncio
 import logging
 import os
 import re
+import uuid
+from contextvars import ContextVar
 from functools import cache
 from pathlib import Path
 
@@ -52,6 +54,42 @@ from .external_wrap_hook import make_post_tool_use_hook
 from .hooks import defer_gated_tools, inject_memory, log_tool_failure
 
 REPO_ROOT = Path(__file__).parent.parent
+
+# ---------- turn_id ContextVar ----------
+
+# Set at run_user_turn/run_visible_proactive entry so all log records emitted
+# during a turn are tagged with [turn_id]. Other modules read this via
+# current_turn_id(). Lives in this module (not _turn_state) because it's an
+# execution-flow concern, not a tool-fabrication concern.
+_CURRENT_TURN_ID: ContextVar[str | None] = ContextVar(
+    "hikari_current_turn_id", default=None
+)
+
+
+def current_turn_id() -> str | None:
+    """Return the active turn ID hex string, or None outside a user turn."""
+    return _CURRENT_TURN_ID.get()
+
+
+class _TurnIdFilter(logging.Filter):
+    """Prepend ``[turn_id]`` to every log record emitted during a turn."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        tid = _CURRENT_TURN_ID.get()
+        if tid:
+            record.msg = f"[{tid}] {record.msg}"
+        return True
+
+
+_turn_id_filter = _TurnIdFilter()
+
+# Attach to the root logger once so all hikari loggers inherit it.
+# Idempotent across importlib.reload(agents.runtime) calls used by tests —
+# otherwise reloads accumulate filters and double/triple-prefix every record.
+_root_logger = logging.getLogger()
+if not any(isinstance(f, _TurnIdFilter) for f in _root_logger.filters):
+    _root_logger.addFilter(_turn_id_filter)
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,14 +112,42 @@ def looks_like_sdk_error(text: str) -> bool:
         return False
     return any(p.search(text) for p in _SDK_ERROR_PATTERNS)
 
+
 MODEL_PRIMARY = (
     os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
 )
-MODEL_FALLBACK = (
-    os.environ.get("HIKARI_MODEL_FALLBACK")
-    or cfg.get("runtime.model_fallback")
-    or "claude-haiku-4-5"
-)
+
+_SONNET_DEFAULT_FALLBACK = "claude-sonnet-4-6"
+
+
+def _resolve_model_fallback() -> str:
+    """Resolve MODEL_FALLBACK, enforcing the no-Haiku rule.
+
+    User rule: never Haiku anywhere. If env or config specifies a Haiku
+    model ID, override to Sonnet and log a warning — the misconfiguration
+    is visible in logs but does not crash import. The correct fix is to
+    update config/engagement.yaml:runtime.model_fallback to a Sonnet ID.
+
+    Environment variable wins over config wins over hardcoded default.
+    """
+    raw = (
+        os.environ.get("HIKARI_MODEL_FALLBACK")
+        or cfg.get("runtime.model_fallback")
+        or _SONNET_DEFAULT_FALLBACK
+    )
+    raw_str = str(raw)
+    if "haiku" in raw_str.lower():
+        logging.getLogger("agents.runtime").warning(
+            "runtime.model_fallback=%r contains 'haiku' — forbidden by user rule. "
+            "Overriding to %s. Fix: update config/engagement.yaml or set HIKARI_MODEL_FALLBACK.",
+            raw_str, _SONNET_DEFAULT_FALLBACK,
+        )
+        return _SONNET_DEFAULT_FALLBACK
+    return raw_str
+
+
+# Fallback is Sonnet (never Haiku) — user rule: no Haiku anywhere.
+MODEL_FALLBACK = _resolve_model_fallback()
 
 _AUX_REFLECTION_SYSTEM = (
     "You are a structured-output assistant. "
@@ -100,82 +166,137 @@ def _aux_model_id() -> str:
 
 
 def _aux_sdk_model() -> str:
-    """SDK model ID to use for internal-control / SDK-based reflection calls."""
-    if _aux_provider() == "haiku_subscription":
-        return "claude-haiku-4-5"
-    # openrouter path not usable with SDK tools — fall back to haiku subscription
-    return "claude-haiku-4-5"
+    """SDK model ID to use for internal-control / SDK-based reflection calls.
 
+    When provider is ``openrouter``, the caller should route through
+    ``_call_aux_llm`` (httpx path) rather than this function. Raises
+    ``ValueError`` for unknown providers so misconfiguration is never silent.
 
-async def _call_aux_llm(prompt: str, *, system: str = _AUX_REFLECTION_SYSTEM) -> str:
-    """Cheap LLM call for reflection and other no-tool ops.
-
-    Routes to OpenRouter (httpx) when provider=openrouter, otherwise uses
-    the Claude SDK with the haiku subscription model.
+    User rule: never Haiku. Any provider that would have returned a Haiku
+    model ID is a misconfiguration and will raise.
     """
-    if _aux_provider() == "openrouter":
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
-        if api_key:
-            messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
-            for attempt in (1, 2):
-                try:
-                    async with httpx.AsyncClient(timeout=60.0) as _client:
-                        resp = await _client.post(
-                            "https://openrouter.ai/api/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                            json={"model": _aux_model_id(), "messages": messages, "max_tokens": 2048},
-                        )
-                except httpx.RequestError as exc:
-                    # Transport-level failure (DNS, TCP, TLS, timeout). Most common
-                    # OpenRouter failure mode — must be retried like 429/503.
-                    if attempt == 1:
-                        logger.warning(
-                            "aux_llm: openrouter transport error on attempt 1 (%s) — retrying in 2s",
-                            type(exc).__name__,
-                        )
-                        await asyncio.sleep(2.0)
-                        continue
-                    logger.warning(
-                        "aux_llm: openrouter transport error on attempt 2 (%s) — giving up",
-                        type(exc).__name__,
-                    )
-                    raise
-                if resp.status_code in (429, 503) and attempt == 1:
-                    logger.warning(
-                        "aux_llm: openrouter %s on attempt 1 — body=%r — retrying in 2s",
-                        resp.status_code, resp.text[:200],
-                    )
-                    await asyncio.sleep(2.0)
-                    continue
-                if resp.status_code >= 400:
-                    logger.warning(
-                        "aux_llm: openrouter HTTP %s — body=%r",
-                        resp.status_code, resp.text[:200],
-                    )
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"].strip()
-        logger.warning("aux_model.provider=openrouter but OPENROUTER_API_KEY not set; using haiku")
-
-    opts = ClaudeAgentOptions(
-        model="claude-haiku-4-5",
-        cwd=str(REPO_ROOT),
-        system_prompt=system,
-        allowed_tools=[],
-        mcp_servers={},
-        max_turns=3,
-        max_budget_usd=0.10,
-        permission_mode="acceptEdits",
-        resume=None,
+    provider = _aux_provider()
+    if provider == "haiku_subscription":
+        # haiku_subscription is a legacy config value — refuse per user rule.
+        raise ValueError(
+            "aux_model.provider='haiku_subscription' is forbidden (no Haiku). "
+            "Set provider=openrouter to use DeepSeek via OpenRouter."
+        )
+    if provider == "openrouter":
+        # Not SDK-compatible — callers that need SDK tools should use
+        # MODEL_PRIMARY (Sonnet) directly; non-tool calls go via _call_aux_llm.
+        raise ValueError(
+            "aux_model.provider='openrouter' cannot use the SDK path. "
+            "Call _call_aux_llm() instead for non-tool aux operations."
+        )
+    raise ValueError(
+        f"Unknown aux_model.provider={provider!r}. "
+        "Valid values: 'openrouter'."
     )
-    parts: list[str] = []
-    async with ClaudeSDKClient(options=opts) as _sdk:
-        await _sdk.query(prompt)
-        async for msg in _sdk.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        parts.append(block.text)
-    return "".join(parts).strip()
+
+
+async def _call_aux_llm(
+    prompt: str,
+    *,
+    system: str = _AUX_REFLECTION_SYSTEM,
+    model: str | None = None,
+    max_tokens: int = 512,
+) -> str:
+    """Cheap LLM call via OpenRouter for reflection and other no-tool ops.
+
+    All auxiliary (non-persona-turn) LLM work routes here: evening_diary,
+    future_letter, reflection consolidation, topic tagging, etc. Uses httpx
+    directly against the OpenRouter API — no SDK subprocess, no Haiku.
+
+    Args:
+        prompt: User-turn content. The system prompt is fixed structured-output
+            instructions (``_AUX_REFLECTION_SYSTEM``) unless overridden.
+        system: Override system prompt when the caller has its own instructions.
+        model: OpenRouter model ID. Defaults to ``_aux_model_id()`` (reads
+            ``aux_model.model`` from config, defaulting to
+            ``deepseek/deepseek-v4-flash``).
+        max_tokens: Hard cap on completion tokens. Default 512 is a safety cap
+            for structured-output tasks (YAML/JSON); pass a higher value only
+            for long-form composition (diary, future_letter). Hardcoded as a
+            safety cap — this is intentional and documented here.
+
+    Raises:
+        RuntimeError: when OPENROUTER_API_KEY is unset (misconfiguration).
+        httpx.HTTPStatusError / httpx.RequestError: on non-retried failures.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "_call_aux_llm requires OPENROUTER_API_KEY to be set. "
+            "DeepSeek / OpenRouter is the mandatory aux-LLM path (no Haiku fallback)."
+        )
+
+    effective_model = model or _aux_model_id()
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as _client:
+                resp = await _client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": effective_model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                    },
+                )
+        except httpx.RequestError as exc:
+            # Transport-level failure (DNS, TCP, TLS, timeout). Most common
+            # OpenRouter failure mode — must be retried like 429/503.
+            if attempt == 1:
+                logger.warning(
+                    "aux_llm: openrouter transport error on attempt 1 (%s) — retrying in 2s",
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(2.0)
+                continue
+            logger.warning(
+                "aux_llm: openrouter transport error on attempt 2 (%s) — giving up",
+                type(exc).__name__,
+            )
+            raise
+        if resp.status_code in (429, 503) and attempt == 1:
+            logger.warning(
+                "aux_llm: openrouter %s on attempt 1 — body=%r — retrying in 2s",
+                resp.status_code, resp.text[:200],
+            )
+            await asyncio.sleep(2.0)
+            continue
+        if resp.status_code >= 400:
+            logger.warning(
+                "aux_llm: openrouter HTTP %s — body=%r",
+                resp.status_code, resp.text[:200],
+            )
+            resp.raise_for_status()
+
+        payload = resp.json()
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError(
+                f"aux_llm: unexpected OpenRouter response shape — "
+                f"'choices' missing or empty. Full response: {payload!r:.400}"
+            )
+        message = choices[0].get("message")
+        if not isinstance(message, dict) or "content" not in message:
+            raise RuntimeError(
+                f"aux_llm: unexpected OpenRouter response shape — "
+                f"choices[0].message missing or has no 'content'. "
+                f"choices[0]={choices[0]!r:.400}"
+            )
+        return str(message["content"]).strip()
+
+    # Should never reach here (loop always returns or raises), but keep the
+    # compiler happy and make the invariant explicit.
+    raise RuntimeError("aux_llm: retry loop exhausted without returning")
 
 
 def _inject_keychain_tokens_to_env() -> None:
@@ -265,9 +386,9 @@ except Exception:
     logger.exception("runtime: failed to configure mcp_manager TTLs (non-fatal)")
 
 # Per-turn budget for chat-path SDK calls. Used by _build_options /
-# run_user_turn / respond defaults AND substituted into the persona prompt
-# via _persona().format(max_turns=...). Keep this constant and the
-# `{max_turns}` placeholder in CLAUDE.md in lockstep.
+# run_user_turn / respond defaults. Surfaced into the per-turn ``# now``
+# block via agents.hooks._format_now (not the cached persona), so Hikari
+# always sees the current value without busting the prompt cache.
 DEFAULT_MAX_TURNS = cfg.get("runtime.default_max_turns") or 4
 
 # Phase 6 (extended Phase 13): serialize concurrent stateful SDK calls. User
@@ -292,11 +413,14 @@ def owner_id() -> int:
 
 @cache
 def _persona() -> str:
-    text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    # Substitute the live turn budget into the persona so the prose stays
-    # in lockstep with DEFAULT_MAX_TURNS. .replace() is safer than .format()
-    # since CLAUDE.md is hand-edited and a stray `{` would crash startup.
-    return text.replace("{max_turns}", str(DEFAULT_MAX_TURNS))
+    """Return the CLAUDE.md text for use as the SDK system prompt.
+
+    Cached once per process. Per-turn values (max_turns, time, etc.) live in
+    the ``# now`` block injected by ``agents.hooks._format_now`` — never
+    substituted here, since per-turn substitution would defeat the Anthropic
+    prompt cache.
+    """
+    return (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
 
 @cache
@@ -459,6 +583,12 @@ async def _invoke_sdk_persistent_live(
     On ProcessError or TimeoutError: clears suspect session if applicable,
     reconnects once, retries once, then re-raises on second failure.
     On ResultMessage: stores session_id if log_session_id=True.
+
+    Lock contract: callers (``run_user_turn``, ``run_visible_proactive``,
+    ``run_user_turn_blocks``) MUST hold ``_RUN_LOCK`` before calling this
+    function. ``_reconnect_live(lock_run=False)`` is safe here because the
+    outer lock is already held — do NOT pass ``lock_run=True`` from inside
+    the lock or you will deadlock.
     """
     sdk_turn_timeout = float(cfg.get("runtime.sdk_turn_timeout_s", 90))
     tool_names_this_turn: set[str] = set()
@@ -667,7 +797,11 @@ async def run_user_turn(user_text: str) -> str:
 
     Acquires ``_RUN_LOCK``, resumes ``db.get_session_id()``, updates
     ``session_id`` on the SDK's ResultMessage.
+
+    Sets ``_CURRENT_TURN_ID`` at entry so all log records for this turn are
+    prefixed with ``[turn_id]``.
     """
+    _CURRENT_TURN_ID.set(uuid.uuid4().hex)
     async with _RUN_LOCK:
         return await _invoke_sdk(
             user_text,
@@ -690,7 +824,10 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     so the session_id produced by this turn is stored and the next text turn can
     reference the same conversation (PDF continuity fix). After the turn,
     advance the persistent live client so it resumes from the new session_id.
+
+    Sets ``_CURRENT_TURN_ID`` at entry for log correlation.
     """
+    _CURRENT_TURN_ID.set(uuid.uuid4().hex)
     async with _RUN_LOCK:
         result = await _invoke_sdk(
             content_blocks,
@@ -723,7 +860,11 @@ async def run_visible_proactive(seed_prompt: str) -> str:
 
     Acquires ``_RUN_LOCK``, resumes session_id, updates session_id on
     ResultMessage.
+
+    Sets ``_CURRENT_TURN_ID`` at entry for log correlation (proactive turns
+    are indistinguishable from user turns in the lock contract).
     """
+    _CURRENT_TURN_ID.set(uuid.uuid4().hex)
     async with _RUN_LOCK:
         return await _invoke_sdk(
             seed_prompt,
@@ -756,6 +897,10 @@ async def run_internal_control(
     No ``_RUN_LOCK`` either — stateless turns can't race the live session
     (they don't resume it). No ProcessError retry — without a resume there's
     nothing to self-heal away from.
+
+    Uses ``MODEL_PRIMARY`` (Sonnet) — internal control prompts may invoke SDK
+    tools (approval resume, GCal sync, etc.) and must use the subscription
+    model. Never Haiku.
     """
     return await _invoke_sdk(
         prompt,
@@ -766,7 +911,7 @@ async def run_internal_control(
         extra_allowed_tools=extra_allowed_tools,
         retry_on_process_error=False,
         inject_memory_enabled=False,
-        model=_aux_sdk_model(),
+        model=MODEL_PRIMARY,
     )
 
 
@@ -803,7 +948,7 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
     Used by:
       - Anti-sycophancy eval tests (tests/persona/test_sycophancy.py) —
         fires SycEval / ELEPHANT prompts at a fresh persona session and
-        scores the response via Haiku.
+        scores the response via DeepSeek (``run_reflection_call``).
       - drift_canary weekly hard-opinion probe (agents.drift_canary).
 
     Differs from ``run_user_turn`` / ``run_visible_proactive`` in three ways:
@@ -838,8 +983,41 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
 async def run_reflection_call(prompt: str) -> str:
     """Single LLM call for the daily reflection (no tool use expected).
 
-    Routes to the aux model (openrouter deepseek or haiku subscription) —
-    NOT Sonnet — so reflection is cheap. Neutral system prompt, no MCP
-    servers, no hooks, no session resume.
+    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash. Cost is
+    ~$0.14/$0.28 per 1M tokens, which is orders of magnitude cheaper than
+    Sonnet and sufficient for YAML extraction / topic tagging / consolidation.
+
+    No MCP servers, no hooks, no session resume. Any callers that were
+    previously using Haiku or the Claude SDK for reflection must use this
+    function. Token cap is 2048 to accommodate longer YAML reflection outputs
+    (daily reflection prompt + entity blocks can produce 800-1200 tokens).
     """
-    return await _call_aux_llm(prompt)
+    return await _call_aux_llm(prompt, max_tokens=2048)
+
+
+async def run_aux_composition(
+    prompt: str,
+    *,
+    system: str | None = None,
+    max_tokens: int = 1024,
+) -> str:
+    """Cheap LLM call for private text-generation tasks: diary, future_letter,
+    and any other composition that does NOT need SDK tools or session context.
+
+    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash.
+    Unlike ``run_internal_control``, this path never spawns an SDK subprocess
+    — it's pure httpx, so there is no per-turn budget, no process fork, and
+    no risk of leaking into the live session. Use for:
+
+    - ``evening_diary.compose_diary`` — private diary composition
+    - ``future_letter.pick_decision_theme`` / ``compose_letter`` — monthly letter
+    - Any future private-generation task that needs >512 tokens but no tools
+
+    Token default is 1024 (composition tasks produce longer output than YAML
+    classifiers but shorter than weekly consolidation). Pass a higher value
+    (e.g. 2048) for long-form letter bodies.
+    """
+    kwargs: dict = {"max_tokens": max_tokens}
+    if system is not None:
+        kwargs["system"] = system
+    return await _call_aux_llm(prompt, **kwargs)

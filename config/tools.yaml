@@ -99,13 +99,12 @@ mcp_servers:
 
   github:
     bucket: 3
-    # NOTE: @modelcontextprotocol/server-github is archived upstream.
-    # Pinned to the final 1.0.1 release; migrate to a maintained fork
-    # before security patches are needed.
+    # Migrated from archived @modelcontextprotocol/server-github@1.0.1
+    # to the maintained @github/mcp-server (Sprint A).
     command: "npx"
     args:
       - "-y"
-      - "@modelcontextprotocol/server-github@1.0.1"
+      - "@github/mcp-server@0.3.0"
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: {from_env: GITHUB_PERSONAL_ACCESS_TOKEN}
     warm_pool_ttl_sec: 1800
@@ -153,7 +152,7 @@ mcp_servers:
       - "git+https://github.com/jkawamoto/mcp-youtube-transcript@v0.6.4"
       - "mcp-youtube-transcript"
     env: {}
-    warm_pool_ttl_sec: 0
+    warm_pool_ttl_sec: 300
 
   duckdb:
     bucket: 3
@@ -170,7 +169,7 @@ mcp_servers:
       - "--query-timeout"
       - "15"
     env: {}
-    warm_pool_ttl_sec: 0
+    warm_pool_ttl_sec: 300
 
 # ============================================================================
 # Tools
@@ -195,6 +194,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: orchestration
+    operation: dispatch
+    risk_tier: medium
+    credentials: null
+    example: "dispatch parallel subagent tasks"
+    presentation_hint: null
 
   - id: "WebFetch"
     bucket: 1
@@ -202,6 +207,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^WebFetch$"]
+    domain: web
+    operation: read
+    risk_tier: medium
+    credentials: null
+    example: "fetch https://example.com"
+    presentation_hint: search_hits
 
   - id: "WebSearch"
     bucket: 1
@@ -209,6 +220,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^WebSearch$"]
+    domain: web
+    operation: read
+    risk_tier: medium
+    credentials: null
+    example: "search for 'python asyncio tutorial'"
+    presentation_hint: search_hits
 
   # --------------------------------------------------------------------------
   # hikari_router (bucket 1) — BM25 tool-search for deferred bucket-2/3 tools
@@ -219,6 +236,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: tooling
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "tool_search('weather')"
+    presentation_hint: list_of_records
 
   # --------------------------------------------------------------------------
   # hikari_memory (bucket 1)
@@ -229,6 +252,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_memory__recall$"]
+    domain: memory
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "recall('birthday')"
+    presentation_hint: search_hits
 
   - id: "mcp__hikari_memory__remember"
     bucket: 1
@@ -236,6 +265,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: memory
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "remember('prefers dark coffee')"
+    presentation_hint: null
 
   - id: "mcp__hikari_memory__mark_fact_invalid"
     bucket: 1
@@ -244,6 +279,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: memory
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "mark_fact_invalid(fact_id='abc')"
+    presentation_hint: null
 
   - id: "mcp__hikari_memory__update_core_block"
     bucket: 1
@@ -252,6 +293,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: memory
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "update_core_block('mood_today', 'tired')"
+    presentation_hint: null
 
   - id: "mcp__hikari_memory__task_create"
     bucket: 1
@@ -259,6 +306,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: memory
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "task_create('follow up about the demo')"
+    presentation_hint: null
 
   - id: "mcp__hikari_memory__task_update"
     bucket: 1
@@ -266,6 +319,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: memory
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "task_update(id='x', status='done')"
+    presentation_hint: null
 
   - id: "mcp__hikari_memory__session_search"
     bucket: 1
@@ -273,6 +332,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_memory__session_search$"]
+    domain: memory
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "session_search('that convo about the thesis')"
+    presentation_hint: search_hits
 
   # --------------------------------------------------------------------------
   # hikari_photo (bucket 1)
@@ -283,6 +348,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: media
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "generate_photo(mood='focused')"
+    presentation_hint: file_preview
 
   # --------------------------------------------------------------------------
   # hikari_wiki (bucket 1)
@@ -293,6 +364,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__wiki_search$"]
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "wiki_search('graphiti')"
+    presentation_hint: search_hits
 
   - id: "mcp__hikari_wiki__wiki_read"
     bucket: 1
@@ -300,6 +377,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__wiki_read$"]
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "wiki_read('projects/hikari/hikari.md')"
+    presentation_hint: wiki_note
 
   - id: "mcp__hikari_wiki__wiki_append"
     bucket: 1
@@ -307,6 +390,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: wiki
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "wiki_append('log.md', '## entry')"
+    presentation_hint: null
 
   - id: "mcp__hikari_wiki__wiki_backlinks"
     bucket: 1
@@ -314,6 +403,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "wiki_backlinks('projects/hikari/hikari.md')"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_wiki__wiki_list"
     bucket: 1
@@ -321,6 +416,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__wiki_list$"]
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "wiki_list('projects/hikari/')"
+    presentation_hint: wiki_tree
 
   - id: "mcp__hikari_wiki__wiki_tree"
     bucket: 1
@@ -328,6 +429,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__wiki_tree$"]
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "wiki_tree('projects/hikari/', depth=2)"
+    presentation_hint: wiki_tree
 
   - id: "mcp__hikari_wiki__morning_brief"
     bucket: 1
@@ -335,6 +442,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_wiki__morning_brief$"]
+    domain: wiki
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "morning_brief('ai')"
+    presentation_hint: morning_brief_digest
 
   # --------------------------------------------------------------------------
   # hikari_dispatch (bucket 1)
@@ -345,6 +458,12 @@ tools:
     gate: gatekeeper
     untrusted_output: false
     wrap_patterns: []
+    domain: orchestration
+    operation: dispatch
+    risk_tier: high
+    credentials: null
+    example: "dispatch_claude_session(prompt='summarize...')"
+    presentation_hint: null
 
   # --------------------------------------------------------------------------
   # hikari_codex (bucket 1)
@@ -355,6 +474,12 @@ tools:
     gate: null
     untrusted_output: false
     wrap_patterns: []
+    domain: codex
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "list_codex_reports()"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_codex__read_codex_report"
     bucket: 1
@@ -362,6 +487,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_codex__read_codex_report$"]
+    domain: codex
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "read_codex_report('security-review-2026-05')"
+    presentation_hint: wiki_note
 
   # --------------------------------------------------------------------------
   # hikari_utility (bucket 1) — explicit names for untrusted/wrap; rest auto
@@ -372,6 +503,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__translate$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: DEEPL_API_KEY
+    example: "translate('как дела', target='en')"
+    presentation_hint: scalar
 
   - id: "mcp__hikari_utility__weather_fetch"
     bucket: 1
@@ -379,6 +516,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__weather_fetch$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "weather_fetch(lat=59.9, lon=10.7)"
+    presentation_hint: weather_three_window
 
   - id: "mcp__hikari_utility__arxiv_search"
     bucket: 1
@@ -386,6 +529,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__arxiv_search$"]
+    domain: research
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "arxiv_search('diffusion models', days=14)"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__places_search"
     bucket: 1
@@ -393,6 +542,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__places_search$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "places_search('ramen', lat=59.9, lon=10.7)"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__place_open_now"
     bucket: 1
@@ -400,6 +555,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__place_open_now$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "place_open_now(osm_id='...', lat=59.9, lon=10.7)"
+    presentation_hint: scalar
 
   - id: "mcp__hikari_utility__ytmusic_recent"
     bucket: 1
@@ -407,6 +568,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__ytmusic_recent$"]
+    domain: media
+    operation: read
+    risk_tier: low
+    credentials: YTMUSIC_BROWSER_JSON_PATH
+    example: "ytmusic_recent(limit=5)"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__ytmusic_search"
     bucket: 1
@@ -414,6 +581,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__ytmusic_search$"]
+    domain: media
+    operation: read
+    risk_tier: low
+    credentials: YTMUSIC_BROWSER_JSON_PATH
+    example: "ytmusic_search('Daughter Youth')"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__ytmusic_library"
     bucket: 1
@@ -421,6 +594,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__ytmusic_library$"]
+    domain: media
+    operation: read
+    risk_tier: low
+    credentials: YTMUSIC_BROWSER_JSON_PATH
+    example: "ytmusic_library()"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__currency_convert"
     bucket: 1
@@ -428,6 +607,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__currency_convert$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "currency_convert(50, 'EUR', 'UAH')"
+    presentation_hint: scalar
 
   - id: "mcp__hikari_utility__note_search"
     bucket: 1
@@ -435,6 +620,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__note_search$"]
+    domain: notes
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "note_search('thesis draft')"
+    presentation_hint: search_hits
 
   - id: "mcp__hikari_utility__note_read"
     bucket: 1
@@ -442,6 +633,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__note_read$"]
+    domain: notes
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "note_read('thesis ideas')"
+    presentation_hint: wiki_note
 
   - id: "mcp__hikari_utility__note_create"
     bucket: 1
@@ -449,6 +646,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__note_create$"]
+    domain: notes
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "note_create('New note', 'content here')"
+    presentation_hint: null
 
   # Prefix entries matching the engagement.yaml untrusted substring patterns
   # These are wildcards covering mcp__hikari_utility__places_* and ytmusic_*
@@ -459,6 +662,12 @@ tools:
     access_mode: read
     untrusted_output: true
     wrap_patterns: []
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "places_* wildcard"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__ytmusic_*"
     bucket: 1
@@ -467,6 +676,12 @@ tools:
     access_mode: read
     untrusted_output: true
     wrap_patterns: []
+    domain: media
+    operation: read
+    risk_tier: low
+    credentials: YTMUSIC_BROWSER_JSON_PATH
+    example: "ytmusic_* wildcard"
+    presentation_hint: list_of_records
 
   - id: "mcp__hikari_utility__read_attachment"
     bucket: 1
@@ -474,6 +689,12 @@ tools:
     gate: null
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__read_attachment$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "read_attachment('data/user_documents/report.pdf')"
+    presentation_hint: file_preview
 
   - id: "mcp__hikari_utility__python_run"
     bucket: 1
@@ -482,6 +703,12 @@ tools:
     gate_timeout_sec: 120
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__python_run$"]
+    domain: utility
+    operation: execute
+    risk_tier: high
+    credentials: null
+    example: "python_run('import pandas as pd')"
+    presentation_hint: scalar
 
   - id: "mcp__hikari_utility__receipt_add"
     bucket: 1
@@ -490,6 +717,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "receipt_add(category='made', text='shipped the prototype')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__receipt_set_note"
     bucket: 1
@@ -498,6 +731,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "receipt_set_note(id='x', note='context')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__receipt_delete"
     bucket: 1
@@ -506,6 +745,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "receipt_delete(id='x')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__decision_log_capture"
     bucket: 1
@@ -514,6 +759,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "decision_log_capture('ships friday', predicted_p=0.8, resolve_by='2026-05-30')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__decision_log_resolve"
     bucket: 1
@@ -522,6 +773,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "decision_log_resolve(id='x', outcome=1)"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__link_save"
     bucket: 1
@@ -530,6 +787,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "link_save('https://...', kind='later')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__link_update"
     bucket: 1
@@ -538,6 +801,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "link_update(id='x', kind='useful')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__link_delete"
     bucket: 1
@@ -546,6 +815,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tracking
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "link_delete(id='x')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__reminder_create"
     bucket: 1
@@ -554,6 +829,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "reminder_create('call dentist', at='2026-05-26T10:00:00')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__reminder_cancel"
     bucket: 1
@@ -562,6 +843,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "reminder_cancel(id='x')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__reminder_snooze"
     bucket: 1
@@ -570,6 +857,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "reminder_snooze(id='x', minutes=30)"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__calendar_get_events"
     bucket: 1
@@ -579,6 +872,12 @@ tools:
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__calendar_get_events$"]
     description: "Fetch Google Calendar events (typed adapter; direct MCP call)"
+    domain: scheduling
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "calendar_get_events(days_ahead=7)"
+    presentation_hint: list_of_records
 
   # Skill management tools — write/external access for create/approve/run.
   - id: "mcp__hikari_utility__skill_create"
@@ -588,6 +887,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tooling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "skill_create(name='morning-checkin')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__skill_approve"
     bucket: 1
@@ -596,6 +901,12 @@ tools:
     access_mode: write
     untrusted_output: false
     wrap_patterns: []
+    domain: tooling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "skill_approve(name='morning-checkin')"
+    presentation_hint: null
 
   - id: "mcp__hikari_utility__run_skill"
     bucket: 1
@@ -603,7 +914,13 @@ tools:
     gate: null
     access_mode: write
     untrusted_output: true
-    wrap_patterns: []
+    wrap_patterns: ["^mcp__hikari_utility__run_skill$"]
+    domain: tooling
+    operation: execute
+    risk_tier: medium
+    credentials: null
+    example: "run_skill('morning-checkin')"
+    presentation_hint: null
 
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
@@ -615,6 +932,12 @@ tools:
     access_mode: read
     untrusted_output: false
     wrap_patterns: []
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "calc('2**32')"
+    presentation_hint: scalar
 
   # --------------------------------------------------------------------------
   # External MCP servers (bucket 3) — explicit gated tools first
@@ -631,6 +954,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "send that email"
+    domain: gmail
+    operation: write
+    risk_tier: critical
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_send_email(to='...', subject='...', body='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__gmail_reply_to_email"
     bucket: 3
@@ -642,6 +971,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "send that reply"
+    domain: gmail
+    operation: write
+    risk_tier: critical
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_reply_to_email(thread_id='...', body='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__gmail_bulk_delete_messages"
     bucket: 3
@@ -653,6 +988,12 @@ tools:
       provider: google
       required: ["https://mail.google.com/"]
       action: "nuke them"
+    domain: gmail
+    operation: write
+    risk_tier: critical
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_bulk_delete_messages(query='from:spam@...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__delete_calendar_event"
     bucket: 3
@@ -664,6 +1005,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/calendar"]
       action: "delete that event"
+    domain: calendar
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "delete_calendar_event(event_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__drive_delete_file"
     bucket: 3
@@ -675,6 +1022,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "delete that file"
+    domain: drive
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_delete_file(file_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__create_calendar_event"
     bucket: 3
@@ -686,6 +1039,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/calendar"]
       action: "create that event"
+    domain: calendar
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "create_calendar_event(title='...', start='...', end='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__drive_delete_folder"
     bucket: 3
@@ -697,6 +1056,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "delete that folder"
+    domain: drive
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_delete_folder(folder_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__drive_upload_file"
     bucket: 3
@@ -708,6 +1073,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "upload that file"
+    domain: drive
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_upload_file(name='report.pdf', content='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__create_gmail_draft"
     bucket: 3
@@ -719,6 +1090,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "create that draft"
+    domain: gmail
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "create_gmail_draft(to='...', subject='...', body='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__delete_gmail_draft"
     bucket: 3
@@ -730,6 +1107,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "delete that draft"
+    domain: gmail
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "delete_gmail_draft(draft_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__gmail_send_draft"
     bucket: 3
@@ -741,6 +1124,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "send that draft"
+    domain: gmail
+    operation: write
+    risk_tier: critical
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_send_draft(draft_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__drive_create_folder"
     bucket: 3
@@ -752,6 +1141,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "create that folder"
+    domain: drive
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_create_folder(name='Projects/2026')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_create_document"
     bucket: 3
@@ -763,6 +1158,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "create that doc"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_create_document(title='Sprint A Notes')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_append_text"
     bucket: 3
@@ -774,6 +1175,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "append to that doc"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_append_text(doc_id='...', text='new section')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_insert_text"
     bucket: 3
@@ -785,6 +1192,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "insert into that doc"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_insert_text(doc_id='...', text='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_prepend_text"
     bucket: 3
@@ -796,6 +1209,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "prepend to that doc"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_prepend_text(doc_id='...', text='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_insert_image"
     bucket: 3
@@ -807,6 +1226,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "insert that image"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_insert_image(doc_id='...', url='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__docs_batch_update"
     bucket: 3
@@ -818,6 +1243,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "batch-update that doc"
+    domain: docs
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_batch_update(doc_id='...', requests=[...])"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_create_spreadsheet"
     bucket: 3
@@ -829,6 +1260,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "create that spreadsheet"
+    domain: sheets
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_create_spreadsheet(title='Budget 2026')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_add_sheet"
     bucket: 3
@@ -840,6 +1277,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add that sheet"
+    domain: sheets
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_add_sheet(spreadsheet_id='...', title='Q2')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_delete_sheet"
     bucket: 3
@@ -851,6 +1294,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "delete that sheet"
+    domain: sheets
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_delete_sheet(spreadsheet_id='...', sheet_id=0)"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_append_rows"
     bucket: 3
@@ -862,6 +1311,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "append those rows"
+    domain: sheets
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_append_rows(spreadsheet_id='...', values=[['a','b']])"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_write_range"
     bucket: 3
@@ -873,6 +1328,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "write that range"
+    domain: sheets
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_write_range(spreadsheet_id='...', range='A1:B2', values=[['x']])"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__sheets_clear_range"
     bucket: 3
@@ -884,6 +1345,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "clear that range"
+    domain: sheets
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_clear_range(spreadsheet_id='...', range='A1:Z100')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__create_presentation"
     bucket: 3
@@ -895,6 +1362,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "create that presentation"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "create_presentation(title='Q1 Review')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__create_presentation_from_markdown"
     bucket: 3
@@ -906,6 +1379,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "create that presentation"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "create_presentation_from_markdown(title='...', markdown='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__create_slide"
     bucket: 3
@@ -917,6 +1396,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add that slide"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "create_slide(presentation_id='...', layout='BLANK')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__delete_slide"
     bucket: 3
@@ -928,6 +1413,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "delete that slide"
+    domain: slides
+    operation: write
+    risk_tier: high
+    credentials: GOOGLE_WORKSPACE_*
+    example: "delete_slide(presentation_id='...', slide_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__duplicate_slide"
     bucket: 3
@@ -939,6 +1430,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "duplicate that slide"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "duplicate_slide(presentation_id='...', slide_id='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__add_text_to_slide"
     bucket: 3
@@ -950,6 +1447,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add text to that slide"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "add_text_to_slide(presentation_id='...', slide_id='...', text='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__add_formatted_text_to_slide"
     bucket: 3
@@ -961,6 +1464,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add formatted text"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "add_formatted_text_to_slide(presentation_id='...', slide_id='...', text='...')"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__add_bulleted_list_to_slide"
     bucket: 3
@@ -972,6 +1481,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add that list"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "add_bulleted_list_to_slide(presentation_id='...', slide_id='...', items=['a','b'])"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__add_table_to_slide"
     bucket: 3
@@ -983,6 +1498,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add that table"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "add_table_to_slide(presentation_id='...', slide_id='...', rows=3, cols=3)"
+    presentation_hint: null
 
   - id: "mcp__google_workspace__add_slide_notes"
     bucket: 3
@@ -994,6 +1515,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "add those slide notes"
+    domain: slides
+    operation: write
+    risk_tier: medium
+    credentials: GOOGLE_WORKSPACE_*
+    example: "add_slide_notes(presentation_id='...', slide_id='...', notes='...')"
+    presentation_hint: null
 
   # Google Workspace — explicit read tools (13 entries)
   # Scopes match the granted write scopes — gmail.modify covers read+write,
@@ -1009,6 +1536,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "read gmail"
+    domain: gmail
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "query_gmail_emails(query='is:unread from:boss@...')"
+    presentation_hint: list_of_records
 
   - id: "mcp__google_workspace__gmail_get_message_details"
     bucket: 3
@@ -1021,6 +1554,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "read message details"
+    domain: gmail
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_get_message_details(message_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__google_workspace__gmail_get_attachment_content"
     bucket: 3
@@ -1033,6 +1572,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
       action: "read attachment"
+    domain: gmail
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "gmail_get_attachment_content(message_id='...', attachment_id='...')"
+    presentation_hint: file_preview
 
   - id: "mcp__google_workspace__calendar_get_events"
     bucket: 3
@@ -1045,6 +1590,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/calendar"]
       action: "read calendar events"
+    domain: calendar
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "calendar_get_events(days_ahead=7)"
+    presentation_hint: list_of_records
 
   - id: "mcp__google_workspace__calendar_get_event_details"
     bucket: 3
@@ -1057,6 +1608,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/calendar"]
       action: "read event details"
+    domain: calendar
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "calendar_get_event_details(event_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__google_workspace__drive_search_files"
     bucket: 3
@@ -1069,6 +1626,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "search drive files"
+    domain: drive
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_search_files(query='thesis draft')"
+    presentation_hint: list_of_records
 
   - id: "mcp__google_workspace__drive_read_file_content"
     bucket: 3
@@ -1081,6 +1644,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read file content"
+    domain: drive
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_read_file_content(file_id='...')"
+    presentation_hint: file_preview
 
   - id: "mcp__google_workspace__drive_list_shared_drives"
     bucket: 3
@@ -1093,6 +1662,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "list shared drives"
+    domain: drive
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "drive_list_shared_drives()"
+    presentation_hint: list_of_records
 
   - id: "mcp__google_workspace__docs_get_document_metadata"
     bucket: 3
@@ -1105,6 +1680,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read doc metadata"
+    domain: docs
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_get_document_metadata(doc_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__google_workspace__docs_get_content_as_markdown"
     bucket: 3
@@ -1117,6 +1698,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read doc content"
+    domain: docs
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "docs_get_content_as_markdown(doc_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__google_workspace__sheets_read_range"
     bucket: 3
@@ -1129,6 +1716,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read sheet range"
+    domain: sheets
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "sheets_read_range(spreadsheet_id='...', range='A1:Z100')"
+    presentation_hint: list_of_records
 
   - id: "mcp__google_workspace__get_presentation"
     bucket: 3
@@ -1141,6 +1734,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read presentation"
+    domain: slides
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "get_presentation(presentation_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__google_workspace__get_slides"
     bucket: 3
@@ -1153,6 +1752,12 @@ tools:
       provider: google
       required: ["https://www.googleapis.com/auth/drive"]
       action: "read slides"
+    domain: slides
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "get_slides(presentation_id='...')"
+    presentation_hint: list_of_records
 
   # Google Workspace — wildcard catch-all (fail-closed: unknown tools denied)
   # access_mode=write so any future upstream tool resolves wildcard+write →
@@ -1164,6 +1769,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__google_workspace__"]
+    domain: google_workspace
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "* wildcard for GW tools"
+    presentation_hint: null
 
   # Notion — gated (writes)
   - id: "mcp__notion__API-patch-block-children"
@@ -1176,6 +1787,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "write to notion"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-patch-block-children(block_id='...', children=[...])"
+    presentation_hint: null
 
   - id: "mcp__notion__API-update-a-block"
     bucket: 3
@@ -1187,6 +1804,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "update that notion block"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-update-a-block(block_id='...')"
+    presentation_hint: null
 
   - id: "mcp__notion__API-delete-a-block"
     bucket: 3
@@ -1198,6 +1821,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "delete that notion block"
+    domain: notion
+    operation: write
+    risk_tier: high
+    credentials: NOTION_TOKEN
+    example: "API-delete-a-block(block_id='...')"
+    presentation_hint: null
 
   - id: "mcp__notion__API-patch-page"
     bucket: 3
@@ -1209,6 +1838,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "update that notion page"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-patch-page(page_id='...', properties={...})"
+    presentation_hint: null
 
   - id: "mcp__notion__API-post-page"
     bucket: 3
@@ -1220,6 +1855,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "create that notion page"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-post-page(parent={...}, properties={...})"
+    presentation_hint: null
 
   - id: "mcp__notion__API-create-a-data-source"
     bucket: 3
@@ -1231,6 +1872,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "create that data source"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-create-a-data-source(...)"
+    presentation_hint: null
 
   - id: "mcp__notion__API-update-a-data-source"
     bucket: 3
@@ -1242,6 +1889,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "update that data source"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-update-a-data-source(...)"
+    presentation_hint: null
 
   - id: "mcp__notion__API-move-page"
     bucket: 3
@@ -1253,6 +1906,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "move that notion page"
+    domain: notion
+    operation: write
+    risk_tier: medium
+    credentials: NOTION_TOKEN
+    example: "API-move-page(page_id='...', parent_id='...')"
+    presentation_hint: null
 
   - id: "mcp__notion__API-create-a-comment"
     bucket: 3
@@ -1264,6 +1923,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "post that comment"
+    domain: notion
+    operation: write
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-create-a-comment(parent={...}, rich_text=[...])"
+    presentation_hint: null
 
   # Notion — explicit read tools (13 entries)
   # Falling back to spec list — notion MCP introspect errors on boot timeout.
@@ -1278,6 +1943,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion identity"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-get-self()"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-get-users"
     bucket: 3
@@ -1290,6 +1961,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "list notion users"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-get-users()"
+    presentation_hint: list_of_records
 
   - id: "mcp__notion__API-get-user"
     bucket: 3
@@ -1302,6 +1979,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion user"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-get-user(user_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-retrieve-a-page"
     bucket: 3
@@ -1314,6 +1997,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion page"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-page(page_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-retrieve-a-page-property"
     bucket: 3
@@ -1326,6 +2015,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read page property"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-page-property(page_id='...', property_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-retrieve-a-database"
     bucket: 3
@@ -1338,6 +2033,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion database"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-database(database_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-retrieve-a-block"
     bucket: 3
@@ -1350,6 +2051,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion block"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-block(block_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-get-block-children"
     bucket: 3
@@ -1362,6 +2069,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read block children"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-get-block-children(block_id='...')"
+    presentation_hint: list_of_records
 
   - id: "mcp__notion__API-post-search"
     bucket: 3
@@ -1374,6 +2087,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "search notion"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-post-search(query='sprint plan')"
+    presentation_hint: search_hits
 
   - id: "mcp__notion__API-retrieve-a-comment"
     bucket: 3
@@ -1386,6 +2105,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read notion comment"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-comment(comment_id='...')"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-retrieve-a-data-source"
     bucket: 3
@@ -1398,6 +2123,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "read data source"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-retrieve-a-data-source(...)"
+    presentation_hint: wiki_note
 
   - id: "mcp__notion__API-list-data-source-templates"
     bucket: 3
@@ -1410,6 +2141,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "list data source templates"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-list-data-source-templates()"
+    presentation_hint: list_of_records
 
   - id: "mcp__notion__API-query-data-source"
     bucket: 3
@@ -1422,6 +2159,12 @@ tools:
       provider: notion
       required: ["_present"]
       action: "query data source"
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "API-query-data-source(...)"
+    presentation_hint: list_of_records
 
   # Notion — wildcard catch-all (fail-closed: unknown tools denied)
   # access_mode=write so any future upstream tool resolves wildcard+write →
@@ -1433,6 +2176,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__notion__"]
+    domain: notion
+    operation: read
+    risk_tier: low
+    credentials: NOTION_TOKEN
+    example: "* wildcard for Notion tools"
+    presentation_hint: null
 
   # GitHub — gated (destructive/state-changing)
   - id: "mcp__github__create_issue"
@@ -1445,6 +2194,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "create that issue"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_issue(repo='owner/repo', title='Bug: ...')"
+    presentation_hint: null
 
   - id: "mcp__github__create_pull_request"
     bucket: 3
@@ -1456,6 +2211,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "open that pull request"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_pull_request(repo='...', title='...', head='feat/x', base='main')"
+    presentation_hint: null
 
   - id: "mcp__github__merge_pull_request"
     bucket: 3
@@ -1467,6 +2228,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "merge that pull request"
+    domain: github
+    operation: write
+    risk_tier: high
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "merge_pull_request(repo='...', pull_number=42)"
+    presentation_hint: null
 
   - id: "mcp__github__delete_file"
     bucket: 3
@@ -1478,6 +2245,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "delete that file"
+    domain: github
+    operation: write
+    risk_tier: high
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "delete_file(repo='...', path='old.txt', message='remove')"
+    presentation_hint: null
 
   - id: "mcp__github__delete_repository"
     bucket: 3
@@ -1490,6 +2263,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "delete that repository"
+    domain: github
+    operation: write
+    risk_tier: critical
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "delete_repository(repo='owner/old-repo')"
+    presentation_hint: null
 
   - id: "mcp__github__add_issue_comment"
     bucket: 3
@@ -1501,6 +2280,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "post that issue comment"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "add_issue_comment(repo='...', issue_number=7, body='...')"
+    presentation_hint: null
 
   - id: "mcp__github__create_branch"
     bucket: 3
@@ -1512,6 +2297,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "create that branch"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_branch(repo='...', branch='feat/x', from_branch='main')"
+    presentation_hint: null
 
   - id: "mcp__github__create_or_update_file"
     bucket: 3
@@ -1523,6 +2314,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "commit that file"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_or_update_file(repo='...', path='...', content='...', message='...')"
+    presentation_hint: null
 
   - id: "mcp__github__create_pull_request_review"
     bucket: 3
@@ -1534,6 +2331,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "submit that PR review"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_pull_request_review(repo='...', pull_number=42, event='APPROVE')"
+    presentation_hint: null
 
   - id: "mcp__github__create_repository"
     bucket: 3
@@ -1545,6 +2348,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "create that repo"
+    domain: github
+    operation: write
+    risk_tier: high
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "create_repository(name='new-repo', private=True)"
+    presentation_hint: null
 
   - id: "mcp__github__fork_repository"
     bucket: 3
@@ -1556,6 +2365,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "fork that repo"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "fork_repository(repo='upstream/lib')"
+    presentation_hint: null
 
   - id: "mcp__github__push_files"
     bucket: 3
@@ -1567,6 +2382,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "push those files"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "push_files(repo='...', branch='feat/x', files=[...], message='...')"
+    presentation_hint: null
 
   - id: "mcp__github__update_issue"
     bucket: 3
@@ -1578,6 +2399,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "update that issue"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "update_issue(repo='...', issue_number=7, state='closed')"
+    presentation_hint: null
 
   - id: "mcp__github__update_pull_request_branch"
     bucket: 3
@@ -1589,6 +2416,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "update that PR branch"
+    domain: github
+    operation: write
+    risk_tier: medium
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "update_pull_request_branch(repo='...', pull_number=42)"
+    presentation_hint: null
 
   # GitHub — explicit read tools (14 entries)
   - id: "mcp__github__get_file_contents"
@@ -1602,6 +2435,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read file contents"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_file_contents(repo='...', path='src/main.py')"
+    presentation_hint: wiki_note
 
   - id: "mcp__github__list_commits"
     bucket: 3
@@ -1614,6 +2453,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "list commits"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "list_commits(repo='...', sha='main')"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_issue"
     bucket: 3
@@ -1626,6 +2471,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read issue"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_issue(repo='...', issue_number=7)"
+    presentation_hint: wiki_note
 
   - id: "mcp__github__list_issues"
     bucket: 3
@@ -1638,6 +2489,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "list issues"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "list_issues(repo='...', state='open')"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__search_issues"
     bucket: 3
@@ -1650,6 +2507,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "search issues"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "search_issues(query='is:open label:bug')"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_pull_request"
     bucket: 3
@@ -1662,6 +2525,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read pull request"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_pull_request(repo='...', pull_number=42)"
+    presentation_hint: wiki_note
 
   - id: "mcp__github__list_pull_requests"
     bucket: 3
@@ -1674,6 +2543,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "list pull requests"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "list_pull_requests(repo='...', state='open')"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_pull_request_comments"
     bucket: 3
@@ -1686,6 +2561,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read PR comments"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_pull_request_comments(repo='...', pull_number=42)"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_pull_request_files"
     bucket: 3
@@ -1698,6 +2579,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read PR files"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_pull_request_files(repo='...', pull_number=42)"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_pull_request_reviews"
     bucket: 3
@@ -1710,6 +2597,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read PR reviews"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_pull_request_reviews(repo='...', pull_number=42)"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__get_pull_request_status"
     bucket: 3
@@ -1722,6 +2615,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "read PR status"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "get_pull_request_status(repo='...', pull_number=42)"
+    presentation_hint: wiki_note
 
   - id: "mcp__github__search_code"
     bucket: 3
@@ -1734,6 +2633,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "search code"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "search_code(query='def recall language:python')"
+    presentation_hint: search_hits
 
   - id: "mcp__github__search_repositories"
     bucket: 3
@@ -1746,6 +2651,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "search repositories"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "search_repositories(query='mcp server stars:>100')"
+    presentation_hint: list_of_records
 
   - id: "mcp__github__search_users"
     bucket: 3
@@ -1758,6 +2669,12 @@ tools:
       provider: github
       required: ["_present"]
       action: "search users"
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "search_users(query='jkawamoto')"
+    presentation_hint: list_of_records
 
   # GitHub — wildcard catch-all (fail-closed: unknown tools denied)
   # access_mode=write so any future upstream tool resolves wildcard+write →
@@ -1769,6 +2686,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__github__"]
+    domain: github
+    operation: read
+    risk_tier: low
+    credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    example: "* wildcard for GitHub tools"
+    presentation_hint: null
 
   # Apple Events — split: LLM-facing entries use gate: confirm_send so the
   # registry test can assert no LLM-facing destructive tool has gate: null.
@@ -1784,6 +2707,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "create_reminder(title='call dentist', due='2026-05-26T10:00:00')"
+    presentation_hint: null
 
   - id: "mcp__apple_events__delete_reminder"
     bucket: 3
@@ -1792,6 +2721,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "delete_reminder(reminder_id='...')"
+    presentation_hint: null
 
   - id: "mcp__apple_events__create_calendar_event"
     bucket: 3
@@ -1800,6 +2735,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "create_calendar_event(title='dentist', start='...', end='...')"
+    presentation_hint: null
 
   - id: "mcp__apple_events__delete_calendar_event"
     bucket: 3
@@ -1808,6 +2749,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "delete_calendar_event(event_id='...')"
+    presentation_hint: null
 
   - id: "mcp__apple_events__reminders_tasks"
     bucket: 3
@@ -1816,6 +2763,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "reminders_tasks(list='Hikari')"
+    presentation_hint: list_of_records
 
   # Apple Events — scheduler-internal bypass variants (gate: null).
   # These ids are never invoked by the LLM; MANAGER.call() reaches the MCP
@@ -1828,6 +2781,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "create_reminder_unsafe(...) scheduler-internal"
+    presentation_hint: null
 
   - id: "mcp__apple_events__delete_reminder_unsafe"
     bucket: 3
@@ -1836,6 +2795,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "delete_reminder_unsafe(...) scheduler-internal"
+    presentation_hint: null
 
   - id: "mcp__apple_events__create_calendar_event_unsafe"
     bucket: 3
@@ -1844,6 +2809,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "create_calendar_event_unsafe(...) scheduler-internal"
+    presentation_hint: null
 
   - id: "mcp__apple_events__delete_calendar_event_unsafe"
     bucket: 3
@@ -1852,6 +2823,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "delete_calendar_event_unsafe(...) scheduler-internal"
+    presentation_hint: null
 
   - id: "mcp__apple_events__reminders_tasks_unsafe"
     bucket: 3
@@ -1860,6 +2837,12 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
+    domain: scheduling
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "reminders_tasks_unsafe(...) scheduler-internal"
+    presentation_hint: list_of_records
 
   # Apple Events — wildcard catch-all (no gate; low-risk local device)
   # Wildcard-write would normally be denied by gatekeeper; the explicit entries
@@ -1871,15 +2854,29 @@ tools:
     access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__apple_events__"]
+    domain: scheduling
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "* wildcard for Apple Events tools"
+    presentation_hint: null
 
   # Apple Shortcuts — wildcard
+  # gate changed null → gatekeeper (Sprint A): shortcuts can run arbitrary
+  # macOS automations and must go through the GATEKEEPER approval flow.
   - id: "mcp__apple_shortcuts__*"
     bucket: 3
     server: apple_shortcuts
-    gate: null
+    gate: gatekeeper
     access_mode: destructive
     untrusted_output: true
     wrap_patterns: ["^mcp__apple_shortcuts__"]
+    domain: macos
+    operation: execute
+    risk_tier: high
+    credentials: null
+    example: "run shortcut 'Morning Summary'"
+    presentation_hint: null
 
   # Playwright — read-only navigation/inspection. Playwright tools do not
   # persist external state (no email, no file writes, no API mutations); the
@@ -1892,6 +2889,12 @@ tools:
     access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__playwright__"]
+    domain: web
+    operation: read
+    risk_tier: medium
+    credentials: null
+    example: "playwright navigate to 'https://...'"
+    presentation_hint: null
 
   # YouTube Transcript — wildcard
   - id: "mcp__youtube_transcript__*"
@@ -1901,6 +2904,12 @@ tools:
     access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__youtube_transcript__"]
+    domain: media
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "get_transcript('https://youtu.be/...')"
+    presentation_hint: wiki_note
 
   # DuckDB — wildcard
   - id: "mcp__duckdb__*"
@@ -1910,6 +2919,18 @@ tools:
     access_mode: read
     untrusted_output: true
     wrap_patterns: ["^mcp__duckdb__"]
+    domain: analytics
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "duckdb query('SELECT * FROM ... LIMIT 10')"
+    presentation_hint: list_of_records
+    domain: analytics
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "duckdb query('SELECT * FROM ... LIMIT 10')"
+    presentation_hint: list_of_records
 
 # ============================================================================
 # Subagents
@@ -1921,7 +2942,7 @@ tools:
 
 subagents:
   wiki:
-    model: haiku
+    model: sonnet
     tools:
       - "mcp__hikari_wiki__wiki_search"
       - "mcp__hikari_wiki__wiki_read"
@@ -1934,14 +2955,14 @@ subagents:
     prompt_path: "agents/subagents/prompts/wiki.prompt.md"
 
   drive_gmail:
-    model: haiku
+    model: sonnet
     tools:
       - "mcp__google_workspace__*"
     description_path: "agents/subagents/prompts/drive_gmail.description.md"
     prompt_path: "agents/subagents/prompts/drive_gmail.prompt.md"
 
   notion:
-    model: haiku
+    model: sonnet
     tools:
       - "mcp__notion__*"
     description_path: "agents/subagents/prompts/notion.description.md"
@@ -1957,7 +2978,7 @@ subagents:
     prompt_path: "agents/subagents/prompts/research.prompt.md"
 
   github:
-    model: haiku
+    model: sonnet
     tools:
       - "mcp__github__*"
     description_path: "agents/subagents/prompts/github.description.md"

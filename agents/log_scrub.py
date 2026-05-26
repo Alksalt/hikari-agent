@@ -3,6 +3,16 @@ they're written to stdout or sent anywhere off-process.
 
 Wire into the root logger in telegram_bridge.main(). For outbound Telegram
 messages, a separate decorator in tools/approvals._redact() handles that path.
+
+Pattern coverage (one-line contract; keep examples in sync with _PATTERNS):
+  - `sk-…`, `sk-ant-…`, `sk-or-…`        → OpenAI / Anthropic / OpenRouter keys
+  - `Bearer <token>`                      → any HTTP Authorization header value
+  - `ya29.…`                              → Google OAuth access tokens
+  - `<digits>:<urlsafe>`                  → Telegram bot tokens
+  - `<jwt-shape>`                         → Anthropic OAuth JWTs
+  - `ghp_/gho_/ghs_/ghr_/github_pat_…`    → GitHub PATs (classic + fine-grained)
+  - `<uuid>:dl` / `<uuid>:fx`             → DeepL Free/Pro API keys
+  - OAuth-secret JSON/url fields          → client_secret/access_token/refresh_token/code_verifier/?code=
 """
 
 from __future__ import annotations
@@ -17,6 +27,21 @@ _PATTERNS = [
     (re.compile(r"ya29\.[a-zA-Z0-9_-]+"), "[REDACTED-OAUTH-TOKEN]"),
     (re.compile(r"Bearer [a-zA-Z0-9._-]+"), "Bearer [REDACTED]"),
     (re.compile(r"\b[0-9]{9,11}:[A-Za-z0-9_-]{30,}"), "[REDACTED-TG-BOT-TOKEN]"),
+    # GitHub Personal Access Tokens — httpx stack traces from the github MCP
+    # server include raw `Authorization: Bearer ghp_…` even after the Bearer
+    # pattern above runs (some libs log the value separately). Catch the bare
+    # token form explicitly. Fine-grained PATs (`github_pat_…`) are longer and
+    # include underscores so they need their own pattern.
+    (re.compile(r"\bghp_[A-Za-z0-9]{20,}"), "[REDACTED-GITHUB-PAT]"),
+    (re.compile(r"\bgho_[A-Za-z0-9]{20,}"), "[REDACTED-GITHUB-OAUTH]"),
+    (re.compile(r"\bghs_[A-Za-z0-9]{20,}"), "[REDACTED-GITHUB-SERVER]"),
+    (re.compile(r"\bghr_[A-Za-z0-9]{20,}"), "[REDACTED-GITHUB-REFRESH]"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}"), "[REDACTED-GITHUB-PAT-FG]"),
+    # DeepL API keys end in the literal `:dl` (Free) or `:fx` (Pro) suffix.
+    # UUID-shaped body (8-4-4-4-12 hex with dashes) followed by the suffix.
+    (re.compile(
+        r"\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}:(?:dl|fx)\b"
+    ), "[REDACTED-DEEPL-KEY]"),
     # Anthropic OAuth tokens
     (re.compile(r"\b[a-zA-Z0-9_-]{32,}\.[a-zA-Z0-9_-]{32,}\.[a-zA-Z0-9_-]{16,}"), "[REDACTED-JWT]"),
     # OAuth 2.1 secrets — emitted by mcp_external/. All are token_urlsafe(32) or

@@ -67,8 +67,20 @@ def _secret_env_name() -> str:
 
 def _public_base_url(scope: dict) -> str:
     """Return the externally-visible base URL for building OAuth metadata
-    pointers. Prefer the configured ``mcp_external.public_base_url``; fall back
-    to reconstructing from the ASGI ``scope`` (scheme + host)."""
+    pointers.
+
+    Resolution order:
+    1. ``mcp_external.public_base_url_env`` — name of an env var holding the URL
+       (Sprint A indirection so the URL isn't hardcoded in config).
+    2. ``mcp_external.public_base_url`` — legacy direct value (backward compat).
+    3. Derive from ASGI ``scope`` (scheme + host).
+    """
+    import os as _os
+    env_key = cfg.get("mcp_external.public_base_url_env")
+    if env_key:
+        val = _os.environ.get(str(env_key))
+        if val:
+            return val.rstrip("/")
     configured = cfg.get("mcp_external.public_base_url")
     if configured:
         return str(configured).rstrip("/")
