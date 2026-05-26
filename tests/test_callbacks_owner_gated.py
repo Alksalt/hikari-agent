@@ -67,7 +67,9 @@ async def test_non_owner_callback_is_ignored():
 
 @pytest.mark.asyncio
 async def test_owner_approval_callback_routes():
-    """Owner tapping confirm must call GATEKEEPER.resolve with 'approved'."""
+    """Owner tapping reject must call GATEKEEPER.resolve with 'rejected'.
+    Confirm is no longer an inline button — user must type CONFIRM-SEND <id>.
+    """
     from storage import db
     from agents.telegram_bridge import _handle_callback
 
@@ -80,7 +82,7 @@ async def test_owner_approval_callback_routes():
         deadline_iso="2099-01-01T00:00:00+00:00",
         gate_kind="gatekeeper",
     )
-    update = _make_update(user_id=99999, callback_data=f"appr:confirm:{row_id}")
+    update = _make_update(user_id=99999, callback_data=f"appr:reject:{row_id}")
     ctx = _make_context()
 
     resolve_mock = AsyncMock(return_value=True)
@@ -88,7 +90,7 @@ async def test_owner_approval_callback_routes():
         gk_mock.resolve = resolve_mock
         await _handle_callback(update, ctx)
 
-    resolve_mock.assert_awaited_once_with("tuid-cb-1", "approved")
+    resolve_mock.assert_awaited_once_with("tuid-cb-1", "rejected")
 
 
 @pytest.mark.asyncio

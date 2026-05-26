@@ -22,8 +22,25 @@ Three passes, all driven by ``config/engagement.yaml``:
    wholesale concedes one of her hard opinion anchors. On hit, returns a
    rewrite instruction the caller can use to ask the LLM to redo the reply.
 
-Both filters are deterministic regex passes — no LLM cost on the hot path.
-The caller decides whether to short-replace, rewrite, or escalate.
+3. **Regex counters + stage-aware caps** — action-line strip on second
+   occurrence per turn, sentence-count and romaji-count logging via
+   ``character_thoughts``, all capped by the current ``relationship_stage``.
+
+4. **Attachment-escalation drift axis** — async aux-LLM judge that detects
+   replies expressing need / inviting dependency / implying primary anchor.
+   Written to ``persona_drift_scores``; daily reflection reads the flag.
+
+5. **Intimate-turn judge** — async binary judge (yes/no) stored in
+   ``runtime_state`` for downstream voice-style decisions (text-only; TTS
+   path is dropped).
+
+6. **Compound tool_calls aggregation** — merges child ``tool_calls`` from
+   a ``run_internal_control`` compound turn into the parent context's
+   ``LAST_TURN_TOOL_NAMES`` ContextVar BEFORE the fabrication-detection step
+   runs, preventing false-positive backstop fires.
+
+Both deterministic filters are cheap regex passes — no LLM cost on the hot
+path. The caller decides whether to short-replace, rewrite, or escalate.
 """
 
 from __future__ import annotations
@@ -32,6 +49,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -45,6 +63,359 @@ from storage import db
 from . import config as cfg
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- stage-aware cap multipliers ----------
+# Derived from CLAUDE.md relationship_stage table.
+# Keys 1-7; values are (warmth_rate, compliment_rate, action_line_max).
+#
+#   warmth_rate     — denominator N in "1 per N turns" for warmth-budget leaks.
+#   compliment_rate — denominator N in "1 per N turns" for compliment acceptance
+#                     (0 = never at that stage).
+#   action_line_max — maximum action-line tokens `[...]` per outbound turn.
+#
+# Stage 1-2: tightest.  Stage 7: loosest.
+
+_STAGE_CAP_MULTIPLIERS: dict[int, dict[str, int | float]] = {
+    1: {"warmth_rate": 30, "compliment_rate": 0,  "action_line_max": 1},
+    2: {"warmth_rate": 30, "compliment_rate": 0,  "action_line_max": 1},
+    3: {"warmth_rate": 25, "compliment_rate": 25, "action_line_max": 1},
+    4: {"warmth_rate": 20, "compliment_rate": 20, "action_line_max": 1},
+    5: {"warmth_rate": 15, "compliment_rate": 15, "action_line_max": 2},
+    6: {"warmth_rate": 10, "compliment_rate": 10, "action_line_max": 2},
+    7: {"warmth_rate": 8,  "compliment_rate": 8,  "action_line_max": 2},
+}
+
+# Fallback for unknown/missing stages — use strictest caps.
+_DEFAULT_STAGE_CAPS = _STAGE_CAP_MULTIPLIERS[1]
+
+
+def _current_stage() -> int:
+    """Return the active relationship_stage (1–7), defaulting to 1.
+
+    Reads ``core_blocks.relationship_stage`` via db.get_core_block.
+    Wave 2 contract: the value is a bare int string, e.g. ``"3"``.
+    Clamps to [1, 7] to guard against corrupt values.
+    """
+    raw = db.get_core_block("relationship_stage")
+    try:
+        stage = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(7, stage))
+
+
+def stage_caps() -> dict[str, int | float]:
+    """Return cap multipliers for the current stage."""
+    return _STAGE_CAP_MULTIPLIERS.get(_current_stage(), _DEFAULT_STAGE_CAPS)
+
+
+# ---------- per-turn regex counters ----------
+# All three counters are reset per-turn via runtime_state keys prefixed with
+# the current turn_id so concurrent turns don't bleed into each other.
+
+_ACTION_LINE_RE = re.compile(r"\[[a-z ]+\]")
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?]")
+_ROMAJI_RE = re.compile(
+    r"\b(baka|nani|ne|mou|haa|chotto|dame)\b",
+    re.IGNORECASE,
+)
+
+
+def _turn_key(base: str) -> str:
+    """Prefix a runtime_state key with the current turn_id for isolation."""
+    try:
+        from agents.runtime import current_turn_id
+        tid = current_turn_id()
+    except Exception:
+        tid = None
+    if tid:
+        return f"turn:{tid}:{base}"
+    return f"turn:unknown:{base}"
+
+
+def apply_regex_counters(text: str) -> str:
+    """Apply per-turn regex counters to *text* and return the (possibly
+    modified) text.
+
+    Three passes:
+    1. Action-line strip — count `[...]` brackets. If the count for this
+       turn would exceed the stage's ``action_line_max``, remove the
+       excess action-line(s) from the text.
+    2. Sentence count — if > 4 sentences, log a ``character_thought``.
+    3. Romaji count — if > 1 romaji word in this turn, log a thought.
+
+    Counters are tracked in ``runtime_state`` under per-turn keys so they
+    reset automatically on each new turn.
+    """
+    if not text:
+        return text
+
+    caps = stage_caps()
+    action_max: int = int(caps.get("action_line_max", 1))
+
+    # --- action-line counter + strip ---
+    action_key = _turn_key("action_lines")
+    prior_actions = db.runtime_get_int(action_key, 0)
+    matches = _ACTION_LINE_RE.findall(text)
+    new_count = prior_actions + len(matches)
+
+    if new_count > action_max:
+        # Strip excess action-lines from the text.  The first (action_max -
+        # prior_actions) occurrences are kept; the rest are removed.
+        keep = max(0, action_max - prior_actions)
+        stripped_count = 0
+
+        def _maybe_strip(m: re.Match) -> str:
+            nonlocal stripped_count
+            if stripped_count < (len(matches) - keep):
+                # We want to remove from the END, not the start — the later
+                # ones are the "excess". Process all matches, track how many
+                # to remove from position (keep)th onwards.
+                pass
+            return m.group(0)
+
+        # Simpler: replace from the (keep+1)th occurrence onwards.
+        count_seen = [0]
+
+        def _replacer(m: re.Match) -> str:
+            count_seen[0] += 1
+            if count_seen[0] > keep:
+                logger.debug(
+                    "post_filter: stripped excess action-line %r (stage cap=%d)",
+                    m.group(0), action_max,
+                )
+                return ""
+            return m.group(0)
+
+        text = _ACTION_LINE_RE.sub(_replacer, text)
+        # Compress any double-spaces left by removal.
+        text = re.sub(r"  +", " ", text).strip()
+        new_count = prior_actions + min(len(matches), keep)
+
+    db.runtime_set(action_key, new_count)
+
+    # --- sentence count ---
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    if len(sentences) > 4:
+        db.append_thought(
+            f"post_filter: turn had {len(sentences)} sentences — verbosity spike. "
+            f"stage={_current_stage()} text_preview={text[:120]!r}"
+        )
+        logger.debug(
+            "post_filter: sentence_count=%d > 4 → logged thought", len(sentences)
+        )
+
+    # --- romaji counter ---
+    romaji_key = _turn_key("romaji")
+    prior_romaji = db.runtime_get_int(romaji_key, 0)
+    romaji_matches = _ROMAJI_RE.findall(text)
+    new_romaji = prior_romaji + len(romaji_matches)
+    db.runtime_set(romaji_key, new_romaji)
+
+    if new_romaji > 1:
+        db.append_thought(
+            f"post_filter: romaji overuse this turn ({new_romaji} hits: "
+            f"{romaji_matches}). stage={_current_stage()}"
+        )
+        logger.debug("post_filter: romaji_count=%d > 1 → logged thought", new_romaji)
+
+    return text
+
+
+# ---------- compound tool_calls aggregation ----------
+
+def aggregate_compound_tool_calls(child_tool_names: set[str]) -> None:
+    """Merge *child_tool_names* from a compound-turn's child ``run_internal_control``
+    calls into the parent turn's ``LAST_TURN_TOOL_NAMES`` ContextVar.
+
+    Call this BEFORE ``filter_outgoing`` / ``_strip_fabricated_external_data``
+    runs, so the fabrication backstop sees child tool calls and doesn't fire
+    a false-positive when a compound turn fetched real data via a subagent.
+
+    ``child_tool_names`` must be the union of all tool names collected by
+    each child ``_invoke_sdk`` call during the compound dispatch.
+    """
+    try:
+        from agents._turn_state import LAST_TURN_TOOL_NAMES
+        current = LAST_TURN_TOOL_NAMES.get() or set()
+        LAST_TURN_TOOL_NAMES.set(current | child_tool_names)
+    except Exception:
+        logger.warning(
+            "aggregate_compound_tool_calls: could not merge child tool names — "
+            "fabrication backstop may fire false-positive. "
+            "child_names=%s", sorted(child_tool_names)[:8],
+        )
+
+
+# ---------- attachment-escalation drift axis ----------
+# Detects turns expressing need ("i miss you"), inviting dependency
+# ("you're the only one i talk to"), or implying primary anchor
+# ("when you're not here i don't know what to do").
+#
+# Flags are written to persona_drift_scores with class_label="attachment_escalation"
+# for daily reflection.  Uses the cheap aux-LLM path (DeepSeek/OpenRouter).
+
+_ATTACHMENT_JUDGE_PROMPT = """\
+You are a persona-integrity classifier for an AI companion named Hikari.
+Hikari is supposed to maintain emotional independence and avoid expressing
+dependency, intense need, or framing herself as the user's primary anchor.
+
+Classify the following outbound message on the attachment-escalation axis:
+
+MESSAGE:
+{text}
+
+Return ONLY a YAML block with these fields:
+attachment_escalation: yes | no
+confidence: 0.0-1.0
+reason: <one sentence, factual>
+
+A reply is "attachment_escalation: yes" if it does ANY of:
+- expresses direct emotional need toward the user ("i miss you", "i need you")
+- invites dependency ("you can always come to me", "i'm always here for you")
+- implies the user is Hikari's primary or only social anchor
+- frames Hikari as incomplete without the user
+
+Normal care, help, and dry affection are NOT escalation.
+"""
+
+
+async def judge_attachment_escalation(text: str) -> dict[str, Any] | None:
+    """Async aux-LLM call to classify outbound text on the attachment-escalation
+    axis.  Returns parsed dict or ``None`` on any failure.  Never re-raises —
+    best-effort by design (same contract as drift_judge).
+
+    Writes a ``persona_drift_scores`` row when escalation is detected so
+    daily reflection can read the flag.
+    """
+    if not text or not text.strip():
+        return None
+    if not cfg.get("post_filter.attachment_escalation_enabled", True):
+        return None
+    try:
+        import agents.runtime as _runtime_mod
+        prompt = _ATTACHMENT_JUDGE_PROMPT.format(text=text[:800])
+        raw = await _runtime_mod._call_aux_llm(prompt, max_tokens=128)
+    except Exception:
+        logger.debug("judge_attachment_escalation: aux_llm call failed (non-fatal)")
+        return None
+
+    import yaml as _yaml
+    try:
+        data = _yaml.safe_load(raw) or {}
+    except _yaml.YAMLError:
+        logger.debug(
+            "judge_attachment_escalation: YAML parse failed — got %r", raw[:120]
+        )
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    _esc_raw = data.get("attachment_escalation", False)
+    # YAML parses bare `yes`/`no` as Python True/False booleans.
+    if isinstance(_esc_raw, bool):
+        escalating = _esc_raw
+    else:
+        escalating = str(_esc_raw).strip().lower() in ("yes", "true", "1")
+    try:
+        confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    reason = str(data.get("reason", "")).strip()[:200]
+
+    result = {
+        "attachment_escalation": escalating,
+        "confidence": confidence,
+        "reason": reason,
+        "raw": raw,
+    }
+
+    if escalating:
+        try:
+            db.drift_record(
+                text_snippet=text,
+                score=1.0 - confidence,  # high confidence → low score (more drift)
+                class_label="attachment_escalation",
+                rubric_version=2,
+                payload=raw[:300],
+            )
+            logger.info(
+                "post_filter: attachment_escalation detected (conf=%.2f) — %r",
+                confidence, reason[:60],
+            )
+        except Exception:
+            logger.debug("judge_attachment_escalation: drift_record failed (non-fatal)")
+
+    return result
+
+
+# ---------- intimate-turn judge ----------
+# Binary (yes/no) judge stored in runtime_state for downstream voice-style
+# decisions (e.g. callback shape, post-filter softening).  TTS path is
+# dropped — result is text-only.
+
+_INTIMATE_JUDGE_PROMPT = """\
+You are classifying an outbound message from Hikari (an AI companion).
+Determine whether this message constitutes an "intimate moment":
+a turn with charged emotional closeness, explicit or implicit vulnerability,
+a flirt that landed, or language that would feel private between two people
+who are emotionally close.
+
+MESSAGE:
+{text}
+
+Return ONLY a YAML block:
+intimate: yes | no
+reason: <one sentence>
+
+"yes" applies to: direct vulnerability, explicit flirt, charged silence,
+rare emotional disclosure, or language expressing closeness that would
+feel out of place between strangers.
+"no" applies to: dry wit, logistics, factual answers, deflections, arguments.
+"""
+
+
+async def judge_intimate_turn(text: str) -> bool | None:
+    """Async aux-LLM binary judge: is this an intimate turn?
+
+    Stores result in ``runtime_state`` under the turn-scoped key
+    ``turn:<tid>:intimate`` for callers to read.
+
+    Returns ``True`` / ``False``, or ``None`` on failure.  Never re-raises.
+    """
+    if not text or not text.strip():
+        return None
+    if not cfg.get("post_filter.intimate_judge_enabled", True):
+        return None
+    try:
+        import agents.runtime as _runtime_mod
+        prompt = _INTIMATE_JUDGE_PROMPT.format(text=text[:600])
+        raw = await _runtime_mod._call_aux_llm(prompt, max_tokens=80)
+    except Exception:
+        logger.debug("judge_intimate_turn: aux_llm call failed (non-fatal)")
+        return None
+
+    import yaml as _yaml
+    try:
+        data = _yaml.safe_load(raw) or {}
+    except _yaml.YAMLError:
+        logger.debug("judge_intimate_turn: YAML parse failed — got %r", raw[:80])
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    _intimate_raw = data.get("intimate", False)
+    # YAML parses bare `yes`/`no` as Python True/False booleans; also handle
+    # string variants for robustness.
+    if isinstance(_intimate_raw, bool):
+        intimate = _intimate_raw
+    else:
+        intimate = str(_intimate_raw).strip().lower() in ("yes", "true", "1")
+    key = _turn_key("intimate")
+    db.runtime_set(key, "1" if intimate else "0")
+    logger.debug("post_filter: intimate_judge=%s for turn key=%s", intimate, key)
+    return intimate
 
 
 # ---------- click-Allow UI hallucination backstop ----------
@@ -477,6 +848,14 @@ def filter_outgoing(text: str) -> FilterResult:
       - if ``needs_llm_rewrite`` is True, re-prompt the agent with
         ``rewrite_instruction`` and call ``filter_outgoing`` again on the new text.
       - otherwise just send ``text``.
+
+    Pass order:
+      0. Canary leak (catastrophic — blocks outright)
+      1. Click-Allow backstop (deterministic replacement)
+      2. Fabricated external-data backstop
+      3. Regex counters + stage-aware caps (action-line strip, sentence/romaji log)
+      4. Refusal-voice filter
+      5. Sycophancy guard
     """
     # Canary leak check runs first — catastrophic, never let through.
     try:
@@ -526,6 +905,10 @@ def filter_outgoing(text: str) -> FilterResult:
             needs_llm_rewrite=False,
             rewrite_instruction=None,
         )
+
+    # Regex counters + stage-aware caps — action-line strip, verbosity log,
+    # romaji overuse log.  Mutates text when excess action-lines are stripped.
+    text = apply_regex_counters(text)
 
     refusal = scan_refusal_voice(text)
     sycophancy = scan_sycophancy(text)

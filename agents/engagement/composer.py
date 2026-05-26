@@ -1,5 +1,16 @@
 """Composer: turns a TriggerCandidate into a Hikari-voice message via
-run_visible_proactive. Per-source templates enforce payload-anchor citation."""
+run_visible_proactive. Per-source templates enforce payload-anchor citation.
+
+Security: attacker-touchable payload fields (gmail subject/sender, calendar
+title/organizer, drive name, notion page_title, weather alert_summary, etc.)
+are wrapped via ``wrap_untrusted`` BEFORE template.format(). Without wrapping,
+a malicious email subject could inject instructions into the proactive prompt
+and steer Hikari's outbound voice — the lethal-trifecta playbook (untrusted
+input + sensitive context + outbound channel). The SDK error guard after
+``run_visible_proactive`` prevents auth-401 strings from shipping in Hikari's
+voice (regression observed 2026-05-20 where a heartbeat shipped as ``Failed to
+authenticate. API Error: 401 ...``).
+"""
 from __future__ import annotations
 
 import logging
@@ -7,9 +18,40 @@ from string import Formatter
 from typing import Any
 
 from agents.engagement.triggers import TriggerCandidate
-from agents.runtime import run_visible_proactive
+from agents.injection_guard import wrap_untrusted
+from agents.runtime import looks_like_sdk_error, run_visible_proactive
 
 logger = logging.getLogger(__name__)
+
+# Per-source field → wrap source-name map. Each key is a (template_source,
+# payload_field) pair; the value is the source-name passed to wrap_untrusted,
+# which becomes the attribution tag inside the [UNTRUSTED CONTENT FROM TOOL …]
+# header. Fields NOT listed here are treated as trusted (numerics, internal
+# user-set values like reminder text are wrapped via the broad fallback set).
+#
+# Per Wave-3 security scope: subject / sender / title / organizer / name /
+# page_title / text / alert_summary / statement are all attacker-touchable
+# when they originate from external sources (email, calendar invites, drive
+# file metadata, notion page titles, weather feeds, callback episodes mined
+# from prior conversations that themselves may contain ingested URLs).
+_UNTRUSTED_FIELDS: set[str] = {
+    "subject",
+    "sender",
+    "title",
+    "organizer",
+    "name",
+    "page_title",
+    "text",
+    "alert_summary",
+    "statement",
+    "body",
+    "message",
+    "description",
+    "filename",
+    "folder",
+    "h1",
+    "place_name",
+}
 
 # ---------- per-source prompt templates ----------
 # Every template MUST include a payload-anchor token so guard.passes() can
@@ -200,28 +242,84 @@ RULES:
 """
 
 
-def _safe_format(template: str, payload: dict[str, Any]) -> str:
-    """Format template with payload. Unknown keys → '<missing>'."""
+def _wrap_field_value(source: str, field: str, value: Any) -> Any:
+    """Wrap a single payload value via ``wrap_untrusted`` when the field is
+    attacker-touchable. Non-strings (counts, probabilities, datetimes) pass
+    through unchanged — there's nothing to wrap and the LLM doesn't read
+    numeric digits as instructions. ``wrap_untrusted`` is idempotent against
+    already-wrapped delimiters (the helper escapes nested copies), so a
+    double-call cannot create a double-wrap that breaks the prompt.
+    """
+    if field not in _UNTRUSTED_FIELDS:
+        return value
+    if not isinstance(value, str):
+        return value
+    if not value:
+        return value
+    tool_name = f"engagement:{source}:{field}"
+    return wrap_untrusted(tool_name, value)
+
+
+def _safe_format(
+    template: str, payload: dict[str, Any], source: str
+) -> str:
+    """Format template with payload. Unknown keys → '<missing>'.
+
+    Wraps every attacker-touchable string field via ``wrap_untrusted`` BEFORE
+    ``template.format(...)`` so injected instructions inside an external
+    field (gmail subject, calendar title, drive file name, etc.) cannot
+    escape the data envelope. Numeric / trusted fields pass through.
+    """
     keys = {fname for _, fname, _, _ in Formatter().parse(template) if fname}
-    safe = {k: payload.get(k, "<missing>") for k in keys}
+    safe = {
+        k: _wrap_field_value(source, k, payload.get(k, "<missing>"))
+        for k in keys
+    }
     try:
         return template.format(**safe)
     except (KeyError, ValueError):
         return template
 
 
+def _format_default_payload_str(source: str, payload: dict[str, Any]) -> str:
+    """Render ``payload_str`` for the default-template branch with untrusted
+    string values wrapped. Same wrap rule as ``_safe_format``: only fields
+    in ``_UNTRUSTED_FIELDS`` and only string values get wrapped; everything
+    else uses ``repr()`` unchanged so int/float/datetime payloads still
+    render the way the model expects.
+    """
+    parts: list[str] = []
+    for k, v in payload.items():
+        if k in _UNTRUSTED_FIELDS and isinstance(v, str) and v:
+            wrapped = wrap_untrusted(f"engagement:{source}:{k}", v)
+            parts.append(f"{k}={wrapped!r}")
+        else:
+            parts.append(f"{k}={v!r}")
+    return ", ".join(parts)
+
+
 async def compose(candidate: TriggerCandidate, retry_hint: str | None = None) -> str | None:
     """Compose one proactive message from the candidate. Returns None on failure
-    or when the model signals NO_MESSAGE."""
+    or when the model signals NO_MESSAGE.
+
+    Security: all attacker-touchable payload fields go through
+    ``wrap_untrusted`` before reaching ``template.format`` so prompt-injection
+    payloads inside email subjects, calendar titles, drive names, etc. arrive
+    at the LLM inside the standard ``<<<HIKARI_UNTRUSTED_BEGIN>>>…<<<…END>>>``
+    envelope and are read as data, not instructions. After the SDK call we
+    run ``looks_like_sdk_error`` over the returned text — an Anthropic 401
+    leaking into AssistantMessage.TextBlock has shipped as Hikari's voice
+    before (2026-05-20 incident); this guard short-circuits that path.
+    """
     template = _TEMPLATES.get(candidate.source)
     if template is None:
-        payload_str = ", ".join(f"{k}={v!r}" for k, v in candidate.payload.items())
+        payload_str = _format_default_payload_str(candidate.source, candidate.payload)
         template = _DEFAULT_TEMPLATE.format(
             source=candidate.source, payload_str=payload_str
         )
         prompt = template
     else:
-        prompt = _safe_format(template, candidate.payload)
+        prompt = _safe_format(template, candidate.payload, candidate.source)
 
     if retry_hint:
         prompt = (
@@ -238,4 +336,16 @@ async def compose(candidate: TriggerCandidate, retry_hint: str | None = None) ->
 
     if not text or "NO_MESSAGE" in text.upper():
         return None
+
+    # SDK-error guard: if the SDK returned an auth/401-style error string
+    # inside an AssistantMessage TextBlock (instead of raising), do NOT ship
+    # it as Hikari's voice. Logged at ERROR level so the incident is visible.
+    if looks_like_sdk_error(text):
+        logger.error(
+            "compose: dropping SDK-error-shaped output (source=%s, head=%r)",
+            candidate.source,
+            text[:120],
+        )
+        return None
+
     return text.strip()

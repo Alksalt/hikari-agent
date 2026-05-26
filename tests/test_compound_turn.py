@@ -197,3 +197,250 @@ async def test_run_compound_turn_all_fail_raises(monkeypatch):
     ]
     with pytest.raises(RuntimeError, match="everything broke"):
         await run_compound_turn(tasks)
+
+
+# ---------------------------------------------------------------------------
+# run_compound_turn_typed (Sprint A Wave 3)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _isolated_db(tmp_path, monkeypatch):
+    """Point storage.db at a fresh temp SQLite file for each test."""
+    import os
+    from importlib import reload
+    db_path = tmp_path / "test_hikari.db"
+    monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
+    from storage import db as _db
+    reload(_db)
+    yield _db
+    # Cleanup
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_reads_in_parallel(monkeypatch, _isolated_db):
+    """Two reads → both dispatched, both done, packet status=done."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(0, 7),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="weather",
+            ),
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(8, 15),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="email",
+            ),
+        ]
+
+    async def _fake_ric(prompt, **_kwargs):
+        return f"[{prompt}]"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "weather and email", user_turn_id="t1", step_timeout=5.0,
+    )
+    assert "[weather]" in result
+    assert "[email]" in result
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_write_approval_conversion(monkeypatch, _isolated_db):
+    """A write with risk=approve_required is converted to a CONFIRM-SEND prompt and marked waiting."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="write", utterance_span=(0, 10),
+                risk_class="approve_required", approval_policy="confirm_send",
+                confidence=0.9, task="send email to alex",
+                entities=["alex"],
+            ),
+        ]
+
+    ric_calls: list[str] = []
+
+    async def _fake_ric(prompt, **_kwargs):
+        ric_calls.append(prompt)
+        return "sent"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "send email", user_turn_id="t2", step_timeout=5.0,
+    )
+    # Write should NOT have been dispatched; just queued for approval.
+    assert ric_calls == []
+    assert "CONFIRM-SEND" in result
+    assert "waiting" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_blocked_write_skipped(monkeypatch, _isolated_db):
+    """A blocked write is skipped without dispatch."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="write", utterance_span=(0, 10),
+                risk_class="blocked", approval_policy="block",
+                confidence=0.9, task="rm -rf /",
+            ),
+        ]
+
+    ric_calls: list[str] = []
+
+    async def _fake_ric(prompt, **_kwargs):
+        ric_calls.append(prompt)
+        return "ok"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "wipe everything", user_turn_id="t3", step_timeout=5.0,
+    )
+    assert ric_calls == []
+    assert "skipped" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_falls_back_on_validation_error(monkeypatch, _isolated_db):
+    """Validation error → single-LLM fallback returned to user."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+
+    async def _fake_extract(message):
+        # Overlapping spans → validation fails
+        return [
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(0, 15),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="a",
+            ),
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(5, 20),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="b",
+            ),
+        ]
+
+    fallback_called = {"hit": False}
+
+    async def _fake_ric(prompt, **_kwargs):
+        fallback_called["hit"] = True
+        return f"FALLBACK[{prompt}]"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "x" * 30, user_turn_id="t4", step_timeout=5.0,
+    )
+    assert fallback_called["hit"] is True
+    assert "FALLBACK" in result
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_falls_back_on_extractor_error(monkeypatch, _isolated_db):
+    """Extractor raises → single-LLM fallback."""
+    from agents.compound_turn import run_compound_turn_typed
+
+    async def _fake_extract(message):
+        raise ValueError("bad json from llm")
+
+    fallback_called = {"hit": False}
+
+    async def _fake_ric(prompt, **_kwargs):
+        fallback_called["hit"] = True
+        return "FALLBACK"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "anything", user_turn_id="t5",
+    )
+    assert fallback_called["hit"] is True
+    assert "FALLBACK" in result
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_read_step_timeout(monkeypatch, _isolated_db):
+    """A read step that exceeds step_timeout is marked failed; receipt reports it."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+    import asyncio
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(0, 7),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="slow",
+            ),
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(8, 15),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="fast",
+            ),
+        ]
+
+    async def _fake_ric(prompt, **_kwargs):
+        if prompt == "slow":
+            await asyncio.sleep(2.0)
+            return "slow-done"
+        return f"[{prompt}]"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    result = await run_compound_turn_typed(
+        "x" * 20, user_turn_id="t6", step_timeout=0.1,
+    )
+    assert "[fast]" in result
+    assert "failed" in result.lower() or "Timeout" in result
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_voice_lifts_flag(monkeypatch, _isolated_db):
+    """is_voice=True lifts voice_uncertainty on all nodes."""
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+
+    captured_nodes: list[CompoundTaskNode] = []
+
+    async def _fake_extract(message):
+        node = CompoundTaskNode(
+            intent_type="read", utterance_span=(0, 7),
+            risk_class="safe", approval_policy="auto",
+            confidence=0.9, task="weather",
+            voice_uncertainty=False,  # extractor didn't flag it
+        )
+        captured_nodes.append(node)
+        return [node]
+
+    async def _fake_ric(prompt, **_kwargs):
+        return f"[{prompt}]"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    await run_compound_turn_typed(
+        "weather", user_turn_id="tV", is_voice=True, step_timeout=5.0,
+    )
+    assert captured_nodes[0].voice_uncertainty is True

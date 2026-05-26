@@ -4,7 +4,8 @@ All public functions return plain strings ≤3900 chars (enforced via
 _truncate_3900).  No telegram objects; no DB writes except settings.set.
 This separation makes every formatter unit-testable without telegram mocks.
 
-Phase 6A — text MVP.
+Wave 3 — inline keyboards, /diary, /links, /receipt, /decision, /voice,
+          /reminders pagination, /proactive simplification, /tools rewrite.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ _COMMANDS: dict[str, str] = {
     "checkin":      "morning checkin: run now / skip tomorrow",
     "memory":       "query / edit the fact + message memory",
     # Tier 2 — weekly / when needed
-    "reminders":    "list active reminders with snooze/dismiss buttons",
+    "reminders":    "list active reminders with snooze/dismiss buttons (paginated)",
     "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
     "proactive":    "manage proactive sources, see recent sends, snooze a source",
     "tasks":        "list open background tasks",
@@ -45,8 +46,14 @@ _COMMANDS: dict[str, str] = {
     "approvals":    "list / cancel pending gatekeeper approvals",
     "settings":     "get or set allowlisted runtime settings",
     "capabilities": "tool families, skill count, and MCP server health",
-    "tools":        "list tool registry (policy) / recent tool_calls (recent) / audit_log (audit)",
+    "tools":        "per-family counts + last-call + warm-pool health",
     "audit":        "paginate audit_log (recent / tools / approvals / id <id>)",
+    # Tier 4 — new in Wave 3
+    "diary":        "last 5 diary entries paginated",
+    "links":        "search bookmark shelf; no arg = 10 most recent",
+    "receipt":      "day/week receipt with category filter buttons",
+    "decision":     "list pending predictions; resolve <id> <0|1>",
+    "voice":        "last voice transcript + STT health + 3 recent prompts",
 }
 
 # ---------------------------------------------------------------------------
@@ -270,14 +277,14 @@ _SETTINGS_ALLOWLIST: dict[str, dict] = {
         "validate": lambda v: v.strip().isdigit() and 0 <= int(v.strip()) <= 23,
         "reader": _read_quiet_start_hour,
         "writer": _write_quiet_start_hour,
-        "doc": "hour (0-23, UTC) when quiet hours begin — no proactive messages",
+        "doc": "hour (0-23, local time via HOME_TZ) when quiet hours begin — no proactive messages",
     },
     "quiet_end_hour": {
         "type": "int[0-23]",
         "validate": lambda v: v.strip().isdigit() and 0 <= int(v.strip()) <= 23,
         "reader": _read_quiet_end_hour,
         "writer": _write_quiet_end_hour,
-        "doc": "hour (0-23, UTC) when quiet hours end — proactives resume",
+        "doc": "hour (0-23, local time via HOME_TZ) when quiet hours end — proactives resume",
     },
     "aux_model.provider": {
         "type": "enum[openrouter,haiku_subscription]",
@@ -442,25 +449,36 @@ async def format_status(app) -> str:
     for provider, state in (await _oauth_states()).items():
         lines.append(f"oauth.{provider}: {state}")
 
-    # DB row counts
+    # DB row counts — use db.status_counts() instead of raw SQL
     try:
+        counts = _db.status_counts()
+        facts_counts = counts.get("facts", {})
+        n_facts = facts_counts.get("active", 0) + facts_counts.get("pinned", 0)
+        n_msgs = 0
+        n_eps = 0
+        n_tasks = 0
+        n_pending_approvals = 0
         with _db._conn() as c:
-            n_facts = c.execute(
-                "SELECT COUNT(*) FROM facts WHERE valid_to IS NULL"
-            ).fetchone()[0]
             n_msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            n_tasks = c.execute(
+            n_eps = c.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+            tasks_counts = counts.get("work_packets", {})
+            n_tasks_raw = c.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status='open'"
             ).fetchone()[0]
-            n_eps = c.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
             n_pending_approvals = c.execute(
                 "SELECT COUNT(*) FROM approvals WHERE status='pending'"
             ).fetchone()[0]
+        n_tasks = n_tasks_raw
         lines.append(
             f"db: {n_facts} facts, {n_msgs} msgs, {n_eps} episodes, "
             f"{n_tasks} open tasks"
         )
         lines.append(f"pending approvals: {n_pending_approvals}")
+        # surfaced from status_counts: reminders active count
+        rem_counts = counts.get("reminders", {})
+        n_rem_active = rem_counts.get("active", 0)
+        if n_rem_active:
+            lines.append(f"active reminders: {n_rem_active}")
     except Exception as exc:
         lines.append(f"db: error ({exc})")
 
@@ -533,7 +551,15 @@ async def format_status(app) -> str:
 
 
 def format_tools(subcmd: str, args: list[str]) -> str:
-    subcmd = (subcmd or "policy").lower()
+    """Per-family counts + last-call time + warm-pool health.
+
+    Subcommands:
+      (no arg)  — per-family summary with last-call timestamp + warm-pool
+      recent    — last 20 tool calls
+      audit     — last 20 audit-log rows
+      policy    — full registry grouped by access_mode (legacy view)
+    """
+    subcmd = (subcmd or "summary").lower()
 
     if subcmd in ("recent", "calls"):
         from storage import db as _db
@@ -564,25 +590,71 @@ def format_tools(subcmd: str, args: list[str]) -> str:
             lines.append(f"  {ts}  {tool}")
         return _truncate_3900("\n".join(lines))
 
-    # default: policy — group by access_mode
+    if subcmd == "policy":
+        # legacy view — group by access_mode
+        try:
+            from tools._tools_yaml import load_registry
+            reg = load_registry()
+            tools_list = reg.tools()
+        except Exception as exc:
+            return f"error loading tool registry: {exc}"
+        groups: dict[str, list[str]] = {}
+        for spec in tools_list:
+            mode = spec.access_mode or "unset"
+            groups.setdefault(mode, []).append(spec.id)
+        lines = ["tool registry by access_mode:"]
+        for mode in sorted(groups):
+            ids = sorted(groups[mode])
+            lines.append(f"\n[{mode}] ({len(ids)} tools)")
+            for tid in ids:
+                lines.append(f"  {tid}")
+        return _truncate_3900("\n".join(lines))
+
+    # default: per-family summary with last-call + warm-pool health
     try:
-        from tools._tools_yaml import load_registry
-        reg = load_registry()
-        tools_list = reg.tools()
+        from tools.catalog import get_catalog
+        catalog = get_catalog()
+        entries = catalog.entries
     except Exception as exc:
-        return f"error loading tool registry: {exc}"
+        return f"error loading tool catalog: {exc}"
 
-    groups: dict[str, list[str]] = {}
-    for spec in tools_list:
-        mode = spec.access_mode or "unset"
-        groups.setdefault(mode, []).append(spec.id)
+    # Group entries by domain (family)
+    families: dict[str, list] = {}
+    for entry in entries:
+        fam = entry.domain or "other"
+        families.setdefault(fam, []).append(entry.name)
 
-    lines = ["tool registry by access_mode:"]
-    for mode in sorted(groups):
-        ids = sorted(groups[mode])
-        lines.append(f"\n[{mode}] ({len(ids)} tools)")
-        for tid in ids:
-            lines.append(f"  {tid}")
+    # Get last-call timestamps from audit 7d counts
+    last_call_by_tool: dict[str, str] = {}
+    try:
+        from storage import db as _db
+        counts_7d = _db.audit_tool_counts_7d()
+        for r in counts_7d:
+            last_call_by_tool[r["tool"]] = (r.get("last_ts") or "")[:16]
+    except Exception:
+        pass
+
+    # Warm-pool health
+    warm_servers: set[str] = set()
+    try:
+        from agents.mcp_manager import MANAGER as _mcp_mgr
+        warm_servers = set(_mcp_mgr.warm_servers())
+    except Exception:
+        pass
+
+    lines = [f"tools by family ({len(families)} families, {len(entries)} total):"]
+    for fam in sorted(families):
+        fam_tools = sorted(families[fam])
+        # Find most recent call across tools in this family
+        last_calls = [last_call_by_tool[t] for t in fam_tools if t in last_call_by_tool]
+        last_str = max(last_calls) if last_calls else "never"
+        lines.append(f"  {fam}: {len(fam_tools)} tools  last={last_str}")
+
+    # Warm pool summary
+    if warm_servers:
+        lines.append(f"\nwarm pool ({len(warm_servers)}): {', '.join(sorted(warm_servers))}")
+    else:
+        lines.append("\nwarm pool: none")
 
     return _truncate_3900("\n".join(lines))
 
@@ -867,28 +939,160 @@ def format_proactive_recent(days: int = 7) -> str:
 
 
 def format_proactive_why(event_id: int) -> str:
+    """Render reason-contract details for a proactive event.
+
+    Renders all known reason-contract columns if present:
+    source, anchor, why_now, suggested_action, confidence,
+    controls, data_checked, gate decision.
+    """
     from storage import db as _db
     row = _db.proactive_event_by_id(event_id)
     if row is None:
         return f"proactive event #{event_id} not found."
     lines = [
         f"proactive event #{row['id']}",
-        f"  source:   {row.get('source') or '?'}",
-        f"  sent_at:  {row.get('sent_at') or '?'}",
-        f"  status:   {row.get('status') or '?'}",
+        f"  source:         {row.get('source') or '?'}",
+        f"  sent_at:        {row.get('sent_at') or '?'}",
+        f"  status:         {row.get('status') or '?'}",
     ]
     aborted = row.get("aborted_reason")
     if aborted:
-        lines.append(f"  aborted:  {aborted}")
+        lines.append(f"  aborted:        {aborted}")
+    # reason-contract columns (may not exist yet in older DBs)
+    anchor = row.get("anchor")
+    if anchor:
+        lines.append(f"  anchor:         {anchor}")
+    why_now = row.get("why_now")
+    if why_now:
+        lines.append(f"  why_now:        {why_now}")
+    suggested_action = row.get("suggested_action")
+    if suggested_action:
+        lines.append(f"  suggested_action: {suggested_action}")
+    confidence = row.get("confidence")
+    if confidence is not None:
+        lines.append(f"  confidence:     {confidence}")
+    gate_decision = row.get("gate_decision")
+    if gate_decision:
+        lines.append(f"  gate_decision:  {gate_decision}")
+    data_checked = row.get("data_checked_json") or row.get("data_checked")
+    if data_checked:
+        lines.append(f"  data_checked:   {data_checked}")
+    controls_raw = row.get("controls_json") or row.get("controls")
+    if controls_raw:
+        lines.append(f"  controls:       {controls_raw}")
+    score_novelty = row.get("score_novelty")
+    score_actionability = row.get("score_actionability")
+    if score_novelty is not None or score_actionability is not None:
+        n_str = f"{score_novelty:.2f}" if score_novelty is not None else "?"
+        a_str = f"{score_actionability:.2f}" if score_actionability is not None else "?"
+        lines.append(f"  score:          novelty={n_str} actionability={a_str}")
     preview = _payload_preview(row.get("payload_json"), max_len=200)
     if preview:
-        lines.append(f"  preview:  {preview}")
+        lines.append(f"  preview:        {preview}")
     up = row.get("thumbs_up") or 0
     dn = row.get("thumbs_down") or 0
-    lines.append(f"  feedback: 👍{up} 👎{dn}")
+    lines.append(f"  feedback:       👍{up} 👎{dn}")
     tg_id = row.get("telegram_message_id")
     if tg_id:
-        lines.append(f"  tg_msg_id: {tg_id}")
+        lines.append(f"  tg_msg_id:      {tg_id}")
+    return _truncate_3900("\n".join(lines))
+
+
+def format_proactive_status() -> str:
+    """Simplified /proactive (no args) output:
+    - next ping window
+    - active sources
+    - snoozed sources with TTLs
+    """
+    from storage import db as _db
+
+    # next ping window from scheduler (best-effort)
+    try:
+        from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
+    except Exception:
+        ALL_PRODUCER_IDS = []
+        DEFAULT_ENABLED_SOURCES = []
+
+    # enabled sources
+    raw_override = _db.runtime_get("proactive_enabled_sources_override")
+    try:
+        enabled: set[str] = set(json.loads(raw_override)) if raw_override else set(DEFAULT_ENABLED_SOURCES)
+    except (ValueError, TypeError):
+        enabled = set(DEFAULT_ENABLED_SOURCES)
+
+    # snooze map
+    raw_snooze = _db.runtime_get("proactive_snooze_until")
+    try:
+        snooze_map: dict[str, str] = json.loads(raw_snooze) if raw_snooze else {}
+    except (ValueError, TypeError):
+        snooze_map = {}
+
+    now_ts = time.time()
+
+    # remove expired snooze entries
+    active_snooze: dict[str, str] = {}
+    for src, iso in snooze_map.items():
+        try:
+            until_ts = datetime.fromisoformat(iso).timestamp()
+            if until_ts > now_ts:
+                active_snooze[src] = iso
+        except (ValueError, TypeError):
+            pass
+
+    # next ping window: try to read from scheduler or config
+    try:
+        from agents import config as _cfg
+        quiet_start = int(_cfg.get("proactive.quiet_start_hour", 23))
+        quiet_end = int(_cfg.get("proactive.quiet_end_hour", 8))
+        tz_name = os.environ.get("HOME_TZ") or "UTC"
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo(tz_name))
+        h = now_local.hour
+        # simple: are we in quiet hours?
+        if quiet_start > quiet_end:
+            in_quiet = h >= quiet_start or h < quiet_end
+        else:
+            in_quiet = quiet_start <= h < quiet_end
+        if in_quiet:
+            ping_window = f"quiet until {quiet_end:02d}:00 {tz_name}"
+        else:
+            ping_window = f"active (quiet {quiet_start:02d}:00–{quiet_end:02d}:00 {tz_name})"
+    except Exception as exc:
+        ping_window = f"unknown ({exc})"
+
+    lines = [f"next ping window: {ping_window}"]
+
+    # active sources (enabled and not snoozed)
+    active_sources = sorted(s for s in enabled if s not in active_snooze)
+    if active_sources:
+        lines.append(f"\nactive sources ({len(active_sources)}):")
+        for s in active_sources:
+            try:
+                from storage import db as _db2
+                cnt_7d = _db2.proactive_send_count_7d(s)
+            except Exception:
+                cnt_7d = "?"
+            lines.append(f"  {s}  (7d: {cnt_7d})")
+    else:
+        lines.append("\nactive sources: none")
+
+    # snoozed sources
+    if active_snooze:
+        lines.append(f"\nsnoozed sources ({len(active_snooze)}):")
+        for src, iso in sorted(active_snooze.items()):
+            try:
+                until_dt = datetime.fromisoformat(iso)
+                secs_left = int(until_dt.timestamp() - now_ts)
+                if secs_left >= 3600:
+                    ttl_str = f"{secs_left // 3600}h {(secs_left % 3600) // 60}m"
+                else:
+                    ttl_str = f"{secs_left // 60}m"
+                lines.append(f"  {src}  (expires in {ttl_str})")
+            except (ValueError, TypeError):
+                lines.append(f"  {src}  (expires: {iso[:16]})")
+    else:
+        lines.append("\nsnoozed sources: none")
+
     return _truncate_3900("\n".join(lines))
 
 
@@ -912,3 +1116,457 @@ def format_proactive_snooze(source: str, duration_str: str) -> str:
 
     human = duration_str.strip()
     return f"snoozed {source} for {human} (until {until_iso[:16]} UTC)."
+
+
+# ---------------------------------------------------------------------------
+# /silence ack with expiry
+# ---------------------------------------------------------------------------
+
+def format_silence_ack(minutes: int) -> str:
+    """Return the silence acknowledgment including expiry timestamp in local time."""
+    from datetime import timedelta
+    until_utc = datetime.now(UTC) + timedelta(minutes=minutes)
+    # try local tz
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = os.environ.get("HOME_TZ") or "UTC"
+        until_local = until_utc.astimezone(ZoneInfo(tz_name))
+        expiry_str = until_local.strftime(f"%Y-%m-%d %H:%M {tz_name}")
+    except Exception:
+        expiry_str = until_utc.strftime("%Y-%m-%d %H:%M UTC")
+    return f"ok. quiet for {minutes} minutes (until {expiry_str}). don't make me regret it."
+
+
+# ---------------------------------------------------------------------------
+# /memorydump — paginated facts with per-fact inline keyboard data
+# ---------------------------------------------------------------------------
+
+_MEMORYDUMP_PAGE_SIZE = 10
+
+
+def format_memorydump(page: int = 0) -> tuple[str, list[dict]]:
+    """Return (text, keyboard_rows) for /memorydump page N.
+
+    keyboard_rows is a list of button rows, each row a list of dicts:
+      [{"text": "...", "callback_data": "..."}]
+
+    Bridge-master registers the callbacks; this function only builds the data.
+    """
+    from storage import db as _db
+    all_facts = _db.active_facts(limit=500)
+    total = len(all_facts)
+    page_size = _MEMORYDUMP_PAGE_SIZE
+    start = page * page_size
+    page_facts = all_facts[start : start + page_size]
+
+    if not page_facts:
+        if page > 0:
+            return "no more facts. /memorydump to start over.", []
+        return "no active facts in memory.", []
+
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    lines = [f"memory dump — page {page + 1}/{total_pages} ({total} facts):"]
+
+    keyboard_rows: list[list[dict]] = []
+    for fact in page_facts:
+        fid = fact.get("id") or 0
+        subj = (fact.get("subject") or "")[:20]
+        pred = (fact.get("predicate") or "")[:20]
+        obj_ = (fact.get("object") or "")[:30]
+        lines.append(f"  #{fid}  {subj} → {pred} → {obj_}")
+        keyboard_rows.append([
+            {"text": "Forget", "callback_data": f"mem:forget:{fid}"},
+            {"text": "Context", "callback_data": f"mem:context:{fid}"},
+            {"text": "Pin", "callback_data": f"mem:pin:{fid}"},
+        ])
+
+    # pagination row
+    nav_row: list[dict] = []
+    if page > 0:
+        nav_row.append({"text": "< Prev", "callback_data": f"mem:page:{page - 1}"})
+    if start + page_size < total:
+        nav_row.append({"text": "Next >", "callback_data": f"mem:page:{page + 1}"})
+    if nav_row:
+        keyboard_rows.append(nav_row)
+
+    return _truncate_3900("\n".join(lines)), keyboard_rows
+
+
+# ---------------------------------------------------------------------------
+# /diary — paginated diary entries
+# ---------------------------------------------------------------------------
+
+_DIARY_PAGE_SIZE = 5
+
+
+def format_diary(page: int = 0) -> tuple[str, list[dict]]:
+    """Return (text, nav_keyboard_row) for /diary page N.
+
+    Fetches up to 50 entries; paginates at 5/page.
+    keyboard_row is a list of dicts (prev/next buttons).
+    """
+    from storage import db as _db
+    # fetch a large window and paginate client-side
+    all_entries = _db.diary_entries_recent(limit=50)
+    total = len(all_entries)
+
+    if total == 0:
+        return "no diary entries yet.", []
+
+    page_size = _DIARY_PAGE_SIZE
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    start = page * page_size
+    page_entries = all_entries[start : start + page_size]
+
+    if not page_entries:
+        return f"no entries on page {page + 1} (total pages: {total_pages}).", []
+
+    lines = [f"diary — page {page + 1}/{total_pages}:"]
+    for entry in page_entries:
+        entry_date = entry.get("entry_date") or "?"
+        body = (entry.get("body") or entry.get("content") or entry.get("text") or "")[:200]
+        lines.append(f"\n{entry_date}")
+        lines.append(f"  {body}")
+
+    nav_row: list[dict] = []
+    if page > 0:
+        nav_row.append({"text": "< Prev", "callback_data": f"diary:page:{page - 1}"})
+    if start + page_size < total:
+        nav_row.append({"text": "Next >", "callback_data": f"diary:page:{page + 1}"})
+
+    return _truncate_3900("\n".join(lines)), nav_row
+
+
+# ---------------------------------------------------------------------------
+# /links — bookmark shelf search + pagination
+# ---------------------------------------------------------------------------
+
+_LINKS_PAGE_SIZE = 10
+
+
+def format_links(query: str | None = None, page: int = 0) -> tuple[str, list[dict]]:
+    """Return (text, nav_keyboard_row) for /links [query].
+
+    No query → 10 most recent. Query → FTS search.
+    """
+    from tools.link_shelf import db as _shelf_db
+
+    page_size = _LINKS_PAGE_SIZE
+    offset = page * page_size
+
+    try:
+        if query:
+            # search uses keyword-only args
+            all_results = _shelf_db.search(query=query, limit=100)
+        else:
+            all_results = _shelf_db.list_links(limit=100)
+    except Exception as exc:
+        return f"error fetching links: {exc}", []
+
+    total = len(all_results)
+    if total == 0:
+        if query:
+            return f"no links matching {query!r}.", []
+        return "no saved links.", []
+
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page_results = all_results[offset : offset + page_size]
+
+    header = f"links — " + (f"'{query}'" if query else "recent") + f" page {page + 1}/{total_pages}:"
+    lines = [header]
+    for link in page_results:
+        lid = link.get("id") or "?"
+        url = link.get("url") or "?"
+        title = (link.get("title") or url)[:60]
+        kind = link.get("kind") or "later"
+        added = (link.get("added_at") or "")[:10]
+        lines.append(f"  #{lid} [{kind}] {added}  {title}")
+        lines.append(f"       {url[:80]}")
+
+    nav_row: list[dict] = []
+    if page > 0:
+        qpart = f":{query}" if query else ""
+        nav_row.append({"text": "< Prev", "callback_data": f"links:page:{page - 1}{qpart}"})
+    if offset + page_size < total:
+        qpart = f":{query}" if query else ""
+        nav_row.append({"text": "Next >", "callback_data": f"links:page:{page + 1}{qpart}"})
+
+    return _truncate_3900("\n".join(lines)), nav_row
+
+
+# ---------------------------------------------------------------------------
+# /receipt — day/week ASCII receipt + category filter buttons
+# ---------------------------------------------------------------------------
+
+def format_receipt(view: str = "today") -> tuple[str, list[dict]]:
+    """Return (text, category_keyboard_row) for /receipt [today|week|made|moved|learned|avoided].
+
+    text: ASCII receipt from receipt_print / receipt_week.
+    keyboard_row: [Today] [Week] [Made] [Moved] [Learned] [Avoided] filter buttons.
+    """
+    view = (view or "today").lower().strip()
+
+    text = ""
+    try:
+        import asyncio as _asyncio
+        from datetime import date as _date
+
+        if view in ("today", "made", "moved", "learned", "avoided"):
+            from tools.day_receipt import _db as _receipt_db
+            from tools.day_receipt._render import RenderOptions, render_receipt
+            r = _receipt_db.get_receipt(_date.today())
+            if view in ("made", "moved", "learned", "avoided"):
+                # filter to single category
+                from tools.day_receipt._db import Receipt
+                filtered_entries = tuple(e for e in r.entries if e.category == view)
+                r = Receipt(
+                    receipt_date=r.receipt_date,
+                    entries=filtered_entries,
+                    note=r.note,
+                )
+            text = render_receipt(r, RenderOptions(width=46))
+            if not text.strip():
+                text = f"nothing logged under '{view}' today."
+        elif view == "week":
+            from datetime import timedelta
+            from tools.day_receipt import _db as _receipt_db
+            from tools.day_receipt._render import RenderOptions, render_week
+            end = _date.today()
+            receipts = []
+            for offset in range(6, -1, -1):
+                d = end - timedelta(days=offset)
+                rr = _receipt_db.get_receipt(d)
+                if rr.entries or rr.note:
+                    receipts.append(rr)
+            text = render_week(receipts, RenderOptions(width=46))
+            if not text.strip():
+                text = "nothing logged this week."
+        else:
+            text = f"unknown view {view!r}. use: today / week / made / moved / learned / avoided"
+    except Exception as exc:
+        text = f"receipt error: {exc}"
+
+    # category buttons always shown
+    keyboard_row = [
+        {"text": "Today", "callback_data": "receipt:today"},
+        {"text": "Week", "callback_data": "receipt:week"},
+        {"text": "Made", "callback_data": "receipt:made"},
+        {"text": "Moved", "callback_data": "receipt:moved"},
+        {"text": "Learned", "callback_data": "receipt:learned"},
+        {"text": "Avoided", "callback_data": "receipt:avoided"},
+    ]
+    return _truncate_3900(text), keyboard_row
+
+
+# ---------------------------------------------------------------------------
+# /decision — list pending predictions / resolve
+# ---------------------------------------------------------------------------
+
+def format_decision(subcmd: str | None = None, args: list[str] | None = None) -> str:
+    """List pending decision_log entries or resolve one.
+
+    /decision                → list all pending (unresolved) decisions
+    /decision pending        → same
+    /decision resolve <id> <0|1>  → resolve a decision by id
+    """
+    from storage import db as _db
+    args = args or []
+    subcmd = (subcmd or "pending").lower()
+
+    if subcmd == "resolve":
+        if len(args) < 2:
+            return "usage: /decision resolve <id> <0|1>"
+        try:
+            did = int(args[0])
+            outcome = int(args[1])
+        except ValueError:
+            return f"invalid args: id={args[0]!r} outcome={args[1]!r}. use integers."
+        if outcome not in (0, 1):
+            return "outcome must be 0 (false) or 1 (true)."
+        try:
+            _db.decision_resolve(did, outcome)
+        except ValueError as exc:
+            return f"error resolving decision #{did}: {exc}"
+        except Exception as exc:
+            return f"unexpected error: {exc}"
+        return f"decision #{did} resolved as {'true (1)' if outcome else 'false (0)'}."
+
+    # pending / list
+    try:
+        with _db._conn() as c:
+            rows = c.execute(
+                "SELECT id, statement, predicted_p, resolve_by, outcome "
+                "FROM decisions WHERE outcome IS NULL ORDER BY resolve_by ASC LIMIT 20"
+            ).fetchall()
+    except Exception as exc:
+        return f"error fetching decisions: {exc}"
+
+    if not rows:
+        return "no pending (unresolved) decisions."
+
+    lines = [f"pending decisions ({len(rows)}):"]
+    for r in rows:
+        did = r["id"]
+        stmt = (r["statement"] or "")[:80]
+        p = f"{float(r['predicted_p']):.0%}"
+        resolve_by = (r["resolve_by"] or "?")[:10]
+        lines.append(f"  #{did}  [{p}]  by {resolve_by}  {stmt}")
+    lines.append("\nresolve with: /decision resolve <id> <0|1>")
+    return _truncate_3900("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# /voice — last transcript + STT health + 3 recent voice prompts
+# ---------------------------------------------------------------------------
+
+def format_voice() -> str:
+    """Show last voice-note transcript, Whisper health, and 3 recent voice prompts."""
+    from storage import db as _db
+    lines: list[str] = []
+
+    # STT health
+    try:
+        from agents import config as _cfg
+        endpoint = _cfg.get("voice.transcribe_endpoint") or ""
+        model = _cfg.get("voice.transcribe_model") or ""
+        key_env = _cfg.get("voice.transcribe_api_key_env") or ""
+        key_set = bool(os.environ.get(str(key_env))) if key_env else False
+        enabled = bool(_cfg.get("voice.enabled", True))
+        lines.append("STT health:")
+        lines.append(f"  enabled:  {enabled}")
+        lines.append(f"  endpoint: {endpoint or '(not set)'}")
+        lines.append(f"  model:    {model or '(not set)'}")
+        lines.append(f"  key env:  {key_env or '(not set)'}  {'✓ set' if key_set else '✗ missing'}")
+        reachable = False
+        if endpoint and key_set:
+            import urllib.request
+            try:
+                urllib.request.urlopen(endpoint.replace("/audio/transcriptions", ""), timeout=2)
+                reachable = True
+            except Exception:
+                pass
+        lines.append(f"  reachable: {'yes' if reachable else 'no (timeout or error)'}")
+    except Exception as exc:
+        lines.append(f"STT health: error ({exc})")
+
+    # Last voice-note transcript — look in recent messages for [voice note] prefix
+    try:
+        msgs = _db.recent_messages(limit=100, exclude_ephemeral=True)
+        voice_msgs = [
+            m for m in reversed(msgs)
+            if "[voice note" in (m.get("content") or "").lower()
+        ]
+        if voice_msgs:
+            last = voice_msgs[-1]
+            ts = (last.get("ts") or "")[:16]
+            content = (last.get("content") or "")[:300]
+            lines.append(f"\nlast voice note ({ts}):")
+            lines.append(f"  {content}")
+        else:
+            lines.append("\nno voice notes in recent history.")
+    except Exception as exc:
+        lines.append(f"\nvoice notes: error ({exc})")
+
+    # 3 most recent voice-style user messages (prompts that came from voice notes)
+    try:
+        msgs = _db.recent_messages(limit=100, exclude_ephemeral=True)
+        # user messages that contain the voice note prefix
+        voice_turns = [
+            m for m in reversed(msgs)
+            if m.get("role") == "user" and "[voice note" in (m.get("content") or "").lower()
+        ][-3:]
+        if voice_turns:
+            lines.append(f"\nrecent voice prompts ({len(voice_turns)}):")
+            for m in voice_turns:
+                ts = (m.get("ts") or "")[:16]
+                snippet = (m.get("content") or "")[:100]
+                lines.append(f"  {ts}  {snippet}")
+    except Exception as exc:
+        lines.append(f"\nrecent voice prompts: error ({exc})")
+
+    return _truncate_3900("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# /reminders pagination — 10/page + prev/next + per-item snooze/cancel
+# ---------------------------------------------------------------------------
+
+_REMINDERS_PAGE_SIZE = 10
+
+
+def format_reminders_page(
+    page: int = 0,
+) -> tuple[str, list[dict]]:
+    """Return (header_text, keyboard_rows) for /reminders page N.
+
+    keyboard_rows: per-item [Snooze 1h] [Cancel] rows + pagination row.
+    Bridge-master registers rem:snooze and rem:cancel callbacks.
+    """
+    from storage import db as _db
+    rows = _db.reminder_list(active_only=True)
+    total = len(rows)
+
+    if total == 0:
+        return "no active reminders.", []
+
+    page_size = _REMINDERS_PAGE_SIZE
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    start = page * page_size
+    page_rows = rows[start : start + page_size]
+
+    lines = [f"reminders — page {page + 1}/{total_pages} ({total} total):"]
+    keyboard_rows: list[list[dict]] = []
+
+    for r in page_rows:
+        rid = r["id"]
+        fire_at = (r.get("fire_at") or "")[:16]
+        text_label = (r.get("text") or f"reminder {rid}")[:60]
+        lines.append(f"  #{rid} {fire_at}  {text_label}")
+        keyboard_rows.append([
+            {"text": "Snooze 10m", "callback_data": f"rem:snooze:{rid}:10m"},
+            {"text": "Snooze 1h",  "callback_data": f"rem:snooze:{rid}:1h"},
+            {"text": "Cancel",     "callback_data": f"rem:cancel:{rid}"},
+        ])
+
+    # pagination nav row
+    nav_row: list[dict] = []
+    if page > 0:
+        nav_row.append({"text": "< Prev", "callback_data": f"rem:page:{page - 1}"})
+    if start + page_size < total:
+        nav_row.append({"text": "Next >", "callback_data": f"rem:page:{page + 1}"})
+    if nav_row:
+        keyboard_rows.append(nav_row)
+
+    return _truncate_3900("\n".join(lines)), keyboard_rows
+
+
+# ---------------------------------------------------------------------------
+# /checkin force helpers
+# ---------------------------------------------------------------------------
+
+async def run_checkin_force(send_fn) -> str:
+    """Bypass the time-window guard and run the daily check-in immediately.
+
+    ``send_fn`` has the same signature as daily_checkin's ``send_text``.
+    Returns a one-line status string.
+    """
+    try:
+        from agents import daily_checkin as _ci
+        text = await _ci.compose_checkin_question()
+        if not text:
+            return "checkin: composer returned no question."
+        from agents.proactive_gate import reserve_and_send
+        result = await reserve_and_send(
+            send_text_fn=send_fn,
+            producer_id="daily_checkin",
+            pattern="ceremony",
+            text=text,
+            payload_json="{}",
+        )
+        if result.status == "sent":
+            from agents import cadence
+            cadence.record_ceremony_sent("daily_checkin")
+            return "checkin sent (forced)."
+        return f"checkin: proactive gate blocked ({result.reason})."
+    except Exception as exc:
+        return f"checkin force error: {exc}"

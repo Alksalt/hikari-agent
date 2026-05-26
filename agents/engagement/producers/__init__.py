@@ -5,18 +5,23 @@ function. The unified _engagement_tick in scheduler.py calls all enabled
 producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
-All 15 producers:
+All 20 producers:
   Default-on (4):
     gmail_unread_threshold, calendar_event_prep,
     wiki_new_file, decision_resolve_due
 
-  Opt-in (10):
+  Default-on world-delta producers (5):
+    book_just_finished, just_got_home, late_night_dissolution,
+    irritation_event, weather_mood_shift
+
+  Opt-in (11):
     calendar_new_invite, callback_episode, drive_starred_new,
     notion_recent_edit, weather_alert, weirdly_good_mood_leak,
     reengage_silence, location_arrived_recurring, readwise_daily_review
     (stub — Readwise MCP removed 2026-05-21), gmail_important_thread
 """
 from agents.engagement.producers import (  # noqa: F401
+    book_just_finished,
     calendar_event_prep,
     calendar_new_invite,
     callback_episode,
@@ -24,12 +29,16 @@ from agents.engagement.producers import (  # noqa: F401
     drive_starred_new,
     gmail_important_thread,
     gmail_unread_threshold,
+    irritation_event,
+    just_got_home,
+    late_night_dissolution,
     location_arrived_recurring,
     notion_recent_edit,
     readwise_daily_review,
     reengage_silence,
     reminder_fire,
     weather_alert,
+    weather_mood_shift,
     weirdly_good_mood_leak,
     wiki_new_file,
 )
@@ -37,6 +46,7 @@ from agents.engagement.producers import (  # noqa: F401
 # Canonical set of all producer source IDs. Imported by the /proactive command
 # and the engagement_tick scheduler.
 ALL_PRODUCER_IDS: frozenset[str] = frozenset({
+    "book_just_finished",
     "callback_episode",
     "calendar_event_prep",
     "calendar_new_invite",
@@ -44,12 +54,16 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
     "drive_starred_new",
     "gmail_important_thread",
     "gmail_unread_threshold",
+    "irritation_event",
+    "just_got_home",
+    "late_night_dissolution",
     "location_arrived_recurring",
     "notion_recent_edit",
     "readwise_daily_review",
     "reengage_silence",
     "reminder_fire",
     "weather_alert",
+    "weather_mood_shift",
     "weirdly_good_mood_leak",
     "wiki_new_file",
 })
@@ -59,10 +73,16 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "calendar_event_prep",
     "wiki_new_file",
     "decision_resolve_due",
+    "book_just_finished",
+    "just_got_home",
+    "late_night_dissolution",
+    "irritation_event",
+    "weather_mood_shift",
 })
 
 # Map source id → module for dynamic dispatch by the scheduler.
 _PRODUCER_MODULES = {
+    "book_just_finished": book_just_finished,
     "callback_episode": callback_episode,
     "calendar_event_prep": calendar_event_prep,
     "calendar_new_invite": calendar_new_invite,
@@ -70,12 +90,16 @@ _PRODUCER_MODULES = {
     "drive_starred_new": drive_starred_new,
     "gmail_important_thread": gmail_important_thread,
     "gmail_unread_threshold": gmail_unread_threshold,
+    "irritation_event": irritation_event,
+    "just_got_home": just_got_home,
+    "late_night_dissolution": late_night_dissolution,
     "location_arrived_recurring": location_arrived_recurring,
     "notion_recent_edit": notion_recent_edit,
     "readwise_daily_review": readwise_daily_review,
     "reengage_silence": reengage_silence,
     "reminder_fire": reminder_fire,
     "weather_alert": weather_alert,
+    "weather_mood_shift": weather_mood_shift,
     "weirdly_good_mood_leak": weirdly_good_mood_leak,
     "wiki_new_file": wiki_new_file,
 }

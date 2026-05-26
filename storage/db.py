@@ -515,6 +515,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_graph_outbox_drained_status",
     "migrate_sprint_a_tables",
     "migrate_fts_porter_tokenizer",
+    "migrate_proactive_events_reason_contract",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -653,6 +654,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_graph_outbox_drained_status", _migrate_graph_outbox_drained_status)
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
+    run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1345,6 +1347,33 @@ def _migrate_fts_porter_tokenizer(conn: sqlite3.Connection) -> None:
         )
 
     conn.commit()
+
+
+def _migrate_proactive_events_reason_contract(conn: sqlite3.Connection) -> None:
+    """Wave 3: add reason-contract columns to proactive_events.
+
+    Columns (all nullable — existing rows default NULL):
+      anchor         — real-world hook that triggered (gmail id, event id, file path, …)
+      why_now        — short human-readable trigger-time explanation
+      suggested_action — what the user might do in response
+      confidence     — float 0..1 from the selector score
+      controls_json  — JSON object of user-facing controls (snooze_hours, mute)
+      data_checked_json — JSON array of data sources consulted (gmail, calendar, wiki, …)
+
+    Index/trigger refs to ALTER-added columns must live inside this fn."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(proactive_events)").fetchall()}
+    if "anchor" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN anchor TEXT")
+    if "why_now" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN why_now TEXT")
+    if "suggested_action" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN suggested_action TEXT")
+    if "confidence" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN confidence REAL")
+    if "controls_json" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN controls_json TEXT")
+    if "data_checked_json" not in cols:
+        conn.execute("ALTER TABLE proactive_events ADD COLUMN data_checked_json TEXT")
 
 
 _RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
@@ -2718,20 +2747,35 @@ def proactive_event_insert(*, source: str, pattern: str, payload_json: str,
                            telegram_message_id: int | None = None,
                            chat_id: int | None = None,
                            status: str = "sent",
-                           dedup_key: str | None = None) -> int:
+                           dedup_key: str | None = None,
+                           anchor: str | None = None,
+                           why_now: str | None = None,
+                           suggested_action: str | None = None,
+                           confidence: float | None = None,
+                           controls_json: str | None = None,
+                           data_checked_json: str | None = None) -> int:
     """Insert a row into proactive_events. Returns the new row id.
 
     ``status`` defaults to ``'sent'`` to backfill old call sites that haven't
     migrated to the reservation pattern yet. Pass ``'reserved'`` from
     ``reserve_and_send`` before the final gate runs.
-    ``dedup_key`` is persisted to the dedup_key column for exact-match dedup."""
+    ``dedup_key`` is persisted to the dedup_key column for exact-match dedup.
+
+    Reason-contract fields (Wave 3): anchor, why_now, suggested_action,
+    confidence, controls_json, data_checked_json — all optional, default NULL.
+    """
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO proactive_events (sent_at, source, pattern, payload_json, "
-            "telegram_message_id, chat_id, status, dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO proactive_events "
+            "(sent_at, source, pattern, payload_json, telegram_message_id, chat_id, "
+            "status, dedup_key, anchor, why_now, suggested_action, confidence, "
+            "controls_json, data_checked_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), source, pattern, payload_json,
                 telegram_message_id, chat_id, status, dedup_key,
+                anchor, why_now, suggested_action, confidence,
+                controls_json, data_checked_json,
             ),
         )
     return int(cur.lastrowid or 0)
@@ -2744,25 +2788,51 @@ def proactive_event_update_terminal(
     telegram_message_id: int | None = None,
     aborted_reason: str | None = None,
     payload_json: str | None = None,
+    anchor: str | None = None,
+    why_now: str | None = None,
+    suggested_action: str | None = None,
+    confidence: float | None = None,
+    controls_json: str | None = None,
+    data_checked_json: str | None = None,
 ) -> None:
     """Flip a reserved proactive_events row to a terminal state.
     Optionally update payload_json on the sent path so reservation rows
-    can stay PII-minimal until commit."""
+    can stay PII-minimal until commit.
+
+    Reason-contract fields (Wave 3): when provided, the corresponding
+    columns are set (COALESCE-patched so a NULL arg does not overwrite an
+    existing value set at reserve time)."""
     with _conn() as c:
+        sets = [
+            "status = ?",
+            "telegram_message_id = COALESCE(?, telegram_message_id)",
+            "aborted_reason = ?",
+            "anchor = COALESCE(?, anchor)",
+            "why_now = COALESCE(?, why_now)",
+            "suggested_action = COALESCE(?, suggested_action)",
+            "confidence = COALESCE(?, confidence)",
+            "controls_json = COALESCE(?, controls_json)",
+            "data_checked_json = COALESCE(?, data_checked_json)",
+        ]
+        params: list = [
+            status,
+            telegram_message_id,
+            aborted_reason,
+            anchor,
+            why_now,
+            suggested_action,
+            confidence,
+            controls_json,
+            data_checked_json,
+        ]
         if payload_json is not None:
-            c.execute(
-                "UPDATE proactive_events SET status = ?, payload_json = ?, "
-                "telegram_message_id = COALESCE(?, telegram_message_id), "
-                "aborted_reason = ? WHERE id = ?",
-                (status, payload_json, telegram_message_id, aborted_reason, event_id),
-            )
-        else:
-            c.execute(
-                "UPDATE proactive_events SET status = ?, "
-                "telegram_message_id = COALESCE(?, telegram_message_id), "
-                "aborted_reason = ? WHERE id = ?",
-                (status, telegram_message_id, aborted_reason, event_id),
-            )
+            sets.insert(1, "payload_json = ?")
+            params.insert(1, payload_json)
+        params.append(event_id)
+        c.execute(
+            f"UPDATE proactive_events SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
 
 
 def proactive_event_dedup_hit(
@@ -3260,12 +3330,15 @@ def proactive_events_recent(days: int = 7, limit: int = 50) -> list[dict]:
 
 
 def proactive_event_by_id(event_id: int) -> dict | None:
-    """Return a single proactive_events row by id, or None."""
+    """Return a single proactive_events row by id, or None.
+
+    Returns every column so callers (cockpit /proactive why) can read the
+    Sprint A reason-contract fields (anchor, why_now, suggested_action,
+    confidence, controls_json, data_checked_json).
+    """
     with _conn() as c:
         row = c.execute(
-            "SELECT id, source, sent_at, payload_json, status, "
-            "thumbs_up, thumbs_down, telegram_message_id, aborted_reason "
-            "FROM proactive_events WHERE id = ?",
+            "SELECT * FROM proactive_events WHERE id = ?",
             (int(event_id),),
         ).fetchone()
     return dict(row) if row else None

@@ -137,6 +137,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "skill_approve": ANN_WRITE_LOCAL,
     # run_skill executes arbitrary skill content which may call external tools
     "run_skill": ANN_WRITE_EXTERNAL,
+    # --- runtime progress signalling (Telegram send — external write) ---
+    "progress": ANN_WRITE_EXTERNAL,
 }
 
 

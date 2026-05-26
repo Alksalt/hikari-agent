@@ -75,6 +75,16 @@ logger = logging.getLogger(__name__)
 
 _BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
 _SCHEDULER_REF = None  # Set after scheduler.start() in post_init
+_BG_TASKS: set[asyncio.Task] = set()  # GC guard: keeps fire-and-forget tasks alive
+
+# Live bot accessor for out-of-bridge callers (progress tool, dispatch hooks).
+# Set in main() after application = Application.builder().build().
+_CURRENT_BOT: Any = None
+
+
+def _get_current_bot() -> Any:
+    """Return the live Telegram bot, or None if the bridge hasn't started yet."""
+    return _CURRENT_BOT
 
 
 def _live_scheduler():
@@ -555,7 +565,7 @@ async def _send_with_choreography(
         stickers_mod._bump_outbound_counter()
         outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
         await stickers_mod.maybe_send_sticker(
-            bot, chat_id, outbound_counter, user_msg=user_msg, reply=reply_text,
+            bot, chat_id, outbound_counter, user_msg=user_msg, reply=text_to_send,
         )
     except Exception:
         logger.exception("stickers: maybe_send_sticker failed (non-fatal)")
@@ -565,11 +575,45 @@ async def _send_with_choreography(
     # ClaudeSDKClient (no session resume, no _RUN_LOCK) so user-send latency
     # stays zero. Sampled probabilistically + daily-capped in config.
     try:
-        asyncio.create_task(
+        _t = asyncio.create_task(
             drift_mod.maybe_judge_and_log(text_to_send, outbound_counter)
         )
+        _BG_TASKS.add(_t)
+        _t.add_done_callback(_BG_TASKS.discard)
     except Exception:
         logger.exception("drift_judge: maybe_judge_and_log scheduling failed")
+
+
+def _character_silence_topic_changed(text: str) -> bool:
+    """Heuristic: return True if the user's message looks like a genuine topic change.
+
+    Criteria (any one sufficient):
+    - 4+ hours since silence was last set (staleness cutoff).
+    - The message shares fewer than 2 content words with the remembered context
+      AND contains at least 3 words (enough for the vocabulary check to be meaningful).
+    """
+    try:
+        _sil_set_at = db.runtime_get("silenced_set_at")
+        if _sil_set_at:
+            from datetime import UTC as _UTC, datetime as _dt
+            try:
+                _age_h = (_dt.now(_UTC) - _dt.fromisoformat(str(_sil_set_at))).total_seconds() / 3600
+                if _age_h >= 4.0:
+                    return True
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+    # Vocabulary heuristic: compare against last remembered silence context.
+    try:
+        _ctx = db.runtime_get("silenced_context") or ""
+        _ctx_words = {w.lower() for w in _ctx.split() if len(w) > 3}
+        _new_words = {w.lower() for w in text.split() if len(w) > 3}
+        if len(_new_words) >= 3 and len(_ctx_words & _new_words) < 2:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -652,12 +696,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("reactions: maybe_react failed (non-fatal)")
 
+    # character_silence pre-LLM hook (L4 refusal): if silenced_until_msg_id is
+    # set and the user hasn't changed topic, skip the LLM entirely. Topic-change
+    # heuristic: enough new vocabulary or 4h+ gap since silence was set.
+    user_text = message.text
+    try:
+        _sil_until_mid = db.runtime_get("silenced_until_msg_id")
+        if _sil_until_mid:
+            _sil_changed = _character_silence_topic_changed(user_text)
+            if _sil_changed:
+                db.runtime_set("silenced_until_msg_id", None)
+                logger.info("character_silence: topic changed — thawed")
+            else:
+                db.append_thought(
+                    f"ignoring — silenced until msg_id={_sil_until_mid}"
+                )
+                logger.info(
+                    "character_silence: skipping LLM (silenced until msg_id=%s)",
+                    _sil_until_mid,
+                )
+                return
+    except Exception:
+        logger.exception("character_silence check failed (non-fatal)")
+
     # Belief-frame guard — if the user is asserting a factual claim as their
     # belief ("i think X", "i'm pretty sure X"), build an adversarial context
     # suffix so the recall subagent looks for contradictions instead of
     # confirmations. The RAW user text is persisted; the belief context is only
     # passed to the SDK via respond()'s internal_belief_context kwarg.
-    user_text = message.text
     internal_belief_context: str | None = None
     try:
         bm_hit, bm_fragment = belief_mod.is_belief_assertion(user_text)
@@ -680,10 +746,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if should_extract(user_text):
                 _tasks = await extract_tasks(user_text)
                 if len(_tasks) > 1:
-                    reply = await run_compound_turn(_tasks)
                     _mid = db.append_message("user", user_text)
                     db.runtime_set("last_user_message", db._now())
                     db.runtime_set("last_user_message_id", str(_mid))
+                    # Fast-path typing refresh before each compound wave so the
+                    # indicator stays alive across sub-2s inter-wave gaps.
+                    try:
+                        await context.bot.send_chat_action(
+                            chat_id=chat.id, action=ChatAction.TYPING,
+                        )
+                    except Exception:
+                        pass
+                    reply = await run_compound_turn(_tasks)
                 else:
                     reply = await respond(
                         user_text, internal_belief_context=internal_belief_context
@@ -885,6 +959,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             transcript = await voice_tool.transcribe_voice(abs_path)
         except voice_tool.VoiceTranscribeError as e:
             logger.info("voice transcription failed: %s", e)
+            try:
+                db.append_message("user", "[voice note — transcription failed]", source="chat")
+            except Exception:
+                logger.exception("voice transcription failure persistence failed (non-fatal)")
             await send_ephemeral_ack(
                 context.bot, chat.id, graceful_reply,
                 reason="voice_transcription_fail", reply_to=message,
@@ -892,6 +970,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         except Exception:
             logger.exception("voice transcription crashed unexpectedly")
+            try:
+                db.append_message("user", "[voice note — transcription failed]", source="chat")
+            except Exception:
+                logger.exception("voice transcription failure persistence failed (non-fatal)")
             await send_ephemeral_ack(
                 context.bot, chat.id, graceful_reply,
                 reason="voice_transcription_fail", reply_to=message,
@@ -1410,6 +1492,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         USER_DOC_DIR.mkdir(parents=True, exist_ok=True)
         ts = int(time.time() * 1000)
         safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in fname)
+        safe_name = safe_name.replace("..", "_")  # path traversal guard
         abs_path = USER_DOC_DIR / f"{ts}_{safe_name}"
         try:
             f = await doc.get_file()
@@ -2356,10 +2439,10 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ---------------------------------------------------------------------------
 
 def _kb_approval(row_id: int) -> InlineKeyboardMarkup:
+    # Confirm is intentionally omitted — user must type CONFIRM-SEND <id>.
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("confirm", callback_data=f"appr:confirm:{row_id}"),
         InlineKeyboardButton("reject", callback_data=f"appr:reject:{row_id}"),
-        InlineKeyboardButton("cancel", callback_data=f"appr:cancel:{row_id}"),
+        InlineKeyboardButton("details", callback_data=f"appr:details:{row_id}"),
     ]])
 
 
@@ -2378,6 +2461,43 @@ def _kb_reminder(reminder_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def _kb_proactive(source: str, event_id: int) -> InlineKeyboardMarkup:
+    """Inline keyboard attached to every outbound proactive message."""
+    eid = event_id
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("why", callback_data=f"pro:why:{eid}"),
+            InlineKeyboardButton("mute source", callback_data=f"pro:mute:{source}"),
+        ],
+        [
+            InlineKeyboardButton("snooze 2h", callback_data=f"pro:snooze:{eid}:2"),
+            InlineKeyboardButton("snooze 8h", callback_data=f"pro:snooze:{eid}:8"),
+            InlineKeyboardButton("snooze 24h", callback_data=f"pro:snooze:{eid}:24"),
+        ],
+    ])
+
+
+async def _attach_proactive_keyboard(bot, chat_id: int, tg_msg_id: int) -> None:
+    """Fire-and-forget: look up the proactive event row and edit the message
+    to attach the action keyboard. Called after reserve_and_send stamps the row."""
+    await asyncio.sleep(0.3)  # let reserve_and_send stamp telegram_message_id
+    try:
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT id, source FROM proactive_events "
+                "WHERE telegram_message_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (tg_msg_id,),
+            ).fetchone()
+        if row:
+            kb = _kb_proactive(str(row["source"] or "unknown"), int(row["id"]))
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=tg_msg_id, reply_markup=kb,
+            )
+    except Exception:
+        logger.debug("_attach_proactive_keyboard: non-fatal — %s", tg_msg_id)
+
+
 # ---------------------------------------------------------------------------
 # Callback implementations
 # ---------------------------------------------------------------------------
@@ -2386,19 +2506,29 @@ async def _cb_approvals(bot, chat_id: int, action: str, row_id: int) -> None:
     from tools.gatekeeper import GATEKEEPER
     with db._conn() as c:
         row = c.execute(
-            "SELECT tool_use_id FROM approvals WHERE id = ? AND status = 'pending'",
+            "SELECT tool_use_id, tool_name, summary FROM approvals "
+            "WHERE id = ? AND status = 'pending'",
             (row_id,),
         ).fetchone()
     if not row:
         await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: not found or already resolved.")
         return
+    if action == "details":
+        summary = (row["summary"] or "no summary")[:500]
+        tool_name = row["tool_name"] or "unknown"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"approval #{row_id}\ntool: {tool_name}\n{summary}\n\n"
+                f"type CONFIRM-SEND {row_id} to approve."
+            ),
+        )
+        return
     tool_use_id = str(row["tool_use_id"] or "")
     if not tool_use_id:
         await bot.send_message(chat_id=chat_id, text=f"approval {row_id}: missing tool_use_id.")
         return
-    if action == "confirm":
-        resolved = await GATEKEEPER.resolve(tool_use_id, "approved")
-    elif action == "reject":
+    if action == "reject":
         resolved = await GATEKEEPER.resolve(tool_use_id, "rejected")
     elif action == "cancel":
         resolved = await GATEKEEPER.resolve(tool_use_id, "admin_cancel")
@@ -2465,6 +2595,176 @@ async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> 
         await bot.send_message(chat_id=chat_id, text=f"unknown reminder action: {action!r}")
 
 
+async def _cb_proactive(bot, chat_id: int, action: str, parts: list[str]) -> None:
+    """Handles pro:why:<event_id>, pro:snooze:<event_id>:<hours>, pro:mute:<source>."""
+    if action == "why":
+        event_id_str = parts[2] if len(parts) > 2 else "0"
+        try:
+            event_id = int(event_id_str)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text=f"invalid event id: {event_id_str!r}")
+            return
+        from agents.cockpit import format_proactive_why  # noqa: PLC0415
+        text = format_proactive_why(event_id)
+        await bot.send_message(chat_id=chat_id, text=text)
+
+    elif action == "snooze":
+        event_id_str = parts[2] if len(parts) > 2 else "0"
+        hours_str = parts[3] if len(parts) > 3 else "2"
+        try:
+            event_id = int(event_id_str)
+            hours = int(hours_str)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text="invalid snooze params.")
+            return
+        row = db.proactive_event_by_id(event_id)
+        source = str(row["source"]) if row else "unknown"
+        from agents.cockpit import format_proactive_snooze  # noqa: PLC0415
+        text = format_proactive_snooze(source, f"{hours}h")
+        await bot.send_message(chat_id=chat_id, text=text)
+
+    elif action == "mute":
+        source = parts[2] if len(parts) > 2 else ""
+        if not source:
+            await bot.send_message(chat_id=chat_id, text="missing source.")
+            return
+        from agents.engagement.sender import on_reaction  # noqa: PLC0415
+        on_reaction(source, "down")
+        await bot.send_message(chat_id=chat_id, text=f"muted {source!r}.")
+
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"unknown proactive action: {action!r}")
+
+
+async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
+    """Handles mem:forget:<fact_id>, mem:context:<fact_id>, mem:pin:<fact_id>,
+    mem:page:<n>."""
+    if action in ("forget", "context", "pin"):
+        fact_id_str = parts[2] if len(parts) > 2 else "0"
+        try:
+            fact_id = int(fact_id_str)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text=f"invalid fact id: {fact_id_str!r}")
+            return
+
+        if action == "forget":
+            try:
+                db.mark_fact_invalid(fact_id)
+                await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: marked invalid.")
+            except Exception as exc:
+                await bot.send_message(chat_id=chat_id, text=f"forget failed: {exc}")
+
+        elif action == "context":
+            try:
+                prov = db.fact_provenance(fact_id)
+                if prov:
+                    lines = [f"fact #{fact_id} provenance:"]
+                    for k, v in prov.items():
+                        if v is not None:
+                            lines.append(f"  {k}: {str(v)[:120]}")
+                    await bot.send_message(chat_id=chat_id, text="\n".join(lines)[:3000])
+                else:
+                    await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: no provenance found.")
+            except Exception as exc:
+                await bot.send_message(chat_id=chat_id, text=f"context lookup failed: {exc}")
+
+        elif action == "pin":
+            try:
+                with db._conn() as c:
+                    c.execute(
+                        "UPDATE facts SET status = 'pinned' WHERE id = ?",
+                        (fact_id,),
+                    )
+                await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: pinned.")
+            except Exception as exc:
+                await bot.send_message(chat_id=chat_id, text=f"pin failed: {exc}")
+
+    elif action == "page":
+        page_str = parts[2] if len(parts) > 2 else "1"
+        try:
+            page = max(1, int(page_str))
+        except ValueError:
+            page = 1
+        per_page = 10
+        offset = (page - 1) * per_page
+        try:
+            with db._conn() as c:
+                rows = c.execute(
+                    "SELECT id, subject, predicate, object FROM facts "
+                    "WHERE valid_to IS NULL AND status = 'active' "
+                    "ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (per_page, offset),
+                ).fetchall()
+            if not rows:
+                await bot.send_message(chat_id=chat_id, text=f"no facts on page {page}.")
+                return
+            lines = [f"facts page {page}:"]
+            for r in rows:
+                lines.append(f"  #{r['id']} {r['subject']} {r['predicate']} {str(r['object'])[:60]}")
+            await bot.send_message(chat_id=chat_id, text="\n".join(lines)[:3000])
+        except Exception as exc:
+            await bot.send_message(chat_id=chat_id, text=f"mem:page failed: {exc}")
+
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"unknown memory action: {action!r}")
+
+
+async def _cb_rem(bot, chat_id: int, action: str, parts: list[str]) -> None:
+    """Handles rem:page:<n>, rem:cancel:<id>, rem:snooze:<id>:<hours>."""
+    if action == "page":
+        page_str = parts[2] if len(parts) > 2 else "1"
+        try:
+            page = max(1, int(page_str))
+        except ValueError:
+            page = 1
+        per_page = 10
+        all_rows = db.reminder_list(active_only=True)
+        chunk = all_rows[(page - 1) * per_page: page * per_page]
+        if not chunk:
+            await bot.send_message(chat_id=chat_id, text=f"no reminders on page {page}.")
+            return
+        for r in chunk:
+            rid = r["id"]
+            fire_at = (r.get("fire_at") or "")[:16]
+            text_label = (r.get("text") or f"reminder {rid}")[:60]
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"#{rid} {fire_at}  {text_label}",
+                reply_markup=_kb_reminder(rid),
+            )
+
+    elif action == "cancel":
+        rid_str = parts[2] if len(parts) > 2 else "0"
+        try:
+            rid = int(rid_str)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text=f"invalid id: {rid_str!r}")
+            return
+        db.reminder_cancel(rid)
+        await bot.send_message(chat_id=chat_id, text=f"reminder {rid}: cancelled.")
+
+    elif action == "snooze":
+        rid_str = parts[2] if len(parts) > 2 else "0"
+        hours_str = parts[3] if len(parts) > 3 else "1"
+        try:
+            rid = int(rid_str)
+            hours = float(hours_str)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text="invalid rem:snooze params.")
+            return
+        from datetime import UTC as _UTC, timedelta as _td, datetime as _dt  # noqa: PLC0415
+        fire_at = (_dt.now(_UTC) + _td(hours=hours)).isoformat()
+        try:
+            db.reminder_update_fire_at(rid, fire_at)
+            db.reminder_requeue_sync(rid)
+            await bot.send_message(chat_id=chat_id, text=f"reminder {rid}: snoozed {hours}h.")
+        except Exception as exc:
+            await bot.send_message(chat_id=chat_id, text=f"rem:snooze failed: {exc}")
+
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"unknown rem action: {action!r}")
+
+
 async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route all inline-keyboard callbacks. Owner-gated."""
     query = update.callback_query
@@ -2492,6 +2792,15 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             rid = int(parts[2]) if len(parts) > 2 and parts[2] else 0
             extra = parts[3] if len(parts) > 3 else ""
             await _cb_reminder(bot, chat_id, action, rid, extra)
+        elif namespace == "pro":
+            action = parts[1] if len(parts) > 1 else ""
+            await _cb_proactive(bot, chat_id, action, parts)
+        elif namespace == "mem":
+            action = parts[1] if len(parts) > 1 else ""
+            await _cb_memory(bot, chat_id, action, parts)
+        elif namespace == "rem":
+            action = parts[1] if len(parts) > 1 else ""
+            await _cb_rem(bot, chat_id, action, parts)
         else:
             logger.warning("_handle_callback: unknown namespace %r in data %r", namespace, data)
     except Exception:
@@ -2501,6 +2810,73 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------------------------
 # /reminders + /checkin
 # ---------------------------------------------------------------------------
+
+async def _send_cockpit_text(message, text: str) -> None:
+    if not text:
+        return
+    await send_ephemeral_ack(
+        message.get_bot(), message.chat_id, text[:4000],
+        reason="cockpit_cmd", reply_to=message,
+    )
+
+
+async def cmd_diary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/diary [page] — last diary entries paginated."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = (context.args or [])
+    page = int(args[0]) if args and args[0].isdigit() else 0
+    text, _ = cockpit.format_diary(page=page)
+    await _send_cockpit_text(message, text)
+
+
+async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/links [search] — search bookmark shelf or list 10 most recent."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = (context.args or [])
+    query = " ".join(args) if args else None
+    text, _ = cockpit.format_links(query=query, page=0)
+    await _send_cockpit_text(message, text)
+
+
+async def cmd_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/receipt [today|week|category] — day/week receipt with filter buttons."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = (context.args or [])
+    view = args[0] if args else "today"
+    text, _ = cockpit.format_receipt(view=view)
+    await _send_cockpit_text(message, text)
+
+
+async def cmd_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/decision [pending|resolve <id> <0|1>] — calibration log."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    args = (context.args or [])
+    subcmd = args[0] if args else None
+    text = cockpit.format_decision(subcmd=subcmd, args=args[1:] if len(args) > 1 else [])
+    await _send_cockpit_text(message, text)
+
+
+async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/voice — last voice transcript + STT health + 3 recent prompts."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or user.id != owner_id():
+        return
+    text = cockpit.format_voice()
+    await _send_cockpit_text(message, text)
+
 
 async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/reminders — list active reminders with snooze/dismiss buttons."""
@@ -2747,9 +3123,11 @@ async def _send_text_with_choreography(
         outbound_counter = db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0)
 
     try:
-        asyncio.create_task(
+        _t = asyncio.create_task(
             drift_mod.maybe_judge_and_log(text_to_send, outbound_counter)
         )
+        _BG_TASKS.add(_t)
+        _t.add_done_callback(_BG_TASKS.discard)
     except Exception:
         logger.exception("reaction-turn: drift_judge scheduling failed")
 
@@ -2910,6 +3288,11 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CommandHandler("checkin", cmd_checkin))
+    app.add_handler(CommandHandler("diary", cmd_diary))
+    app.add_handler(CommandHandler("links", cmd_links))
+    app.add_handler(CommandHandler("receipt", cmd_receipt))
+    app.add_handler(CommandHandler("decision", cmd_decision))
+    app.add_handler(CommandHandler("voice", cmd_voice))
     app.add_handler(CallbackQueryHandler(_handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
@@ -2946,6 +3329,7 @@ def main() -> None:
     _rot.setFormatter(_fmt)
     _stderr = logging.StreamHandler()
     _stderr.setFormatter(_fmt)
+    _stderr.setLevel(logging.ERROR)  # only errors to stderr; file handler gets INFO+
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(_rot)
@@ -3005,7 +3389,18 @@ def main() -> None:
                 run_hooks=False,
                 skip_choreography=True,
             )
-            return result.final_text, result.telegram_message_id, result.ok
+            tg_msg_id = result.telegram_message_id
+            if result.ok and tg_msg_id:
+                # Attach proactive action keyboard after the message is sent.
+                # Looks up source/event_id from proactive_events by tg_msg_id
+                # in a fire-and-forget task; slight delay lets reserve_and_send
+                # stamp the row before we query it.
+                _pt = asyncio.create_task(
+                    _attach_proactive_keyboard(application.bot, owner_id(), tg_msg_id)
+                )
+                _BG_TASKS.add(_pt)
+                _pt.add_done_callback(_BG_TASKS.discard)
+            return result.final_text, tg_msg_id, result.ok
 
         # 7A: reconcile any photo files written before 7A (one-shot, idempotent).
         _reconcile_photo_outbox_orphans()
@@ -3100,6 +3495,8 @@ def main() -> None:
 
         from tools.gatekeeper import GATEKEEPER as _gatekeeper  # noqa: PLC0415
         _bot_ref = application.bot
+        global _CURRENT_BOT
+        _CURRENT_BOT = application.bot
 
         async def _gk_send(chat_id: int, text: str, reply_markup=None) -> None:
             from agents.post_filter import filter_outgoing  # noqa: PLC0415
@@ -3136,7 +3533,9 @@ def main() -> None:
             logger.exception("graph init failed (degrading: dual-writes will retry)")
 
         # Start the long-running dispatch event listener.
-        asyncio.create_task(listener_loop(application.bot))
+        _lt = asyncio.create_task(listener_loop(application.bot))
+        _BG_TASKS.add(_lt)
+        _lt.add_done_callback(_BG_TASKS.discard)
         logger.info("dispatch listener task started")
 
     async def post_shutdown(application) -> None:
