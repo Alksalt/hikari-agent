@@ -58,6 +58,7 @@ class TestBackupDryRun:
 
 @pytest.mark.skipif(not AGE_AVAILABLE, reason="age binary not available")
 class TestBackupAtomicity:
+    @pytest.mark.slow
     def test_no_corrupt_final_on_kill(self, tmp_path):
         """Killing backup.sh mid-encrypt must not leave a final .tar.age file."""
         import datetime

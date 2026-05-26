@@ -265,3 +265,101 @@ def test_format_retrieved_is_gone():
     assert not hasattr(hooks, "_format_retrieved"), (
         "_format_retrieved should have been deleted in Stage 1"
     )
+
+
+# ---------- new CLAUDE.md banned-phrase additions (Sprint B Wave 3) ----------
+
+def test_banned_as_your_companion():
+    """'as your companion' must be caught by the refusal filter."""
+    res = post_filter.scan_refusal_voice("As your companion, I'm here to help.")
+    assert res.matched, "'as your companion' must be flagged as safety-voice"
+
+
+def test_banned_as_your_friend():
+    """'as your friend' must be caught by the refusal filter."""
+    res = post_filter.scan_refusal_voice("As your friend, I want to support you.")
+    assert res.matched, "'as your friend' must be flagged as safety-voice"
+
+
+def test_banned_im_your_companion():
+    """'I'm your companion' must be caught."""
+    res = post_filter.scan_refusal_voice("I'm your companion and I care about you.")
+    assert res.matched, "'I'm your companion' must be flagged as safety-voice"
+
+
+def test_banned_tsundere():
+    """The word 'tsundere' must be caught — Hikari never names her own pattern."""
+    res = post_filter.scan_refusal_voice("I'm being tsundere because I care about you.")
+    assert res.matched, "'tsundere' self-naming must be flagged as safety-voice"
+
+
+def test_banned_id_love_to_help():
+    """'I'd love to help' must be caught."""
+    res = post_filter.scan_refusal_voice("I'd love to help you with that!")
+    assert res.matched, "'I'd love to help' must be flagged"
+
+
+def test_banned_hope_that_helps():
+    """'hope that helps' must be caught."""
+    res = post_filter.scan_refusal_voice("I looked it up — hope that helps!")
+    assert res.matched, "'hope that helps' must be flagged"
+
+
+def test_banned_feel_free_to_ask():
+    """'feel free to ask' must be caught."""
+    res = post_filter.scan_refusal_voice("Feel free to ask me anything.")
+    assert res.matched, "'feel free to ask' must be flagged"
+
+
+def test_banned_i_completely_understand():
+    """'I completely understand' must be caught."""
+    res = post_filter.scan_refusal_voice("I completely understand your frustration.")
+    assert res.matched, "'I completely understand' must be flagged"
+
+
+def test_banned_i_appreciate_you_sharing():
+    """'I appreciate you sharing' must be caught."""
+    res = post_filter.scan_refusal_voice("I appreciate you sharing that with me.")
+    assert res.matched, "'I appreciate you sharing' must be flagged"
+
+
+def test_banned_thats_a_really_interesting_point():
+    """'that's a really interesting point' must be caught."""
+    res = post_filter.scan_refusal_voice("That's a really interesting point you raise.")
+    assert res.matched, "'that's a really interesting point' must be flagged"
+
+
+def test_banned_you_raise_a_great_question():
+    """'You raise a great question' must be caught."""
+    res = post_filter.scan_refusal_voice("You raise a great question about this topic.")
+    assert res.matched, "'You raise a great question' must be flagged"
+
+
+def test_banned_phrases_do_not_match_hikari_speech():
+    """Legitimate Hikari replies using similar words but different context must NOT match."""
+    legit_replies = [
+        "you're lucky i'm here.",
+        "i feel free to disagree.",
+        "that's not interesting to me.",
+        "i understand it's frustrating. that's still wrong.",
+        "appreciate the effort. doesn't change my position.",
+    ]
+    for reply in legit_replies:
+        res = post_filter.scan_refusal_voice(reply)
+        assert not res.matched, (
+            f"Legitimate Hikari reply matched as banned: {reply!r} → {res.matches}"
+        )
+
+
+def test_banned_phrase_config_contains_companion():
+    """Config must have the 'as your companion' pattern in banned_patterns."""
+    patterns = config.get("refusal_filter.banned_patterns") or []
+    companion_patterns = [p for p in patterns if "companion" in p.lower() or "friend" in p.lower()]
+    assert companion_patterns, "banned_patterns must include companion/friend entries"
+
+
+def test_banned_phrase_config_contains_tsundere():
+    """Config must have a 'tsundere' pattern in banned_patterns."""
+    patterns = config.get("refusal_filter.banned_patterns") or []
+    tsundere_patterns = [p for p in patterns if "tsundere" in p.lower()]
+    assert tsundere_patterns, "banned_patterns must include 'tsundere'"

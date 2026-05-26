@@ -59,13 +59,17 @@ def _make_forecast(source_a_high: float = 18.0, source_b_high: float = 18.0) -> 
 
 async def _call_weather_fetch(monkeypatch, source_a_high: float = 18.0, source_b_high: float = 18.0) -> dict:
     """Call weather_fetch via its .handler, patching fetch_forecast to avoid network."""
-    import tools.weather._shared as shared_mod
-
     async def fake_fetch(lat, lon):
         return _make_forecast(source_a_high, source_b_high)
 
-    monkeypatch.setattr(shared_mod, "fetch_forecast", fake_fetch)
+    # Patch BOTH the source module (for any indirect callers) AND the caller-side
+    # binding in tools.weather.fetch — `fetch.py` does `from ... import fetch_forecast`
+    # at module load, so patching only _shared.fetch_forecast leaves the bound name
+    # in fetch.py pointing at the real (network-hitting) function.
+    import tools.weather._shared as shared_mod
     from tools.weather import fetch as fetch_mod
+    monkeypatch.setattr(shared_mod, "fetch_forecast", fake_fetch)
+    monkeypatch.setattr(fetch_mod, "fetch_forecast", fake_fetch)
     return await fetch_mod.weather_fetch.handler({"lat": 59.91, "lon": 10.75, "label": "Oslo"})
 
 

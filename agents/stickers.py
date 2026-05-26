@@ -178,7 +178,7 @@ async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | Non
     try:
         with db._conn() as conn:
             conn.execute(
-                "INSERT INTO character_thoughts (thought) VALUES (?)",
+                "INSERT INTO character_thoughts (thought, created_at) VALUES (?, datetime('now'))",
                 (
                     f"[sticker] aux LLM hallucinated a sticker id that isn't in my pool: "
                     f"{result!r}. falling back to random pick.",

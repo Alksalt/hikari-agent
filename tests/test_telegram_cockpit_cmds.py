@@ -475,3 +475,298 @@ async def test_audit_media_with_data():
     text = update.message.reply_text.call_args[0][0]
     assert "photo" in text
     assert "test cap" in text
+
+
+# ---------------------------------------------------------------------------
+# 19. /diary — empty DB returns "no diary entries"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_diary_empty():
+    from agents.telegram_bridge import cmd_diary
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_diary(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "no diary" in text.lower() or "diary" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 20. /diary — returns formatted entries with date + body
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_diary_with_entries():
+    db.diary_entry_upsert("2026-05-01", "something meaningful happened")
+    db.diary_entry_upsert("2026-05-02", "another day, another thought")
+    from agents.telegram_bridge import cmd_diary
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_diary(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "2026-05" in text
+    assert len(text) <= 4000
+
+
+# ---------------------------------------------------------------------------
+# 21. /diary — non-owner ignored
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_diary_non_owner_silent():
+    from agents.telegram_bridge import cmd_diary
+    update, context = _make_update(user_id=999)
+    await cmd_diary(update, context)
+    update.message.reply_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 22. /links — empty shelf returns "no saved links"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_links_empty():
+    import tools.link_shelf.db as shelf_db
+    shelf_db._reset_schema_sentinel()
+    from agents.telegram_bridge import cmd_links
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_links(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "no saved links" in text.lower() or "link" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 23. /links — returns bookmark entries
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_links_with_data():
+    import tools.link_shelf.db as shelf_db
+    shelf_db._reset_schema_sentinel()
+    shelf_db.insert(
+        url="https://example.com/paper",
+        title="Interesting Paper",
+        snippet="A short snippet",
+        kind="useful",
+        tags=["ml"],
+        note=None,
+    )
+    from agents.telegram_bridge import cmd_links
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_links(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "example.com" in text or "Interesting Paper" in text
+
+
+# ---------------------------------------------------------------------------
+# 24. /links search — returns filtered results
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_links_search_filter():
+    import tools.link_shelf.db as shelf_db
+    shelf_db._reset_schema_sentinel()
+    shelf_db.insert(
+        url="https://arxiv.org/abs/1234",
+        title="Attention Is All You Need",
+        snippet="transformer paper",
+        kind="source",
+        tags=["transformers", "nlp"],
+        note=None,
+    )
+    from agents.telegram_bridge import cmd_links
+    update, context = _make_update(_owner_id(), args=["arxiv"])
+    await cmd_links(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    # Either the match or the "no links" response is acceptable
+    assert "arxiv" in text.lower() or "no links" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 25. /receipt today — returns text (no entries = empty message)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_receipt_today_empty():
+    from agents.telegram_bridge import cmd_receipt
+    update, context = _make_update(_owner_id(), args=["today"])
+    await cmd_receipt(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert len(text) <= 4000
+
+
+# ---------------------------------------------------------------------------
+# 26. /receipt week — returns week view or "nothing logged"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_receipt_week_empty():
+    from agents.telegram_bridge import cmd_receipt
+    update, context = _make_update(_owner_id(), args=["week"])
+    await cmd_receipt(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert len(text) <= 4000
+
+
+# ---------------------------------------------------------------------------
+# 27. /decision pending — empty returns "no pending decisions"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_decision_pending_empty():
+    from agents.telegram_bridge import cmd_decision
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_decision(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "pending" in text.lower() or "no pending" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 28. /decision pending — shows pending decisions with probability
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_decision_pending_with_data():
+    db.decision_insert(
+        "the deal closes by friday",
+        predicted_p=0.65,
+        resolve_by="2026-05-30",
+    )
+    from agents.telegram_bridge import cmd_decision
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_decision(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "deal closes" in text or "65%" in text or "0.65" in text
+
+
+# ---------------------------------------------------------------------------
+# 29. /decision resolve <id> 1 — resolves a decision
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_decision_resolve():
+    did = db.decision_insert(
+        "the PR merges today",
+        predicted_p=0.8,
+        resolve_by="2026-05-26",
+    )
+    from agents.telegram_bridge import cmd_decision
+    update, context = _make_update(_owner_id(), args=["resolve", str(did), "1"])
+    await cmd_decision(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "resolved" in text.lower() or str(did) in text
+
+
+# ---------------------------------------------------------------------------
+# 30. /decision — non-owner ignored
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_decision_non_owner_silent():
+    from agents.telegram_bridge import cmd_decision
+    update, context = _make_update(user_id=999)
+    await cmd_decision(update, context)
+    update.message.reply_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 31. /voice — returns STT health section
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_returns_stt_health():
+    from agents.telegram_bridge import cmd_voice
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_voice(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "stt" in text.lower() or "voice" in text.lower()
+    assert len(text) <= 4000
+
+
+# ---------------------------------------------------------------------------
+# 32. /voice — with a voice note in messages history
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_shows_recent_transcript():
+    db.append_message("user", "[voice note] what's the weather today")
+    from agents.telegram_bridge import cmd_voice
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_voice(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    # Either the note appeared in the output or the "no voice notes" message
+    assert "voice note" in text.lower() or "no voice notes" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 33. /voice — non-owner ignored
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_non_owner_silent():
+    from agents.telegram_bridge import cmd_voice
+    update, context = _make_update(user_id=999)
+    await cmd_voice(update, context)
+    update.message.reply_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 34. /proactive why <id> — not found
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proactive_why_returns_not_found_for_missing():
+    from agents.telegram_bridge import cmd_proactive
+    update, context = _make_update(_owner_id(), args=["why", "88888"])
+    await cmd_proactive(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "not found" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 35. /proactive why <id> — with real event: renders source/anchor/why_now
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proactive_why_renders_reason_contract():
+    eid = db.proactive_event_insert(
+        source="wiki_new_file",
+        pattern="notify",
+        payload_json='{"title": "New wiki page"}',
+        status="sent",
+        anchor="a new page was added to the wiki",
+        why_now="user is active right now",
+        confidence=0.82,
+        controls_json='["cool_down"]',
+        data_checked_json='{"wiki_updated": true}',
+    )
+    from agents.telegram_bridge import cmd_proactive
+    update, context = _make_update(_owner_id(), args=["why", str(eid)])
+    await cmd_proactive(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "wiki_new_file" in text
+    assert "anchor" in text.lower()
+    assert "why_now" in text.lower() or "why now" in text.lower()
+    assert "0.82" in text or "confidence" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 36. /proactive why — non-owner ignored
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proactive_why_non_owner_silent():
+    from agents.telegram_bridge import cmd_proactive
+    update, context = _make_update(user_id=999, args=["why", "1"])
+    await cmd_proactive(update, context)
+    update.message.reply_text.assert_not_awaited()

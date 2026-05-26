@@ -37,8 +37,6 @@ def test_vault_cache_expires_after_ttl(monkeypatch):
         call_count += 1
         return v
 
-    monkeypatch.setattr(ws, "_VAULT_TTL_SEC", 0.05)  # 50ms TTL
-
     with patch("tools.wiki._shared.Vault", side_effect=fake_vault_constructor):
         first = ws._vault()
         # Still within TTL — should return same cached instance
@@ -46,8 +44,10 @@ def test_vault_cache_expires_after_ttl(monkeypatch):
         assert first is second
         assert call_count == 1
 
-        # Wait for TTL to expire
-        time.sleep(0.1)
+        # Force TTL expiry by backdating the cache timestamp by 3600 seconds.
+        # No sleep needed — we directly manipulate the monotonic timestamp.
+        cached_vault, _old_ts = ws._VAULT_CACHE
+        ws._VAULT_CACHE = (cached_vault, time.monotonic() - 3600)
 
         third = ws._vault()
         assert call_count == 2

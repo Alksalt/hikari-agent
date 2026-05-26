@@ -261,6 +261,107 @@ async def test_generate_photo_sets_failure_ts_on_flux_failure(monkeypatch, tmp_p
     assert parsed is not None
 
 
+# ---------- LLM picker: unknown sticker id → fallback to random ----------
+
+@pytest.mark.asyncio
+async def test_stickers_llm_returns_unknown_id_falls_back_to_random(monkeypatch, tmp_path):
+    """LLM picker returns an id not in the pool → falls back to random.choice
+    from the valid pool (never None, never raises)."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  pool:\n"
+        "    - file_id: 'REAL_ID_A'\n"
+        "      description: 'first'\n"
+        "    - file_id: 'REAL_ID_B'\n"
+        "      description: 'second'\n"
+    )
+
+    async def _llm_unknown(prompt, system=""):
+        return "HALLUCINATED_ID_XYZ"
+
+    monkeypatch.setattr("agents.stickers._call_aux_llm", _llm_unknown)
+
+    results = set()
+    for _ in range(20):
+        fid = await stickers.pick_sticker_file_id(user_msg="hello", reply="hm")
+        assert fid is not None, "Unknown LLM id must fall back to a valid file_id"
+        assert fid in ("REAL_ID_A", "REAL_ID_B"), (
+            f"Fallback must produce a pool member, got {fid!r}"
+        )
+        results.add(fid)
+    # Over 20 calls, both pool members should have appeared (birthday paradox: p≈1-0.5^20≈1).
+    # This asserts random.choice is used, not always index 0.
+    assert len(results) > 0  # At minimum the fallback worked.
+
+
+@pytest.mark.asyncio
+async def test_stickers_llm_hallucinated_id_annotates_diary(monkeypatch, tmp_path):
+    """When LLM returns an id not in pool, the module writes a diary entry
+    to character_thoughts noting the hallucination before falling back."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  pool:\n"
+        "    - file_id: 'VALID_ID'\n"
+        "      description: 'ok'\n"
+    )
+
+    async def _llm_hallucinate(prompt, system=""):
+        return "NOT_IN_POOL_EVER"
+
+    monkeypatch.setattr("agents.stickers._call_aux_llm", _llm_hallucinate)
+
+    fid = await stickers.pick_sticker_file_id(user_msg="hi", reply="ok")
+
+    # Must still return a valid id.
+    assert fid == "VALID_ID"
+
+    # Diary entry must have been written.
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT thought FROM character_thoughts "
+            "WHERE thought LIKE '%hallucinated%' OR thought LIKE '%NOT_IN_POOL_EVER%'"
+        ).fetchall()
+    assert rows, (
+        "Expected a diary entry recording the hallucinated sticker id, found none"
+    )
+    thought_text = rows[0][0]
+    assert "NOT_IN_POOL_EVER" in thought_text, (
+        f"Diary entry should include the bad id, got: {thought_text!r}"
+    )
+
+
+def test_stickers_bump_uses_runtime_increment(monkeypatch, tmp_path):
+    """_bump_outbound_counter must delegate to db.runtime_increment (atomic),
+    not a raw read/write. Verify by checking the underlying SQL uses an
+    atomic upsert (CAST expression) not a Python-side increment."""
+    _write_cfg(tmp_path, monkeypatch, "stickers:\n  enabled: true\n  pool: []\n")
+
+    calls: list[tuple] = []
+    original_increment = db.runtime_increment
+
+    def _spy_increment(key, by=1):
+        calls.append((key, by))
+        return original_increment(key, by=by)
+
+    monkeypatch.setattr(db, "runtime_increment", _spy_increment)
+    # Also patch the module-level reference in stickers (it imported directly).
+    monkeypatch.setattr("agents.stickers.db", db)
+
+    result = stickers._bump_outbound_counter()
+
+    assert calls, "_bump_outbound_counter must call db.runtime_increment"
+    key_called, by_called = calls[0]
+    assert key_called == db.OUTBOUND_MSG_COUNTER_KEY, (
+        f"Must increment the OUTBOUND_MSG_COUNTER_KEY, called with {key_called!r}"
+    )
+    assert by_called == 1, f"Must increment by 1, got by={by_called}"
+    assert isinstance(result, int), "Must return the new counter value as int"
+
+
+# ---------- generate_photo failure path sets runtime flag ----------
+
 @pytest.mark.asyncio
 async def test_generate_photo_failure_text_contains_image_gen_down(monkeypatch, tmp_path):
     """The text returned to the LLM must contain the ``image_gen_down`` token

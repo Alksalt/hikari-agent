@@ -67,9 +67,8 @@ def test_insert_creates_pending_row():
 
 
 def test_pending_returns_oldest_first():
-    import time
+    # ORDER BY created_at ASC, id ASC — id is the tiebreaker so no sleep needed.
     _insert(key="old", kind="text")
-    time.sleep(0.01)
     _insert(key="new", kind="text")
     rows = db.media_outbox_pending()
     assert rows[0]["idempotency_key"] == "old"

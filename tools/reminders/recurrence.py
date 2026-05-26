@@ -142,7 +142,7 @@ def next_occurrence(rule: str, current_due: datetime) -> datetime:
     # daily
     # -----------------------------------------------------------------------
     if rule_lower == "daily":
-        return _replace_day_preserve_wall(local, local.day + 1, tz=tz)
+        return _shift_days_wall(local, 1, tz=tz)
 
     # -----------------------------------------------------------------------
     # every_n_days:N
@@ -161,14 +161,13 @@ def next_occurrence(rule: str, current_due: datetime) -> datetime:
             _WEEKDAY_MAP[d] for d in m.group("days").upper().split(",")
         )
         current_iso = local.isoweekday()  # Mon=1 … Sun=7
-        # Find the next weekday that is strictly after today.
-        for dow in target_isoweekdays:
-            diff = (dow - current_iso) % 7
-            if diff > 0:
-                return _shift_days_wall(local, diff, tz=tz)
-        # Wrap to next week — smallest listed day.
-        diff = 7 - current_iso + target_isoweekdays[0]
-        return _shift_days_wall(local, diff, tz=tz)
+        # Find the soonest (smallest positive) diff across all listed weekdays.
+        # Using % 7 means a diff of 0 maps to 7 (same weekday = next week).
+        min_diff = min(
+            (dow - current_iso) % 7 or 7  # 0 → 7 so "same day" wraps to +7
+            for dow in target_isoweekdays
+        )
+        return _shift_days_wall(local, min_diff, tz=tz)
 
     # -----------------------------------------------------------------------
     # monthly:N or monthly:last

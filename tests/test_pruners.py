@@ -1,8 +1,20 @@
-"""Phase A (Sprint 3) — pruner functions for audit_log, oauth_audit_log,
-and calendar_notifications; plus scheduler job coverage."""
+"""Pruner test suite.
+
+Section A — Sprint 3 pruners:
+  - audit_log (intentionally absent — hash-chain integrity)
+  - oauth_audit_log
+  - calendar_notifications
+
+Section B — Sprint A pruners (new retention-management functions):
+  - prune_tool_calls(older_than_days=30)
+  - prune_graph_outbox_sent(older_than_days=14)
+  - prune_media_outbox_terminal(older_than_days=14)
+  - prune_proactive_events(older_than_days=90)
+"""
 from __future__ import annotations
 
 import importlib
+import time
 from pathlib import Path
 
 import pytest
@@ -18,7 +30,10 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     importlib.reload(_db_mod)
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     db._reset_schema_sentinel()
+    # Bootstrap schema.
+    db.upsert_core_block("_boot", "_boot")
     yield
+    db._reset_schema_sentinel()
 
 
 # ---------- helpers ----------
@@ -189,3 +204,216 @@ def test_monthly_prune_job_calls_all_pruners(monkeypatch):
     assert "messages" in calls
     assert "oauth_audit" in calls
     assert "calendar" in calls
+
+
+# ===========================================================================
+# Section B — Sprint A pruners
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# prune_tool_calls
+# ---------------------------------------------------------------------------
+
+def _insert_tool_call(days_ago: int, idx: int) -> None:
+    """Insert a tool_calls row with started_at backdated by days_ago."""
+    with db._conn() as c:
+        c.execute(
+            "INSERT INTO tool_calls (tool_id, started_at, duration_ms, success, output_size) "
+            "VALUES (?, datetime('now', ? || ' days'), 10, 1, 0)",
+            (f"tc-{idx}", f"-{days_ago}"),
+        )
+
+
+def test_prune_tool_calls_deletes_old_keeps_recent():
+    """3 rows older than 30d deleted; 2 recent rows retained."""
+    _insert_tool_call(31, 1)
+    _insert_tool_call(60, 2)
+    _insert_tool_call(90, 3)
+    _insert_tool_call(1, 4)
+    _insert_tool_call(5, 5)
+
+    deleted = db.prune_tool_calls(older_than_days=30)
+
+    assert deleted == 3
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM tool_calls").fetchone()["n"]
+    assert remaining == 2
+
+
+def test_prune_tool_calls_empty_table():
+    assert db.prune_tool_calls(older_than_days=30) == 0
+
+
+def test_prune_tool_calls_all_recent_nothing_deleted():
+    _insert_tool_call(1, 10)
+    _insert_tool_call(5, 11)
+    _insert_tool_call(10, 12)
+
+    assert db.prune_tool_calls(older_than_days=30) == 0
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM tool_calls").fetchone()["n"]
+    assert remaining == 3
+
+
+def test_prune_tool_calls_boundary_29d_retained():
+    """A row inserted 29 days ago is safely within the retention window and kept.
+
+    Note: ``datetime('now', '-30 days')`` at insert time will be slightly older
+    than the cutoff computed at prune time, so rows inserted with -30d reliably
+    get deleted too.  The meaningful boundary to test is retention (29d) vs
+    clearly-over (31d).
+    """
+    _insert_tool_call(29, 20)   # within retention — kept
+    _insert_tool_call(31, 21)   # clearly over — deleted
+
+    deleted = db.prune_tool_calls(older_than_days=30)
+    assert deleted == 1
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM tool_calls").fetchone()["n"]
+    assert remaining == 1
+
+
+# ---------------------------------------------------------------------------
+# prune_graph_outbox_sent
+# ---------------------------------------------------------------------------
+
+def _insert_graph_outbox(status: str, days_ago_processed: int, sid: int) -> None:
+    epoch_offset = int(time.time()) - days_ago_processed * 86400
+    with db._conn() as c:
+        c.execute(
+            "INSERT INTO graph_outbox "
+            "(source_table, source_id, payload_json, status, created_at, processed_at) "
+            "VALUES ('facts', ?, '{}', ?, ?, ?)",
+            (sid, status, epoch_offset - 1, epoch_offset),
+        )
+
+
+def test_prune_graph_outbox_sent_deletes_old_terminal():
+    """Old sent/drained/skipped rows deleted; recent sent and old pending retained."""
+    _insert_graph_outbox("sent", 20, 101)
+    _insert_graph_outbox("sent", 20, 102)
+    _insert_graph_outbox("drained", 20, 103)
+    _insert_graph_outbox("skipped", 20, 104)
+    _insert_graph_outbox("sent", 5, 105)      # recent — kept
+    _insert_graph_outbox("pending", 20, 106)  # not terminal — kept
+
+    deleted = db.prune_graph_outbox_sent(older_than_days=14)
+
+    assert deleted == 4
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM graph_outbox").fetchone()["n"]
+    assert remaining == 2
+
+
+def test_prune_graph_outbox_empty():
+    assert db.prune_graph_outbox_sent(older_than_days=14) == 0
+
+
+def test_prune_graph_outbox_pending_and_failed_never_deleted():
+    """pending and failed rows are not terminal and must not be pruned."""
+    _insert_graph_outbox("pending", 100, 110)
+    _insert_graph_outbox("failed", 100, 111)
+
+    assert db.prune_graph_outbox_sent(older_than_days=14) == 0
+
+
+# ---------------------------------------------------------------------------
+# prune_media_outbox_terminal
+# ---------------------------------------------------------------------------
+
+def _insert_media_outbox(status: str, days_ago: int, key: str) -> None:
+    with db._conn() as c:
+        c.execute(
+            "INSERT INTO media_outbox "
+            "(kind, idempotency_key, payload_json, status, created_at) "
+            "VALUES ('text', ?, '{}', ?, datetime('now', ? || ' days'))",
+            (key, status, f"-{days_ago}"),
+        )
+
+
+def test_prune_media_outbox_terminal_deletes_old():
+    """Old terminal rows (sent/failed/aborted) deleted; recent + pending retained."""
+    _insert_media_outbox("sent", 20, "m1")
+    _insert_media_outbox("failed", 20, "m2")
+    _insert_media_outbox("aborted", 20, "m3")
+    _insert_media_outbox("sent", 5, "m4")     # recent — kept
+    _insert_media_outbox("pending", 20, "m5") # not terminal — kept
+
+    deleted = db.prune_media_outbox_terminal(older_than_days=14)
+
+    assert deleted == 3
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM media_outbox").fetchone()["n"]
+    assert remaining == 2
+
+
+def test_prune_media_outbox_empty():
+    assert db.prune_media_outbox_terminal(older_than_days=14) == 0
+
+
+def test_prune_media_outbox_pending_never_deleted():
+    _insert_media_outbox("pending", 100, "mp1")
+    _insert_media_outbox("pending", 50, "mp2")
+
+    assert db.prune_media_outbox_terminal(older_than_days=14) == 0
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM media_outbox").fetchone()["n"]
+    assert remaining == 2
+
+
+# ---------------------------------------------------------------------------
+# prune_proactive_events
+# ---------------------------------------------------------------------------
+
+def _insert_proactive_event(days_ago: int) -> None:
+    with db._conn() as c:
+        c.execute(
+            "INSERT INTO proactive_events "
+            "(sent_at, source, pattern, payload_json) "
+            "VALUES (datetime('now', ? || ' days'), 'test', 'p', '{}')",
+            (f"-{days_ago}",),
+        )
+
+
+def test_prune_proactive_events_deletes_old():
+    """Rows older than threshold deleted; recent rows retained."""
+    _insert_proactive_event(100)
+    _insert_proactive_event(100)
+    _insert_proactive_event(100)
+    _insert_proactive_event(30)
+    _insert_proactive_event(10)
+
+    deleted = db.prune_proactive_events(older_than_days=90)
+
+    assert deleted == 3
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM proactive_events").fetchone()["n"]
+    assert remaining == 2
+
+
+def test_prune_proactive_events_empty():
+    assert db.prune_proactive_events(older_than_days=90) == 0
+
+
+def test_prune_proactive_events_all_recent_nothing_deleted():
+    _insert_proactive_event(10)
+    _insert_proactive_event(30)
+    _insert_proactive_event(60)
+
+    assert db.prune_proactive_events(older_than_days=90) == 0
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM proactive_events").fetchone()["n"]
+    assert remaining == 3
+
+
+def test_prune_proactive_events_short_threshold():
+    """Short threshold (7d) only removes rows clearly over the line."""
+    _insert_proactive_event(10)  # deleted
+    _insert_proactive_event(5)   # kept
+    _insert_proactive_event(1)   # kept
+
+    deleted = db.prune_proactive_events(older_than_days=7)
+    assert deleted == 1
+    with db._conn() as c:
+        remaining = c.execute("SELECT COUNT(*) AS n FROM proactive_events").fetchone()["n"]
+    assert remaining == 2

@@ -202,6 +202,17 @@ refusal_filter:
     - "(?i)\\bwhat should I work on\\b"
     - "(?i)\\bwhat['']?s next\\b"
     - "(?i)\\bwhat can I do for you\\b"
+    - "(?i)\\bas your (companion|friend|assistant|ai companion)\\b"
+    - "(?i)\\bi['']m your (companion|friend|ai friend|ai companion)\\b"
+    - "(?i)\\btsundere\\b"
+    - "(?i)\\bAbsolutely!\\s"
+    - "(?i)\\bI['']d love to (help|assist)\\b"
+    - "(?i)\\bhope (that )?helps\\b"
+    - "(?i)\\bfeel free to (ask|let me know)\\b"
+    - "(?i)\\bI completely understand\\b"
+    - "(?i)\\bI appreciate you sharing\\b"
+    - "(?i)\\bthat['']?s a (really )?interesting point\\b"
+    - "(?i)\\bYou raise a (great |good )?question\\b"
   # Short, in-voice replacements when the safety-voice phrase dominates the
   # reply (see post_filter._dominates).
   short_replacements:

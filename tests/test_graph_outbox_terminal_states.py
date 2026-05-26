@@ -182,3 +182,78 @@ def test_schedule_episode_embeds_fact_id():
     assert payload.get("fact_id") == source_id, (
         f"expected fact_id={source_id} in payload, got {payload!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. "add_episode_safe returned False" is NOT transient — permanent path
+# ---------------------------------------------------------------------------
+#
+# _TRANSIENT_PREFIXES = ("OPENROUTER_API_KEY", "GRAPHITI_ENABLED").
+# The string "add_episode_safe returned False" does NOT match either prefix,
+# so it must follow the permanent-error path: status stays 'pending' until
+# attempts reaches 5, then flips to 'failed'.
+
+def test_add_episode_safe_false_error_is_not_transient_before_threshold():
+    """4 marks with the False-return error stay pending (permanent but < threshold)."""
+    rid = db.graph_outbox_insert("facts", 200, json.dumps({"v": 1}))
+    for _ in range(4):
+        db.graph_outbox_mark_failed(rid, "add_episode_safe returned False")
+
+    with db._conn() as c:
+        row = c.execute("SELECT status, attempts FROM graph_outbox WHERE id=?", (rid,)).fetchone()
+    assert row["status"] == "pending", (
+        f"expected pending before threshold, got {row['status']!r}"
+    )
+    assert row["attempts"] == 4
+
+
+def test_add_episode_safe_false_error_flips_to_failed_at_threshold():
+    """5th mark with the False-return error must flip status to 'failed'."""
+    rid = db.graph_outbox_insert("facts", 201, json.dumps({"v": 1}))
+    for _ in range(5):
+        db.graph_outbox_mark_failed(rid, "add_episode_safe returned False")
+
+    with db._conn() as c:
+        row = c.execute("SELECT status, attempts, last_error FROM graph_outbox WHERE id=?",
+                        (rid,)).fetchone()
+    assert row["status"] == "failed", (
+        f"expected failed at threshold, got {row['status']!r}"
+    )
+    assert row["attempts"] == 5
+    assert "add_episode_safe returned False" in row["last_error"]
+
+
+async def test_process_outbox_add_episode_false_marks_row_via_permanent_path(monkeypatch):
+    """process_outbox with add_episode_safe returning False writes the permanent
+    error string, confirming the row is on the flip-at-5 path (not transient)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-key")
+    monkeypatch.setenv("GRAPHITI_ENABLED", "true")
+
+    # Insert a fact so there's a pending outbox row.
+    fid = db.insert_fact("user", "prefers", "dark mode")
+    rows = db.graph_outbox_pending()
+    assert rows, "expected at least one pending row after insert_fact"
+    row_id = rows[0]["id"]
+
+    # add_episode_safe is already patched to return False by the global conftest
+    # fixture (_block_graphiti), so we can call process_outbox directly.
+    import storage.graph as _graph
+    stats = await _graph.process_outbox(limit=50, max_per_call=10)
+
+    # process_outbox counts a False return as a failed attempt.
+    assert stats["sent"] == 0
+    assert stats["failed"] >= 1
+
+    # The row should have its last_error set to the False-return message
+    # and be on the permanent (not transient) track.
+    with db._conn() as c:
+        row = c.execute(
+            "SELECT status, attempts, last_error FROM graph_outbox WHERE id=?",
+            (row_id,),
+        ).fetchone()
+    # After 1 attempt it stays pending (threshold is 5).
+    assert row["status"] == "pending", (
+        f"expected pending after 1 failed attempt, got {row['status']!r}"
+    )
+    assert row["last_error"] is not None
+    assert "add_episode_safe returned False" in row["last_error"]

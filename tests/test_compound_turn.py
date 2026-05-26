@@ -444,3 +444,123 @@ async def test_run_compound_turn_typed_voice_lifts_flag(monkeypatch, _isolated_d
         "weather", user_turn_id="tV", is_voice=True, step_timeout=5.0,
     )
     assert captured_nodes[0].voice_uncertainty is True
+
+
+# ---------------------------------------------------------------------------
+# compound provenance — child step rows in DB before receipt composed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_child_steps_persisted_before_receipt(
+    monkeypatch, _isolated_db
+):
+    """Child tool_calls (work_packet_steps) are written to DB while the packet
+    is still running, so any post-processing (like anti-fabrication checks)
+    can query them against the parent context.
+
+    After run_compound_turn_typed completes:
+      - The work_packets row exists with status 'done'.
+      - Both child work_packet_steps rows exist with status 'done'.
+      - Each step's input_json contains the node's intent_type / task.
+      - The packet's user_turn_id matches what was passed in.
+    """
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+    from storage import db as _db
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(0, 8),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="fetch calendar",
+            ),
+            CompoundTaskNode(
+                intent_type="search", utterance_span=(9, 20),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.85, task="find flights",
+            ),
+        ]
+
+    async def _fake_ric(prompt, **_kwargs):
+        return f"result:{prompt}"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    turn_id = "prov-test-t1"
+    await run_compound_turn_typed(
+        "check calendar and find flights", user_turn_id=turn_id, step_timeout=5.0,
+    )
+
+    # Verify the packet row exists.
+    with _db._conn() as c:
+        packet_row = c.execute(
+            "SELECT * FROM work_packets WHERE user_turn_id = ?", (turn_id,)
+        ).fetchone()
+    assert packet_row is not None, "work_packets row must exist after typed run"
+    assert packet_row["status"] == "done"
+
+    packet_id = packet_row["id"]
+    steps = _db.work_packet_steps(packet_id)
+    assert len(steps) == 2, f"expected 2 child steps, got {len(steps)}"
+
+    # Both steps should be done.
+    assert all(s["status"] == "done" for s in steps), (
+        f"expected all steps done, got {[s['status'] for s in steps]}"
+    )
+
+    # Each step's input_json must contain the node's intent data.
+    import json
+    for step in steps:
+        node_data = json.loads(step["input_json"])
+        assert node_data["intent_type"] in ("read", "search")
+        assert node_data["task"] in ("fetch calendar", "find flights")
+
+
+@pytest.mark.asyncio
+async def test_run_compound_turn_typed_approve_required_step_is_waiting_in_db(
+    monkeypatch, _isolated_db
+):
+    """After an approve_required write: the step row in DB has status='waiting'
+    (not 'done' or 'pending') before the receipt is composed.
+    This guarantees the parent packet view reflects the child's blocked state.
+    """
+    from agents.compound_turn import run_compound_turn_typed
+    from agents.work_packet import CompoundTaskNode
+    from storage import db as _db
+
+    async def _fake_extract(message):
+        return [
+            CompoundTaskNode(
+                intent_type="write", utterance_span=(0, 12),
+                risk_class="approve_required", approval_policy="confirm_send",
+                confidence=0.95, task="send invoice",
+                entities=["invoice"],
+            ),
+        ]
+
+    async def _fake_ric(prompt, **_kwargs):
+        return "sent"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
+    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+
+    turn_id = "prov-approve-t2"
+    await run_compound_turn_typed(
+        "send invoice to client", user_turn_id=turn_id, step_timeout=5.0,
+    )
+
+    with _db._conn() as c:
+        packet_row = c.execute(
+            "SELECT * FROM work_packets WHERE user_turn_id = ?", (turn_id,)
+        ).fetchone()
+    assert packet_row is not None
+    # Packet itself is in 'waiting' state (has a waiting step).
+    assert packet_row["status"] == "waiting"
+
+    steps = _db.work_packet_steps(packet_row["id"])
+    assert len(steps) == 1
+    assert steps[0]["status"] == "waiting", (
+        f"approve_required step must be 'waiting' in DB, got {steps[0]['status']!r}"
+    )

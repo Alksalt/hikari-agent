@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 import importlib
-import time
+import os
 from pathlib import Path
 
 import pytest
@@ -54,12 +54,14 @@ def _setup_reports_dir(tmp_path: Path, monkeypatch) -> Path:
 @pytest.mark.asyncio
 async def test_list_returns_mtime_ordered(tmp_path, monkeypatch):
     reports = _setup_reports_dir(tmp_path, monkeypatch)
-    # Create three files with distinct mtimes.
+    # Create three files with distinct mtimes via os.utime — no sleep needed.
+    base_ts = 1_700_000_000.0
     (reports / "alpha.md").write_text("alpha body")
-    time.sleep(0.02)
+    os.utime(reports / "alpha.md", (base_ts, base_ts))
     (reports / "beta.md").write_text("beta body")
-    time.sleep(0.02)
+    os.utime(reports / "beta.md", (base_ts + 1, base_ts + 1))
     (reports / "gamma.md").write_text("gamma body")
+    os.utime(reports / "gamma.md", (base_ts + 2, base_ts + 2))
 
     result = await codex_tools.list_codex_reports.handler({"limit": 10})
     body = result["content"][0]["text"]
@@ -71,9 +73,11 @@ async def test_list_returns_mtime_ordered(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_list_respects_limit(tmp_path, monkeypatch):
     reports = _setup_reports_dir(tmp_path, monkeypatch)
+    base_ts = 1_700_000_000.0
     for i in range(5):
-        (reports / f"r{i}.md").write_text(f"body {i}")
-        time.sleep(0.01)
+        p = reports / f"r{i}.md"
+        p.write_text(f"body {i}")
+        os.utime(p, (base_ts + i, base_ts + i))
 
     result = await codex_tools.list_codex_reports.handler({"limit": 2})
     assert len(result["data"]["reports"]) == 2

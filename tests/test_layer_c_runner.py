@@ -154,9 +154,25 @@ async def test_cost_cap_aborts():
         output_tokens=500_000,
     )
 
-    with patch(
-        "evals.conversation.judge.judge_voice_drift",
-        new=AsyncMock(return_value=expensive_verdict),
+    # score_response is reached by rubric_judge cases in run_layer_c —
+    # patch it alongside judge_voice_drift so the test stays network-free.
+    fake_score_result = {
+        "scores": {},
+        "weighted_avg": 3.5,
+        "passed": True,
+        "usd_cost": 0.0,
+        "reasons": {},
+    }
+
+    with (
+        patch(
+            "evals.conversation.judge.judge_voice_drift",
+            new=AsyncMock(return_value=expensive_verdict),
+        ),
+        patch(
+            "evals.conversation.scorer.score_response",
+            new=AsyncMock(return_value=fake_score_result),
+        ),
     ):
         passed, total, errors, total_cost = await run_layer_c(
             LAYER_C_DIR, cost_cap_usd=0.25

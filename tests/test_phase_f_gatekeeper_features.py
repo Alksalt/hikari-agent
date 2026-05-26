@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import time
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,12 +54,12 @@ def test_always_approve_hits_within_ttl():
 def test_always_approve_expires_after_ttl():
     """When the TTL has elapsed, _check_always_approve returns False and
     evicts the stale entry."""
-    from tools.approvals import _ALWAYS_APPROVE, _check_always_approve, always_approve
+    import time
+    from tools.approvals import _ALWAYS_APPROVE, _check_always_approve
 
     _ALWAYS_APPROVE.clear()
-    always_approve(chat_id=12345, tool_name="mcp__test__expiry", ttl_seconds=0)
-    # TTL=0 expires immediately — sleep a tiny bit to be safe.
-    time.sleep(0.05)
+    # Plant an entry that expired 1 second ago — no real sleep needed.
+    _ALWAYS_APPROVE[(12345, "mcp__test__expiry")] = time.time() - 1.0
     assert _check_always_approve(12345, "mcp__test__expiry") is False
     # Entry was evicted.
     assert (12345, "mcp__test__expiry") not in _ALWAYS_APPROVE
