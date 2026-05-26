@@ -287,6 +287,9 @@ _ID_DESCRIPTIONS: dict[str, str] = {
     # --- photo ---
     "mcp__hikari_photo__generate_photo":
         "generate selfie photo image picture of hikari",
+    # --- playlist ---
+    "mcp__hikari_utility__playlist_list":
+        "list hikari curated playlist tracks songs music mood filter",
     # --- utility misc ---
     "mcp__hikari_utility__translate":
         "translate text language russian english ukrainian japanese",
@@ -478,6 +481,7 @@ def _token_expand(base_text: str) -> str:
 
 _ID_DOMAIN_OVERRIDES: dict[str, str] = {
     "mcp__hikari_utility__ytmusic": "music",
+    "mcp__hikari_utility__playlist": "music",
     "mcp__hikari_router__tool_search": "meta",
     "mcp__hikari_utility__weather": "weather",
     "mcp__hikari_utility__receipt": "receipt",

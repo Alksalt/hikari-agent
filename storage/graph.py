@@ -208,7 +208,7 @@ def schedule_episode(
         return None
     except Exception:
         logger.warning("schedule_episode: outbox insert failed (fact_id=%s)", source_id, exc_info=True)
-        raise
+        return None
 
 
 async def process_outbox(limit: int = 50, max_per_call: int = 10) -> dict:

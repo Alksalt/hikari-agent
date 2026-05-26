@@ -131,10 +131,8 @@ _LABEL_ALLOWLIST: frozenset[str] = frozenset({
     # Sprint A — runtime state labels (surfaced in core_blocks or runtime_state)
     "time_texture",
     "silenced_until_msg_id",
-    "sulking_until",
     "deferred_observations",
     "last_i_keep_thinking_at",
-    "action_lines_this_session",
     # Sprint A — new tables / columns surfaced in context
     "peer_insights",
     "diary_entries",
@@ -172,10 +170,8 @@ _LENGTH_LIMITS: dict[str, int] = {
     "hikari_current_activity": 200,
     "time_texture": 50,
     "silenced_until_msg_id": 50,
-    "sulking_until": 50,
     "deferred_observations": 800,
     "last_i_keep_thinking_at": 200,
-    "action_lines_this_session": 200,
     "peer_insights": 800,
     "diary_entries": 2000,
     "work_packets": 2000,

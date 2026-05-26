@@ -80,6 +80,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     # --- calc / python_run (pure compute) ---
     "calc": ANN_READ_LOCAL,
     "python_run": ANN_READ_LOCAL,
+    # --- playlist (local YAML read) ---
+    "playlist_list": ANN_READ_LOCAL,
     # --- router (in-memory BM25) ---
     "tool_search": ANN_READ_LOCAL,
     # --- day_receipt (DB) ---

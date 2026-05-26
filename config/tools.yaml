@@ -866,21 +866,6 @@ tools:
     example: "reminder_snooze(id='x', minutes=30)"
     presentation_hint: null
 
-  - id: "mcp__hikari_utility__calendar_get_events"
-    bucket: 1
-    server: hikari_utility
-    gate: null
-    access_mode: read
-    untrusted_output: true
-    wrap_patterns: ["^mcp__hikari_utility__calendar_get_events$"]
-    description: "Fetch Google Calendar events (typed adapter; direct MCP call)"
-    domain: scheduling
-    operation: read
-    risk_tier: low
-    credentials: GOOGLE_WORKSPACE_*
-    example: "calendar_get_events(days_ahead=7)"
-    presentation_hint: list_of_records
-
   # Skill management tools — write/external access for create/approve/run.
   - id: "mcp__hikari_utility__skill_create"
     bucket: 1
@@ -937,6 +922,20 @@ tools:
     description: "chain-of-actions progress beat for multi-step turns; rate-limited; routes sub-2s through sendChatAction(\"typing\"), >2s through bot.send_message"
     example: "progress(message='...looking that up.', mode='auto')"
     presentation_hint: null
+
+  - id: "mcp__hikari_utility__playlist_list"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: false
+    wrap_patterns: ["^mcp__hikari_utility__playlist_list$"]
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "list Hikari's curated playlist tracks from config/hikari_playlist.yaml; filter by mood_tag, topic, limit"
+    example: "playlist_list(mood='late_night', limit=5)"
+    presentation_hint: list_of_records
 
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire

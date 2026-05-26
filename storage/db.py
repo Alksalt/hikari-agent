@@ -1379,9 +1379,7 @@ def _migrate_proactive_events_reason_contract(conn: sqlite3.Connection) -> None:
 _RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
     "time_texture",
     "silenced_until_msg_id",
-    "sulking_until",
     "deferred_observations",
-    "action_lines_this_session",
     "last_i_keep_thinking_at",
 })
 
@@ -1647,6 +1645,7 @@ def entity_alias_add(entity_id: int, alias: str, source: str = "auto") -> None:
                   "VALUES (?,?,?)", (entity_id, a, source))
 
 
+# test-only: planned entity browser deferred — no production callers yet
 def entity_get(entity_id: int) -> dict | None:
     """Fetch a single entity row by id. Returns None if not found."""
     with _conn() as c:
@@ -1654,6 +1653,7 @@ def entity_get(entity_id: int) -> dict | None:
     return dict(r) if r else None
 
 
+# test-only: planned entity browser deferred — no production callers yet
 def entity_search(kind: str | None, query: str, limit: int = 10) -> list[dict]:
     """Search entities by canonical_name or alias substring. Ordered by last_seen_at DESC."""
     q = f"%{(query or '').strip().lower()}%"
@@ -1831,6 +1831,7 @@ def facts_mark_recalled(fact_ids: list[int]) -> int:
     return cur.rowcount or 0
 
 
+# test-only: used only by tests/test_facts_recall_decay.py
 def fact_backdate_created_at(fact_id: int, iso_ts: str) -> None:
     """Test/admin helper: forcibly rewrite the ``created_at``, ``valid_from``,
     and ``last_recalled_at`` timestamps for a fact. The recall-decay logic
