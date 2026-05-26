@@ -831,7 +831,7 @@ runtime:
   # Defaults previously hardcoded as module-level constants in agents/runtime.py.
   # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
   model_primary: "claude-sonnet-4-6"
-  model_fallback: "claude-sonnet-4-6"
+  model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
 
 reflection:

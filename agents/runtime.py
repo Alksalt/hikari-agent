@@ -146,6 +146,14 @@ def _resolve_model_fallback() -> str:
             raw_str, _SONNET_DEFAULT_FALLBACK,
         )
         return _SONNET_DEFAULT_FALLBACK
+    if raw_str == MODEL_PRIMARY:
+        override = _SONNET_DEFAULT_FALLBACK if _SONNET_DEFAULT_FALLBACK != MODEL_PRIMARY else "claude-sonnet-4-5"
+        logging.getLogger("agents.runtime").warning(
+            "runtime.model_fallback=%r equals model_primary — SDK refuses identical model+fallback. "
+            "Overriding to %s. Fix: update config/engagement.yaml:runtime.model_fallback.",
+            raw_str, override,
+        )
+        return override
     return raw_str
 
 
