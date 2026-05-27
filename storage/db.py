@@ -532,6 +532,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_sprint_a_tables",
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
+    "migrate_reminders_action_mode",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
