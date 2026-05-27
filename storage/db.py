@@ -532,6 +532,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_sprint_a_tables",
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
+    "migrate_phase_b_schema_tables",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -671,6 +672,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
+    run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1390,6 +1392,192 @@ def _migrate_proactive_events_reason_contract(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE proactive_events ADD COLUMN controls_json TEXT")
     if "data_checked_json" not in cols:
         conn.execute("ALTER TABLE proactive_events ADD COLUMN data_checked_json TEXT")
+
+
+def _migrate_phase_b_schema_tables(conn: sqlite3.Connection) -> None:
+    """Phase B: new tables, ALTER columns, and media_outbox CHECK widening.
+
+    New tables (all brand-new — no ALTER ADD COLUMN for these):
+      llm_costs            — per-turn token usage rollup
+      voice_corrections    — FIFO drift-correction log
+      belief_journal       — forward-looking belief capture with 90d resurface
+      significant_events   — date-keyed anniversaries
+
+    ALTER columns (indexes/triggers live INSIDE this fn per MEMORY.md rule):
+      lexicon.first_seen_date  — anniversary callbacks on in-jokes
+      facts.fact_category      — ACT-R decay tau selection hint
+      tasks.research_intent    — background research worker flag
+
+    CHECK widening:
+      media_outbox.kind — add 'voice' to existing text/photo/sticker/document.
+      Done via table-rebuild (SQLite can't ALTER a CHECK in place).
+      Wrapped in a savepoint so production data is safe.
+    """
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+
+    # ------------------------------------------------------------------
+    # llm_costs
+    # ------------------------------------------------------------------
+    if "llm_costs" not in tables:
+        conn.execute("""
+            CREATE TABLE llm_costs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                turn_id TEXT,
+                model TEXT NOT NULL,
+                path TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0
+            )
+        """)
+    # Index refs to the new table live here (not _SCHEMA) — consistent with
+    # the schema-migration-ordering rule even for brand-new tables.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_costs_ts ON llm_costs(ts)")
+
+    # ------------------------------------------------------------------
+    # voice_corrections
+    # ------------------------------------------------------------------
+    if "voice_corrections" not in tables:
+        conn.execute("""
+            CREATE TABLE voice_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                correction_text TEXT NOT NULL,
+                source_outbound_id INTEGER
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voice_corrections_ts_desc "
+        "ON voice_corrections(ts DESC)"
+    )
+
+    # ------------------------------------------------------------------
+    # belief_journal
+    # ------------------------------------------------------------------
+    if "belief_journal" not in tables:
+        conn.execute("""
+            CREATE TABLE belief_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stated_at TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                claim_type TEXT NOT NULL
+                    CHECK(claim_type IN ('factual', 'identity')),
+                resurface_at TEXT NOT NULL,
+                resolved_bool INTEGER NOT NULL DEFAULT 0,
+                resolution_note TEXT
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belief_journal_resurface "
+        "ON belief_journal(resurface_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belief_journal_unresolved "
+        "ON belief_journal(resolved_bool, resurface_at) WHERE resolved_bool = 0"
+    )
+
+    # ------------------------------------------------------------------
+    # significant_events
+    # ------------------------------------------------------------------
+    if "significant_events" not in tables:
+        conn.execute("""
+            CREATE TABLE significant_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_date TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('good', 'hard', 'funny', 'milestone')),
+                created_at TEXT NOT NULL
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_significant_events_date "
+        "ON significant_events(event_date)"
+    )
+
+    # ------------------------------------------------------------------
+    # ALTER columns
+    # ------------------------------------------------------------------
+    def _has_col(table: str, col: str) -> bool:
+        return any(
+            r["name"] == col
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+
+    # lexicon.first_seen_date — backfill from created_at for existing rows
+    if not _has_col("lexicon", "first_seen_date"):
+        conn.execute("ALTER TABLE lexicon ADD COLUMN first_seen_date TEXT")
+        conn.execute(
+            "UPDATE lexicon SET first_seen_date = date(created_at) "
+            "WHERE first_seen_date IS NULL AND created_at IS NOT NULL"
+        )
+
+    # facts.fact_category — nullable, no backfill needed
+    if not _has_col("facts", "fact_category"):
+        conn.execute("ALTER TABLE facts ADD COLUMN fact_category TEXT")
+
+    # tasks.research_intent — boolean 0/1, default 0
+    if not _has_col("tasks", "research_intent"):
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN research_intent INTEGER NOT NULL DEFAULT 0"
+        )
+
+    # ------------------------------------------------------------------
+    # media_outbox CHECK widening: add 'voice'
+    # SQLite cannot ALTER a CHECK; rebuild the table inside a savepoint.
+    # ------------------------------------------------------------------
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_outbox'"
+    ).fetchone()
+    if row is not None and "'voice'" not in (row[0] or ""):
+        conn.execute("SAVEPOINT phase_b_media_outbox")
+        try:
+            conn.execute("""
+                CREATE TABLE media_outbox_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL
+                        CHECK(kind IN ('text', 'photo', 'sticker', 'document', 'voice')),
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'sent', 'failed', 'aborted')),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    telegram_message_id INTEGER
+                )
+            """)
+            conn.execute(
+                "INSERT INTO media_outbox_new "
+                "(id, kind, idempotency_key, payload_json, status, attempts, "
+                " last_error, created_at, processed_at, telegram_message_id) "
+                "SELECT id, kind, idempotency_key, payload_json, status, attempts, "
+                "       last_error, created_at, processed_at, telegram_message_id "
+                "FROM media_outbox"
+            )
+            conn.execute("DROP TABLE media_outbox")
+            conn.execute("ALTER TABLE media_outbox_new RENAME TO media_outbox")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_outbox_status "
+                "ON media_outbox(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_outbox_kind_status "
+                "ON media_outbox(kind, status)"
+            )
+            conn.execute("RELEASE phase_b_media_outbox")
+        except Exception:
+            conn.execute("ROLLBACK TO phase_b_media_outbox")
+            conn.execute("RELEASE phase_b_media_outbox")
+            raise
+
+    conn.commit()
 
 
 _RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
