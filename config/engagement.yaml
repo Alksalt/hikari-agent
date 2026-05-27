@@ -79,7 +79,10 @@ approvals:
 
 voice:
   enabled: true
-  transcription_provider: openai_whisper_api
+  transcription_provider: openai_whisper_api  # or: local_faster_whisper
+  # When transcription_provider=local_faster_whisper, these apply:
+  local_faster_whisper_model: base.en         # tiny|base|small|medium|large-v3; .en variants are English-only and faster
+  local_faster_whisper_compute_type: int8     # int8|int8_float16|float16|float32 — int8 is fastest CPU
   # Reject voice notes longer than this. Whisper API has its own hard limit
   # at 25MB / ~25 min; ours is character-safety (no need to transcribe rants).
   max_duration_sec: 300
