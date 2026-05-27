@@ -177,7 +177,6 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "_cb_proactive",
         "_cb_memory",
         "_cb_rem",
-        "_attach_proactive_keyboard",
         "cmd_approvals",
         "cmd_checkin",
         "cmd_reminders",
@@ -214,4 +213,42 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
     assert not violations, (
         f"Found {len(violations)} direct bot.send_*() call(s) outside outbox dispatchers:\n"
         + "\n".join(f"  - {v}" for v in violations)
+    )
+
+
+def test_proactive_messages_no_keyboard():
+    """Proactive messages must not attach an inline keyboard.
+
+    Verifies that _attach_proactive_keyboard and _kb_proactive are gone from
+    telegram_bridge.py, and that edit_message_reply_markup is never called in
+    the proactive send path.
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent / "agents" / "telegram_bridge.py"
+    text = src.read_text()
+    tree = ast.parse(text)
+
+    assert "_attach_proactive_keyboard" not in text, (
+        "_attach_proactive_keyboard still present in telegram_bridge.py"
+    )
+    assert "_kb_proactive" not in text, (
+        "_kb_proactive still present in telegram_bridge.py"
+    )
+
+    calls_to_edit_markup: list[str] = []
+
+    class EditMarkupVisitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "edit_message_reply_markup"
+            ):
+                calls_to_edit_markup.append(f"line {node.lineno}")
+            self.generic_visit(node)
+
+    EditMarkupVisitor().visit(tree)
+    assert not calls_to_edit_markup, (
+        f"edit_message_reply_markup still called in telegram_bridge.py: "
+        + ", ".join(calls_to_edit_markup)
     )

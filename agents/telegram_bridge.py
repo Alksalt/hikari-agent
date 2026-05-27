@@ -2406,42 +2406,6 @@ def _kb_reminder(reminder_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
-def _kb_proactive(source: str, event_id: int) -> InlineKeyboardMarkup:
-    """Inline keyboard attached to every outbound proactive message."""
-    eid = event_id
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("why", callback_data=f"pro:why:{eid}"),
-            InlineKeyboardButton("mute source", callback_data=f"pro:mute:{source}"),
-        ],
-        [
-            InlineKeyboardButton("snooze 2h", callback_data=f"pro:snooze:{eid}:2"),
-            InlineKeyboardButton("snooze 8h", callback_data=f"pro:snooze:{eid}:8"),
-            InlineKeyboardButton("snooze 24h", callback_data=f"pro:snooze:{eid}:24"),
-        ],
-    ])
-
-
-async def _attach_proactive_keyboard(bot, chat_id: int, tg_msg_id: int) -> None:
-    """Fire-and-forget: look up the proactive event row and edit the message
-    to attach the action keyboard. Called after reserve_and_send stamps the row."""
-    await asyncio.sleep(0.3)  # let reserve_and_send stamp telegram_message_id
-    try:
-        with db._conn() as c:
-            row = c.execute(
-                "SELECT id, source FROM proactive_events "
-                "WHERE telegram_message_id = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (tg_msg_id,),
-            ).fetchone()
-        if row:
-            kb = _kb_proactive(str(row["source"] or "unknown"), int(row["id"]))
-            await bot.edit_message_reply_markup(
-                chat_id=chat_id, message_id=tg_msg_id, reply_markup=kb,
-            )
-    except Exception:
-        logger.debug("_attach_proactive_keyboard: non-fatal — %s", tg_msg_id)
-
 
 # ---------------------------------------------------------------------------
 # Callback implementations
@@ -3361,16 +3325,6 @@ def main() -> None:
                 skip_choreography=True,
             )
             tg_msg_id = result.telegram_message_id
-            if result.ok and tg_msg_id:
-                # Attach proactive action keyboard after the message is sent.
-                # Looks up source/event_id from proactive_events by tg_msg_id
-                # in a fire-and-forget task; slight delay lets reserve_and_send
-                # stamp the row before we query it.
-                _pt = asyncio.create_task(
-                    _attach_proactive_keyboard(application.bot, owner_id(), tg_msg_id)
-                )
-                _BG_TASKS.add(_pt)
-                _pt.add_done_callback(_BG_TASKS.discard)
             return result.final_text, tg_msg_id, result.ok
 
         # 7A: reconcile any photo files written before 7A (one-shot, idempotent).

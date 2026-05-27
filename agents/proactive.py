@@ -214,12 +214,9 @@ async def fire_due_reminders(send_text) -> int:
 
     fired = 0
     for row in due:
-        # Phase 13.1 (Stream G — decision): we ship the literal user-set
-        # reminder text rather than routing it through a Hikari-voice LLM
-        # pass. The hard-coded "reminder: " prefix is intentional — no LLM
-        # round-trip latency at fire time, and the user expects the exact
-        # text they set. Voice-flavor reminders would be a separate feature.
-        text = row["text"] if row["text"].startswith("reminder:") else f"reminder: {row['text']}"
+        # Ship the literal user-set reminder text, prefixed with ⏰ so the
+        # push stands out in chat. No LLM round-trip at fire time.
+        text = row["text"] if row["text"].startswith("⏰") else f"⏰ {row['text']}"
         payload = _json.dumps({"reminder_id": row["id"]})
         result = await reserve_and_send(
             send_text_fn=_send_text_fn,

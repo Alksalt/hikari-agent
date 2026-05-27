@@ -43,6 +43,33 @@ async def test_fire_due_reminders_sends_text_and_marks_fired():
     assert db.reminder_get(rid)["status"] == "fired"
 
 @pytest.mark.asyncio
+async def test_reminder_push_has_emoji_marker():
+    """Fired reminder push text must start with the ⏰ emoji, not 'reminder:'."""
+    sent: list[str] = []
+    async def fake_send(s: str): sent.append(s)
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    db.reminder_insert(fire_at=past, text="take vitamins", lead_minutes=0, repeat=None)
+    from agents import proactive
+    await proactive.fire_due_reminders(fake_send)
+    assert sent, "expected at least one message to be sent"
+    assert sent[0].startswith("⏰"), f"expected ⏰ prefix, got: {sent[0]!r}"
+    assert "take vitamins" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_reminder_push_no_double_prefix():
+    """If the stored text already starts with ⏰, it must not be double-prefixed."""
+    sent: list[str] = []
+    async def fake_send(s: str): sent.append(s)
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    db.reminder_insert(fire_at=past, text="⏰ already marked", lead_minutes=0, repeat=None)
+    from agents import proactive
+    await proactive.fire_due_reminders(fake_send)
+    assert sent, "expected at least one message to be sent"
+    assert sent[0] == "⏰ already marked", f"unexpected double-prefix: {sent[0]!r}"
+
+
+@pytest.mark.asyncio
 async def test_repeat_daily_reinserts_next_day():
     sent: list[str] = []
     async def fake_send(s: str): sent.append(s)
