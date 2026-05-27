@@ -170,3 +170,191 @@ async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
     row = db.reminder_get(rid)
     assert row["apple_sync_pending"] == 0
     assert row["apple_event_id"] == "ABC-EVENT-123"
+
+
+# ---------------------------------------------------------------------------
+# Phase 15: action-mode reminder firing
+# ---------------------------------------------------------------------------
+
+def _insert_action_row(*, max_fires=3, minutes_ago=5, recurrence="every_n_minutes:20"):
+    past = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
+    return db.reminder_insert(
+        fire_at=past,
+        text="autonomous notion write",
+        kind="action",
+        seed_prompt="write the next row",
+        max_fires=max_fires,
+        recurrence_rule=recurrence,
+    )
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_success_advances_fires_done(monkeypatch):
+    rid = _insert_action_row(max_fires=3)
+    from agents import proactive
+    from agents import runtime as _rt
+    import agents.engagement.guard as _guard
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    async def fake_run(seed_prompt, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+
+    sent = []
+    async def fake_send(s): sent.append(s)
+
+    await proactive.fire_due_reminders(fake_send)
+    row = db.reminder_get(rid)
+    assert row["fires_done"] == 1
+    assert row["status"] == "active"
+    # No push to user during the inner work — only summary or failure surfaces.
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_failure_increments_counter_not_cancelled(monkeypatch):
+    rid = _insert_action_row(max_fires=3)
+    from agents import proactive
+    from agents import runtime as _rt
+    import agents.engagement.guard as _guard
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    async def fake_run(seed_prompt, **_kwargs):
+        raise RuntimeError("simulated MCP timeout")
+
+    monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+
+    async def fake_send(s): pass
+
+    await proactive.fire_due_reminders(fake_send)
+    row = db.reminder_get(rid)
+    assert row["consecutive_failures"] == 1
+    assert row["fires_done"] == 0
+    assert row["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_three_strikes_cancels_and_surfaces(monkeypatch):
+    rid = _insert_action_row(max_fires=10)
+    db.reminder_increment_failures(rid)
+    db.reminder_increment_failures(rid)   # pre-load to 2 failures
+
+    from agents import proactive
+    from agents import runtime as _rt
+    import agents.engagement.guard as _guard
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    async def fake_run(seed_prompt, **_kwargs):
+        raise RuntimeError("third strike")
+
+    monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+
+    # Capture text that would have been pushed via reserve_and_send.
+    surfaced = []
+    async def fake_reserve(*, send_text_fn, text, **_):
+        surfaced.append(text)
+        class _R: status = "sent"; reason = None
+        return _R()
+
+    monkeypatch.setattr(proactive, "reserve_and_send", fake_reserve)
+
+    async def fake_send(s): pass
+
+    await proactive.fire_due_reminders(fake_send)
+    row = db.reminder_get(rid)
+    assert row["status"] == "cancelled"
+    assert row["consecutive_failures"] == 3
+    assert any("cancelled" in s and "3 failures" in s for s in surfaced)
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_last_fire_marks_fired_and_runs_summary(monkeypatch):
+    rid = db.reminder_insert(
+        fire_at=(datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+        text="x", kind="action",
+        seed_prompt="write a row",
+        summary_prompt="wrap it up",
+        max_fires=2,
+        recurrence_rule="every_n_minutes:20",
+    )
+    # Pre-advance to 1/2 so this fire is the FINAL one.
+    db.reminder_increment_fires_done(rid)
+
+    from agents import proactive
+    from agents import runtime as _rt
+    import agents.engagement.guard as _guard
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    calls = []
+
+    async def fake_run(seed_prompt, **_kwargs):
+        calls.append(seed_prompt)
+        return "summary text from hikari" if "wrap it up" in seed_prompt else ""
+
+    monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+
+    surfaced = []
+    async def fake_reserve(*, text, **_):
+        surfaced.append(text)
+        class _R: status = "sent"; reason = None
+        return _R()
+
+    monkeypatch.setattr(proactive, "reserve_and_send", fake_reserve)
+
+    async def fake_send(s): pass
+
+    await proactive.fire_due_reminders(fake_send)
+
+    row = db.reminder_get(rid)
+    assert row["status"] == "fired", "last fire of bounded schedule must close the row"
+    assert row["fires_done"] == 2
+    # The summary turn ran and its text was pushed.
+    assert any("wrap it up" in c for c in calls)
+    assert any("summary text from hikari" in s for s in surfaced)
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_user_turn_in_progress_defers(monkeypatch):
+    rid = _insert_action_row(max_fires=3, minutes_ago=5)
+    original_due = db.reminder_get(rid)["fire_at"]
+    from agents import proactive
+    from agents import runtime as _rt
+    import agents.engagement.guard as _guard
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    # Hold the run-lock to simulate an active user turn.
+    await _rt._RUN_LOCK.acquire()
+    try:
+        called = {"n": 0}
+
+        async def fake_run(*_a, **_k):
+            called["n"] += 1
+            return ""
+
+        monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+        async def fake_send(s): pass
+        await proactive.fire_due_reminders(fake_send)
+    finally:
+        _rt._RUN_LOCK.release()
+
+    assert called["n"] == 0, "action turn must not preempt a user turn"
+    row = db.reminder_get(rid)
+    assert row["fire_at"] != original_due, "fire_at must be deferred"
+    assert row["fires_done"] == 0
+    assert row["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_text_reminder_unchanged_by_action_branch(monkeypatch):
+    """Existing text-reminder behaviour must be untouched by the new
+    action branch — same emoji prefix, same status flip."""
+    sent: list[str] = []
+    async def fake_send(s): sent.append(s)
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    rid = db.reminder_insert(fire_at=past, text="text-mode", lead_minutes=0)
+    from agents import proactive
+    await proactive.fire_due_reminders(fake_send)
+    assert sent, "text reminder should still push"
+    assert sent[0].startswith("⏰")
+    assert db.reminder_get(rid)["status"] == "fired"

@@ -213,11 +213,170 @@ async def _generate_accountability_followup_text(task_text: str) -> str:
         return f"did you do the {task_text} thing."
 
 
+async def _push_action_message(
+    rid: int,
+    text: str,
+    send_text_fn,
+    reason: str,
+) -> None:
+    """Push a one-off Telegram message from an action reminder (summary or
+    failure notice). Uses reserve_and_send so cadence/silence still apply."""
+    import json as _json
+    payload = _json.dumps({
+        "reminder_id": rid, "kind": "action", "reason": reason,
+    })
+    await reserve_and_send(
+        send_text_fn=send_text_fn,
+        producer_id="reminder",
+        pattern=f"action_{reason}",
+        text=text,
+        payload_json=payload,
+        dedup_key=f"reminder_action:{rid}:{reason}",
+        candidate={
+            "anchor": str(rid),
+            "why_now": f"scheduled action {reason}",
+            "suggested_action": "reply ok/snooze",
+            "confidence": 1.0,
+            "controls": {"snooze_hours": [], "mute_source": "reminder"},
+            "data_checked": ["reminders"],
+        },
+    )
+
+
+def _reschedule_action_row(row: dict) -> None:
+    """Advance an action reminder's fire_at via its recurrence_rule. Falls
+    through silently if the rule is malformed — the row keeps its old
+    fire_at so the next poll just retries it."""
+    recurrence_rule = row.get("recurrence_rule") or ""
+    if not recurrence_rule:
+        return
+    try:
+        from tools.reminders.recurrence import next_occurrence as _recurrence_next
+        current_due = datetime.fromisoformat(row["fire_at"])
+        if current_due.tzinfo is None:
+            current_due = current_due.replace(tzinfo=UTC)
+        new_due = _recurrence_next(recurrence_rule, current_due)
+        db.reminder_update_fire_at(row["id"], new_due.isoformat())
+    except Exception:
+        logger.exception(
+            "action reminder #%s: failed to reschedule (rule=%r)",
+            row["id"], recurrence_rule,
+        )
+
+
+async def _fire_action_reminder(row: dict, send_text_fn) -> int:
+    """Handle one action-mode reminder: defer on quiet-hours / user-turn
+    contention, otherwise invoke ``run_scheduled_action`` and advance state.
+
+    Returns 1 if the row was processed this poll (success OR failure),
+    0 if deferred (caller skips it but does not count it as fired).
+    """
+    rid = int(row["id"])
+    seed = row.get("seed_prompt")
+    if not seed:
+        logger.error("action reminder #%s has no seed_prompt; cancelling", rid)
+        db.reminder_set_status(rid, "cancelled")
+        return 1
+
+    # Quiet-hours: defer 15 min, don't drop. User explicitly opted into the
+    # schedule but quiet-hours is the global noise gate for proactive sends.
+    try:
+        from agents.engagement.guard import should_wake
+        if not should_wake(source_id="reminder_action"):
+            new_due = datetime.now(UTC) + timedelta(minutes=15)
+            db.reminder_update_fire_at(rid, new_due.isoformat())
+            logger.info(
+                "action reminder #%s deferred 15 min (quiet hours)", rid,
+            )
+            return 0
+    except Exception:
+        logger.warning(
+            "action reminder #%s: quiet-hours check raised; proceeding "
+            "(user explicitly scheduled)", rid, exc_info=True,
+        )
+
+    # User-turn contention: defer 2 min. We must NOT preempt a live user
+    # interaction — Hikari's chat-turn lock is single-conversation; running
+    # two SDK turns against the same session_id would fork state.
+    from agents.runtime import _RUN_LOCK
+    if _RUN_LOCK.locked():
+        new_due = datetime.now(UTC) + timedelta(minutes=2)
+        db.reminder_update_fire_at(rid, new_due.isoformat())
+        logger.info(
+            "action reminder #%s deferred 2 min (user turn in progress)", rid,
+        )
+        return 0
+
+    fires_done = int(row.get("fires_done") or 0)
+    max_fires = int(row.get("max_fires") or 0)
+    seed_with_context = (
+        f"{seed}\n\n[scheduled action #{fires_done + 1}"
+        + (f"/{max_fires}" if max_fires else "")
+        + f"; fire_at={row['fire_at']}]"
+    )
+
+    from agents.runtime import run_scheduled_action
+
+    try:
+        await run_scheduled_action(
+            seed_with_context,
+            timeout_s=row.get("timeout_s"),
+            max_budget_usd=row.get("budget_usd_per_fire"),
+        )
+    except Exception as exc:
+        logger.exception("action reminder #%s fire failed", rid)
+        n_failures = db.reminder_increment_failures(rid)
+        if n_failures >= 3:
+            db.reminder_set_status(rid, "cancelled")
+            try:
+                await _push_action_message(
+                    rid,
+                    f"scheduled action cancelled — 3 failures in a row "
+                    f"(last: {type(exc).__name__}).",
+                    send_text_fn,
+                    reason="failed_cap",
+                )
+            except Exception:
+                logger.exception(
+                    "action reminder #%s: failure-surface send failed", rid,
+                )
+        else:
+            # Try again at the next cadence step so transient errors clear.
+            _reschedule_action_row(row)
+        return 1
+
+    # Success path
+    new_fires_done = db.reminder_increment_fires_done(rid)
+    db.reminder_reset_failures(rid)
+
+    if max_fires and new_fires_done >= max_fires:
+        summary_prompt = row.get("summary_prompt")
+        if summary_prompt:
+            try:
+                summary_text = await run_scheduled_action(summary_prompt)
+                if summary_text and summary_text.strip():
+                    await _push_action_message(
+                        rid, summary_text.strip(), send_text_fn,
+                        reason="summary",
+                    )
+            except Exception:
+                logger.exception(
+                    "action reminder #%s: summary turn failed", rid,
+                )
+        db.reminder_set_status(rid, "fired")
+    else:
+        _reschedule_action_row(row)
+    return 1
+
+
 async def fire_due_reminders(send_text) -> int:
     """Drain reminder_due() — for each row, format + send + mark fired.
     If row has a repeat spec, insert the next occurrence as a fresh row.
     If row has a recurrence_rule, UPDATE fire_at in-place (infinite loop
     until user cancels — do NOT mark the row fired/cancelled).
+
+    Action-mode rows (``kind='action'``) branch to ``_fire_action_reminder``
+    which invokes ``run_scheduled_action`` instead of pushing static text.
     Returns count fired."""
     import json as _json
 
@@ -237,6 +396,13 @@ async def fire_due_reminders(send_text) -> int:
 
     fired = 0
     for row in due:
+        # Action-mode reminders: invoke Hikari autonomously, do not push
+        # static text. _fire_action_reminder handles defer / failure cap /
+        # summary / reschedule on its own.
+        if row.get("kind") == "action":
+            fired += await _fire_action_reminder(row, _send_text_fn)
+            continue
+
         accountability = db.accountability_get_by_followup_id(row["id"])
         if accountability and accountability["outcome"] is None:
             text = await _generate_accountability_followup_text(accountability["task_text"])

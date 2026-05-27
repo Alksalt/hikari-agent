@@ -147,3 +147,112 @@ async def test_reminder_snooze_does_not_requeue_when_never_synced():
     row = db.reminder_get(rid)
     assert row["gcal_sync_pending"] == 0, "must not queue sync when event was never created"
     assert row["apple_sync_pending"] == 0, "must not queue apple sync when event was never created"
+
+
+# ---------------------------------------------------------------------------
+# Phase 15: action-mode reminders
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_reminder_happy_path():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "autonomous notion write",
+        "kind": "action",
+        "recurrence": "every_n_minutes:20",
+        "max_fires": 6,
+        "seed_prompt": "write the next row to notion db abc123",
+        "summary_prompt": "summarize what you wrote",
+        "budget_usd_per_fire": 0.40,
+        "timeout_s": 180,
+    })
+    assert "data" in out
+    assert out["data"]["kind"] == "action"
+    rid = out["data"]["id"]
+    row = db.reminder_get(rid)
+    assert row["kind"] == "action"
+    assert row["seed_prompt"] == "write the next row to notion db abc123"
+    assert row["max_fires"] == 6
+    assert row["recurrence_rule"] == "every_n_minutes:20"
+    # Calendar mirroring is forced off for action kind.
+    assert row["gcal_sync_pending"] == 0
+    assert row["apple_sync_pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_missing_seed_prompt_refused():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "action",
+        "recurrence": "every_n_minutes:20", "max_fires": 6,
+    })
+    assert "refused" in out["content"][0]["text"]
+    assert "seed_prompt" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_missing_recurrence_refused():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "action",
+        "seed_prompt": "do it", "max_fires": 6,
+    })
+    assert "refused" in out["content"][0]["text"]
+    assert "recurrence" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_missing_max_fires_refused():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "action",
+        "seed_prompt": "do it", "recurrence": "every_n_minutes:20",
+    })
+    assert "refused" in out["content"][0]["text"]
+    assert "max_fires" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_cost_cap_refused():
+    """A schedule of 100 fires × $0.40 = $40 must refuse (cap is $5)."""
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "action",
+        "seed_prompt": "do it", "recurrence": "every_n_minutes:20",
+        "max_fires": 100,
+    })
+    assert "refused" in out["content"][0]["text"]
+    body = out["content"][0]["text"]
+    assert "exceeds cap" in body or "total budget" in body
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_invalid_kind_refused():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "weird",
+    })
+    assert "refused" in out["content"][0]["text"]
+    assert "kind" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_text_reminder_unchanged_by_action_args():
+    """Existing text reminder behaviour must be unaffected when action-mode
+    args are absent."""
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "old-school ping",
+    })
+    rid = out["data"]["id"]
+    row = db.reminder_get(rid)
+    assert row["kind"] == "text"
+    assert row["seed_prompt"] is None
+    assert row["max_fires"] is None
