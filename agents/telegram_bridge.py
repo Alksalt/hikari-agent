@@ -1983,18 +1983,14 @@ async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/memory subcommand suite.
+    """/memory — query / edit the fact + message memory.
 
-    Subcommands:
-      recent [N=10]        — most recently recorded facts
-      search <query>       — FTS over facts text
+    Routes:
+      (no args)            — 10 most recent facts
       fact <id>            — full fact + provenance + linked entities
-      forget <id>          — invalidate a fact (soft delete)
-      correct <id> <new>   — invalidate + insert replacement
-      tasks                — alias for /tasks
-      session <query>      — search message history (FTS5)
-      why <id>             — provenance: source message, attribution, when
-      debug <query>        — SQLite vs Graphiti diff (operator only)
+      forget <id>          — soft-delete a fact
+      correct <id> <new>   — invalidate + replace a fact
+      <freetext>           — fuzzy search facts + sessions
     """
     user = update.effective_user
     message = update.message
@@ -2010,22 +2006,9 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             reason="memory_cmd", reply_to=message, silent=silent,
         )
 
-    # ---- /memory (no args) → usage ----
+    # ---- /memory (no args) → recent ----
     if not sub:
-        await _mem_ack(
-            "/memory: recent [N] | search <q> | fact <id> | forget <id> | "
-            "correct <id> <new> | tasks | session <q> | why <id> | debug <q> | "
-            "locations [list | delete <id>]"
-        )
-        return
-
-    # ---- recent ----
-    if sub == "recent":
-        try:
-            n = int(args[1]) if len(args) > 1 else 10
-        except ValueError:
-            n = 10
-        facts = db.active_facts(limit=max(1, min(50, n)))
+        facts = db.active_facts(limit=10)
         if not facts:
             await _mem_ack("no facts yet.")
             return
@@ -2033,22 +2016,6 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         for f in facts:
             obj_short = f['object'][:80]
             lines.append(f"  #{f['id']}: {f['predicate']} — {obj_short}  [{f['valid_from'][:10]}]")
-        await _mem_ack("\n".join(lines)[:3900])
-        return
-
-    # ---- search ----
-    if sub == "search":
-        q = " ".join(args[1:]).strip()
-        if not q:
-            await _mem_ack("usage: /memory search <query>")
-            return
-        hits = db.facts_text_search(q, limit=10)
-        if not hits:
-            await _mem_ack(f"no fact matches for {q!r}.")
-            return
-        lines = [f"{len(hits)} matches for {q!r}:"]
-        for f in hits:
-            lines.append(f"  #{f['id']}: {f['predicate']} — {f['object'][:80]}")
         await _mem_ack("\n".join(lines)[:3900])
         return
 
@@ -2134,98 +2101,24 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _mem_ack(f"corrected {fid} → new fact #{new_id}.")
         return
 
-    # ---- tasks ----
-    if sub == "tasks":
-        await cmd_tasks(update, context)
+    # ---- freetext search (facts + sessions) ----
+    q = " ".join(args).strip()
+    fact_hits = db.facts_text_search(q, limit=8)
+    session_hits = db.messages_fts_search(q, limit=5)
+    if not fact_hits and not session_hits:
+        await _mem_ack(f"no matches for {q!r}.")
         return
-
-    # ---- session ----
-    if sub == "session":
-        q = " ".join(args[1:]).strip()
-        if not q:
-            await _mem_ack("usage: /memory session <query>")
-            return
-        rows = db.messages_fts_search(q, limit=10)
-        if not rows:
-            await _mem_ack(f"no message matches for {q!r}.")
-            return
-        lines = [f"{len(rows)} message matches for {q!r}:"]
-        for r in rows:
-            snippet = (r["content"] or "")[:100].replace("\n", " ")
-            lines.append(f"  [{r['role']} #{r['id']} @ {r['ts'][:19]}] {snippet}")
-        await _mem_ack("\n".join(lines)[:3900])
-        return
-
-    # ---- why ----
-    if sub == "why":
-        if len(args) < 2:
-            await _mem_ack("usage: /memory why <id>")
-            return
-        try:
-            fid = int(args[1])
-        except ValueError:
-            await _mem_ack("id must be an integer.")
-            return
-        prov = db.fact_provenance(fid)
-        if not prov:
-            await _mem_ack(f"fact {fid}: not found.")
-            return
-        lines = [f"provenance for fact #{fid}:"]
-        lines.append(f"  attribution: {prov.get('attribution') or 'unknown'}")
-        if prov.get("recorded_at"):
-            lines.append(f"  recorded_at: {prov['recorded_at']}")
-        if prov.get("source_span_hash"):
-            lines.append(f"  span_hash:   {prov['source_span_hash']}")
-        if prov.get("source_message_id"):
-            _ts = prov.get('ts') or ''
-            lines.append(f"  source_msg:  #{prov['source_message_id']} @ {_ts[:19]}")
-            if prov.get("content"):
-                snippet = (prov["content"] or "")[:200].replace("\n", " ")
-                lines.append(f"  text:        {snippet}")
-        await _mem_ack("\n".join(lines)[:3900])
-        return
-
-    # ---- debug ----
-    if sub == "debug":
-        # Route to cmd_memory_diff — pass the remaining args as context.args
-        context.args = args[1:]
-        await cmd_memory_diff(update, context)
-        return
-
-    # ---- locations ----
-    if sub == "locations":
-        action = args[1].lower() if len(args) > 1 else "list"
-        if action == "list":
-            rows = db.photo_locations_recent(limit=20)
-            if not rows:
-                await _mem_ack("no photo locations recorded yet.")
-                return
-            lines = [f"photo locations ({len(rows)}):"]
-            for r in rows:
-                label = (r.get("label") or "unknown")[:60]
-                ts = (r.get("received_at") or "")[:10]
-                lines.append(f"  #{r['id']} [{ts}] lat={r['lat']:.4f} lon={r['lon']:.4f} {label}")
-            await _mem_ack("\n".join(lines)[:3900])
-        elif action == "delete":
-            if len(args) < 3:
-                await _mem_ack("usage: /memory locations delete <id>")
-                return
-            try:
-                loc_id = int(args[2])
-            except ValueError:
-                await _mem_ack("id must be an integer.")
-                return
-            deleted = db.photo_location_delete(loc_id)
-            if deleted:
-                await _mem_ack(f"location #{loc_id} deleted.")
-            else:
-                await _mem_ack(f"location #{loc_id}: not found.")
-        else:
-            await _mem_ack("usage: /memory locations [list | delete <id>]")
-        return
-
-    # ---- unknown ----
-    await _mem_ack(f"unknown subcommand: {sub!r}.")
+    lines = [f"search: {q!r}"]
+    if fact_hits:
+        lines.append(f"\nfacts ({len(fact_hits)}):")
+        for f in fact_hits:
+            lines.append(f"  #{f['id']}: {f['predicate']} — {f['object'][:80]}")
+    if session_hits:
+        lines.append(f"\nmessages ({len(session_hits)}):")
+        for r in session_hits:
+            snippet = (r["content"] or "")[:80].replace("\n", " ")
+            lines.append(f"  [{r['role']} #{r['id']} @ {r['ts'][:10]}] {snippet}")
+    await _mem_ack("\n".join(lines)[:3900])
 
 
 async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2909,15 +2802,16 @@ async def cmd_memorydump(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/links [search] — search bookmark shelf or list 10 most recent."""
+    """/links [search] — search bookmark shelf or list all recent."""
     user = update.effective_user
     message = update.message
     if not user or not message or user.id != owner_id():
         return
     args = (context.args or [])
     query = " ".join(args) if args else None
-    text, _ = cockpit.format_links(query=query, page=0)
-    await _send_cockpit_text(message, text)
+    chunks = cockpit.format_links(query=query)
+    for chunk in chunks:
+        await _send_cockpit_text(message, chunk)
 
 
 async def cmd_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

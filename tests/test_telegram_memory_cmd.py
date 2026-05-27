@@ -1,17 +1,18 @@
 """Sprint 5B — /memory command handler tests (mock-based, pytest-asyncio).
 
-Ten cases:
-  1.  /memory (no args) → usage line
-  2.  /memory recent → list with #ids
-  3.  /memory recent 3 → respects N
-  4.  /memory fact <id> → includes entity line
-  5.  /memory forget <id> → fact marked invalid + voice confirm
-  6.  /memory correct <id> <new> → new fact with attribution=user_corrected + entities linked + old superseded
-  7.  /memory session <q> → calls messages_fts_search
-  8.  /memory why <id> → shows provenance
-  9.  /memory debug <q> → routes to cmd_memory_diff (monkeypatched)
-  10. unknown subcommand → error reply
-  11. non-owner user → silent (reply_text NOT called)
+Three-route surface:
+  - /memory (no args) → recent facts list
+  - /memory <freetext> → combined fact + session search
+  - /memory fact|forget|correct <id> [<new>] → single-fact operations
+
+Cases:
+  1.  /memory (no args) → recent facts list (#id visible)
+  2.  /memory <freetext> → combined search (match visible or "no matches")
+  3.  /memory fact <id> → includes entity line
+  4.  /memory forget <id> → fact marked invalid + voice confirm
+  5.  /memory correct <id> <new> → new fact with attribution=user_corrected + entities linked + old superseded
+  6.  null ts — /memory fact on pruned-source message (no crash)
+  7.  non-owner user → silent (reply_text NOT called)
 """
 from __future__ import annotations
 
@@ -87,54 +88,37 @@ def seeded_db():
 
 
 # ---------------------------------------------------------------------------
-# 1. no args → usage
+# 1. no args → recent facts list
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_memory_no_args():
+async def test_memory_no_args_returns_recent(seeded_db):
+    """/memory with no args should return the recent facts list."""
     from agents.telegram_bridge import cmd_memory
     update, context = _make_update(_owner_id(), args=[])
     await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
-    assert "recent" in text
-    assert "search" in text
-
-
-# ---------------------------------------------------------------------------
-# 2. recent → list with #ids
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_recent_lists(seeded_db):
-    fid1, fid2, eid = seeded_db
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["recent"])
-    await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
+    fid1, fid2, _ = seeded_db
+    # Either #fid1 or #fid2 should appear in the recent list
     assert f"#{fid1}" in text or f"#{fid2}" in text
 
 
 # ---------------------------------------------------------------------------
-# 3. recent 3 → respects N
+# 2. freetext → combined search
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_memory_recent_respects_n(seeded_db):
-    # Seed 5 more facts so we have >3.
-    for i in range(5):
-        db.insert_fact("user", "notes", f"extra fact {i}")
+async def test_memory_freetext_routes_to_search(seeded_db):
+    """/memory <freetext> should route to combined fact + session search."""
     from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["recent", "3"])
+    update, context = _make_update(_owner_id(), args=["kabocha"])
     await cmd_memory(update, context)
     text = update.message.reply_text.call_args[0][0]
-    # Should say "recent 3 facts:"
-    assert "3 facts" in text
+    assert "kabocha" in text.lower()
 
 
 # ---------------------------------------------------------------------------
-# 4. fact <id> → includes entity line
+# 3. fact <id> → includes entity line
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -150,7 +134,7 @@ async def test_memory_fact_includes_entity(seeded_db):
 
 
 # ---------------------------------------------------------------------------
-# 5. forget <id> → fact marked invalid + voice confirm
+# 4. forget <id> → fact marked invalid + voice confirm
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -168,7 +152,7 @@ async def test_memory_forget_marks_invalid(seeded_db):
 
 
 # ---------------------------------------------------------------------------
-# 6. correct <id> <new> → new fact attributed user_corrected + entities + old superseded
+# 5. correct <id> <new> → new fact attributed user_corrected + entities + old superseded
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -202,104 +186,8 @@ async def test_memory_correct_creates_replacement(seeded_db):
 
 
 # ---------------------------------------------------------------------------
-# 7. session <q> → calls messages_fts_search (via db)
+# 6. null ts — /memory fact on pruned-source message (no crash)
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_session_searches_messages(seeded_db):
-    # seeded_db inserts "i love kabocha soup" message.
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["session", "kabocha"])
-    await cmd_memory(update, context)
-    text = update.message.reply_text.call_args[0][0]
-    # Should mention a match.
-    assert "kabocha" in text.lower()
-    assert "match" in text.lower()
-
-
-# ---------------------------------------------------------------------------
-# 8. why <id> → shows provenance fields
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_why_shows_provenance(seeded_db):
-    fid1, fid2, eid = seeded_db
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["why", str(fid1)])
-    await cmd_memory(update, context)
-    text = update.message.reply_text.call_args[0][0]
-    assert f"#{fid1}" in text
-    assert "attribution" in text
-    assert "user_stated" in text
-
-
-# ---------------------------------------------------------------------------
-# 9. debug <q> → routes to cmd_memory_diff (monkeypatched)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_debug_routes_to_memory_diff(seeded_db):
-    from agents import telegram_bridge as tb
-    diff_called_with: list = []
-
-    async def fake_memory_diff(update, context):
-        diff_called_with.append(list(context.args))
-
-    update, context = _make_update(_owner_id(), args=["debug", "kabocha"])
-    original = tb.cmd_memory_diff
-    tb.cmd_memory_diff = fake_memory_diff
-    try:
-        await tb.cmd_memory(update, context)
-    finally:
-        tb.cmd_memory_diff = original
-
-    assert diff_called_with == [["kabocha"]]
-
-
-# ---------------------------------------------------------------------------
-# 10. unknown subcommand → error reply
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_unknown_subcommand():
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["xyzzy"])
-    await cmd_memory(update, context)
-    text = update.message.reply_text.call_args[0][0]
-    assert "unknown" in text.lower()
-
-
-# ---------------------------------------------------------------------------
-# 11. non-owner user → silent
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_non_owner_silent():
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(user_id=999, args=["recent"])
-    await cmd_memory(update, context)
-    update.message.reply_text.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# 12. null ts — /memory why + /memory fact on pruned-source message (Fix 1)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_why_null_ts_no_crash():
-    """fact_provenance LEFT JOIN returns ts=None when source message is pruned.
-    /memory why must not raise TypeError on None[:19]."""
-    from agents.telegram_bridge import cmd_memory
-
-    # Insert a fact whose source_message_id points to a non-existent message.
-    fid = db.insert_fact("user", "likes", "void", source_message_id=999,
-                         attribution="user_stated")
-
-    update, context = _make_update(_owner_id(), args=["why", str(fid)])
-    # Must not raise — the handler should reply without crashing.
-    await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
-
 
 @pytest.mark.asyncio
 async def test_memory_fact_null_ts_no_crash():
@@ -315,43 +203,12 @@ async def test_memory_fact_null_ts_no_crash():
 
 
 # ---------------------------------------------------------------------------
-# 13. /memory locations — list empty
+# 7. non-owner user → silent
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_memory_locations_list_empty():
+async def test_memory_non_owner_silent():
     from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["locations"])
+    update, context = _make_update(user_id=999, args=[])
     await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
-    assert "no photo locations" in text
-
-
-# ---------------------------------------------------------------------------
-# 14. /memory locations delete <id> → not found when id missing
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_locations_delete_not_found():
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["locations", "delete", "9999"])
-    await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
-    assert "not found" in text
-
-
-# ---------------------------------------------------------------------------
-# 15. /memory locations delete <id> → deleted when row exists
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_memory_locations_delete_existing():
-    loc_id = db.photo_location_insert(35.6762, 139.6503, label="Tokyo")
-    from agents.telegram_bridge import cmd_memory
-    update, context = _make_update(_owner_id(), args=["locations", "delete", str(loc_id)])
-    await cmd_memory(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
-    assert "deleted" in text
+    update.message.reply_text.assert_not_awaited()

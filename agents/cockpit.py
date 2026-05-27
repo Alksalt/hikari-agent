@@ -34,7 +34,7 @@ _COMMANDS: dict[str, str] = {
     "silence":      "mute proactives for N minutes (default 120)",
     "unsilence":    "cancel active silence window",
     "checkin":      "morning checkin: run now / skip tomorrow",
-    "memory":       "query / edit the fact + message memory",
+    "memory":       "query memory — /memory [search] | fact <id> | forget <id> | correct <id> <new>",
     # Tier 2 — weekly / when needed
     "reminders":    "list active reminders with snooze/dismiss buttons (paginated)",
     "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
@@ -42,18 +42,10 @@ _COMMANDS: dict[str, str] = {
     "tasks":        "list open background tasks",
     "cancel":       "cancel a running background task by id",
     "help":         "show this command list",
-    # Tier 3 — monthly / debug
-    "approvals":    "list / cancel pending gatekeeper approvals",
-    "settings":     "get or set allowlisted runtime settings",
-    "capabilities": "tool families, skill count, and MCP server health",
-    "tools":        "per-family counts + last-call + warm-pool health",
-    "audit":        "paginate audit_log (recent / tools / approvals / id <id>)",
-    # Tier 4 — new in Wave 3
+    # Tier 3 — new in Wave 3
     "diary":        "last 5 diary entries paginated",
-    "links":        "search bookmark shelf; no arg = 10 most recent",
+    "links":        "search bookmark shelf; no arg = all recent",
     "receipt":      "day/week receipt with category filter buttons",
-    "decision":     "list pending predictions; resolve <id> <0|1>",
-    "voice":        "last voice transcript + STT health + 3 recent prompts",
 }
 
 # ---------------------------------------------------------------------------
@@ -595,7 +587,7 @@ def format_tools(subcmd: str, args: list[str]) -> str:
         try:
             from tools._tools_yaml import load_registry
             reg = load_registry()
-            tools_list = reg.tools()
+            tools_list = reg.specs()
         except Exception as exc:
             return f"error loading tool registry: {exc}"
         groups: dict[str, list[str]] = {}
@@ -1202,11 +1194,10 @@ _DIARY_PAGE_SIZE = 5
 def format_diary(page: int = 0) -> tuple[str, list[dict]]:
     """Return (text, nav_keyboard_row) for /diary page N.
 
-    Fetches up to 50 entries; paginates at 5/page.
+    Fetches up to 50 entries from diary_entries; paginates at 5/page.
     keyboard_row is a list of dicts (prev/next buttons).
     """
     from storage import db as _db
-    # fetch a large window and paginate client-side
     all_entries = _db.diary_entries_recent(limit=50)
     total = len(all_entries)
 
@@ -1223,10 +1214,10 @@ def format_diary(page: int = 0) -> tuple[str, list[dict]]:
 
     lines = [f"diary — page {page + 1}/{total_pages}:"]
     for entry in page_entries:
-        entry_date = entry.get("entry_date") or "?"
-        body = (entry.get("body") or entry.get("content") or entry.get("text") or "")[:200]
-        lines.append(f"\n{entry_date}")
-        lines.append(f"  {body}")
+        ts = (entry.get("entry_date") or "")[:10]
+        thought = (entry.get("body") or "")[:200]
+        lines.append(f"\n{ts}")
+        lines.append(f"  {thought}")
 
     nav_row: list[dict] = []
     if page > 0:
@@ -1241,40 +1232,33 @@ def format_diary(page: int = 0) -> tuple[str, list[dict]]:
 # /links — bookmark shelf search + pagination
 # ---------------------------------------------------------------------------
 
-_LINKS_PAGE_SIZE = 10
+_LINKS_CHUNK_SIZE = 4000
 
 
-def format_links(query: str | None = None, page: int = 0) -> tuple[str, list[dict]]:
-    """Return (text, nav_keyboard_row) for /links [query].
+def format_links(query: str | None = None) -> list[str]:
+    """Return a list of text chunks for /links [query].
 
-    No query → 10 most recent. Query → FTS search.
+    No query → all recent links. Query → FTS search.
+    Each chunk is at most 4000 chars, split on line boundaries.
     """
     from tools.link_shelf import db as _shelf_db
 
-    page_size = _LINKS_PAGE_SIZE
-    offset = page * page_size
-
     try:
         if query:
-            # search uses keyword-only args
-            all_results = _shelf_db.search(query=query, limit=100)
+            all_results = _shelf_db.search(query=query, limit=1000)
         else:
-            all_results = _shelf_db.list_links(limit=100)
+            all_results = _shelf_db.list_links(limit=1000)
     except Exception as exc:
-        return f"error fetching links: {exc}", []
+        return [f"error fetching links: {exc}"]
 
-    total = len(all_results)
-    if total == 0:
+    if not all_results:
         if query:
-            return f"no links matching {query!r}.", []
-        return "no saved links.", []
+            return [f"no links matching {query!r}."]
+        return ["no saved links."]
 
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    page_results = all_results[offset : offset + page_size]
-
-    header = f"links — " + (f"'{query}'" if query else "recent") + f" page {page + 1}/{total_pages}:"
+    header = "links — " + (f"'{query}'" if query else "recent") + f" ({len(all_results)}):"
     lines = [header]
-    for link in page_results:
+    for link in all_results:
         lid = link.get("id") or "?"
         url = link.get("url") or "?"
         title = (link.get("title") or url)[:60]
@@ -1283,15 +1267,24 @@ def format_links(query: str | None = None, page: int = 0) -> tuple[str, list[dic
         lines.append(f"  #{lid} [{kind}] {added}  {title}")
         lines.append(f"       {url[:80]}")
 
-    nav_row: list[dict] = []
-    if page > 0:
-        qpart = f":{query}" if query else ""
-        nav_row.append({"text": "< Prev", "callback_data": f"links:page:{page - 1}{qpart}"})
-    if offset + page_size < total:
-        qpart = f":{query}" if query else ""
-        nav_row.append({"text": "Next >", "callback_data": f"links:page:{page + 1}{qpart}"})
+    full_text = "\n".join(lines)
+    if len(full_text) <= _LINKS_CHUNK_SIZE:
+        return [full_text]
 
-    return _truncate_3900("\n".join(lines)), nav_row
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if current_lines and current_len + line_len > _LINKS_CHUNK_SIZE:
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_len = 0
+        current_lines.append(line)
+        current_len += line_len
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+    return chunks
 
 
 # ---------------------------------------------------------------------------

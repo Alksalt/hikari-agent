@@ -2120,6 +2120,7 @@ def append_thought(thought: str) -> None:
         )
 
 
+
 def prune_thoughts_older_than_days(days: int) -> int:
     """Delete character_thoughts older than `days` from now. Returns count."""
     from datetime import timedelta

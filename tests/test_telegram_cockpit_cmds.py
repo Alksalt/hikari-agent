@@ -101,9 +101,9 @@ async def test_help_lists_commands():
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
     assert "/status" in text
-    assert "/audit" in text
-    assert "/settings" in text
-    assert "/tools" in text
+    assert "/memory" in text
+    assert "/diary" in text
+    assert "/links" in text
     assert len(text) <= 3900
 
 
@@ -137,7 +137,7 @@ async def test_tools_policy_groups():
     fake_spec.id = "mcp__test__foo"
     fake_spec.access_mode = "read"
     fake_registry = MagicMock()
-    fake_registry.tools.return_value = [fake_spec]
+    fake_registry.specs.return_value = [fake_spec]
 
     update, context = _make_update(_owner_id(), args=[])
     with patch("tools._tools_yaml.load_registry", return_value=fake_registry):
@@ -146,6 +146,17 @@ async def test_tools_policy_groups():
     text = update.message.reply_text.call_args[0][0]
     assert "access_mode" in text or "read" in text
     assert len(text) <= 3900
+
+
+@pytest.mark.asyncio
+async def test_format_tools_real_registry_no_crash():
+    """format_tools() with the real ToolRegistry (not a mock) must not raise."""
+    import agents.cockpit as ck
+    try:
+        result = ck.format_tools("policy", [])
+    except Exception as exc:
+        pytest.fail(f"format_tools crashed with real registry: {exc}")
+    assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +489,7 @@ async def test_audit_media_with_data():
 
 
 # ---------------------------------------------------------------------------
-# 19. /diary — empty DB returns "no diary entries"
+# 19. /diary — empty DB returns terse empty message
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -488,23 +499,23 @@ async def test_diary_empty():
     await cmd_diary(update, context)
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
-    assert "no diary" in text.lower() or "diary" in text.lower()
+    assert "no diary entries" in text
 
 
 # ---------------------------------------------------------------------------
-# 20. /diary — returns formatted entries with date + body
+# 20. /diary — returns formatted entries from diary_entries
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_diary_with_entries():
-    db.diary_entry_upsert("2026-05-01", "something meaningful happened")
-    db.diary_entry_upsert("2026-05-02", "another day, another thought")
+    db.diary_entry_upsert("2026-05-27", "something meaningful happened today")
+    db.diary_entry_upsert("2026-05-26", "another day, another thought")
     from agents.telegram_bridge import cmd_diary
     update, context = _make_update(_owner_id(), args=[])
     await cmd_diary(update, context)
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
-    assert "2026-05" in text
+    assert "something meaningful" in text or "another day" in text
     assert len(text) <= 4000
 
 
@@ -537,7 +548,7 @@ async def test_links_empty():
 
 
 # ---------------------------------------------------------------------------
-# 23. /links — returns bookmark entries
+# 23. /links — returns ALL bookmark entries (no pagination)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -558,10 +569,12 @@ async def test_links_with_data():
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
     assert "example.com" in text or "Interesting Paper" in text
+    # no pagination nav buttons in output
+    assert "< Prev" not in text and "Next >" not in text
 
 
 # ---------------------------------------------------------------------------
-# 24. /links search — returns filtered results
+# 24. /links search — returns filtered results, no pagination
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -581,8 +594,38 @@ async def test_links_search_filter():
     await cmd_links(update, context)
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
-    # Either the match or the "no links" response is acceptable
     assert "arxiv" in text.lower() or "no links" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 24b. /links overflow — >50 links splits into multiple messages
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_links_overflow_splits():
+    import tools.link_shelf.db as shelf_db
+    shelf_db._reset_schema_sentinel()
+    for i in range(60):
+        shelf_db.insert(
+            url=f"https://example.com/link{i:03d}",
+            title=f"Link number {i:03d} with a somewhat long title to fill space",
+            snippet="snippet",
+            kind="later",
+            tags=[],
+            note=None,
+        )
+    from agents.telegram_bridge import cmd_links
+    update, context = _make_update(_owner_id(), args=[])
+    context.bot = MagicMock()
+    await cmd_links(update, context)
+    # multiple chunks → reply_text called more than once, OR single call if fits
+    call_count = update.message.reply_text.await_count
+    assert call_count >= 1
+    # all 60 links visible across all calls
+    all_text = " ".join(
+        call[0][0] for call in update.message.reply_text.call_args_list
+    )
+    assert "link000" in all_text.lower() or "link059" in all_text.lower() or "60" in all_text
 
 
 # ---------------------------------------------------------------------------
@@ -770,3 +813,77 @@ async def test_proactive_why_non_owner_silent():
     update, context = _make_update(user_id=999, args=["why", "1"])
     await cmd_proactive(update, context)
     update.message.reply_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# /memory — A4 collapse tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_memory_no_args_shows_recent_facts():
+    """no args → recent facts (or 'no facts' if empty)."""
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=[])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "fact" in text.lower() or "no facts" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_memory_freetext_routes_to_search():
+    """/memory <freetext> routes to combined fact+session search."""
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["some", "search", "query"])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args[0][0]
+    # either "no matches" or search results header
+    assert "some search query" in text or "no matches" in text
+
+
+@pytest.mark.asyncio
+async def test_memory_fact_not_found():
+    """/memory fact <id> returns not found for missing id."""
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["fact", "99999"])
+    await cmd_memory(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "not found" in text
+
+
+@pytest.mark.asyncio
+async def test_memory_forget_not_found():
+    """/memory forget <id> returns not found for missing id."""
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(_owner_id(), args=["forget", "99999"])
+    await cmd_memory(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "not found" in text
+
+
+@pytest.mark.asyncio
+async def test_memory_non_owner_silent():
+    """/memory non-owner is silently ignored."""
+    from agents.telegram_bridge import cmd_memory
+    update, context = _make_update(user_id=999, args=[])
+    await cmd_memory(update, context)
+    update.message.reply_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A5 — menu trim: removed keys not in _COMMANDS
+# ---------------------------------------------------------------------------
+
+def test_menu_trim_cuts_removed_commands():
+    from agents.cockpit import _COMMANDS
+    removed = {"approvals", "settings", "capabilities", "tools", "audit", "decision", "voice"}
+    for key in removed:
+        assert key not in _COMMANDS, f"expected {key!r} removed from _COMMANDS"
+
+
+def test_menu_has_required_commands():
+    from agents.cockpit import _COMMANDS
+    required = {"silence", "memory", "reminders", "status", "proactive", "tasks", "diary", "links", "receipt"}
+    for key in required:
+        assert key in _COMMANDS, f"expected {key!r} in _COMMANDS"

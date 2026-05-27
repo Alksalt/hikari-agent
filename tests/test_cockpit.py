@@ -139,9 +139,9 @@ def test_links_empty(monkeypatch):
     import tools.link_shelf.db as _shelf
     monkeypatch.setattr(_shelf, "list_links", lambda **kw: [])
     import agents.cockpit as ck
-    text, nav = ck.format_links()
+    chunks = ck.format_links()
+    text = chunks[0]
     assert "no saved links" in text
-    assert nav == []
 
 
 def test_links_with_data(monkeypatch):
@@ -153,7 +153,8 @@ def test_links_with_data(monkeypatch):
     import tools.link_shelf.db as _shelf
     monkeypatch.setattr(_shelf, "list_links", lambda **kw: fake_links)
     import agents.cockpit as ck
-    text, nav = ck.format_links()
+    chunks = ck.format_links()
+    text = "\n".join(chunks)
     assert "example.com" in text
     assert "Link 0" in text
     assert len(text) <= 3900
@@ -163,7 +164,8 @@ def test_links_search_empty(monkeypatch):
     import tools.link_shelf.db as _shelf
     monkeypatch.setattr(_shelf, "search", lambda **kw: [])
     import agents.cockpit as ck
-    text, nav = ck.format_links(query="python")
+    chunks = ck.format_links(query="python")
+    text = "\n".join(chunks)
     assert "python" in text
     assert "no links" in text
 
@@ -450,7 +452,7 @@ def test_tools_policy_still_works():
     fake_spec.id = "mcp__test__foo"
     fake_spec.access_mode = "read"
     fake_registry = MagicMock()
-    fake_registry.tools.return_value = [fake_spec]
+    fake_registry.specs.return_value = [fake_spec]
     with patch("tools._tools_yaml.load_registry", return_value=fake_registry):
         text = ck.format_tools("policy", [])
     assert "read" in text
