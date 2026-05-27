@@ -24,6 +24,7 @@ import httpx
 
 from claude_agent_sdk import (
     AssistantMessage,
+    CLIConnectionError,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
@@ -600,7 +601,9 @@ async def _invoke_sdk_persistent_live(
 
     Uses sdk_pool.get_live_client() — no fresh subprocess fork.
     On ProcessError or TimeoutError: clears suspect session if applicable,
-    reconnects once, retries once, then re-raises on second failure.
+    reconnects once, retries once, then re-raises on second failure. On
+    CLIConnectionError, reconnects without clearing session_id: the cached
+    subprocess is dead, but the SDK session itself is not necessarily suspect.
     On ResultMessage: stores session_id if log_session_id=True.
 
     Lock contract: callers (``run_user_turn``, ``run_visible_proactive``,
@@ -658,22 +661,30 @@ async def _invoke_sdk_persistent_live(
 
     try:
         result = await _run_one()
-    except (TimeoutError, ProcessError) as exc:
+    except (TimeoutError, ProcessError, CLIConnectionError) as exc:
         reason = type(exc).__name__
-        # If a stored session_id was involved, clear it (suspect session).
-        stored = db.get_session_id()
-        if stored:
+        # CLIConnectionError means the cached CLI transport died. Reconnect the
+        # client, but keep session_id so the retry can resume the live chat.
+        if isinstance(exc, CLIConnectionError):
             logger.warning(
-                "_invoke_sdk_persistent_live: %s"
-                " — clearing suspect session_id (present=True) and reconnecting",
+                "_invoke_sdk_persistent_live: %s — reconnecting dead live client",
                 reason,
             )
-            db.set_session_id("")
         else:
-            logger.warning(
-                "_invoke_sdk_persistent_live: %s — reconnecting live client",
-                reason,
-            )
+            # If a stored session_id was involved, clear it (suspect session).
+            stored = db.get_session_id()
+            if stored:
+                logger.warning(
+                    "_invoke_sdk_persistent_live: %s"
+                    " — clearing suspect session_id (present=True) and reconnecting",
+                    reason,
+                )
+                db.set_session_id("")
+            else:
+                logger.warning(
+                    "_invoke_sdk_persistent_live: %s — reconnecting live client",
+                    reason,
+                )
         await sdk_pool._reconnect_live(f"{reason} on user turn", lock_run=False)
         result = await _run_one()   # one retry; re-raises on second failure
 
