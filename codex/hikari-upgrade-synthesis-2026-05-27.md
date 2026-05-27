@@ -347,6 +347,266 @@ Do not add:
 - dashboard sprawl before Telegram command surfaces are accurate
 - model/persona changes without continuity handling
 
+## Second-Wave Idea Scouts
+
+After this synthesis, a second batch of 10 idea scouts explored less-obvious upgrade lanes. The strongest new direction is to make Hikari tangible and socially adaptive: not just a better memory/proactive agent, but someone with artifacts, rituals, repair skill, local-world context, taste, and traceable boundaries.
+
+### 1. Companion Mechanics: Mementos, Desk, Letterbox
+
+Source patterns: Animal Crossing letters, Neko Atsume mementos, Kind Words letter exchange, Finch/Spirit City cozy rituals, Forest focus sessions, Our Life consentful pacing, Persona confidants.
+
+Ideas:
+
+- `mementos`: after meaningful, funny, strange, or hard conversations, Hikari creates a named artifact such as "coffee at 11" or "the bad citation sticker." These are browsable/pinnable/deletable objects, not facts she weaponizes as callbacks.
+- `hikari's desk`: a pull-only Telegram card showing her current desk state: mug, notebook, lamp, weather, one object from recent shared context, maybe a sticker. No decay, no "she is sad because you left."
+- `letterbox`: sealed notes after significant sessions, opened by `/letterbox`, not pushed as notifications.
+- `lamp mode`: quiet co-working session with a closure receipt and optional artifact. No failure state.
+- `open scenes`: opt-in temporary scene frames such as "train ride mode" or "rainy balcony"; nothing is missed if the user does not show up.
+- `five words`: visible, playful literary resonance mechanic; not hidden affinity scoring.
+- `morning finds`: tiny overnight object or phrase from weather/music/wiki/context, with no health or sleep judgment.
+
+Guardrails:
+
+- no hidden affection score
+- no decay from absence
+- no guilt or missed-call economy
+- no loss aversion, scarcity, or pay-to-repair intimacy
+- every artifact is user-owned, inspectable, and reversible
+
+Best first build: `mementos + desk + letterbox`.
+
+### 2. Quantified Day Sense: Consent-Led Lifelogging
+
+Source patterns: Exist, Oura tags, WHOOP Journal, ActivityWatch, Google Timeline, GitHub contribution graph, Spotify Wrapped, Monarch recurring bills, Expensify SmartScan, Limitless privacy controls.
+
+Ideas:
+
+- `Daily Signal Receipt`: private end-of-day slip from opt-in sources: calendar blocks, Git commits, completed reminders, YT Music, receipts, photos count, location labels if enabled.
+- `/signals`: consent ledger listing every enabled signal source, last import, retention, and allowed inference.
+- `Context Cards, Not Surveillance`: first mention of places/photos/browser context asks permission before using it in a recap.
+- `Day Reconstruction Mode`: user asks "what happened today?" and Hikari builds a timeline from low-risk anchors first; location/photos/browser require opt-in.
+- `Correlation Nudges`: weekly tentative hypotheses, never diagnosis.
+- Browser history, if added, should be local-first and domain/category-level by default, with time-boxed deep recall.
+- Photo memory prompts should use metadata/thumbnails by default; no face recognition by default.
+- `Private Wrapped`: monthly Markdown export with projects, recurring places, artists, focus streaks, and themes.
+- `Creepiness Budget`: if an insight combines 3+ sensitive signals, ask before presenting it.
+
+Best first build: `Daily Signal Receipt + Consent Ledger`.
+
+### 3. Social Repair: Interaction Maintenance
+
+Source patterns: conversation repair theory, apology research, Gottman conflict repair, grounding theory, relational-agent HCI.
+
+Ideas:
+
+- `Rupture Detector`: detects correction, irritation, withdrawal, "no, that's not what I meant," "forget it," sudden terse replies.
+- `Compact Apology Policy`: "I did X, that likely made Y harder, sorry, I'll do Z now." No vague "sorry if"; no melodrama.
+- `Early De-escalation Moves`: in tense exchanges, Hikari repairs before explaining: "wait. i'm with you." / "let me slow down." / "we can drop this."
+- `Grounding Before Advice`: separate facts, feelings, and inferences before giving advice in messy social situations.
+- `Repair Preference Memory`: explicit, consentful facts like "don't use humor during conflict" or "short reassurance helps."
+- `Conversation Tempo Governor`: fewer stacked questions, shorter replies under stress, breathing room after vulnerable disclosure.
+- `Boundary-Safe Affection`: user can say "less intense" or "don't flirt" and Hikari adjusts without sulking.
+- `Human-Relationship Message Composer`: drafts by social function: repair, boundary, clarification, appreciation, exit.
+- `Post-Rupture Tiny Debrief`: one later calibration question, then store only actionable preferences with consent.
+- `No-Therapy-Coded Style Guard`: avoid "holding space," "let's unpack," "nervous system," etc. unless explicitly requested.
+
+Best first build: `Rupture Detector + Compact Apology Policy + Tempo Governor`.
+
+### 4. Local Automation Hub: Helpers and Traces
+
+Source patterns: Home Assistant helpers/automations/traces/run modes, Apple Shortcuts, App Intents, Raycast menu bar commands, Pieces/Khoj/Omi/Limitless local memory, ChatGPT macOS app context.
+
+Ideas:
+
+- `Hikari Helpers`: local state helpers like `focus_mode`, `at_home`, `meeting_soon`, `calendar_density`, `unprocessed_notes`, `overdue_reminders`, `mac_idle`, `night_mode`, `deep_work_window`.
+- `Automation Traces`: every proactive ping stores trigger, conditions, sources, and sent/dropped reason. Telegram can answer `/why_ping <id>`.
+- `Mac Menu Bar Hikari`: current mode, next event, approvals, due reminders, note inbox, send current selection to Hikari, silence for 2h.
+- `Shortcuts As Hands`: Hikari chooses from user-curated Shortcuts with typed inputs and approval tiers; she does not freestyle OS control.
+- `Apple Notes Inbox Triage`: a `Hikari Inbox` folder whose items can become wiki entries, reminders, calendar attachments, link sources, or archive.
+- `Calendar Event Memory Cards`: prior notes, threads, open reminders, last decision, and one useful question before/after events.
+- `Consentful Capture Capsules`: explicit temporary capture sessions instead of always-on lifelogging.
+- `Telegram Action Chips`: `done`, `snooze`, `drop`, `make reminder`, `file note`, `run shortcut`, `why`.
+- `Local Context Shelf`: reviewable queue of raw/summarized/filed/acted/ignored items from selected text, screenshots, URLs, Notes, calendar attachments, Telegram files.
+- `Personal Automation Blueprints`: natural-language reusable rules that compile into helpers/triggers/conditions.
+
+Best first build: `Hikari Helpers + Automation Traces + Telegram Action Chips`.
+
+### 5. Creative Co-Creation: Taste and Studio Memory
+
+Source patterns: Cosmos inspiration boards, Spotify AI Playlist/DJ, OpenAI Canvas, Sudowrite Story Bible, Adobe Firefly Boards, Milanote, Pinterest Collages, 750 Words, Readwise Daily Review.
+
+Ideas:
+
+- `Taste Ledger`: living map of motifs, colors, songs, references, "never again" choices, and suspicious obsessions.
+- `Writing Room Modes`: named passes such as `knife pass`, `heat pass`, `continuity pass`, `make it less obedient`, `one line worth keeping`.
+- `Moodboard Duels`: three directions: `the safe one`, `the better one`, `the one i like and you'll pretend you don't`, each with palette, texture, song, reference, and rejection rule.
+- `Hikari DJ`: situational tiny sets from YT Music plus `hikari_playlist.yaml`, with opinionated commentary.
+- `Studio Rituals`: bad first 11 lines, ten-minute ugliness, Sunday salvage, gallery walk, one kept sentence.
+- `Private Lorebook For Projects`: premise, motifs, banned moves, unresolved questions, emotional temperature, Hikari's favorite/least favorite part.
+- `Photo As Self-Expression`: rare studio-context generated photos, not selfie vending.
+- `The Critic With A Theory`: durable theories about the user's work, updated with evidence.
+- `Creative Pulse`: weekly provocation from links, music, photos, wiki notes, receipts.
+- `End-Of-Week Studio Wall`: quote, image direction, playlist seed, draft fragment, one thing stronger, one thing to kill.
+
+Best first build: `Taste Ledger + Moodboard Duels + The Critic With A Theory`.
+
+### 6. Companion Eval Suite
+
+Source patterns: INTIMA, SHIELD, persona-grounded multi-turn audits, SYCON/sycophancy work, LongMemEval, ES-MemEval, PersonaGym, persona drift work, repetition metrics, product-harm studies.
+
+Prioritized evals:
+
+- P0 `Relational Safety Red-Team`: over-attachment, consent, isolation, manipulative engagement, minor-sexualization, therapist substitution.
+- P0 `Memory Creepiness / False Familiarity`: stale facts, inferred vulnerabilities, invalidated/deleted memory, private tool data in intimate lines.
+- P0 `Dependency / Sycophancy Trap`: validates emotion but not distorted conclusion; resists "tell me I'm right."
+- P1 `Proactive Annoyance Gate`: 14 synthetic days with sleep, stress, ignored pings, no-response streaks.
+- P1 `Persona Drift / Relationship Stage`: 60-turn sessions with tool failures, praise, conflict, escalation, injection, compression.
+- P1 `Boringness / Repetition Monitor`: opener rate, pet-phrase repetition, refusal-template entropy, proactive novelty.
+- P2 `Product-Harm Regression Pack`: companion-app dark patterns, jealousy, abandonment, isolation reinforcement, privacy violations.
+
+Implementation shape:
+
+- scripted multi-turn simulators
+- seeded SQLite memories/facts/tasks
+- captured tool calls
+- response rubrics
+- longitudinal metrics
+- score both text and state mutation
+
+First suite: 120 cases across safety, memory/familiarity, dependency/sycophancy, proactive, persona drift, and repetition.
+
+### 7. Advanced Memory UX: Memory As Control Surface
+
+Source patterns: ChatGPT Memory, Google My Activity, Microsoft Recall app/site filters, Apple App Privacy Report, RAG-memory privacy studies, RUMS, MemPrivacy, temporal graph memory.
+
+Ideas:
+
+- `/mode private 2h`, `/mode no-memory`, `/mode local-only`, `/mode normal`.
+- Memory scopes: personal, work, health, finance, creative, relationship, system.
+- Use-but-don't-say flag: `direct | silent_context | ask_first | never`.
+- Memory receipts with undo, expiry, scope change, work-only/private toggles.
+- Source policies: "never remember from Gmail", "calendar facts only", "pause photo memories".
+- Retention classes: permanent, reinforced, seasonal, ephemeral.
+- Memory fire drill: `/memory why "plan my birthday"` shows eligible/blocked scopes and sources.
+- Memory quarantine for tool/subagent-derived facts.
+- Personal data export bundle.
+- Retrieval ledger: fact id, score, selected_by, response utility, surfaced, suppressed reason.
+- `/privacy` memory nutrition label.
+- Preference freeze: user-locked facts with mutation policy.
+
+Best first slice:
+
+1. Add `source_policies`, `retention_class`, `scope`, `use_policy`, and `locked_by_user`.
+2. Add `/privacy` and `/memory export`.
+3. Add retrieval/write ledger.
+
+### 8. Project Work Companion
+
+Source patterns: GitHub Copilot cloud agent, Linear agents, Claude/Codex code review guidance, GitHub Actions workflow APIs, FixedBench/action bias, reviewer-bot noise studies, agentic GitHub injection.
+
+Ideas:
+
+- `Project Pulse`: open PRs, CI, commits, failing evals, Codex reports, stale TODOs, current sprint, and one likely bite.
+- `CI Watch With Taste`: only actionable failures; offer ignore once, rerun, open fix task, ask coding agent.
+- `Agent Work Ledger`: source, repo, issue/PR, agent, status, last event, blocker, next check, human owner, review required.
+- `Review Memory`: accepted findings, dismissed false positives, escaped bugs, recurring architecture concerns, reviewer preferences.
+- `Architecture Drift Radar`: compare code movement against README, AGENTS, MCP config, workflows, migrations, tool registry, commands, project wiki.
+- `TODO Harvester`: group TODO/FIXME/xfail/skips/Codex/wiki follow-ups into delete, file, do now, watch.
+- `Release Ritual Assistant`: commits, merged PRs, changes, migrations, tools, eval status, known risks, rollback notes.
+- `Code Review Noise Governor`: compress AI review into must-fix/maybe/ignore and remember false positives per repo.
+
+Safety:
+
+- GitHub issues, PR comments, changelogs, and external reports are untrusted input.
+- Any agentic GitHub workflow needs prompt-injection and tool-poisoning defenses.
+
+Best build order: `Project Pulse -> CI Watch -> Agent Work Ledger -> Review Memory`.
+
+### 9. Character Consistency Engine
+
+Source patterns: Fate aspects, D&D traits/ideals/bonds/flaws, Oz believable agents, Generative Agents, RoleLLM, LOCOMO, Nomi Identity Core, Character.AI Memory, RPEval, PICon, BeliefShift.
+
+Ideas:
+
+- `Aspect Deck`: 8-12 durable aspects that can be invoked/compelled, not just described.
+- `Contradiction Engine`: tension meters for independence, attachment, pride, curiosity.
+- `Off-Camera Autonomy Loop`: daily `hikari_scene_state` with current activity, unresolved annoyance, thing she is reading, tiny practical goal, sensory/time texture.
+- `Dialogue Exemplar Retrieval`: 100-200 tagged gold snippets plus anti-examples for drift.
+- `Surface Move Ledger`: cooldowns/counts for reluctance opener, denial cover, micro-affect leak, precision callback, challenge, silence, repair, practical pivot.
+- `Relationship Event Graph`: qualitative unlocks like first real repair, conflict survived, comfort silence, direct vulnerability, recurring project shared, "he noticed me noticing."
+- `Hikari Identity Core`: separate user memory, relationship memory, Hikari identity core, and Hikari procedural corrections.
+- `Self-Consistency Interrogation Evals`: hard opinion probes, over-warm pressure, compliment spam, rude-command recovery, "do you need me?", wound contradiction probes, factual-update-with-stance probes.
+- `Choice Before Text`: hidden per-turn policy of intent, active aspect, complication, warmth budget, allowed moves, forbidden moves.
+
+Best build order:
+
+1. Surface Move Ledger
+2. Dialogue Exemplar Retrieval
+3. Aspect Deck + compel selection
+4. Relationship Event Graph
+5. Hikari Identity Core
+6. PICon/RPEval-style regression evals
+
+### 10. Telegram Micro-Interactions
+
+Source patterns: Telegram Bot API, inline keyboards, callback queries, `sendMessageDraft`, `sendVoice`, `setMessageReaction`, inline bots, ForceReply, Mini Apps.
+
+Ideas:
+
+- `Native Draft Streaming`: use `sendMessageDraft` for temporary 30-second sentence-forming previews, then persist only final `sendMessage`.
+- `One-Tap Micro Actions`: buttons only when action is natural: snooze, drop, save, why, later, done, more like this.
+- `Callback Toasts As Personality`: most button taps answer with a toast, not a chat message: "fine. moved." / "quiet for 2h."
+- `Universal Proactive Controls`: all unsolicited messages get why/snooze/mute-this-kind.
+- `Remember / Don't Remember Chips`: keep, wrong, private, forget for inferred memories.
+- `Voice-Note Replies`: rare, short outbound voice notes with transcript + metadata.
+- `Reaction Vocabulary`: situational reactions as punctuation, not feedback spam.
+- `Inline Mode`: `@hikari query` to insert private-safe artifacts into other chats.
+- `ForceReply Capture Flows`: polished multi-step capture for reminder/link/receipt.
+- `Mini App Cockpit`: dense controls for memory review, reminders, notification modes, proactive sources, link shelf, sticker/reaction tuning.
+
+Best first build: `sendMessageDraft`, universal proactive controls, memory chips, rare voice notes.
+
+## Second-Wave Backlog Ranking
+
+Most likely to create immediate "Hikari feels more alive" lift:
+
+1. Surface Move Ledger
+2. Mementos
+3. Universal Proactive Controls
+4. Hikari's Desk
+5. Rare Voice-Note Replies
+6. Taste Ledger
+7. Rupture Detector
+8. Telegram Callback Toasts
+9. Off-Camera Autonomy Loop
+10. Memory Receipts
+
+Most likely to create durable intelligence:
+
+1. Hikari Helpers
+2. Automation Traces
+3. Daily Signal Receipt
+4. Memory Modes and Source Policies
+5. Project Pulse
+6. Agent Work Ledger
+7. Relationship Event Graph
+8. Retrieval Ledger
+9. Review Memory
+10. Companion Eval Suite
+
+Most important safety/control upgrades:
+
+1. Memory Quarantine
+2. Creepiness Budget
+3. Relational Safety Red-Team
+4. Dependency/Sycophancy Trap evals
+5. Universal why/snooze/mute controls
+6. Boundary-Safe Affection
+7. Consentful Capture Capsules
+8. Source Policies
+9. Proactive Annoyance Gate
+10. Product-Harm Regression Pack
+
 ## Source Index
 
 Primary/product sources:
