@@ -141,26 +141,50 @@ def invalidate_vault() -> None:
 
 
 def _resolve_note(path_or_name: str) -> Path | None:
-    """Resolve 'projects/foo/bar' or 'bar' to an absolute .md file under the vault."""
+    """Resolve 'projects/foo/bar' or 'bar' to an absolute .md file under the vault.
+
+    Resolution order:
+    1. ``VAULT_ROOT / p_md`` (exact path join) — covers both bare stems like
+       ``"log"`` and explicit sub-paths like ``"projects/x/log"``.  If the
+       file exists we return immediately without touching rglob.
+    2. rglob fallback — only reached when the exact join doesn't exist.
+       For bare stems (no path separators in the input) the join already
+       checked the root, so rglob may still find a nested match.
+    3. ``None`` — no match found anywhere; callers may create the file.
+
+    Security: every candidate is checked with ``relative_to(VAULT_ROOT)``
+    before being returned, so symlink escapes and ``..`` traversals are
+    rejected here as well as at the call sites.
+    """
     p = (path_or_name or "").strip()
     if not p:
         return None
     p_md = p if p.endswith(".md") else p + ".md"
+    vault_root_resolved = VAULT_ROOT.resolve()
+
+    # Step 1: exact path join (handles both "log" → VAULT_ROOT/log.md and
+    # "projects/x/log" → VAULT_ROOT/projects/x/log.md).
     candidate = (VAULT_ROOT / p_md).resolve()
     try:
-        candidate.relative_to(VAULT_ROOT.resolve())
+        candidate.relative_to(vault_root_resolved)
     except ValueError:
         return None
     if candidate.exists():
         return candidate
+
+    # Step 2: rglob fallback — search the whole vault by filename only.
+    # Using Path(p).stem strips any leading dir component that may have been
+    # passed (e.g. "projects/x/log" → stem "log"), so rglob matches on the
+    # filename alone.
     stem = Path(p).stem
     for md_path in VAULT_ROOT.rglob(f"{stem}.md"):
         resolved = md_path.resolve()
         try:
-            resolved.relative_to(VAULT_ROOT.resolve())
+            resolved.relative_to(vault_root_resolved)
         except ValueError:
             continue
         return resolved
+
     return None
 
 

@@ -3,17 +3,64 @@
 Thin wrapper over ``fetch_forecast`` in ``_shared``: validates the
 coordinates, runs the merge, and formats a three-window summary so
 Hikari can render morning / midday / evening at a glance.
+
+Location fallback chain (applied when lat/lon args are absent or zero):
+  1. Explicit lat/lon args from the caller
+  2. HOME_LAT / HOME_LON environment variables
+  3. config weather.default_location (Kristiansund by default)
 """
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
 
 from claude_agent_sdk import tool
 
+from agents import config as cfg
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
 from tools.weather._shared import fetch_forecast, wmo_label
+
+
+def _resolve_coords(args: dict[str, Any]) -> tuple[float, float, str]:
+    """Resolve (lat, lon, label) using the documented fallback chain."""
+    raw_lat = args.get("lat")
+    raw_lon = args.get("lon")
+    label = (args.get("label") or "").strip()
+
+    # 1. Explicit args — only accept if both are non-zero and valid.
+    if raw_lat and raw_lon:
+        try:
+            lat, lon = float(raw_lat), float(raw_lon)
+            if (-90 <= lat <= 90) and (-180 <= lon <= 180) and (lat != 0.0 or lon != 0.0):
+                return lat, lon, label
+        except (TypeError, ValueError):
+            pass
+
+    # 2. HOME_LAT / HOME_LON env vars.
+    lat_env = os.environ.get("HOME_LAT")
+    lon_env = os.environ.get("HOME_LON")
+    if lat_env and lon_env:
+        try:
+            lat, lon = float(lat_env), float(lon_env)
+            if (-90 <= lat <= 90) and (-180 <= lon <= 180):
+                return lat, lon, label or "home"
+        except ValueError:
+            pass
+
+    # 3. Config default location.
+    default = cfg.get("weather.default_location") or {}
+    if isinstance(default, dict) and default.get("lat") and default.get("lon"):
+        try:
+            lat, lon = float(default["lat"]), float(default["lon"])
+            city = str(default.get("city") or "")
+            return lat, lon, label or city
+        except (TypeError, ValueError):
+            pass
+
+    # Fallback to whatever the caller gave (may be zero — will fail validation below).
+    return float(raw_lat or 0), float(raw_lon or 0), label
 
 
 @tool(
@@ -27,9 +74,7 @@ from tools.weather._shared import fetch_forecast, wmo_label
     annotations=annotations_for("weather_fetch"),
 )
 async def weather_fetch(args: dict[str, Any]) -> dict[str, Any]:
-    lat = float(args.get("lat") or 0)
-    lon = float(args.get("lon") or 0)
-    label = (args.get("label") or "").strip()
+    lat, lon, label = _resolve_coords(args)
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return _ok("refused: lat/lon out of range")
     out = await fetch_forecast(lat, lon)

@@ -359,8 +359,16 @@ def _inject_keychain_tokens_to_env() -> None:
                 )
             else:
                 os.environ["NOTION_TOKEN"] = str(kc_notion)
+        else:
+            logger.warning(
+                "notion token not loaded from keychain — re-grant via "
+                "`uv run python -m scripts.auth notion grant`"
+            )
     except Exception:
-        logger.debug("_inject_keychain_tokens_to_env: notion read failed (non-fatal)")
+        logger.warning(
+            "notion token not loaded from keychain — re-grant via "
+            "`uv run python -m scripts.auth notion grant`"
+        )
 
     try:
         from auth.github import _load_pat

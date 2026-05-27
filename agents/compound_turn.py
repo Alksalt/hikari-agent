@@ -27,6 +27,7 @@ import json
 import logging
 from typing import Any
 
+from agents import config as cfg
 from agents.work_packet import (
     CompoundTaskNode,
     WorkPacket,
@@ -36,8 +37,9 @@ from agents.work_packet import (
 
 logger = logging.getLogger(__name__)
 
-# Per-step read timeout (seconds). Configurable via kwarg.
-_DEFAULT_STEP_TIMEOUT = 8.0
+# Per-step read timeout (seconds). Configurable via engagement.yaml
+# compound_turn.step_timeout_s; falls back to 12.0 if unset.
+_DEFAULT_STEP_TIMEOUT = float(cfg.get("compound_turn.step_timeout_s", 12.0))
 
 
 # ---------------------------------------------------------------------------

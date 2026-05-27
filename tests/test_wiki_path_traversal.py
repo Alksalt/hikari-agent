@@ -55,3 +55,41 @@ def test_resolve_note_symlink_escape_skipped(fake_vault, tmp_path):
         f"_resolve_note should return None for a symlink pointing outside the vault, "
         f"got: {result}"
     )
+
+
+def test_resolve_note_bare_stem_prefers_vault_root(fake_vault):
+    """Bare stem 'log' must resolve to VAULT_ROOT/log.md even when a nested
+    VAULT_ROOT/projects/x/log.md also exists (regression: rglob ordering was
+    non-deterministic and could return the nested file first)."""
+    from tools.wiki._shared import _resolve_note
+
+    # Create both files so rglob would have an ambiguous set to return from.
+    root_log = fake_vault / "log.md"
+    root_log.write_text("root log")
+    nested_dir = fake_vault / "projects" / "x"
+    nested_dir.mkdir(parents=True)
+    nested_log = nested_dir / "log.md"
+    nested_log.write_text("nested log")
+
+    result = _resolve_note("log")
+    assert result == root_log.resolve(), (
+        f"expected VAULT_ROOT/log.md ({root_log.resolve()}), got {result}"
+    )
+
+
+def test_resolve_note_explicit_subpath_hits_nested(fake_vault):
+    """'projects/x/log' must resolve to the nested file even when VAULT_ROOT/log.md
+    also exists — an explicit subdir path is honoured over the root file."""
+    from tools.wiki._shared import _resolve_note
+
+    root_log = fake_vault / "log.md"
+    root_log.write_text("root log")
+    nested_dir = fake_vault / "projects" / "x"
+    nested_dir.mkdir(parents=True)
+    nested_log = nested_dir / "log.md"
+    nested_log.write_text("nested log")
+
+    result = _resolve_note("projects/x/log")
+    assert result == nested_log.resolve(), (
+        f"expected nested log ({nested_log.resolve()}), got {result}"
+    )

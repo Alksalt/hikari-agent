@@ -781,6 +781,14 @@ morning_brief:
     - "open_meteo"
     - "met_no"
 
+weather:
+  # Fallback location when no last-shared location exists and HOME_LAT/HOME_LON
+  # env vars are unset. Chain: last_shared_location → HOME_LAT/HOME_LON → this.
+  default_location:
+    city: Kristiansund
+    lat: 63.111
+    lon: 7.728
+
 reminders:
   # Poll interval in seconds for the fire-due-reminders scheduler job.
   poll_interval_sec: 60
@@ -837,6 +845,10 @@ link_shelf:
   search_default_limit: 10        # link_search default `limit`
   list_default_limit: 20          # link_list default `limit`
   valid_kinds: [later, useful, source, inspiration]
+
+compound_turn:
+  # Per-step read timeout in seconds. Writes get ×2 this budget.
+  step_timeout_s: 12.0
 
 runtime:
   # Defaults previously hardcoded as module-level constants in agents/runtime.py.
