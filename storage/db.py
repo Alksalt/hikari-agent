@@ -4587,6 +4587,49 @@ def decision_brier_score(window_days: int = 90) -> dict[str, Any]:
     }
 
 
+def decision_calibration_curve(window_days: int = 90, buckets: int = 5) -> list[dict]:
+    """Group resolved decisions into probability buckets and return actual
+    outcome rate per bucket. Default 5 buckets: [0-20], [20-40], [40-60],
+    [60-80], [80-100] percent.
+
+    Returns: list of {bucket_low, bucket_high, n, mean_predicted, actual_rate}
+    sorted by bucket ascending. Empty list if no resolved decisions in the
+    window.
+    """
+    from datetime import datetime, timedelta, UTC
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    width = 1.0 / buckets
+    out: list[dict] = []
+    with _conn() as c:
+        for i in range(buckets):
+            lo = i * width
+            hi = (i + 1) * width
+            # Include upper bound only on the last bucket to avoid double-counting.
+            upper_op = "<=" if i == buckets - 1 else "<"
+            row = c.execute(
+                f"""
+                SELECT COUNT(*) AS n,
+                       COALESCE(AVG(predicted_p), 0.0) AS mean_p,
+                       COALESCE(AVG(outcome), 0.0) AS actual_rate
+                FROM decisions
+                WHERE outcome IS NOT NULL
+                  AND resolved_at IS NOT NULL
+                  AND resolved_at >= ?
+                  AND predicted_p >= ?
+                  AND predicted_p {upper_op} ?
+                """,
+                (cutoff, lo, hi),
+            ).fetchone()
+            out.append({
+                "bucket_low": lo,
+                "bucket_high": hi,
+                "n": int(row["n"] or 0),
+                "mean_predicted": float(row["mean_p"] or 0.0),
+                "actual_rate": float(row["actual_rate"] or 0.0),
+            })
+    return out
+
+
 # ---------- 5B: messages FTS + fact helpers ----------
 
 def _migrate_messages_fts(conn: sqlite3.Connection) -> None:
