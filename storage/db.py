@@ -277,6 +277,22 @@ CREATE TABLE IF NOT EXISTS reminders (
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
 
+-- Accountability items: link a primary reminder to a follow-up check.
+-- outcome NULL = pending, 0 = didn't do it, 1 = did it.
+CREATE TABLE IF NOT EXISTS accountability_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reminder_id INTEGER NOT NULL REFERENCES reminders(id),
+    follow_up_reminder_id INTEGER NOT NULL REFERENCES reminders(id),
+    task_text TEXT NOT NULL,
+    outcome INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_accountability_followup
+    ON accountability_items(follow_up_reminder_id);
+CREATE INDEX IF NOT EXISTS idx_accountability_unresolved
+    ON accountability_items(outcome) WHERE outcome IS NULL;
+
 -- Legacy table kept only so the validity-columns migration can ALTER it on
 -- fresh DBs. Dropped by _migrate_drop_episode_summaries_and_fact_relations.
 CREATE TABLE IF NOT EXISTS fact_relations (
@@ -3633,6 +3649,129 @@ def reminders_pending_apple_sync(limit: int = 10) -> list[dict[str, Any]]:
             "ORDER BY created_at ASC LIMIT ?",
             (limit,),
         ).fetchall()]
+
+
+# ---------- accountability items ----------
+
+def accountability_insert(
+    reminder_id: int,
+    follow_up_reminder_id: int,
+    task_text: str,
+) -> int:
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO accountability_items "
+            "(reminder_id, follow_up_reminder_id, task_text) "
+            "VALUES (?, ?, ?)",
+            (reminder_id, follow_up_reminder_id, task_text),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def accountability_get(item_id: int) -> dict[str, Any] | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM accountability_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def accountability_get_by_followup_id(follow_up_reminder_id: int) -> dict[str, Any] | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM accountability_items WHERE follow_up_reminder_id = ?",
+            (follow_up_reminder_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def accountability_resolve(item_id: int, outcome: int) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE accountability_items "
+            "SET outcome = ?, resolved_at = datetime('now') "
+            "WHERE id = ?",
+            (outcome, item_id),
+        )
+
+
+def accountability_recent_unresolved(limit: int = 5) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM accountability_items WHERE outcome IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()]
+
+
+def accountability_stats() -> dict[str, Any]:
+    with _conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM accountability_items"
+        ).fetchone()[0]
+        resolved = conn.execute(
+            "SELECT COUNT(*) FROM accountability_items WHERE outcome IS NOT NULL"
+        ).fetchone()[0]
+        did = conn.execute(
+            "SELECT COUNT(*) FROM accountability_items WHERE outcome = 1"
+        ).fetchone()[0]
+        didnt = conn.execute(
+            "SELECT COUNT(*) FROM accountability_items WHERE outcome = 0"
+        ).fetchone()[0]
+        did_rate = did / resolved if resolved > 0 else 0.0
+        return {
+            "total": total,
+            "resolved": resolved,
+            "did": did,
+            "didnt": didnt,
+            "did_rate": did_rate,
+        }
+
+
+def _is_darwin() -> bool:
+    import sys
+    return sys.platform == "darwin"
+
+
+def accountability_create_atomic(
+    when_iso_primary: str,
+    when_iso_followup: str,
+    task_text: str,
+) -> tuple[int, int, int]:
+    """Insert both reminders and the accountability row in a single transaction.
+
+    Returns (reminder_id, follow_up_reminder_id, item_id).
+    Rolls back entirely on any exception.
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reminders "
+            "(fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id, "
+            "gcal_sync_pending, apple_sync_pending) "
+            "VALUES (?, 0, ?, NULL, NULL, NULL, 1, ?)",
+            (when_iso_primary, task_text, 1 if _is_darwin() else 0),
+        )
+        rid = int(cur.lastrowid or 0)
+
+        cur2 = conn.execute(
+            "INSERT INTO reminders "
+            "(fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id, "
+            "gcal_sync_pending, apple_sync_pending) "
+            "VALUES (?, 0, ?, NULL, NULL, NULL, 0, 0)",
+            (when_iso_followup, task_text),
+        )
+        follow_rid = int(cur2.lastrowid or 0)
+
+        cur3 = conn.execute(
+            "INSERT INTO accountability_items "
+            "(reminder_id, follow_up_reminder_id, task_text) "
+            "VALUES (?, ?, ?)",
+            (rid, follow_rid, task_text),
+        )
+        item_id = int(cur3.lastrowid or 0)
+
+    return rid, follow_rid, item_id
 
 
 # ---------- session scratch (Phase 11 — shared subagent memory) ----------

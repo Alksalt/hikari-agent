@@ -729,6 +729,69 @@ def _format_unresolved_decisions() -> str | None:
         return None
 
 
+def _format_pending_accountability() -> str | None:
+    """Inject context when a follow-up accountability check is pending.
+
+    Expires silently after 48h so stale checks don't accumulate.
+    """
+    try:
+        raw = db.runtime_get("pending_accountability_check")
+        if not raw:
+            return None
+        try:
+            item_id = int(raw)
+        except (ValueError, TypeError):
+            db.runtime_set("pending_accountability_check", None)
+            return None
+        item = db.accountability_get(item_id)
+        if not item or item.get("outcome") is not None:
+            db.runtime_set("pending_accountability_check", None)
+            return None
+        created_at_str = item.get("created_at") or ""
+        created = None
+        if created_at_str:
+            try:
+                created = datetime.fromisoformat(created_at_str)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=UTC)
+            except (ValueError, TypeError):
+                pass
+        if created is None:
+            created = datetime.now(UTC)
+        follow_fire = None
+        follow_up_reminder_id = item.get("follow_up_reminder_id")
+        if follow_up_reminder_id:
+            follow_row = db.reminder_get(follow_up_reminder_id)
+            if follow_row:
+                try:
+                    follow_fire = datetime.fromisoformat(follow_row["fire_at"])
+                    if follow_fire.tzinfo is None:
+                        follow_fire = follow_fire.replace(tzinfo=UTC)
+                except (ValueError, TypeError):
+                    follow_fire = None
+        anchor = max(created, follow_fire) if follow_fire else created
+        if (datetime.now(UTC) - anchor).total_seconds() > 48 * 3600:
+            db.runtime_set("pending_accountability_check", None)
+            return None
+        task_text = item.get("task_text", "?")
+        age_seconds = max(0, (datetime.now(UTC) - created).total_seconds())
+        age_minutes = int(age_seconds // 60)
+        if age_minutes >= 60:
+            age_str = f"~{age_minutes // 60}h"
+        else:
+            age_str = f"~{age_minutes}m"
+        return (
+            f"# pending accountability check\n"
+            f"You asked the user {age_str} ago if they did the '{task_text}' thing. "
+            f"If their next message reads as a clear yes/no/'kind of'/'didn't get to it', "
+            f"call accountability_resolve(id={item_id}, outcome=1|0). "
+            f"Ambiguous → don't call; act in voice."
+        )
+    except Exception:
+        logger.exception("inject_memory: _format_pending_accountability failed (non-fatal)")
+        return None
+
+
 def _format_deferred_proactives() -> str | None:
     """Return any deferred proactive items (defer:next_turn) from session_scratch.
 
@@ -890,6 +953,7 @@ async def inject_memory(
             ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
             ("unresolved_decisions", 2, _format_unresolved_decisions()),
             ("deferred_proactives", 2, _format_deferred_proactives()),
+            ("pending_accountability", 2, _format_pending_accountability()),
         ]
 
         candidates: list[_Block] = []

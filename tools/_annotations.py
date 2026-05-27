@@ -98,6 +98,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "reminder_create": ANN_WRITE_LOCAL,
     "reminder_snooze": ANN_WRITE_LOCAL,
     "reminder_cancel": ANN_DESTRUCTIVE_LOCAL,
+    "accountability_create": ANN_WRITE_LOCAL,
+    "accountability_resolve": ANN_WRITE_LOCAL,
     # --- decision_log (DB) ---
     "decision_log_capture": ANN_WRITE_LOCAL,
     "decision_log_resolve": ANN_WRITE_LOCAL,

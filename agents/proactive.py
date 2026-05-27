@@ -190,6 +190,29 @@ def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
     return None
 
 
+async def _generate_accountability_followup_text(task_text: str) -> str:
+    """Generate a dry, varied follow-up question via aux-LLM. Falls back to a
+    template if the LLM call fails or OPENROUTER_API_KEY is unset."""
+    from agents.runtime import _call_aux_llm
+
+    system = (
+        "You are Hikari. One sentence, lowercase, dry, no exclamation marks, "
+        "no emojis. Ask if the user did the task. Vary phrasing. Examples: "
+        "'so. water?', 'you actually drink that water or no.', "
+        "'the water thing. yes or no.'"
+    )
+    try:
+        out = await _call_aux_llm(
+            f"Task: {task_text}",
+            system=system,
+            max_tokens=40,
+        )
+        return out.strip().strip('"') or f"did you do the {task_text} thing."
+    except Exception:
+        logger.warning("accountability followup voice-gen failed; using fallback")
+        return f"did you do the {task_text} thing."
+
+
 async def fire_due_reminders(send_text) -> int:
     """Drain reminder_due() — for each row, format + send + mark fired.
     If row has a repeat spec, insert the next occurrence as a fresh row.
@@ -214,10 +237,17 @@ async def fire_due_reminders(send_text) -> int:
 
     fired = 0
     for row in due:
-        # Ship the literal user-set reminder text, prefixed with ⏰ so the
-        # push stands out in chat. No LLM round-trip at fire time.
-        text = row["text"] if row["text"].startswith("⏰") else f"⏰ {row['text']}"
-        payload = _json.dumps({"reminder_id": row["id"]})
+        accountability = db.accountability_get_by_followup_id(row["id"])
+        if accountability and accountability["outcome"] is None:
+            text = await _generate_accountability_followup_text(accountability["task_text"])
+            db.runtime_set("pending_accountability_check", str(accountability["id"]))
+            payload = _json.dumps({
+                "reminder_id": row["id"],
+                "accountability_id": accountability["id"],
+            })
+        else:
+            text = row["text"] if row["text"].startswith("⏰") else f"⏰ {row['text']}"
+            payload = _json.dumps({"reminder_id": row["id"]})
         result = await reserve_and_send(
             send_text_fn=_send_text_fn,
             producer_id="reminder",

@@ -866,6 +866,34 @@ tools:
     example: "reminder_snooze(id='x', minutes=30)"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__accountability_create"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "accountability_create(when_iso='2026-05-27T18:00:00+02:00', task_text='drink water')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__accountability_resolve"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: scheduling
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "accountability_resolve(id=3, outcome=1)"
+    presentation_hint: null
+
   # Skill management tools — write/external access for create/approve/run.
   - id: "mcp__hikari_utility__skill_create"
     bucket: 1

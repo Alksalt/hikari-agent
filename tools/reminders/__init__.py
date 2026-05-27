@@ -11,6 +11,7 @@ call sites keep working.
 from __future__ import annotations
 
 from tools.reminders._shared import _VALID_REPEAT, _parse_iso  # noqa: F401 — re-exported helpers
+from tools.reminders.accountability import accountability_create, accountability_resolve
 from tools.reminders.cancel import reminder_cancel
 from tools.reminders.create import reminder_create
 from tools.reminders.list import reminder_list
@@ -26,4 +27,6 @@ ALL_TOOLS = [
     reminder_list,
     reminder_cancel,
     reminder_snooze,
+    accountability_create,
+    accountability_resolve,
 ]
