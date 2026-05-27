@@ -178,9 +178,14 @@ def _aux_provider() -> str:
 # flag "what would API pricing have cost" so /cockpit status can alert at the
 # $200/mo Max-credit equivalent threshold. Verified: 2026-05-27.
 _MODEL_RATES_USD_PER_1M: dict[str, tuple[float, float]] = {
-    "claude-sonnet-4-6": (3.00, 15.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-opus-4-7":   (15.00, 75.00),
+    "claude-sonnet-4-6":               (3.00, 15.00),
+    "claude-sonnet-4-5":               (3.00, 15.00),
+    "claude-opus-4-7":                 (15.00, 75.00),
+    # OpenRouter aux-LLM models — rates from MODELS.md (verified 2026-05-23).
+    "deepseek/deepseek-v4-flash":      (0.14, 0.28),
+    "mistralai/mistral-small-2603":    (0.15, 0.60),
+    "google/gemini-2.5-flash-lite":    (0.10, 0.40),
+    "z-ai/glm-4.7-flash":              (0.06, 0.40),
 }
 _CACHE_READ_DISCOUNT     = 0.10  # cache_read input at 10% of normal input rate
 _CACHE_WRITE_PREMIUM_5M  = 1.25  # 5-min TTL cache write at 125% of input rate
@@ -275,6 +280,28 @@ def _record_llm_cost(
         )
     except Exception:
         logger.debug("llm_costs insert failed (non-fatal)", exc_info=True)
+
+
+def _log_aux_cost(model: str, prompt_chars: int, completion_chars: int, path: str) -> None:
+    """Approximate token usage from char counts (~4 chars/token) for aux calls
+    where OpenRouter usage block wasn't captured. Best-effort, never raises."""
+    try:
+        inp = max(1, prompt_chars // 4)
+        outp = max(1, completion_chars // 4)
+        usage = {"input_tokens": inp, "output_tokens": outp}
+        cost = _compute_cost_usd(model, usage)
+        db.llm_costs_insert(
+            turn_id=current_turn_id(),
+            model=model,
+            path=path,
+            input_tokens=inp,
+            output_tokens=outp,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+            cost_usd=cost,
+        )
+    except Exception:
+        logger.debug("aux cost log failed (non-fatal)", exc_info=True)
 
 
 _MOSHFEGH_LINES = (

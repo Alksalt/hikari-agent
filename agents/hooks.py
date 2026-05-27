@@ -338,6 +338,34 @@ def _format_emotional_register() -> str:
     return f"# emotional register\n{register}"
 
 
+def _format_voice_corrections() -> str:
+    """# voice-corrections — last 3 reflexion notes from the drift loop.
+    Injected as DATA (not instructions): observations of past drifts."""
+    if not cfg.get("drift_telemetry.reflexion_inject_enabled", True):
+        return ""
+    try:
+        rows = db.voice_corrections_recent(limit=3)
+    except Exception:
+        logger.exception("_format_voice_corrections: read failed")
+        return ""
+    if not rows:
+        return ""
+    from agents.reflection_sanitize import escape_remembered_tags, sanitize, MemoryInstructionShape
+    lines = [
+        "# voice-corrections (your own notes on recent drifts — re-anchor, don't quote)",
+    ]
+    for r in rows:
+        raw = str(r.get("correction_text") or "")[:240]
+        try:
+            sanitize(raw, kind="observation")
+        except MemoryInstructionShape:
+            continue
+        lines.append(f"- {escape_remembered_tags(raw)}")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _format_peer_representation() -> str:
     """Phase 7: structured user model. Replaces the flat ``user_profile``
     block with communication_style / values / domain_expertise /
@@ -947,6 +975,7 @@ async def inject_memory(
             ("observations",        3, _format_observations()),
             ("peer_insights",       3, _format_peer_insights()),
             ("emotional_register",  2, _format_emotional_register()),
+            ("voice_corrections",   2, _format_voice_corrections()),     # Phase P
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
             ("tools_available",     1, _format_tools_available()),

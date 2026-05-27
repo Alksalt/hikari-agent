@@ -2655,6 +2655,40 @@ def drift_count_today() -> int:
     return int(row["n"] or 0)
 
 
+# ---------- voice_corrections (Phase P reflexion loop) ----------
+
+
+def voice_corrections_insert(*, correction_text: str, source_outbound_id: int | None) -> int:
+    """Append a correction; trim to FIFO 10 in the same transaction."""
+    text = (correction_text or "").strip()[:300]
+    if not text:
+        return 0
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO voice_corrections (ts, correction_text, source_outbound_id) "
+            "VALUES (?, ?, ?)",
+            (_now(), text, source_outbound_id),
+        )
+        new_id = cur.lastrowid
+        c.execute(
+            "DELETE FROM voice_corrections WHERE id IN ("
+            "  SELECT id FROM voice_corrections ORDER BY id DESC LIMIT -1 OFFSET 10"
+            ")"
+        )
+    return new_id
+
+
+def voice_corrections_recent(limit: int = 3) -> list[dict]:
+    """Most-recent first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, correction_text, source_outbound_id "
+            "FROM voice_corrections ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------- drift_canary_answers (weekly hard-opinion probe) ----------
 
 def drift_canary_record(

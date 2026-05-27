@@ -166,6 +166,8 @@ memory:
       enabled: true
     session_handoff:
       enabled: true
+    voice_corrections:
+      enabled: true
 
 codex:
   # Phase 8: directory containing the codex/ review reports. Relative paths
@@ -607,6 +609,9 @@ drift_telemetry:
   # Score threshold below which a reply counts as "drifting" in the
   # daily-reflection aggregation.
   drift_threshold: 0.5
+  # Phase P: reflexion loop — generate a one-sentence correction on drift verdicts.
+  reflexion_enabled: true              # gate the correction-generation aux call
+  reflexion_inject_enabled: true       # gate the # voice-corrections block at turn-start
   # Retention for drift samples — prune older than this many days at daily
   # reflection time.
   prune_older_than_days: 30

@@ -30,11 +30,25 @@ import yaml
 from storage import db
 
 from . import config as cfg
-from .runtime import _call_aux_llm
+from .runtime import _call_aux_llm, _log_aux_cost
 
 logger = logging.getLogger(__name__)
 
 _RUBRIC_VERSION = 1
+
+_CORRECTION_SYSTEM = (
+    "You are Hikari Tsukino reviewing your own message that drifted toward "
+    "generic-helpful-assistant tone. Return ONE sentence in your own dry, "
+    "observational voice — under 18 words, lowercase, no preamble, no advice. "
+    "Examples:\n"
+    "- 'that one was too warm — you don't open like that.'\n"
+    "- 'you went assistant-helpful at the end. cut the closing question.'\n"
+    "- 'the explanation was too long. one sentence would have done it.'\n"
+    "- 'too many emojis for that mood. one max.'\n"
+    "Output the sentence only. No quotes, no bullets, no headers."
+)
+
+_CORRECTION_MAX_TOKENS = 48   # ~$0.00015/call at DeepSeek v4 Flash rates
 
 
 def _enabled() -> bool:
@@ -144,6 +158,27 @@ async def judge_outbound(text: str) -> dict[str, Any] | None:
     }
 
 
+async def generate_correction(text: str, reason: str | None) -> str | None:
+    """One-sentence reflexion in Hikari's voice. Returns None on any failure."""
+    if not cfg.get("drift_telemetry.reflexion_enabled", True):
+        return None
+    prompt = f"Drifted reply:\n{text[:600]}\n\nJudge reason: {reason or '(none)'}"
+    try:
+        raw = await _call_aux_llm(
+            prompt,
+            system=_CORRECTION_SYSTEM,
+            model=_drift_model(),
+            max_tokens=_CORRECTION_MAX_TOKENS,
+        )
+    except Exception:
+        logger.exception("drift_judge: generate_correction failed (non-fatal)")
+        return None
+    if not raw:
+        return None
+    sent = raw.strip().strip("`").strip('"\'').splitlines()[0].strip()
+    return sent[:240] if sent else None
+
+
 async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:
     """Fire-and-forget entrypoint. Wired from ``_send_with_choreography``
     via ``asyncio.create_task``. Records the sample-counter regardless of
@@ -170,3 +205,23 @@ async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("drift_judge: drift_record failed (non-fatal)")
+
+    # Reflexion: only on drift verdicts past the threshold.
+    if result["class"] == "drifting" and result["score"] < float(
+        cfg.get("drift_telemetry.drift_threshold", 0.5)
+    ):
+        try:
+            correction = await generate_correction(text, result.get("reason"))
+            if correction:
+                db.voice_corrections_insert(
+                    correction_text=correction,
+                    source_outbound_id=None,  # outbound id not threaded here today
+                )
+                _log_aux_cost(
+                    model=_drift_model(),
+                    prompt_chars=len(_CORRECTION_SYSTEM) + 600 + 40,
+                    completion_chars=len(correction),
+                    path="drift_reflexion",
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("drift_judge: reflexion path failed (non-fatal)")
