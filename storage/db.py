@@ -2950,6 +2950,29 @@ def llm_costs_insert(
         return cur.lastrowid
 
 
+def llm_costs_rollup(window_hours: int = 24) -> dict:
+    """Return {n_rows, total_cost_usd, by_model: {model: cost}} for the last
+    window_hours. Filters by ts >= now - window_hours."""
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0.0) AS total "
+            "FROM llm_costs WHERE ts >= ?",
+            (cutoff_iso,),
+        ).fetchone()
+        per_model = c.execute(
+            "SELECT model, COALESCE(SUM(cost_usd), 0.0) AS cost "
+            "FROM llm_costs WHERE ts >= ? GROUP BY model ORDER BY cost DESC",
+            (cutoff_iso,),
+        ).fetchall()
+    return {
+        "n_rows": int(row["n"] or 0),
+        "total_cost_usd": float(row["total"] or 0.0),
+        "by_model": {r["model"]: float(r["cost"]) for r in per_model},
+    }
+
+
 # ---------- tool_calls telemetry ----------
 
 def tool_calls_insert(

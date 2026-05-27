@@ -858,6 +858,7 @@ runtime:
   model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
   cache_ttl_1h_enabled: true
+  agent_sdk_monthly_credit_usd: 200  # Anthropic Agent SDK credit bucket (separate from interactive plan)
 
 reflection:
   near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity
