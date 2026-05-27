@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MCP_JSON_PATH = REPO_ROOT / ".mcp.json"
@@ -95,16 +98,19 @@ def _external_mcp_status() -> list[tuple[str, str]]:
         if not env_block:
             out.append((name, "n/a (no auth)"))
             continue
-        # env values look like "${VAR_NAME}" — extract the var names.
+        # env values may be bare ``${VAR}`` OR embed one or more ``${VAR}``
+        # refs inside a JSON-string blob (e.g. notion's OPENAPI_MCP_HEADERS).
+        # Extract every referenced var and check each.
         missing: list[str] = []
         for _key, value in env_block.items():
             if not isinstance(value, str):
                 continue
             v = value.strip()
-            if v.startswith("${") and v.endswith("}"):
-                var_name = v[2:-1]
-                if not os.environ.get(var_name):
-                    missing.append(var_name)
+            refs = _ENV_REF_RE.findall(v)
+            if refs:
+                for var_name in refs:
+                    if not os.environ.get(var_name):
+                        missing.append(var_name)
             elif not v:
                 # Inlined empty value — treat as unset.
                 missing.append(_key)
