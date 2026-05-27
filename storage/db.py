@@ -671,6 +671,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
+    run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -968,6 +969,45 @@ def _migrate_reminders_apple_columns(conn: sqlite3.Connection) -> None:
     except Exception as exc:
         if "duplicate column" not in str(exc).lower():
             raise
+
+
+def _migrate_reminders_action_mode(conn: sqlite3.Connection) -> None:
+    """Phase 15: action-mode reminders.
+
+    When ``kind = 'action'``, a fired reminder wakes Hikari with ``seed_prompt``
+    instead of pushing static ``text`` to Telegram. Used for autonomous
+    time-spanning task batches (e.g. write a row to a Notion DB every 20 min
+    × 6 fires). Bounded recurrence via ``max_fires`` with a per-fire failure
+    counter that caps the schedule at 3 strikes.
+
+    Index/trigger references to ALTER-added columns live inside this fn, not
+    in _SCHEMA — per repo migration ordering rule.
+    """
+    existing = {row["name"] for row in conn.execute(
+        "PRAGMA table_info(reminders)"
+    ).fetchall()}
+    cols_to_add = [
+        ("kind", "TEXT NOT NULL DEFAULT 'text'"),
+        ("seed_prompt", "TEXT"),
+        ("max_fires", "INTEGER"),
+        ("fires_done", "INTEGER NOT NULL DEFAULT 0"),
+        ("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+        ("summary_prompt", "TEXT"),
+        ("budget_usd_per_fire", "REAL"),
+        ("timeout_s", "INTEGER"),
+    ]
+    for col, decl in cols_to_add:
+        if col in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE reminders ADD COLUMN {col} {decl}")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminders_action_active "
+        "ON reminders(status, fire_at) WHERE kind = 'action'"
+    )
 
 
 def _migrate_messages_telegram_message_id(conn: sqlite3.Connection) -> None:
@@ -3530,16 +3570,28 @@ def reminder_insert(*, fire_at: str, text: str, lead_minutes: int = 0,
                     recurrence_rule: str | None = None,
                     gcal_event_id: str | None = None,
                     gcal_sync_pending: bool = False,
-                    apple_sync_pending: bool = False) -> int:
+                    apple_sync_pending: bool = False,
+                    kind: str = "text",
+                    seed_prompt: str | None = None,
+                    max_fires: int | None = None,
+                    summary_prompt: str | None = None,
+                    budget_usd_per_fire: float | None = None,
+                    timeout_s: int | None = None) -> int:
+    if kind not in {"text", "action"}:
+        raise ValueError(f"reminder kind must be 'text' or 'action', got {kind!r}")
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO reminders "
             "(fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id, "
-            "gcal_sync_pending, apple_sync_pending) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "gcal_sync_pending, apple_sync_pending, "
+            "kind, seed_prompt, max_fires, summary_prompt, "
+            "budget_usd_per_fire, timeout_s) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (fire_at, lead_minutes, text, repeat, recurrence_rule, gcal_event_id,
              1 if gcal_sync_pending else 0,
-             1 if apple_sync_pending else 0),
+             1 if apple_sync_pending else 0,
+             kind, seed_prompt, max_fires, summary_prompt,
+             budget_usd_per_fire, timeout_s),
         )
         return cur.lastrowid
 
@@ -3599,6 +3651,52 @@ def reminder_update_fire_at(reminder_id: int, new_fire_at: str) -> None:
         conn.execute(
             "UPDATE reminders SET fire_at = ? WHERE id = ?",
             (new_fire_at, reminder_id),
+        )
+
+
+def reminder_increment_fires_done(reminder_id: int) -> int:
+    """Atomic increment of ``fires_done``. Returns the new count."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET fires_done = COALESCE(fires_done, 0) + 1 WHERE id = ?",
+            (reminder_id,),
+        )
+        row = conn.execute(
+            "SELECT fires_done FROM reminders WHERE id = ?", (reminder_id,)
+        ).fetchone()
+        return int(row["fires_done"]) if row else 0
+
+
+def reminder_increment_failures(reminder_id: int) -> int:
+    """Atomic increment of ``consecutive_failures``. Returns the new count."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET consecutive_failures = "
+            "COALESCE(consecutive_failures, 0) + 1 WHERE id = ?",
+            (reminder_id,),
+        )
+        row = conn.execute(
+            "SELECT consecutive_failures FROM reminders WHERE id = ?", (reminder_id,)
+        ).fetchone()
+        return int(row["consecutive_failures"]) if row else 0
+
+
+def reminder_reset_failures(reminder_id: int) -> None:
+    """Reset failure streak after any successful fire."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET consecutive_failures = 0 WHERE id = ?",
+            (reminder_id,),
+        )
+
+
+def reminder_set_status(reminder_id: int, status: str) -> None:
+    """Set the lifecycle status. Caller is responsible for valid values
+    (``active`` | ``fired`` | ``cancelled``)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET status = ? WHERE id = ?",
+            (status, reminder_id),
         )
 
 

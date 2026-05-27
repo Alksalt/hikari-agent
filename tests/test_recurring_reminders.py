@@ -106,6 +106,85 @@ class TestEveryNDays:
         assert r1.month == r2.month
 
 
+class TestEveryNMinutes:
+    def test_20_minutes(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_minutes:20", base))
+        assert result == base + timedelta(minutes=20)
+
+    def test_1_minute_low_bound(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_minutes:1", base))
+        assert result == base + timedelta(minutes=1)
+
+    def test_1440_minutes_high_bound(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_minutes:1440", base))
+        assert result == base + timedelta(minutes=1440)
+
+    def test_zero_minutes_rejected(self):
+        from tools.reminders.recurrence import validate_rule
+        with pytest.raises(ValueError, match="every_n_minutes"):
+            validate_rule("every_n_minutes:0")
+
+    def test_above_1440_rejected(self):
+        from tools.reminders.recurrence import validate_rule
+        with pytest.raises(ValueError, match="every_n_minutes"):
+            validate_rule("every_n_minutes:1441")
+
+    def test_dst_spring_forward_preserves_minute_arithmetic(self, monkeypatch):
+        """20-min cadence walks the absolute clock — DST shift is part of arithmetic.
+
+        Sub-day cadences explicitly do not preserve wall-clock time (that's a
+        daily/weekly concern). Spring-forward day, +20min before the gap should
+        still be 20 absolute minutes later.
+        """
+        monkeypatch.setenv("HOME_TZ", "Europe/Oslo")
+        from tools.reminders import recurrence
+        importlib.reload(recurrence)
+        from datetime import timedelta
+        # 2027-03-28 02:00 Europe/Oslo doesn't exist (jumps to 03:00).
+        # 01:50 Oslo + 20 min → 03:10 Oslo wall clock = +20 absolute minutes.
+        oslo_tz = __import__("zoneinfo").ZoneInfo("Europe/Oslo")
+        pre_dst = datetime(2027, 3, 28, 1, 50, 0, tzinfo=oslo_tz)
+        result = recurrence.next_occurrence("every_n_minutes:20", pre_dst)
+        # Absolute UTC delta is exactly 20 minutes.
+        assert (result - pre_dst) == timedelta(minutes=20)
+
+
+class TestEveryNHours:
+    def test_2_hours(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_hours:2", base))
+        assert result == base + timedelta(hours=2)
+
+    def test_1_hour_low_bound(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_hours:1", base))
+        assert result == base + timedelta(hours=1)
+
+    def test_168_hours_high_bound(self):
+        from datetime import timedelta
+        base = _utc(2026, 5, 27, 19, 0)
+        result = _as_utc(next_occurrence("every_n_hours:168", base))
+        assert result == base + timedelta(hours=168)
+
+    def test_zero_hours_rejected(self):
+        from tools.reminders.recurrence import validate_rule
+        with pytest.raises(ValueError, match="every_n_hours"):
+            validate_rule("every_n_hours:0")
+
+    def test_above_168_rejected(self):
+        from tools.reminders.recurrence import validate_rule
+        with pytest.raises(ValueError, match="every_n_hours"):
+            validate_rule("every_n_hours:169")
+
+
 class TestWeekly:
     def test_monday_fires_monday_next_is_wednesday(self):
         # 2026-05-25 is a Monday (isoweekday=1)

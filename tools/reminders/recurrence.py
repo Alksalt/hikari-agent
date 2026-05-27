@@ -1,15 +1,20 @@
 """Recurrence rule engine for Hikari reminders.
 
-Supports five cadences:
+Supports these cadences:
   - "daily"                  — +1 day, same wall time
   - "weekly:MON,WED,FRI"    — next listed weekday at same wall time
   - "monthly:1"              — first of next month
   - "monthly:last"           — last day of next month
   - "yearly:MM-DD"           — annual date
-  - "every_n_days:N"         — +N days
+  - "every_n_days:N"         — +N days (N ≥ 1)
+  - "every_n_hours:N"        — +N hours (1 ≤ N ≤ 168)
+  - "every_n_minutes:N"      — +N minutes (1 ≤ N ≤ 1440)
 
-All arithmetic uses ``zoneinfo.ZoneInfo`` for DST-safe wall-clock
-preservation.  End-of-month clamping (e.g. Jan 31 → Feb 28/29) uses
+Sub-day cadences (hours/minutes) use absolute UTC arithmetic — they
+intentionally do *not* preserve wall-clock time across DST. Day-based
+cadences continue to preserve wall-clock time via local-zone arithmetic.
+
+End-of-month clamping (e.g. Jan 31 → Feb 28/29) uses
 ``calendar.monthrange``.  Invalid rule strings raise ``ValueError``
 immediately — no silent coercion.
 """
@@ -37,6 +42,8 @@ _RE_MONTHLY_N = re.compile(r"^monthly:(?P<day>\d{1,2})$")
 _RE_MONTHLY_LAST = re.compile(r"^monthly:last$", re.IGNORECASE)
 _RE_YEARLY = re.compile(r"^yearly:(?P<month>\d{2})-(?P<day>\d{2})$")
 _RE_EVERY_N = re.compile(r"^every_n_days:(?P<n>\d+)$")
+_RE_EVERY_N_HR = re.compile(r"^every_n_hours:(?P<n>\d+)$")
+_RE_EVERY_N_MIN = re.compile(r"^every_n_minutes:(?P<n>\d+)$")
 
 # Accepted by reminder_create; anything else should raise ValueError.
 VALID_RULE_RE = re.compile(
@@ -46,6 +53,8 @@ VALID_RULE_RE = re.compile(
     r"|monthly:(\d{1,2}|last)"
     r"|yearly:\d{2}-\d{2}"
     r"|every_n_days:\d+"
+    r"|every_n_hours:\d+"
+    r"|every_n_minutes:\d+"
     r")$",
     re.IGNORECASE,
 )
@@ -108,6 +117,20 @@ def validate_rule(rule: str) -> None:
             raise ValueError(
                 f"every_n_days interval must be ≥ 1, got {n} in rule {rule!r}"
             )
+    m = _RE_EVERY_N_HR.match(rule)
+    if m:
+        n = int(m.group("n"))
+        if not (1 <= n <= 168):
+            raise ValueError(
+                f"every_n_hours interval must be in [1, 168], got {n} in rule {rule!r}"
+            )
+    m = _RE_EVERY_N_MIN.match(rule)
+    if m:
+        n = int(m.group("n"))
+        if not (1 <= n <= 1440):
+            raise ValueError(
+                f"every_n_minutes interval must be in [1, 1440], got {n} in rule {rule!r}"
+            )
 
 
 def next_occurrence(rule: str, current_due: datetime) -> datetime:
@@ -151,6 +174,22 @@ def next_occurrence(rule: str, current_due: datetime) -> datetime:
     if m:
         n = int(m.group("n"))
         return _shift_days_wall(local, n, tz=tz)
+
+    # -----------------------------------------------------------------------
+    # every_n_hours:N — absolute clock arithmetic, not wall-time preserving.
+    # -----------------------------------------------------------------------
+    m = _RE_EVERY_N_HR.match(rule)
+    if m:
+        n = int(m.group("n"))
+        return (current_due + timedelta(hours=n)).astimezone(tz)
+
+    # -----------------------------------------------------------------------
+    # every_n_minutes:N — absolute clock arithmetic, not wall-time preserving.
+    # -----------------------------------------------------------------------
+    m = _RE_EVERY_N_MIN.match(rule)
+    if m:
+        n = int(m.group("n"))
+        return (current_due + timedelta(minutes=n)).astimezone(tz)
 
     # -----------------------------------------------------------------------
     # weekly:DOW[,DOW...]
