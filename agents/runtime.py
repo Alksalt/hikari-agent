@@ -173,6 +173,143 @@ def _aux_provider() -> str:
     return str(cfg.get("aux_model.provider", "haiku_subscription"))
 
 
+# Per-1M-token rates for cost telemetry. Sonnet pricing per Anthropic public
+# API tariff. Subscription users pay $0 marginal — these numbers exist to
+# flag "what would API pricing have cost" so /cockpit status can alert at the
+# $200/mo Max-credit equivalent threshold. Verified: 2026-05-27.
+_MODEL_RATES_USD_PER_1M: dict[str, tuple[float, float]] = {
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-opus-4-7":   (15.00, 75.00),
+}
+_CACHE_READ_DISCOUNT     = 0.10  # cache_read input at 10% of normal input rate
+_CACHE_WRITE_PREMIUM_5M  = 1.25  # 5-min TTL cache write at 125% of input rate
+_CACHE_WRITE_PREMIUM_1H  = 2.00  # 1-hour TTL cache write at 200% of input rate
+
+_UNKNOWN_MODELS_LOGGED: set[str] = set()
+
+
+def _compute_cost_usd(model: str, usage: dict) -> float:
+    rates = _MODEL_RATES_USD_PER_1M.get(model)
+    if rates is None:
+        if model not in _UNKNOWN_MODELS_LOGGED:
+            logger.warning("llm_costs: unknown model %r — storing cost=0", model)
+            _UNKNOWN_MODELS_LOGGED.add(model)
+        return 0.0
+    in_rate, out_rate = rates
+    inp  = int(usage.get("input_tokens") or 0)
+    outp = int(usage.get("output_tokens") or 0)
+    cr   = int(usage.get("cache_read_input_tokens") or 0)
+
+    # Prefer per-TTL breakdown when Anthropic returns it; fall back to the
+    # rolled-up cache_creation_input_tokens and pick a premium based on
+    # whether the 1h beta is enabled (errs conservative — assumes 1h when on).
+    breakdown = usage.get("cache_creation") or {}
+    cc_5m = int(breakdown.get("ephemeral_5m_input_tokens") or 0)
+    cc_1h = int(breakdown.get("ephemeral_1h_input_tokens") or 0)
+    if cc_5m or cc_1h:
+        cc_cost = (
+            cc_5m * in_rate * _CACHE_WRITE_PREMIUM_5M / 1_000_000
+          + cc_1h * in_rate * _CACHE_WRITE_PREMIUM_1H / 1_000_000
+        )
+    else:
+        cc = int(usage.get("cache_creation_input_tokens") or 0)
+        premium = (
+            _CACHE_WRITE_PREMIUM_1H
+            if bool(cfg.get("runtime.cache_ttl_1h_enabled", True))
+            else _CACHE_WRITE_PREMIUM_5M
+        )
+        cc_cost = cc * in_rate * premium / 1_000_000
+
+    return (
+        inp  * in_rate / 1_000_000
+      + outp * out_rate / 1_000_000
+      + cr   * in_rate * _CACHE_READ_DISCOUNT / 1_000_000
+      + cc_cost
+    )
+
+
+def _record_llm_cost(
+    model_usage: dict | None,
+    *,
+    path: str,
+    fallback_model: str,
+    fallback_usage: dict | None,
+) -> None:
+    """Best-effort persistence of per-turn token usage to llm_costs.
+    Never raises — DB failure must not break the turn.
+
+    Prefers per-model breakdown via ResultMessage.model_usage so fallback
+    turns attribute correctly. Falls back to the rolled-up msg.usage stamped
+    with fallback_model when the SDK didn't surface per-model details.
+    """
+    try:
+        if model_usage:
+            for model_id, u in model_usage.items():
+                if not isinstance(u, dict):
+                    continue
+                cost = _compute_cost_usd(model_id, u)
+                db.llm_costs_insert(
+                    turn_id=current_turn_id(),
+                    model=model_id,
+                    path=path,
+                    input_tokens=int(u.get("input_tokens") or 0),
+                    output_tokens=int(u.get("output_tokens") or 0),
+                    cache_read_input_tokens=int(u.get("cache_read_input_tokens") or 0),
+                    cache_creation_input_tokens=int(u.get("cache_creation_input_tokens") or 0),
+                    cost_usd=cost,
+                )
+            return
+        if not fallback_usage:
+            return
+        cost = _compute_cost_usd(fallback_model, fallback_usage)
+        db.llm_costs_insert(
+            turn_id=current_turn_id(),
+            model=fallback_model,
+            path=path,
+            input_tokens=int(fallback_usage.get("input_tokens") or 0),
+            output_tokens=int(fallback_usage.get("output_tokens") or 0),
+            cache_read_input_tokens=int(fallback_usage.get("cache_read_input_tokens") or 0),
+            cache_creation_input_tokens=int(fallback_usage.get("cache_creation_input_tokens") or 0),
+            cost_usd=cost,
+        )
+    except Exception:
+        logger.debug("llm_costs insert failed (non-fatal)", exc_info=True)
+
+
+_MOSHFEGH_LINES = (
+    "i'm done for today. tomorrow.",
+    "not now. it's been too many.",
+)
+
+
+def _anti_binge_check_and_increment() -> str | None:
+    """Returns a fixed close-line if the session is over the limit; otherwise
+    increments the counter and returns None. Reset semantics: when the active
+    SDK session_id differs from the one we last counted against, treat that
+    as a new session — reset counter to 0 and clear session_closed."""
+    limit = int(cfg.get("working_memory.anti_binge_turn_limit", 40))
+    if limit <= 0:
+        return None
+    active_sid = db.get_session_id() or ""
+    last_sid = db.runtime_get("session_turn_count_session_id") or ""
+    if active_sid != last_sid:
+        db.runtime_set("session_turn_count", "0")
+        db.runtime_set("session_turn_count_session_id", active_sid)
+        db.runtime_set("session_closed", "")
+    if (db.runtime_get("session_closed") or "") == "true":
+        return _MOSHFEGH_LINES[db.runtime_get_int("session_turn_count") % 2]
+    try:
+        n = int(db.runtime_increment("session_turn_count", by=1))
+    except (TypeError, ValueError):
+        return None
+    if n > limit:
+        db.runtime_set("session_closed", "true")
+        logger.info("anti_binge: session closed at turn %d (limit=%d)", n, limit)
+        return _MOSHFEGH_LINES[n % 2]
+    return None
+
+
 def _aux_model_id() -> str:
     return str(cfg.get("aux_model.model", "deepseek/deepseek-v4-flash"))
 
@@ -589,6 +726,16 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         max_budget_usd=max_budget_usd,
         resume=resume,
         permission_mode="acceptEdits",
+        # Phase B — Item 2: adaptive thinking + medium effort
+        thinking={"type": "adaptive"},
+        effort="medium",
+        # Phase B — Item 1: 1h prompt-cache TTL request via Anthropic beta.
+        # Gated by config so the user can disable without code change.
+        betas=(
+            ["extended-cache-ttl-2025-04-11"]
+            if bool(cfg.get("runtime.cache_ttl_1h_enabled", True))
+            else []
+        ),
     )
 
 
@@ -654,6 +801,12 @@ async def _invoke_sdk_persistent_live(
                             msg.usage.get("cache_creation_input_tokens", "-"),
                             msg.usage.get("cache_read_input_tokens", "-"),
                             msg.usage.get("output_tokens", "-"),
+                        )
+                        _record_llm_cost(
+                            getattr(msg, "model_usage", None),
+                            path="persistent",
+                            fallback_model=MODEL_PRIMARY,
+                            fallback_usage=msg.usage,
                         )
 
         await asyncio.wait_for(_collect(), timeout=sdk_turn_timeout)
@@ -791,6 +944,12 @@ async def _invoke_sdk(
                                 msg.usage.get("cache_read_input_tokens", "-"),
                                 msg.usage.get("output_tokens", "-"),
                             )
+                            _record_llm_cost(
+                                getattr(msg, "model_usage", None),
+                                path="ephemeral",
+                                fallback_model=MODEL_PRIMARY,
+                                fallback_usage=msg.usage,
+                            )
                         if msg.deferred_tool_use is not None:
                             logger.info(
                                 "SDK halted on deferred tool: %s (id=%s)",
@@ -832,6 +991,9 @@ async def run_user_turn(user_text: str) -> str:
     prefixed with ``[turn_id]``.
     """
     _CURRENT_TURN_ID.set(uuid.uuid4().hex)
+    closeline = _anti_binge_check_and_increment()
+    if closeline is not None:
+        return closeline
     async with _RUN_LOCK:
         return await _invoke_sdk(
             user_text,
@@ -858,6 +1020,9 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     Sets ``_CURRENT_TURN_ID`` at entry for log correlation.
     """
     _CURRENT_TURN_ID.set(uuid.uuid4().hex)
+    closeline = _anti_binge_check_and_increment()
+    if closeline is not None:
+        return closeline
     async with _RUN_LOCK:
         result = await _invoke_sdk(
             content_blocks,

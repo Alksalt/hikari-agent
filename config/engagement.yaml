@@ -514,6 +514,7 @@ working_memory:
   enabled: true
   last_k_turns: 6
   snippet_chars: 400
+  anti_binge_turn_limit: 40
 
 noticings:
   enabled: true
@@ -856,6 +857,7 @@ runtime:
   model_primary: "claude-sonnet-4-6"
   model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
+  cache_ttl_1h_enabled: true
 
 reflection:
   near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity

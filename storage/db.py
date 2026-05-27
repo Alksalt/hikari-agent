@@ -2926,6 +2926,30 @@ def runtime_increment(key: str, by: int = 1) -> int:
         return int(by)
 
 
+def llm_costs_insert(
+    *,
+    turn_id: str | None,
+    model: str,
+    path: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int,
+    cache_creation_input_tokens: int,
+    cost_usd: float,
+) -> int:
+    """Insert a per-turn cost row into llm_costs (table from Phase A)."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO llm_costs (ts, turn_id, model, path, "
+            "input_tokens, output_tokens, "
+            "cache_read_input_tokens, cache_creation_input_tokens, cost_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (_now(), turn_id, model, path, input_tokens, output_tokens,
+             cache_read_input_tokens, cache_creation_input_tokens, cost_usd),
+        )
+        return cur.lastrowid
+
+
 # ---------- tool_calls telemetry ----------
 
 def tool_calls_insert(
