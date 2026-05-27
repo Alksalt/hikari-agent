@@ -26,6 +26,25 @@ from agents import config as cfg
 
 logger = logging.getLogger(__name__)
 
+# Tools the user has pre-authorized for autonomous (scheduled) action turns.
+# When ``agents.runtime.in_autonomous_action()`` is True, these bypass the
+# per-call CONFIRM-SEND approval. Scope is intentionally narrow: Notion
+# writes only. Other gated ops (gmail send, calendar delete, github merge,
+# notion-block delete) still gate even in action mode — they have blast
+# radius beyond a single Notion workspace.
+#
+# Canary tripwire (above the bypass) still applies — autonomous mode never
+# silences exfiltration detection, only the user-facing CONFIRM-SEND.
+_AUTONOMOUS_ACTION_SAFE_TOOLS = frozenset({
+    "mcp__notion__API-post-page",
+    "mcp__notion__API-patch-page",
+    "mcp__notion__API-create-a-data-source",
+    "mcp__notion__API-update-a-data-source",
+    "mcp__notion__API-patch-block-children",
+    "mcp__notion__API-update-a-block",
+    "mcp__notion__API-create-a-comment",
+})
+
 _CRITICAL_FIELDS = {
     # recipients / addressees
     "recipients", "to", "cc", "bcc", "addressees", "target_email", "bcc_list",
@@ -294,6 +313,23 @@ async def gatekeeper_can_use_tool(
     except Exception:
         logger.debug(
             "gatekeeper_can_use_tool: canary check failed for %s", tool_name, exc_info=True
+        )
+
+    # Autonomous action bypass — scheduled action reminders pre-authorize
+    # a narrow set of writes (Notion only). Canary tripwire above still
+    # applies; this only skips the per-call CONFIRM-SEND prompt.
+    try:
+        from agents.runtime import in_autonomous_action  # noqa: PLC0415
+        if in_autonomous_action() and tool_name in _AUTONOMOUS_ACTION_SAFE_TOOLS:
+            logger.info(
+                "gatekeeper_can_use_tool: autonomous-action bypass for %s",
+                tool_name,
+            )
+            return PermissionResultAllow(updated_input=input)
+    except Exception:
+        logger.debug(
+            "gatekeeper_can_use_tool: autonomous-action check failed for %s",
+            tool_name, exc_info=True,
         )
 
     # URL-taint badge — surface to the operator in the CONFIRM-SEND prompt

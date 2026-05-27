@@ -856,6 +856,13 @@ runtime:
   model_primary: "claude-sonnet-4-6"
   model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
+  # Wall-clock budget for the SDK turn loop. Chat default fits a single
+  # quick MCP roundtrip + reply; scheduled actions get headroom for
+  # write-heavy MCP work (Notion DB creation, multi-row inserts).
+  sdk_turn_timeout_s: 90
+  sdk_scheduled_action_timeout_s: 180
+  scheduled_action_max_budget_usd: 0.40
+  scheduled_action_max_turns: 6
 
 reflection:
   near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity

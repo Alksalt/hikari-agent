@@ -71,6 +71,39 @@ def current_turn_id() -> str | None:
     return _CURRENT_TURN_ID.get()
 
 
+# ---------- per-turn-mode timeout override ----------
+# When set, overrides ``runtime.sdk_turn_timeout_s`` for this turn only.
+# run_scheduled_action raises the wall clock to allow write-heavy MCP work
+# (Notion DB creation, multi-page inserts) that doesn't fit in the 90 s
+# chat-path default.
+_CURRENT_TURN_TIMEOUT: ContextVar[float | None] = ContextVar(
+    "hikari_current_turn_timeout", default=None
+)
+
+
+def current_turn_timeout() -> float | None:
+    """Return the per-turn timeout override in seconds, or None for the
+    default chat-path budget."""
+    return _CURRENT_TURN_TIMEOUT.get()
+
+
+# ---------- autonomous action mode ----------
+# Set by run_scheduled_action so gated tools (notion writes) bypass
+# CONFIRM-SEND for this turn. The user opted in by creating the schedule —
+# they explicitly chose to delegate these writes. Other gated ops (gmail,
+# calendar delete, github merge) still gate.
+_AUTONOMOUS_ACTION: ContextVar[bool] = ContextVar(
+    "hikari_autonomous_action", default=False
+)
+
+
+def in_autonomous_action() -> bool:
+    """True if the current turn was launched by ``run_scheduled_action`` and
+    is allowed to bypass per-write approval for whitelisted autonomous-safe
+    tools."""
+    return _AUTONOMOUS_ACTION.get()
+
+
 class _TurnIdFilter(logging.Filter):
     """Prepend ``[turn_id]`` to every log record emitted during a turn."""
 
@@ -609,7 +642,11 @@ async def _invoke_sdk_persistent_live(
     outer lock is already held — do NOT pass ``lock_run=True`` from inside
     the lock or you will deadlock.
     """
-    sdk_turn_timeout = float(cfg.get("runtime.sdk_turn_timeout_s", 90))
+    # Per-turn override (run_scheduled_action) wins over the config default.
+    sdk_turn_timeout = float(
+        _CURRENT_TURN_TIMEOUT.get()
+        or cfg.get("runtime.sdk_turn_timeout_s", 90)
+    )
     tool_names_this_turn: set[str] = set()
     LAST_TURN_TOOL_NAMES.set(tool_names_this_turn)
 
@@ -894,6 +931,63 @@ async def run_visible_proactive(seed_prompt: str) -> str:
             retry_on_process_error=True,
             use_persistent_live=True,
         )
+
+
+async def run_scheduled_action(
+    seed_prompt: str,
+    *,
+    timeout_s: int | None = None,
+    max_budget_usd: float | None = None,
+    max_turns: int | None = None,
+) -> str:
+    """Autonomous turn fired by a scheduled action reminder.
+
+    Resumes the live session so context carries between fires; budget elevated
+    (default 180 s, $0.40, 6 turns) for write-heavy MCP work. Sets the
+    ``_AUTONOMOUS_ACTION`` flag so gatekeeper-gated tools tagged
+    ``autonomous_action_safe`` bypass per-write CONFIRM-SEND.
+
+    The single retry inside ``_invoke_sdk_persistent_live`` still applies — a
+    persistent-client SDK timeout is rare and one reconnect typically clears
+    it. Worst-case wall time is ``2 × timeout_s``; caller is responsible for
+    failure-cap bookkeeping (3 strikes → cancel) at the reminder level.
+
+    Tools enabled here are the same as a normal chat turn (subagents and
+    in-process MCPs); the only change is timeout/budget headroom and the
+    autonomous bypass for whitelisted writes.
+    """
+    _CURRENT_TURN_ID.set(uuid.uuid4().hex)
+    effective_timeout = float(
+        timeout_s
+        if timeout_s is not None
+        else cfg.get("runtime.sdk_scheduled_action_timeout_s", 180)
+    )
+    effective_max_turns = int(
+        max_turns
+        if max_turns is not None
+        else cfg.get("runtime.scheduled_action_max_turns", 6)
+    )
+    effective_budget = float(
+        max_budget_usd
+        if max_budget_usd is not None
+        else cfg.get("runtime.scheduled_action_max_budget_usd", 0.40)
+    )
+    timeout_token = _CURRENT_TURN_TIMEOUT.set(effective_timeout)
+    action_token = _AUTONOMOUS_ACTION.set(True)
+    try:
+        async with _RUN_LOCK:
+            return await _invoke_sdk(
+                seed_prompt,
+                resume=db.get_session_id(),
+                log_session_id=True,
+                max_turns=effective_max_turns,
+                max_budget_usd=effective_budget,
+                retry_on_process_error=True,
+                use_persistent_live=True,
+            )
+    finally:
+        _AUTONOMOUS_ACTION.reset(action_token)
+        _CURRENT_TURN_TIMEOUT.reset(timeout_token)
 
 
 async def run_internal_control(
