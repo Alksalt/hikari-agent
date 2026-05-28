@@ -43,7 +43,7 @@ def _read_fact(fact_id: int) -> dict:
 
 def test_mark_fact_invalid_sets_valid_to_and_status():
     """No-replacement invalidation: status flips to 'invalid', valid_to is stamped."""
-    fid = db.fact_insert(text="lives in Oslo", source="user_message")
+    fid = db.fact_insert(text="lives in Oslo", source="user")
     db.mark_fact_invalid(fid)
     row = _read_fact(fid)
     assert row["status"] == "invalid"
@@ -54,8 +54,8 @@ def test_mark_fact_invalid_sets_valid_to_and_status():
 
 def test_mark_fact_superseded_keeps_history():
     """Replacement path: status='superseded', pointer set, both rows still exist."""
-    old = db.fact_insert(text="lives in Oslo", source="user_message")
-    new = db.fact_insert(text="lives in Kristiansund", source="user_message")
+    old = db.fact_insert(text="lives in Oslo", source="user")
+    new = db.fact_insert(text="lives in Kristiansund", source="user")
     db.mark_fact_invalid(old, superseded_by=new)
     row = _read_fact(old)
     assert row["status"] == "superseded"
@@ -78,7 +78,7 @@ def test_recall_excludes_invalid_facts(monkeypatch):
         lambda _text: (_ for _ in ()).throw(RuntimeError("no embeddings in test")),
     )
 
-    fid = db.fact_insert(text="loves cabbage stew", source="user_message")
+    fid = db.fact_insert(text="loves cabbage stew", source="user")
     # Sanity: active fact is retrievable.
     hits = retrieval.legacy_retrieve("cabbage stew", limit=5)
     assert any(h.kind == "fact" and h.ref_id == fid for h in hits), (
@@ -97,12 +97,12 @@ def test_recall_excludes_invalid_facts(monkeypatch):
 def test_fact_insert_round_trip_columns():
     """The new text/source-shaped insert populates the bi-temporal columns
     so downstream readers can rely on them."""
-    fid = db.fact_insert(text="hates rainy mornings", source="user_message")
+    fid = db.fact_insert(text="hates rainy mornings", source="user")
     row = _read_fact(fid)
     assert row["status"] == "active"
     assert row["valid_from"] is not None
     assert row["valid_to"] is None
-    assert row["source"] == "user_message"
+    assert row["source"] == "user"
     assert row["superseded_by_fact_id"] is None
 
 

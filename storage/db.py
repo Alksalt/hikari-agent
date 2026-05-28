@@ -1636,6 +1636,19 @@ def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS fact_entities_entity "
                  "ON fact_entities(entity_id, fact_id DESC)")
+
+    # Phase N: backfill facts.source from attribution where source IS NULL.
+    # hikari_inferred → 'inferred' (Hikari extracted from user content, not Hikari-authored).
+    # user_stated / user_corrected → 'user'.
+    conn.execute("""
+        UPDATE facts
+        SET source = CASE
+            WHEN attribution = 'hikari_inferred' THEN 'inferred'
+            WHEN attribution IN ('user_stated', 'user_corrected') THEN 'user'
+            ELSE NULL
+        END
+        WHERE source IS NULL AND attribution IS NOT NULL
+    """)
     conn.commit()
 
 
@@ -1724,7 +1737,16 @@ def insert_fact(
 
     ``source_span_hash`` is a 16-hex-char SHA-256 of the source text span.
     ``recorded_at`` is the UTC epoch at which the fact was recorded; defaults
-    to ``_utc_epoch()`` if not supplied."""
+    to ``_utc_epoch()`` if not supplied.
+
+    ``source`` (the provenance axis, orthogonal to ``attribution``) must be
+    one of ``'user'``, ``'hikari'``, ``'inferred'``, or ``None``."""
+    _VALID_SOURCES = {"user", "hikari", "inferred"}
+    if source is not None and source not in _VALID_SOURCES:
+        raise ValueError(
+            f"insert_fact: source {source!r} must be one of "
+            f"{sorted(_VALID_SOURCES)} or None"
+        )
     if recorded_at is None:
         recorded_at = _utc_epoch()
     now = _now()

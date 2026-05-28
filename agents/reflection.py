@@ -230,6 +230,7 @@ async def run_daily_reflection() -> bool:
                 importance=int(f.get("importance") or 5),
                 confidence=float(f.get("confidence") or 0.9),
                 attribution="hikari_inferred",
+                source="inferred",
                 source_message_id=source_message_id,
                 source_span_hash=db.span_hash(src_text or f"{subj} {pred} {obj}"),
             )
@@ -266,6 +267,7 @@ async def run_daily_reflection() -> bool:
                 importance=int(new.get("importance") or 5),
                 confidence=float(new.get("confidence") or 0.9),
                 attribution="hikari_inferred",
+                source="inferred",
                 source_message_id=source_message_id_s,
                 source_span_hash=db.span_hash(src_text_s or f"{subj} {pred} {obj}"),
             )
@@ -890,6 +892,7 @@ async def reflection_after_task(task_id: str) -> None:
                 importance=int(f.get("importance") or 5),
                 confidence=0.8,
                 attribution="hikari_inferred",
+                source="inferred",
                 source_span_hash=db.span_hash(src_text),
             )
             await _embed_fact(fact_id, subj, pred, obj)

@@ -48,8 +48,8 @@ def _backdate(fact_id: int, days_ago: int) -> str:
 def test_recall_prefers_fresh_fact_over_old():
     """Two facts with nearly identical content; the old one should rank lower
     because the Ebbinghaus multiplier collapses its relevance contribution."""
-    fresh = db.fact_insert(text="user loves matcha cake", source="user_message")
-    old = db.fact_insert(text="user loves matcha cake recipes", source="user_message")
+    fresh = db.fact_insert(text="user loves matcha cake", source="user")
+    old = db.fact_insert(text="user loves matcha cake recipes", source="user")
     # Backdate the second by ~28 days — well past the 7-day tau half-life so
     # the multiplier shrinks the relevance term noticeably.
     _backdate(old, days_ago=28)
@@ -72,7 +72,7 @@ def test_recall_prefers_fresh_fact_over_old():
 def test_recall_bumps_hit_count_and_last_recalled_at():
     """A successful recall stamps the returned facts so the next call sees
     a stretched tau (rehearsal effect)."""
-    fid = db.fact_insert(text="user studies attention mechanisms", source="user_message")
+    fid = db.fact_insert(text="user studies attention mechanisms", source="user")
 
     row_before = db.get_fact(fid)
     assert row_before["recall_hit_count"] == 0
@@ -114,7 +114,7 @@ def test_facts_mark_recalled_handles_empty_list():
     """No-op call must not raise and must not touch any rows."""
     assert db.facts_mark_recalled([]) == 0
     # Insert one, confirm it stays untouched.
-    fid = db.fact_insert(text="ignored", source="user_message")
+    fid = db.fact_insert(text="ignored", source="user")
     assert db.facts_mark_recalled([]) == 0
     row = db.get_fact(fid)
     assert row["recall_hit_count"] == 0
@@ -123,8 +123,8 @@ def test_facts_mark_recalled_handles_empty_list():
 
 def test_facts_mark_recalled_bulk_update():
     """Multiple ids in one call all get stamped + incremented."""
-    a = db.fact_insert(text="fact a", source="user_message")
-    b = db.fact_insert(text="fact b", source="user_message")
+    a = db.fact_insert(text="fact a", source="user")
+    b = db.fact_insert(text="fact b", source="user")
     n = db.facts_mark_recalled([a, b])
     assert n == 2
     for fid in (a, b):

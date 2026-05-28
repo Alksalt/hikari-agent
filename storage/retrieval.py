@@ -63,6 +63,12 @@ _ATTRIBUTION_MULTIPLIER: dict[str, float] = {
     "subagent_extracted": 0.8,
 }
 
+# Source → score multiplier. 'hikari' facts are dampened 0.7× to prevent
+# Hikari's own statements from reinforcing themselves across sessions.
+_SOURCE_MULTIPLIER: dict[str, float] = {
+    "hikari": 0.7,
+}
+
 # Spaced-surprise window: items aged between these bounds get a lift.
 _SURPRISE_MIN_DAYS = 28
 _SURPRISE_MAX_DAYS = 60
@@ -87,6 +93,11 @@ def _attribution_multiplier(attribution: str | None) -> float:
     if not attribution:
         return 1.0
     return _ATTRIBUTION_MULTIPLIER.get(attribution.strip(), 1.0)
+
+
+def _source_multiplier(source: str | None) -> float:
+    """0.7x for source='hikari' to prevent self-reinforcement. 1.0 otherwise."""
+    return _SOURCE_MULTIPLIER.get((source or "").strip().lower(), 1.0)
 
 
 def _spaced_surprise_multiplier(iso: str | None) -> float:
@@ -190,6 +201,7 @@ def _hydrate(kind: str, ref_id: int) -> dict[str, Any] | None:
             "last_recalled_at": rec.get("last_recalled_at"),
             "recall_hit_count": int(rec.get("recall_hit_count") or 0),
             "attribution": rec.get("attribution"),
+            "source": rec.get("source"),
         }
     elif kind == "episode":
         rec = db.get_episode(ref_id)
@@ -375,6 +387,10 @@ def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
         # Wave 2: attribution multiplier — trust the source; user_stated facts
         # outrank hikari-inferred or subagent-extracted ones.
         score *= _attribution_multiplier(rec.get("attribution"))
+
+        # Phase N: source provenance multiplier — dampen hikari-authored facts
+        # 0.7× to prevent Hikari's own statements from reinforcing themselves.
+        score *= _source_multiplier(rec.get("source"))
 
         hits.append(Hit(
             kind=kind, ref_id=ref_id, text=rec["text"],
