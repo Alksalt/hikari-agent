@@ -94,6 +94,8 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "weather_mood_shift":          ("to_condition",),
     # Phase H — stale PR producer
     "stale_pr_check":              ("branch", "title"),
+    # Phase Q — anniversary callbacks
+    "anniversary_callback":        ("summary",),
 }
 
 

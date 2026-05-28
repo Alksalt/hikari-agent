@@ -1126,6 +1126,15 @@ engagement:
     send_mode: observation
     min_value_score: 0.3
     interruption_right: low
+  anniversary_callback:
+    enabled: true
+    min_stage: 3              # stage 3+ unlocks sideways callbacks
+    window_days: 3            # ±3d from today's MMDD
+    priority_tier: 3          # opportunistic
+    min_interval_minutes: 1440  # at most daily
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
 
 aux_model:
   # Cheap model for stateless LLM ops: run_reflection_call, run_internal_control.

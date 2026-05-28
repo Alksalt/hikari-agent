@@ -2448,6 +2448,31 @@ def lexicon_get(phrase: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+# ---------- significant_events ----------
+
+def significant_event_insert(
+    *,
+    event_date: str,
+    summary: str,
+    kind: str,
+) -> int:
+    """Insert into significant_events table. Idempotent on (event_date, summary[:80])."""
+    with _conn() as c:
+        existing = c.execute(
+            "SELECT id FROM significant_events "
+            "WHERE event_date = ? AND substr(summary, 1, 80) = ?",
+            (event_date, summary[:80]),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
+        cur = c.execute(
+            "INSERT INTO significant_events (event_date, summary, kind, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (event_date, summary, kind, _now()),
+        )
+        return cur.lastrowid
+
+
 def all_messages_text_since(iso_cutoff: str, role: str | None = None) -> list[str]:
     """Helper for lexicon extraction: return raw message texts since cutoff."""
     sql = "SELECT content FROM messages WHERE ts >= ?"

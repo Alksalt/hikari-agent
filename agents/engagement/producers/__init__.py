@@ -5,7 +5,7 @@ function. The unified _engagement_tick in scheduler.py calls all enabled
 producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
-All 21 producers:
+All 22 producers:
   Default-on (4):
     gmail_unread_threshold, calendar_event_prep,
     wiki_new_file, decision_resolve_due
@@ -14,14 +14,15 @@ All 21 producers:
     book_just_finished, just_got_home, late_night_dissolution,
     irritation_event, weather_mood_shift
 
-  Opt-in (12):
-    calendar_new_invite, callback_episode, drive_starred_new,
-    notion_recent_edit, weather_alert, weirdly_good_mood_leak,
-    reengage_silence, location_arrived_recurring, readwise_daily_review
-    (stub — Readwise MCP removed 2026-05-21), gmail_important_thread,
-    stale_pr_check
+  Opt-in (13):
+    anniversary_callback, calendar_new_invite, callback_episode,
+    drive_starred_new, notion_recent_edit, weather_alert,
+    weirdly_good_mood_leak, reengage_silence, location_arrived_recurring,
+    readwise_daily_review (stub — Readwise MCP removed 2026-05-21),
+    gmail_important_thread, stale_pr_check
 """
 from agents.engagement.producers import (  # noqa: F401
+    anniversary_callback,
     book_just_finished,
     calendar_event_prep,
     calendar_new_invite,
@@ -48,6 +49,7 @@ from agents.engagement.producers import (  # noqa: F401
 # Canonical set of all producer source IDs. Imported by the /proactive command
 # and the engagement_tick scheduler.
 ALL_PRODUCER_IDS: frozenset[str] = frozenset({
+    "anniversary_callback",
     "book_just_finished",
     "callback_episode",
     "calendar_event_prep",
@@ -86,6 +88,7 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
 
 # Map source id → module for dynamic dispatch by the scheduler.
 _PRODUCER_MODULES = {
+    "anniversary_callback": anniversary_callback,
     "book_just_finished": book_just_finished,
     "callback_episode": callback_episode,
     "calendar_event_prep": calendar_event_prep,
