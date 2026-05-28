@@ -98,6 +98,21 @@ def _entities_for_fact(subj: str, obj: str, entity_block) -> list[int]:
     return out
 
 
+_VALID_CATEGORIES = {"event", "preference", "fact"}
+
+
+def _normalize_category(raw) -> str | None:
+    """Map LLM-returned category label to a valid ACT-R tau bucket.
+
+    Returns 'event', 'preference', or 'fact'. Defaults to 'fact' when raw is
+    missing or unrecognised — the safest tau for an unknown decay rate.
+    """
+    if not raw:
+        return "fact"
+    s = str(raw).strip().lower()
+    return s if s in _VALID_CATEGORIES else "fact"
+
+
 def _should_run_second_order() -> bool:
     """Return True if it's time for a quarterly their_model_of_me extraction (>=90d)."""
     raw = db.runtime_get("last_second_order_extraction_at")
@@ -139,10 +154,10 @@ def _build_reflection_prompt(include_second_order: bool = False) -> str:
         "the schema you must produce.\n\n"
         "new_facts:\n"
         "  - {subject: '', predicate: '', object: '', importance: 5, confidence: 0.9, "
-        "source_message_id: 0, source_text: ''}\n"
+        "source_message_id: 0, source_text: '', category: 'event|preference|fact'}\n"
         "supersede:  # for facts that contradict existing — give the existing fact_id\n"
         "  - {old_fact_id: 0, new: {subject: '', predicate: '', object: '', importance: 5, "
-        "source_message_id: 0, source_text: ''}}\n"
+        "source_message_id: 0, source_text: '', category: 'event|preference|fact'}}\n"
         "observations:  # patterns about the user, not facts. e.g. 'goes quiet around 11pm', "
         "'always brings up cabbage when stressed'\n"
         "  - {kind: 'pattern_break|recurrence|topic_pattern|absence', "
@@ -197,7 +212,9 @@ def _build_reflection_prompt(include_second_order: bool = False) -> str:
         "- Noticings are time-comparative: today vs last week / last month. Surface only "
         "real shifts, not noise.\n"
         "- entities: list all named persons, projects, places, apps, or topics that "
-        "appear across the new facts. Empty list if none.\n\n"
+        "appear across the new facts. Empty list if none.\n"
+        "- category picks the decay rate: 'event' for one-off occurrences, "
+        "'preference' for taste/likes/dislikes, 'fact' for stable identity.\n\n"
         "## recent messages\n\n"
         f"<<UNTRUSTED_SOURCE name=\"messages\">>\n{messages_text}\n<<END_UNTRUSTED_SOURCE>>\n\n"
         "## recent episodes\n\n"
@@ -264,6 +281,7 @@ async def run_daily_reflection() -> bool:
                 source="inferred",
                 source_message_id=source_message_id,
                 source_span_hash=db.span_hash(src_text or f"{subj} {pred} {obj}"),
+                fact_category=_normalize_category(f.get("category")),
             )
             await _embed_fact(fact_id, subj, pred, obj)
             mentioned = _entities_for_fact(subj, obj, entity_block)
@@ -301,6 +319,7 @@ async def run_daily_reflection() -> bool:
                 source="inferred",
                 source_message_id=source_message_id_s,
                 source_span_hash=db.span_hash(src_text_s or f"{subj} {pred} {obj}"),
+                fact_category=_normalize_category(new.get("category")),
             )
             await _embed_fact(new_id, subj, pred, obj)
             mentioned_s = _entities_for_fact(subj, obj, entity_block)
@@ -962,6 +981,7 @@ async def reflection_after_task(task_id: str) -> None:
                 attribution="hikari_inferred",
                 source="inferred",
                 source_span_hash=db.span_hash(src_text),
+                fact_category="fact",
             )
             await _embed_fact(fact_id, subj, pred, obj)
             written += 1

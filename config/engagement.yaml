@@ -149,6 +149,15 @@ memory:
   # (lowest first) when additionalContext would exceed this char count.
   # Priority-1 (always-on) blocks always render even if they alone exceed it.
   additional_context_max_chars: 4096
+  # Phase M: ACT-R decay + Mem0 entity-fusion constants (documentation — code
+  # uses module-level constants in storage/retrieval.py; wire cfg.get() if
+  # runtime tuning is needed without redeploy).
+  act_r_d: 0.5
+  act_r_noise_epsilon: 0.15
+  act_r_tau_event_seconds: 259200       # 3d
+  act_r_tau_preference_seconds: 1814400 # 21d
+  act_r_tau_fact_seconds: 2505600       # 29d
+  entity_bonus_max: 0.3
   conditional_blocks:
     affect:
       enabled: true

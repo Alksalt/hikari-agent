@@ -1741,6 +1741,7 @@ def insert_fact(
     attribution: str | None = None,
     source_span_hash: str | None = None,
     recorded_at: int | None = None,
+    fact_category: str | None = None,
 ) -> int:
     """Insert a new fact. Returns row id. Caller is responsible for any
     contradiction/supersession logic — this function does NOT auto-supersede.
@@ -1773,11 +1774,11 @@ def insert_fact(
         cur = c.execute(
             "INSERT INTO facts (subject, predicate, object, confidence, importance, "
             "valid_from, source_message_id, source, attribution, status, created_at, "
-            "source_span_hash, recorded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            "source_span_hash, recorded_at, fact_category) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
             (subject, predicate, object_, confidence, importance, now,
              source_message_id, source, attribution, now,
-             source_span_hash, recorded_at),
+             source_span_hash, recorded_at, fact_category),
         )
         fact_id = cur.lastrowid
         c.execute(
