@@ -203,7 +203,7 @@ _AUX_REFLECTION_SYSTEM = (
 
 
 def _aux_provider() -> str:
-    return str(cfg.get("aux_model.provider", "haiku_subscription"))
+    return str(cfg.get("aux_model.provider", "openrouter"))
 
 
 # Per-1M-token rates for cost telemetry. Sonnet pricing per Anthropic public

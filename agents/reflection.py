@@ -656,6 +656,14 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("maybe_trigger_diary_writer failed (non-fatal)")
 
+    # Dialectic: extract non-explicit user insights from the recent window.
+    try:
+        from agents.dialectic import extract_post_turn
+        window = db.recent_messages(limit=12, exclude_ephemeral=True)
+        await extract_post_turn(window)
+    except Exception:
+        logger.exception("dialectic.extract_post_turn failed (non-fatal)")
+
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated

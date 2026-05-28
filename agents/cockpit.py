@@ -205,8 +205,8 @@ def _read_aux_model_provider() -> str:
 
 def _write_aux_model_provider(value: str) -> None:
     v = value.strip().lower()
-    if v not in ("openrouter", "haiku_subscription"):
-        raise ValueError(f"aux_model.provider must be openrouter|haiku_subscription, got {v!r}")
+    if v != "openrouter":
+        raise ValueError(f"aux_model.provider must be openrouter, got {v!r}")
     _patch_yaml_key("aux_model.provider", v)
 
 
@@ -279,8 +279,8 @@ _SETTINGS_ALLOWLIST: dict[str, dict] = {
         "doc": "hour (0-23, local time via HOME_TZ) when quiet hours end — proactives resume",
     },
     "aux_model.provider": {
-        "type": "enum[openrouter,haiku_subscription]",
-        "validate": lambda v: v.strip().lower() in ("openrouter", "haiku_subscription"),
+        "type": "enum[openrouter]",
+        "validate": lambda v: v.strip().lower() == "openrouter",
         "reader": _read_aux_model_provider,
         "writer": _write_aux_model_provider,
         "doc": "LLM provider for cheap aux ops (reflection, task extraction)",

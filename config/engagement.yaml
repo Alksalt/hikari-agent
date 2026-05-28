@@ -1151,13 +1151,6 @@ engagement:
     send_mode: observation
     min_value_score: 0.3
     interruption_right: low
-  stale_pr_check:
-    enabled: true
-    priority_tier: 3        # low priority — nagging behavior
-    min_interval_minutes: 1440  # at most once per day
-    send_mode: observation
-    min_value_score: 0.3
-    interruption_right: low
   anniversary_callback:
     enabled: true
     min_stage: 3              # stage 3+ unlocks sideways callbacks

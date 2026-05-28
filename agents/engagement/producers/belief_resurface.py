@@ -6,7 +6,7 @@ Stage 3+ only. Sunday ceremony preference, but can fire any day.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, UTC
+from datetime import UTC, datetime, timedelta
 
 from agents.engagement.triggers import TriggerCandidate
 
@@ -49,7 +49,7 @@ def collect() -> list[TriggerCandidate]:
             "stated_at": item["stated_at"],
         },
         dedup_key=f"belief_resurface:{item['id']}",
-        decay_at=datetime.now(UTC).replace(microsecond=0).isoformat(),  # 24h decay
+        decay_at=(datetime.now(UTC) + timedelta(hours=24)).replace(microsecond=0).isoformat(),
         novelty=0.8,
         actionability=0.3,
         confidence=0.9,
