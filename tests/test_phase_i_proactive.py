@@ -360,12 +360,6 @@ class TestProducerLocationArrivedRecurring:
         assert results[0].payload["place_name"] == "Office"
 
 
-class TestProducerReadwiseDailyReview:
-    def test_collect_always_returns_empty(self):
-        from agents.engagement.producers import readwise_daily_review
-        assert readwise_daily_review.collect() == []
-
-
 class TestProducerGmailImportantThread:
     def test_collect_empty_when_mcp_cold(self):
         from agents.engagement.producers import gmail_important_thread

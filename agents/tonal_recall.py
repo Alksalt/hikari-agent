@@ -96,7 +96,7 @@ async def compute_session_register(session_id: str) -> str:
         logger.exception(
             "tonal_recall: failed to write emotional_register for session %s", session_id
         )
-        raise  # propagate so caller (run_daily_reflection in reflection.py) sees the failure
+        raise
 
     logger.info("tonal_recall: session %s register = %s", session_id, register)
     return register

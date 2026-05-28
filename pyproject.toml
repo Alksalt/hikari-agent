@@ -18,9 +18,6 @@ dependencies = [
     "obsidiantools>=0.10",
     "python-frontmatter>=1.1",
     "ruamel.yaml>=0.18",
-    "watchdog>=4.0",
-    "beautifulsoup4>=4.12",
-    "lxml>=5.0",
     "pykakasi>=2.3.0",
     "asteval>=1.0.8",
     "arxiv>=4.0.0",
@@ -34,6 +31,11 @@ dependencies = [
     "bm25s[core]>=0.3.9,<0.4",
     "faster-whisper>=1.0",  # local STT alternative to OpenAI Whisper API
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "tools*", "storage*", "auth*", "evals*", "mcp_external*"]
+exclude = ["data*", "secrets*", "codex*", "plans*", "scripts*", "tests*", "assets*", "config*", "etc*"]
 
 [dependency-groups]
 dev = [

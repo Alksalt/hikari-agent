@@ -202,10 +202,6 @@ _AUX_REFLECTION_SYSTEM = (
 )
 
 
-def _aux_provider() -> str:
-    return str(cfg.get("aux_model.provider", "openrouter"))
-
-
 # Per-1M-token rates for cost telemetry. Sonnet pricing per Anthropic public
 # API tariff. Subscription users pay $0 marginal — these numbers exist to
 # flag "what would API pricing have cost" so /cockpit status can alert at the
@@ -372,36 +368,6 @@ def _anti_binge_check_and_increment() -> str | None:
 
 def _aux_model_id() -> str:
     return str(cfg.get("aux_model.model", "deepseek/deepseek-v4-flash"))
-
-
-def _aux_sdk_model() -> str:
-    """SDK model ID to use for internal-control / SDK-based reflection calls.
-
-    When provider is ``openrouter``, the caller should route through
-    ``_call_aux_llm`` (httpx path) rather than this function. Raises
-    ``ValueError`` for unknown providers so misconfiguration is never silent.
-
-    User rule: never Haiku. Any provider that would have returned a Haiku
-    model ID is a misconfiguration and will raise.
-    """
-    provider = _aux_provider()
-    if provider == "haiku_subscription":
-        # haiku_subscription is a legacy config value — refuse per user rule.
-        raise ValueError(
-            "aux_model.provider='haiku_subscription' is forbidden (no Haiku). "
-            "Set provider=openrouter to use DeepSeek via OpenRouter."
-        )
-    if provider == "openrouter":
-        # Not SDK-compatible — callers that need SDK tools should use
-        # MODEL_PRIMARY (Sonnet) directly; non-tool calls go via _call_aux_llm.
-        raise ValueError(
-            "aux_model.provider='openrouter' cannot use the SDK path. "
-            "Call _call_aux_llm() instead for non-tool aux operations."
-        )
-    raise ValueError(
-        f"Unknown aux_model.provider={provider!r}. "
-        "Valid values: 'openrouter'."
-    )
 
 
 async def _call_aux_llm(
@@ -710,11 +676,13 @@ def allowed_tool_names() -> list[str]:
 
 
 def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
-                   max_budget_usd: float | None = 0.50,
+                   max_budget_usd: float | None = None,
                    extra_allowed_tools: list[str] | None = None,
                    inject_memory_enabled: bool = True,
                    model: str | None = None,
                    ) -> ClaudeAgentOptions:
+    if max_budget_usd is None:
+        max_budget_usd = float(cfg.get("runtime.chat_max_budget_usd", 0.50))
     allowed = list(_base_allowed_tools())
     if extra_allowed_tools:
         allowed.extend(extra_allowed_tools)
@@ -915,7 +883,7 @@ async def _invoke_sdk(
     resume: str | None,
     log_session_id: bool,
     max_turns: int = DEFAULT_MAX_TURNS,
-    max_budget_usd: float = 0.50,
+    max_budget_usd: float | None = None,
     extra_allowed_tools: list[str] | None = None,
     retry_on_process_error: bool = True,
     inject_memory_enabled: bool = True,
@@ -1064,7 +1032,6 @@ async def run_user_turn(user_text: str) -> str:
             resume=db.get_session_id(),
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
-            max_budget_usd=0.50,
             retry_on_process_error=True,
             use_persistent_live=True,
         )
@@ -1093,7 +1060,6 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
             resume=db.get_session_id(),
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
-            max_budget_usd=0.50,
             retry_on_process_error=True,
         )
         if sdk_pool.is_live_persistent_path_enabled():

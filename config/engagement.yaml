@@ -544,7 +544,6 @@ cadence_governor:
         - notion_recent_edit
         - weather_alert
         - location_arrived_recurring
-        - readwise_daily_review
 
 working_memory:
   enabled: true
@@ -916,6 +915,7 @@ runtime:
   sdk_scheduled_action_timeout_s: 180
   scheduled_action_max_budget_usd: 0.40
   scheduled_action_max_turns: 6
+  chat_max_budget_usd: 0.50         # per-turn $ cap for chat-path SDK calls
   cache_ttl_1h_enabled: true
   agent_sdk_monthly_credit_usd: 200  # Anthropic Agent SDK credit bucket (separate from interactive plan)
 
@@ -1149,13 +1149,6 @@ engagement:
     min_interval_minutes: 120
     send_mode: proactive
     min_value_score: 0.5
-    interruption_right: low
-  readwise_daily_review:
-    enabled: false
-    priority_tier: 3
-    min_interval_minutes: 1440
-    send_mode: observation
-    min_value_score: 0.3
     interruption_right: low
   anniversary_callback:
     enabled: true

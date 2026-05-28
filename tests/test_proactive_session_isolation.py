@@ -39,7 +39,7 @@ async def test_run_internal_control_does_not_overwrite_session_id(monkeypatch):
     import agents.runtime as runtime_mod
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
-                               max_budget_usd, extra_allowed_tools=None,
+                               max_budget_usd=None, extra_allowed_tools=None,
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
@@ -74,7 +74,7 @@ async def test_run_user_turn_updates_session_id(monkeypatch):
     import agents.runtime as runtime_mod
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
-                               max_budget_usd, extra_allowed_tools=None,
+                               max_budget_usd=None, extra_allowed_tools=None,
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
@@ -141,7 +141,7 @@ async def test_run_user_turn_blocks_uses_log_session_id_true(monkeypatch):
     log_session_id_received: list[bool] = []
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
-                               max_budget_usd, retry_on_process_error=True,
+                               max_budget_usd=None, retry_on_process_error=True,
                                **kwargs):
         log_session_id_received.append(log_session_id)
         return "blocks reply"

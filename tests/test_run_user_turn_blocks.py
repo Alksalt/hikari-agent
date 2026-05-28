@@ -14,7 +14,7 @@ async def test_run_user_turn_blocks_passes_blocks_to_sdk(monkeypatch):
     captured = {}
 
     async def fake_invoke_sdk(prompt, *, resume, log_session_id, max_turns,
-                               max_budget_usd, retry_on_process_error, **kw):
+                               max_budget_usd=None, retry_on_process_error=True, **kw):
         captured["prompt"] = prompt
         captured["log_session_id"] = log_session_id
         return "ok"
