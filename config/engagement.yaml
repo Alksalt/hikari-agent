@@ -1253,3 +1253,12 @@ voice_outbound:
       similarity_boost: 0.80
       style: 0.25
       use_speaker_boost: true
+
+# ============================================================================
+# Phase S: annual review ceremony (Dec 26-31)
+# ============================================================================
+
+annual_review:
+  enabled: true
+  model: deepseek/deepseek-v4-flash  # cheap aux LLM
+  fire_hour: 11                       # local hour for daily check

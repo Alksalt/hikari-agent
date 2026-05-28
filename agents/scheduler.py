@@ -279,6 +279,22 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
+    # Phase S: Annual review ceremony — Dec 26-31, 11:00 local.
+    # Composes a year synthesis in Hikari voice (things worth more of /
+    # things worth less of) from episodes, receipts, decisions, and drift
+    # canary divergences. Idempotent via runtime_state key.
+    if bool(cfg.get("annual_review.enabled", True)):
+        from agents.annual_review import run_annual_review
+        ar_hour = int(cfg.get("annual_review.fire_hour", 11))
+        async def _annual_review_job():
+            return await run_annual_review(send_text=send_text)
+        scheduler.add_job(
+            _annual_review_job,
+            CronTrigger(month=12, day="26-31", hour=ar_hour, minute=0),
+            id="annual_review",
+            coalesce=True, max_instances=1, misfire_grace_time=86400,
+        )
+
     # Drift canary: weekly Sunday 20:00 local. Probes one of three hard
     # opinions, LLM-as-judge classifies the answer, alerts via send_text on
     # 'drift' verdict. Single-user Nautilus Compass.
