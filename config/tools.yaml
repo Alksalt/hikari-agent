@@ -360,6 +360,19 @@ tools:
     example: "generate_photo(mood='focused')"
     presentation_hint: file_preview
 
+  - id: "mcp__hikari_photo__scene_photo_send"
+    bucket: 1
+    server: hikari_photo
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+    domain: media
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "scene_photo_send(hint='making tea')"
+    presentation_hint: file_preview
+
   # --------------------------------------------------------------------------
   # hikari_wiki (bucket 1)
   # --------------------------------------------------------------------------

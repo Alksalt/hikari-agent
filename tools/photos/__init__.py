@@ -36,5 +36,6 @@ from tools.photos._shared import (  # noqa: F401 — back-compat re-exports
     _scene_suffix,
 )
 from tools.photos.generate import generate_photo
+from tools.photos.scene import scene_photo_send
 
-ALL_TOOLS = [generate_photo]
+ALL_TOOLS = [generate_photo, scene_photo_send]
