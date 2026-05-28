@@ -805,6 +805,11 @@ morning_brief:
   sources:
     - "open_meteo"
     - "met_no"
+  # HuggingFace Daily Papers block. Fetches from the public HF API, filters
+  # against config/hikari_interests_pool.yaml topics, emits ≤2 titles.
+  hf_papers_enabled: true
+  hf_papers_max_results: 2
+  hf_papers_fetch_limit: 20  # how many papers to scan from the HF API
 
 weather:
   # Fallback location when no last-shared location exists and HOME_LAT/HOME_LON
