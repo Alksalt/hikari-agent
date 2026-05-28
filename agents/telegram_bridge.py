@@ -2984,10 +2984,6 @@ def _reaction_max_per_day() -> int:
     return int(cfg.get("reactions_as_turns.max_per_day", 20))
 
 
-def _reaction_irritable_skip_prob() -> float:
-    return float(cfg.get("reactions_as_turns.irritable_skip_probability", 0.5))
-
-
 def _reaction_turn_within_cooldown() -> bool:
     last = db.runtime_get(_REACTION_TURN_COOLDOWN_KEY)
     if not last:
@@ -3199,9 +3195,11 @@ async def handle_message_reaction(
         logger.info("reaction-turn: daily cap reached; skipping")
         return
     mood = _mood()
-    if mood == "irritable" and random.random() < _reaction_irritable_skip_prob():
-        logger.info("reaction-turn: irritable mood skip")
-        return
+    if mood == "irritable":
+        from agents.cadence import effective_reaction_skip_prob
+        if random.random() < effective_reaction_skip_prob():
+            logger.info("reaction-turn: irritable mood skip")
+            return
 
     # Look up the original message text Hikari sent. If the row is missing
     # (e.g. user reacted to an old message pre-D-3), fall back to a generic

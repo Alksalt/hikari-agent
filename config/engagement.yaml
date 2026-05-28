@@ -504,6 +504,15 @@ emotional_half_life:
     # the deflection_rate baseline downward for opening turns.
     softness_factor: 0.18
 
+cycle_modulation:
+  enabled: true
+  low_tolerance_below: 0.6
+  low_tolerance_proactive_cap_scale: 0.5
+  open_at_or_above: 1.2
+  open_proactive_cap_scale: 1.25
+  low_tolerance_reaction_skip_scale: 1.5   # multiplies skip probability (more withdrawn)
+  open_reaction_skip_scale: 0.8
+
 cadence_governor:
   enabled: true
   pools:

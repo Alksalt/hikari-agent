@@ -58,6 +58,79 @@ def _max_per_7d(pool: Pool) -> int:
     return int(_pool_config(pool).get("max_per_7d", 4))
 
 
+def _warmth_band() -> str | None:
+    """Classify the current warmth_multiplier into 'low' | 'mid' | 'open'.
+
+    Single source of truth for the band thresholds so cap- and
+    reaction-modulation stay in lockstep. Returns None when
+    ``cycle_modulation`` is disabled or ``cycle_state`` is absent/unparseable
+    (callers treat None as a no-op).
+    """
+    if not cfg.get("cycle_modulation.enabled", True):
+        return None
+    try:
+        raw = db.get_core_block("cycle_state")
+        if not raw:
+            return None
+        state = json.loads(raw)
+        wm = state.get("warmth_multiplier")
+        if wm is None:
+            return None
+        wm = float(wm)
+    except Exception:
+        return None
+    low_below = float(cfg.get("cycle_modulation.low_tolerance_below", 0.6))
+    open_at = float(cfg.get("cycle_modulation.open_at_or_above", 1.2))
+    if wm < low_below:
+        return "low"
+    if wm >= open_at:
+        return "open"
+    return "mid"
+
+
+def _warmth_band_factor(pool: Pool) -> float:
+    """Return the agent_spontaneous cap scaling factor for the current band.
+
+    Only the ``agent_spontaneous`` pool is modulated — other pools return 1.0.
+    """
+    if pool is not Pool.AGENT_SPONTANEOUS:
+        return 1.0
+    band = _warmth_band()
+    if band == "low":
+        return float(cfg.get("cycle_modulation.low_tolerance_proactive_cap_scale", 0.5))
+    if band == "open":
+        return float(cfg.get("cycle_modulation.open_proactive_cap_scale", 1.25))
+    return 1.0
+
+
+def effective_max_per_7d(pool: Pool) -> int:
+    """Return the warmth-scaled cap for *pool* (int >= 0).
+
+    Used by ``can_send`` and exposed for tests.
+    """
+    base = _max_per_7d(pool)
+    factor = _warmth_band_factor(pool)
+    return max(0, round(base * factor))
+
+
+def effective_reaction_skip_prob() -> float:
+    """Return the warmth-scaled ``irritable_skip_probability`` (clamped 0.0–1.0).
+
+    Used by the reaction-turn gate in ``telegram_bridge`` and exposed for tests.
+    When ``cycle_modulation.enabled`` is false or ``cycle_state`` is absent,
+    returns the raw config value unchanged.
+    """
+    base = float(cfg.get("reactions_as_turns.irritable_skip_probability", 0.5))
+    band = _warmth_band()
+    if band == "low":
+        scale = float(cfg.get("cycle_modulation.low_tolerance_reaction_skip_scale", 1.5))
+    elif band == "open":
+        scale = float(cfg.get("cycle_modulation.open_reaction_skip_scale", 0.8))
+    else:
+        return base
+    return min(1.0, base * scale)
+
+
 def _allowed_sources_for_pool(pool: Pool) -> set[str]:
     raw = _pool_config(pool).get("allowed_sources") or []
     return set(raw)
@@ -132,7 +205,7 @@ def can_send(source: str, pool: Pool | None = None) -> tuple[bool, str]:
     if allowed_srcs and source not in allowed_srcs:
         return False, f"source_not_in_pool ({source!r} not in {pool.value})"
 
-    cap = _max_per_7d(pool)
+    cap = effective_max_per_7d(pool)
     count = _count_last_7d(pool)
     if count >= cap:
         return False, f"cap_reached ({cap}/7d, pool={pool.value})"
@@ -212,6 +285,10 @@ def simulate_emission(source: str, candidate_at: str) -> bool:
         at = at.replace(tzinfo=UTC)
     if state._now is None or at > state._now:
         state._now = at
+    # Base cap only — the simulation must stay deterministic and DB-free (see
+    # docstring). Cycle-modulation (effective_max_per_7d) is a live-path concern
+    # applied in can_send(); folding it in here would couple the eval to ambient
+    # cycle_state and break determinism.
     cap = _max_per_7d(pool)
     count = state.count(pool)
     if count >= cap:

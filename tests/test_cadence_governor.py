@@ -81,9 +81,11 @@ def test_can_send_resolves_user_anchored_source():
 # ---------- cap enforcement ----------
 
 def test_spontaneous_cap_blocks_when_reached():
-    from agents.cadence import Pool, can_send
-    # Fill to max (8)
-    _fill_pool_log("proactive_log_v1", 8)
+    from agents.cadence import Pool, can_send, effective_max_per_7d
+    # Fill to the live (cycle-modulated) cap so this exercises can_send's real
+    # cap path, not the hardcoded base. No cycle_state seeded → factor 1.0 → 8.
+    cap = effective_max_per_7d(Pool.AGENT_SPONTANEOUS)
+    _fill_pool_log("proactive_log_v1", cap)
     allowed, reason = can_send("open_loop", Pool.AGENT_SPONTANEOUS)
     assert allowed is False
     assert "cap_reached" in reason

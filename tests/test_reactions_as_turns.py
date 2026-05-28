@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -40,6 +41,13 @@ def _isolated(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     config.reload()
     yield
+    # Some tests point HIKARI_CONFIG_PATH at a minimal engagement.yaml and call
+    # config.reload(); the config singleton is process-global, so restore the
+    # real config at teardown or the minimal one leaks into other test files
+    # (e.g. the layer-C cadence eval reads cadence_governor.pools). monkeypatch
+    # hasn't undone the env yet at this point, so clear it before reloading.
+    os.environ.pop("HIKARI_CONFIG_PATH", None)
+    config.reload()
 
 
 def _reaction_update(emoji: str, message_id: int, user_id: int = 12345,
