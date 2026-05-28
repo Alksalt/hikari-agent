@@ -72,7 +72,6 @@ CREATE TABLE IF NOT EXISTS facts (
     valid_from TEXT NOT NULL,
     valid_to TEXT,
     source_message_id INTEGER,
-    superseded_by INTEGER REFERENCES facts(id),  -- legacy. Write disabled 2026-05-28. Drop in future migration. Use superseded_by_fact_id.
     superseded_by_fact_id INTEGER REFERENCES facts(id),
     status TEXT NOT NULL DEFAULT 'active',
     source TEXT,
@@ -538,6 +537,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_phase_o_research_columns",
     "migrate_reminders_action_mode",
     "migrate_messages_source_index",
+    "migrate_drop_facts_legacy_superseded_by",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -683,6 +683,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
     run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index)
+    run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -692,11 +693,9 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
     """T3.1: bi-temporal facts — add ``status``, ``superseded_by_fact_id``,
-    and ``source``. The legacy ``superseded_by`` column is preserved for the
-    one-time backfill of ``status`` and ``superseded_by_fact_id`` below; new
-    writes only populate ``superseded_by_fact_id`` (legacy column write-disabled
-    2026-05-28). Existing rows are backfilled to ``status='active'`` (or
-    ``'invalid'`` if ``valid_to`` is already set)."""
+    and ``source``. The existing ``superseded_by`` column is preserved for
+    backward compat; new writes populate both. Existing rows are backfilled to
+    ``status='active'`` (or ``'invalid'`` if ``valid_to`` is already set)."""
     existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(facts)").fetchall()
@@ -1021,6 +1020,22 @@ def _migrate_reminders_action_mode(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_reminders_action_active "
         "ON reminders(status, fire_at) WHERE kind = 'action'"
     )
+
+
+def _migrate_drop_facts_legacy_superseded_by(conn: sqlite3.Connection) -> None:
+    """Drop the legacy ``facts.superseded_by`` column.
+
+    Write was disabled on 2026-05-28 (`c0887fe`). The end-of-sprint reviewer
+    panel verified zero in-tree readers. Live bot has been running with NULL
+    writes for >24h. SQLite 3.35+ supports ALTER TABLE DROP COLUMN; minimum
+    supported version verified at 3.50.4.
+
+    Idempotent: skipped if the column is already gone.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(facts)").fetchall()}
+    if "superseded_by" not in cols:
+        return
+    conn.execute("ALTER TABLE facts DROP COLUMN superseded_by")
 
 
 def _migrate_messages_source_index(conn: sqlite3.Connection) -> None:
