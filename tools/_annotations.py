@@ -143,6 +143,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "run_skill": ANN_WRITE_EXTERNAL,
     # --- runtime progress signalling (Telegram send — external write) ---
     "progress": ANN_WRITE_EXTERNAL,
+    # --- voice outbound (ElevenLabs TTS → Telegram send — external write) ---
+    "voice_outbound_send": ANN_WRITE_EXTERNAL,
 }
 
 

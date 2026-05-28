@@ -1213,3 +1213,35 @@ mode_flags:
     softening_patterns:
       - "(?i)\\b(sorry|sry|my bad|i apologize|didn't mean|that came out wrong|wasn't trying to)\\b"
     clear_on_session_boundary: true
+
+# ============================================================================
+# Phase E: outbound voice notes (ElevenLabs Flash v2.5)
+# ============================================================================
+
+voice_outbound:
+  provider: elevenlabs_flash_v2_5
+  outbound_voice_id: null  # set after picking via ElevenLabs Voice Design v3
+  api_key_env: ELEVENLABS_API_KEY
+  daily_cap: 10
+  max_chars: 400
+  request_timeout_sec: 30.0
+  mood_gates:
+    - tired
+    - focused
+    - weirdly good
+  outbound_mood_profiles:
+    default:
+      stability: 0.55
+      similarity_boost: 0.75
+      style: 0.0
+      use_speaker_boost: true
+    tired:
+      stability: 0.75
+      similarity_boost: 0.65
+      style: 0.0
+      use_speaker_boost: true
+    night:
+      stability: 0.40
+      similarity_boost: 0.80
+      style: 0.25
+      use_speaker_boost: true

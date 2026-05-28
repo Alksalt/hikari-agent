@@ -658,6 +658,19 @@ tools:
     example: "note_create('New note', 'content here')"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__voice_outbound_send"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: false
+    wrap_patterns: []
+    domain: media
+    operation: write
+    risk_tier: low
+    credentials: ELEVENLABS_API_KEY
+    example: "voice_outbound_send(text='hey. sleep.', force=False)"
+    presentation_hint: null
+
   # Prefix entries matching the engagement.yaml untrusted substring patterns
   # These are wildcards covering mcp__hikari_utility__places_* and ytmusic_*
   - id: "mcp__hikari_utility__places_*"

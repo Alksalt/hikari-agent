@@ -227,9 +227,9 @@ def _reconcile_photo_outbox_orphans() -> None:
             logger.debug("_reconcile_photo_outbox_orphans: insert failed for %s", path.name)
 
 
-_DRAIN_KINDS_DEFAULT: tuple[str, ...] = ("text", "sticker", "document", "photo")
+_DRAIN_KINDS_DEFAULT: tuple[str, ...] = ("text", "sticker", "document", "photo", "voice")
 _DRAIN_RETRY_LIMITS: dict[str, int] = {
-    "photo": 5, "text": 3, "sticker": 3, "document": 2,
+    "photo": 5, "text": 3, "sticker": 3, "document": 2, "voice": 3,
 }
 
 
@@ -391,11 +391,62 @@ async def _send_outbox_document(bot, chat_id: int, row: dict) -> int | None:  # 
         return None
 
 
+async def _send_outbox_voice(bot, chat_id: int, row: dict) -> int | None:  # noqa: HIKARI001
+    """Send a single voice outbox row. Returns tg_msg_id or None on failure."""
+    import json as _json  # noqa: PLC0415
+    try:
+        payload = _json.loads(row["payload_json"])
+    except (ValueError, KeyError):
+        logger.warning("_drain_media_outbox: bad payload_json on voice row %s", row["id"])
+        db.media_outbox_mark_aborted(row["id"], "bad_payload_json")
+        return None
+    path_str = payload.get("path", "")
+    duration = payload.get("duration_sec") or 0
+    if not path_str:
+        db.media_outbox_mark_aborted(row["id"], "missing_path")
+        return None
+    path = Path(path_str)
+    if path.is_symlink() or not path.is_file():
+        db.media_outbox_mark_aborted(row["id"], "not_a_regular_file")
+        return None
+    try:
+        from tools.voice_outbound import VOICE_OUTBOX
+        real = path.resolve(strict=True)
+        VOICE_OUTBOX.mkdir(parents=True, exist_ok=True)
+        real.relative_to(VOICE_OUTBOX.resolve())
+    except (OSError, ValueError):
+        db.media_outbox_mark_aborted(row["id"], "out_of_tree")
+        return None
+    try:
+        with open(real, "rb") as voice_fh:
+            tg_msg = await bot.send_voice(  # noqa: HIKARI001
+                chat_id=chat_id,
+                voice=voice_fh,
+                duration=int(duration) if duration else None,
+            )
+        tg_msg_id = getattr(tg_msg, "message_id", None)
+        db.media_outbox_mark_sent(row["id"], tg_msg_id)
+        try:
+            db.media_events_insert("voice", telegram_message_id=tg_msg_id)
+        except Exception:
+            logger.exception("media_events_insert failed for voice row %s (non-fatal)", row["id"])
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return tg_msg_id
+    except Exception:
+        logger.exception("_drain_media_outbox: failed to send voice row %s", row["id"])
+        db.media_outbox_mark_failed(row["id"], "send_voice raised", max_attempts=3)
+        return None
+
+
 _OUTBOX_DISPATCHERS = {
     "photo": _send_outbox_photo,
     "text": _send_outbox_text,
     "sticker": _send_outbox_sticker,
     "document": _send_outbox_document,
+    "voice": _send_outbox_voice,
 }
 
 
