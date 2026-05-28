@@ -24,7 +24,7 @@ def collect() -> list[TriggerCandidate]:
     if stage < int(cfg.get("engagement.research_callback.min_stage", 3)):
         return []
 
-    mood = (db.runtime_get("mood_today") or "").lower()
+    mood = (db.get_core_block("mood_today") or "").lower()
     blocked_moods = ("irritable", "crashed")
     if mood in blocked_moods:
         return []

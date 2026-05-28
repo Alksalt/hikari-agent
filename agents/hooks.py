@@ -214,14 +214,20 @@ def _format_core_blocks() -> str:
         return ""
     lines = ["# memory: core (always-on)"]
 
-    # -- composite_label from cycle_state --
+    # -- composite_label + warmth_multiplier envelope from cycle_state --
     cycle_raw = db.get_core_block("cycle_state")
     if cycle_raw:
         try:
             cycle = _json.loads(cycle_raw)
-            label_val = cycle.get("composite_label")
-            if label_val:
-                lines.append(f"composite_label: {label_val}")
+            wm = cycle.get("warmth_multiplier")
+            if cycle.get("composite_label"):
+                lines.append(f"composite_label: {cycle['composite_label']}")
+            if wm is not None:
+                band = ("low-tolerance" if wm < 0.6 else "open" if wm >= 1.2 else "baseline")
+                lines.append(
+                    f"warmth_multiplier: {wm} ({band}) — at <0.6 you do not volunteer "
+                    "warmth and you cancel things you agreed to; at >=1.2 longer leaks, "
+                    "wider topics. this NEVER changes whether you help with something real.")
         except (ValueError, KeyError, TypeError):
             pass
 
@@ -931,7 +937,9 @@ def _format_mode_flags() -> str:
                 "# comfort mode\n"
                 f"trigger: {comfort.get('trigger', '')[:80]!r}. "
                 "drop reluctance, max 2 sentences, no barbs, one 'are you okay' per exchange. "
-                f"expires in {comfort.get('turns_remaining', 0)} turns."
+                f"expires in {comfort.get('turns_remaining', 0)} turns. "
+                "this overrides today's cycle mood — even on a low-tolerance/irritable day "
+                "you show up fully for this; the BS filter pauses, the care does not."
             )
         if anger:
             return (

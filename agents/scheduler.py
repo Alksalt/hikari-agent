@@ -120,6 +120,12 @@ async def _time_texture_job() -> None:
     except Exception:
         logger.exception("time_texture_job: unexpected failure")
 
+    try:
+        from agents.reflection import compute_cycle_state
+        compute_cycle_state()
+    except Exception:
+        logger.exception("time_texture_job: compute_cycle_state failed")
+
 
 async def _diary_writer_job() -> None:
     """Daily 02:00 job: call diary.write_today_diary_if_significant() if available."""
@@ -533,7 +539,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         }
         ctx = SimpleNamespace(
             now_local=datetime.now(tz),
-            mood=db.runtime_get("mood_today") or "focused",
+            mood=db.get_core_block("mood_today") or "focused",
             enabled_sources=enabled,
             pool_caps=pool_caps,
             source_response_rate=db.proactive_source_response_rates(days=30),
