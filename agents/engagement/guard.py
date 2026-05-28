@@ -98,6 +98,8 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "anniversary_callback":        ("summary",),
     # Phase T — belief resurface
     "belief_resurface":            ("statement",),
+    # Phase O — background research callback
+    "research_callback":           ("subject",),
 }
 
 

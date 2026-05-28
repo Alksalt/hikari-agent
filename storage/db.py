@@ -533,6 +533,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
     "migrate_phase_b_schema_tables",
+    "migrate_phase_o_research_columns",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -673,6 +674,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
     run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
+    run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1599,6 +1601,41 @@ def _migrate_phase_b_schema_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_phase_o_research_columns(conn: sqlite3.Connection) -> None:
+    """Phase O: add research tracking columns to tasks.
+
+    New columns:
+      tasks.research_summary         TEXT   — LLM-composed summary
+      tasks.research_sources_json    TEXT   — JSON list of source URLs
+      tasks.research_attempted_at    TEXT   — last worker attempt timestamp
+      tasks.research_surfaced_at     TEXT   — when the callback surfaced
+
+    Index:
+      idx_tasks_research_pending ON tasks(research_intent, status, research_summary)
+        WHERE research_intent = 1
+    """
+    def _has_col(table: str, col: str) -> bool:
+        return any(
+            r["name"] == col
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+
+    if not _has_col("tasks", "research_summary"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_summary TEXT")
+    if not _has_col("tasks", "research_sources_json"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_sources_json TEXT")
+    if not _has_col("tasks", "research_attempted_at"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_attempted_at TEXT")
+    if not _has_col("tasks", "research_surfaced_at"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_surfaced_at TEXT")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_research_pending "
+        "ON tasks(research_intent, status, research_summary) "
+        "WHERE research_intent = 1"
+    )
+
+
 _RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
     "time_texture",
     "silenced_until_msg_id",
@@ -2250,12 +2287,14 @@ def weekly_consolidations_recent(limit: int = 10) -> list[dict[str, Any]]:
 # ---------- tasks ----------
 
 def create_task(subject: str, description: str | None = None,
-                due_at: str | None = None, importance: int = 5) -> int:
+                due_at: str | None = None, importance: int = 5,
+                research_intent: bool = False) -> int:
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO tasks (subject, description, due_at, importance, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (subject, description, due_at, max(1, min(10, int(importance))), _now()),
+            "INSERT INTO tasks (subject, description, due_at, importance, research_intent, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (subject, description, due_at, max(1, min(10, int(importance))),
+             1 if research_intent else 0, _now()),
         )
     return cur.lastrowid
 

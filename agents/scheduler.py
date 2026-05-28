@@ -433,6 +433,24 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
+    # Phase O: background research worker — 10:00 and 12:00 local.
+    # Processes tasks with research_intent=1 that have no summary yet.
+    if bool(cfg.get("research_worker.enabled", True)):
+        from agents.subagents.research_worker import run_research_worker
+        async def _research_worker_job():
+            try:
+                n = await run_research_worker()
+                if n:
+                    logger.info("research_worker: processed %d task(s)", n)
+            except Exception:
+                logger.exception("research_worker: unexpected failure")
+        scheduler.add_job(
+            _research_worker_job,
+            CronTrigger(hour="10,12", minute=0),
+            id="research_worker",
+            coalesce=True, max_instances=1, misfire_grace_time=1800,
+        )
+
     # Phase I: unified engagement_tick — replaces the per-producer wiki_new_file_tick.
     # Runs every 60s, collects candidates from all enabled producers, selects the
     # highest-scoring one, composes + guards + sends it.

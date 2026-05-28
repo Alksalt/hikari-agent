@@ -5,7 +5,7 @@ function. The unified _engagement_tick in scheduler.py calls all enabled
 producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
-All 23 producers:
+All 24 producers:
   Default-on (4):
     gmail_unread_threshold, calendar_event_prep,
     wiki_new_file, decision_resolve_due
@@ -14,12 +14,12 @@ All 23 producers:
     book_just_finished, just_got_home, late_night_dissolution,
     irritation_event, weather_mood_shift
 
-  Opt-in (14):
+  Opt-in (15):
     anniversary_callback, belief_resurface, calendar_new_invite, callback_episode,
     drive_starred_new, notion_recent_edit, weather_alert,
     weirdly_good_mood_leak, reengage_silence, location_arrived_recurring,
     readwise_daily_review (stub — Readwise MCP removed 2026-05-21),
-    gmail_important_thread, stale_pr_check
+    gmail_important_thread, stale_pr_check, research_callback
 """
 from agents.engagement.producers import (  # noqa: F401
     anniversary_callback,
@@ -40,6 +40,7 @@ from agents.engagement.producers import (  # noqa: F401
     readwise_daily_review,
     reengage_silence,
     reminder_fire,
+    research_callback,
     stale_pr_check,
     weather_alert,
     weather_mood_shift,
@@ -68,6 +69,7 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
     "readwise_daily_review",
     "reengage_silence",
     "reminder_fire",
+    "research_callback",
     "stale_pr_check",
     "weather_alert",
     "weather_mood_shift",
@@ -108,6 +110,7 @@ _PRODUCER_MODULES = {
     "readwise_daily_review": readwise_daily_review,
     "reengage_silence": reengage_silence,
     "reminder_fire": reminder_fire,
+    "research_callback": research_callback,
     "stale_pr_check": stale_pr_check,
     "weather_alert": weather_alert,
     "weather_mood_shift": weather_mood_shift,

@@ -1280,3 +1280,24 @@ annual_review:
   enabled: true
   model: deepseek/deepseek-v4-flash  # cheap aux LLM
   fire_hour: 11                       # local hour for daily check
+
+# ============================================================================
+# Phase O: background research worker + callback producer
+# ============================================================================
+
+research_worker:
+  enabled: true
+  max_loops_per_day: 2
+  max_tasks_per_loop: 2
+  per_task_max_turns: 8
+  task_age_max_days: 14
+
+engagement:
+  research_callback:
+    enabled: true
+    min_stage: 3
+    priority_tier: 2
+    min_interval_minutes: 1440
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
