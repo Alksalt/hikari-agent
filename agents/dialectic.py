@@ -78,6 +78,8 @@ async def extract_post_turn(message_window: list[dict]) -> int:
         logger.warning("dialectic: expected list, got %s", type(insights).__name__)
         return 0
 
+    from agents.reflection_sanitize import MemoryInstructionShape, sanitize
+
     count = 0
     for item in insights[:3]:
         if not isinstance(item, str):
@@ -85,6 +87,11 @@ async def extract_post_turn(message_window: list[dict]) -> int:
             continue
         item = item.strip()
         if not item:
+            continue
+        try:
+            item = sanitize(item, kind="observation")
+        except MemoryInstructionShape as exc:
+            logger.warning("dialectic: dropped injection-shaped insight — matched %r", str(exc))
             continue
         try:
             db.peer_insight_insert(item, surface_score=0.5, source="dialectic")

@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS facts (
     valid_from TEXT NOT NULL,
     valid_to TEXT,
     source_message_id INTEGER,
-    superseded_by INTEGER REFERENCES facts(id),
+    superseded_by INTEGER REFERENCES facts(id),  -- legacy. Write disabled 2026-05-28. Drop in future migration. Use superseded_by_fact_id.
     superseded_by_fact_id INTEGER REFERENCES facts(id),
     status TEXT NOT NULL DEFAULT 'active',
     source TEXT,
@@ -692,9 +692,11 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
 
 def _migrate_facts_bitemporal(conn: sqlite3.Connection) -> None:
     """T3.1: bi-temporal facts — add ``status``, ``superseded_by_fact_id``,
-    and ``source``. The existing ``superseded_by`` column is preserved for
-    backward compat; new writes populate both. Existing rows are backfilled to
-    ``status='active'`` (or ``'invalid'`` if ``valid_to`` is already set)."""
+    and ``source``. The legacy ``superseded_by`` column is preserved for the
+    one-time backfill of ``status`` and ``superseded_by_fact_id`` below; new
+    writes only populate ``superseded_by_fact_id`` (legacy column write-disabled
+    2026-05-28). Existing rows are backfilled to ``status='active'`` (or
+    ``'invalid'`` if ``valid_to`` is already set)."""
     existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(facts)").fetchall()

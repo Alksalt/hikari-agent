@@ -1178,9 +1178,9 @@ engagement:
 
 aux_model:
   # Cheap model for stateless LLM ops: run_reflection_call, run_internal_control.
-  # provider: openrouter  → use OPENROUTER_API_KEY + httpx (reflection only — no tools)
-  # provider: haiku_subscription → use claude-haiku-4-5 via SDK (works for tool calls too)
-  # Switch at runtime: /settings aux_model.provider haiku_subscription
+  # Only `openrouter` is accepted (uses OPENROUTER_API_KEY + httpx — reflection
+  # only, no tools). The legacy `haiku_subscription` value is rejected by the
+  # cockpit validator (no Haiku per project rules).
   provider: openrouter
   model: deepseek/deepseek-v4-flash
 
