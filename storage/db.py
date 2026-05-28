@@ -533,6 +533,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
     "migrate_phase_b_schema_tables",
+    "migrate_phase_n_facts_source_backfill",
     "migrate_phase_o_research_columns",
 ]
 
@@ -674,6 +675,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
     run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
+    run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill)
     run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
@@ -1692,10 +1694,22 @@ def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS fact_entities_entity "
                  "ON fact_entities(entity_id, fact_id DESC)")
+    conn.commit()
 
-    # Phase N: backfill facts.source from attribution where source IS NULL.
-    # hikari_inferred → 'inferred' (Hikari extracted from user content, not Hikari-authored).
-    # user_stated / user_corrected → 'user'.
+
+def _migrate_phase_n_facts_source_backfill(conn: sqlite3.Connection) -> None:
+    """Phase N: backfill facts.source from attribution where source IS NULL.
+
+    Lives in its own migration (NOT in the older
+    ``_migrate_entities_and_provenance``) so the recorded checksum for that
+    older migration doesn't drift on DBs that already ran it pre-Phase N.
+
+    Mapping:
+    - attribution='hikari_inferred' → source='inferred' (Hikari extracted
+      facts from user content; not Hikari-authored).
+    - attribution in ('user_stated','user_corrected') → source='user'.
+    - else → source stays NULL.
+    """
     conn.execute("""
         UPDATE facts
         SET source = CASE

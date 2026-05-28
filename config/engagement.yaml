@@ -1073,6 +1073,14 @@ engagement:
     send_mode: proactive
     min_value_score: 0.9
     interruption_right: high
+  research_callback:
+    enabled: true
+    min_stage: 3
+    priority_tier: 2
+    min_interval_minutes: 1440
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
   decision_resolve_due:
     enabled: true
     priority_tier: 2
@@ -1291,13 +1299,3 @@ research_worker:
   max_tasks_per_loop: 2
   per_task_max_turns: 8
   task_age_max_days: 14
-
-engagement:
-  research_callback:
-    enabled: true
-    min_stage: 3
-    priority_tier: 2
-    min_interval_minutes: 1440
-    send_mode: observation
-    min_value_score: 0.3
-    interruption_right: low
