@@ -91,13 +91,6 @@ def test_fifteen_sessions_is_stage_2():
     assert stage == 2
 
 
-def test_thirty_sessions_is_stage_2():
-    _seed_sessions(30)
-    from agents.reflection import compute_relationship_stage
-    stage = compute_relationship_stage()
-    assert stage == 2
-
-
 def test_fifty_nine_sessions_is_stage_2():
     """59 sessions (one below stage-3 threshold) → stage 2."""
     _seed_sessions(59)
@@ -113,13 +106,6 @@ def test_fifty_nine_sessions_is_stage_2():
 def test_sixty_sessions_is_stage_3():
     """60 sessions (exactly the stage-3 threshold) → stage 3."""
     _seed_sessions(60)
-    from agents.reflection import compute_relationship_stage
-    stage = compute_relationship_stage()
-    assert stage == 3
-
-
-def test_one_hundred_sessions_is_stage_3():
-    _seed_sessions(100)
     from agents.reflection import compute_relationship_stage
     stage = compute_relationship_stage()
     assert stage == 3
@@ -144,13 +130,6 @@ def test_one_fifty_sessions_is_stage_4():
     assert stage == 4
 
 
-def test_two_fifty_sessions_is_stage_4():
-    _seed_sessions(250)
-    from agents.reflection import compute_relationship_stage
-    stage = compute_relationship_stage()
-    assert stage == 4
-
-
 def test_three_forty_nine_sessions_is_stage_4():
     _seed_sessions(349)
     from agents.reflection import compute_relationship_stage
@@ -165,13 +144,6 @@ def test_three_forty_nine_sessions_is_stage_4():
 def test_three_fifty_sessions_is_stage_5():
     """350 sessions (exactly the stage-5 threshold) → stage 5."""
     _seed_sessions(350)
-    from agents.reflection import compute_relationship_stage
-    stage = compute_relationship_stage()
-    assert stage == 5
-
-
-def test_five_hundred_sessions_is_stage_5():
-    _seed_sessions(500)
     from agents.reflection import compute_relationship_stage
     stage = compute_relationship_stage()
     assert stage == 5

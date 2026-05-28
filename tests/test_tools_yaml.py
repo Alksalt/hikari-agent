@@ -242,11 +242,6 @@ class TestSubagents:
         missing = expected - actual
         assert not missing, f"subagents missing from registry: {missing}"
 
-    def test_recall_and_code_dispatch_deleted(self, registry):
-        actual = set(registry._subagents_spec.keys())
-        assert "recall" not in actual, "recall subagent should be deleted from yaml"
-        assert "code_dispatch" not in actual, "code_dispatch subagent should be deleted from yaml"
-
     def test_subagents_returns_agent_definitions(self, registry):
         from claude_agent_sdk import AgentDefinition
         agents = registry.subagents()

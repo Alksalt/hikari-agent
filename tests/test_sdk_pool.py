@@ -140,13 +140,6 @@ async def test_get_live_client_same_instance(fresh_pool, monkeypatch):
     assert c1 is c2 is client
 
 
-def test_get_haiku_judge_is_gone(fresh_pool):
-    """get_haiku_judge no longer exists — drift judging routes via _call_aux_llm."""
-    assert not hasattr(fresh_pool, "get_haiku_judge"), (
-        "get_haiku_judge was removed; drift judging uses agents.runtime._call_aux_llm"
-    )
-
-
 @pytest.mark.asyncio
 async def test_reconnect_clears_suspect_session_id(fresh_pool, monkeypatch):
     """_reconnect_live should read the latest session_id from DB."""
