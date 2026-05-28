@@ -537,6 +537,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_phase_n_facts_source_backfill",
     "migrate_phase_o_research_columns",
     "migrate_reminders_action_mode",
+    "migrate_messages_source_index",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -681,6 +682,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill)
     run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
+    run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1016,6 +1018,22 @@ def _migrate_reminders_action_mode(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_reminders_action_active "
         "ON reminders(status, fire_at) WHERE kind = 'action'"
+    )
+
+
+def _migrate_messages_source_index(conn: sqlite3.Connection) -> None:
+    """Hot-path index on messages(source).
+
+    `recent_messages(..., exclude_ephemeral=True)` and the hook injection path
+    repeatedly filter rows with `source NOT LIKE 'ephemeral:%'`. With no index
+    on the column SQLite walks the full table on every context build — fine at
+    a few hundred messages, painful at tens of thousands. The audit on
+    2026-05-28 flagged this as a HIGH item.
+
+    Idempotent via IF NOT EXISTS, so safe to re-apply.
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source)"
     )
 
 
@@ -2063,16 +2081,18 @@ def active_facts_matching(subject: str, predicate: str) -> list[dict[str, Any]]:
 
 
 def supersede_fact(old_id: int, new_id: int, reason: str | None = None) -> None:
-    """Mark old fact invalid (valid_to=now, superseded_by=new_id, status='superseded').
+    """Mark old fact invalid (valid_to=now, superseded_by_fact_id=new_id, status='superseded').
 
-    Writes both the legacy ``superseded_by`` and the new ``superseded_by_fact_id``
-    columns so older callers keep working while new readers use the explicit name.
+    The legacy ``superseded_by`` column is no longer written (write disabled
+    2026-05-28 per audit — every read path uses ``superseded_by_fact_id``).
+    Drop the column in a future migration once the write-disabled window
+    has elapsed.
     """
     with _conn() as c:
         c.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ?, "
+            "UPDATE facts SET valid_to = ?, "
             "superseded_by_fact_id = ?, status = 'superseded' WHERE id = ?",
-            (_now(), new_id, new_id, old_id),
+            (_now(), new_id, old_id),
         )
         c.execute("DELETE FROM fts WHERE kind = 'fact' AND ref_id = ?", (old_id,))
         c.execute("DELETE FROM vec_facts WHERE id = ?", (old_id,))
@@ -2109,8 +2129,8 @@ def mark_fact_invalid(fact_id: int, superseded_by: int | None = None,
 
     - Always sets ``valid_to = datetime('now')``.
     - If ``superseded_by`` is provided, sets ``status='superseded'`` AND
-      ``superseded_by_fact_id=<id>`` (plus the legacy ``superseded_by`` column
-      so prior consumers keep working).
+      ``superseded_by_fact_id=<id>``. The legacy ``superseded_by`` column is
+      no longer written (write disabled 2026-05-28).
     - Otherwise sets ``status='invalid'`` and leaves the superseded pointers NULL.
 
     Unlike :func:`invalidate_fact` and :func:`supersede_fact`, this preserves
@@ -2127,9 +2147,9 @@ def mark_fact_invalid(fact_id: int, superseded_by: int | None = None,
             c.execute(
                 "UPDATE facts SET valid_to = datetime('now'), "
                 "status = 'superseded', "
-                "superseded_by_fact_id = ?, superseded_by = ? "
+                "superseded_by_fact_id = ? "
                 "WHERE id = ?",
-                (sup, sup, fid),
+                (sup, fid),
             )
         else:
             c.execute(
