@@ -2997,12 +2997,6 @@ tools:
     credentials: null
     example: "duckdb query('SELECT * FROM ... LIMIT 10')"
     presentation_hint: list_of_records
-    domain: analytics
-    operation: read
-    risk_tier: low
-    credentials: null
-    example: "duckdb query('SELECT * FROM ... LIMIT 10')"
-    presentation_hint: list_of_records
 
 # ============================================================================
 # Subagents

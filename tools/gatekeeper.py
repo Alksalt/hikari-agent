@@ -456,6 +456,35 @@ def summarize(tool_name: str, tool_input: dict) -> str:
         code_preview = (tool_input.get("code") or "")[:120]
         return f"run python: {code_preview!r}"
 
+    # Server-prefix fallbacks: avoid raising NotImplementedError for the
+    # large surface of Google Workspace / GitHub / Notion write tools that
+    # don't have a dedicated case above. The summary is generic but better
+    # than the catch-all "tool {name} (no summary available)" the caller
+    # would otherwise render.
+    if tool_name.startswith("mcp__google_workspace__"):
+        op = tool_name.removeprefix("mcp__google_workspace__")
+        if "gmail" in op:
+            subj = tool_input.get("subject") or tool_input.get("to") or ""
+            return f"google_workspace gmail op: {op}" + (f" — {subj!r}" if subj else "")
+        if "calendar" in op:
+            return f"google_workspace calendar op: {op}"
+        if "drive" in op:
+            name = tool_input.get("file_name") or tool_input.get("file_id") or ""
+            return f"google_workspace drive op: {op}" + (f" — {name!r}" if name else "")
+        if "sheets" in op or "docs" in op or "slides" in op or "presentation" in op:
+            return f"google_workspace doc op: {op}"
+        return f"google_workspace op: {op}"
+
+    if tool_name.startswith("mcp__github__"):
+        op = tool_name.removeprefix("mcp__github__")
+        repo = f"{tool_input.get('owner', '?')}/{tool_input.get('repo', '?')}"
+        return f"github op: {op} on {repo}"
+
+    if tool_name.startswith("mcp__notion__") or tool_name.startswith("mcp__claude_ai_Notion__"):
+        op = tool_name.split("__")[-1]
+        title = tool_input.get("title") or tool_input.get("page_id") or ""
+        return f"notion op: {op}" + (f" — {title!r}" if title else "")
+
     raise NotImplementedError(
         f"summarize: no handler for gated tool {tool_name!r} — "
         "add a case to tools/gatekeeper.py:summarize()"

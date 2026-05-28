@@ -135,6 +135,12 @@ episodes:
   # Prune episodes older than this many days during daily reflection.
   prune_older_than_days: 30
 
+photos:
+  # OpenRouter image-generation model for selfie/scene photos.
+  default_model: "black-forest-labs/flux.2-klein"
+  # Per-day cap on outbound photos to avoid Telegram spam + cost runaway.
+  daily_cap: 2
+
 memory:
   # Phase 8: monthly retention sweep at 04:00 on day 1. Episodes older than
   # this get dropped entirely (their embeddings + FTS rows too). Daily

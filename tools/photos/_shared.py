@@ -35,8 +35,20 @@ OUTBOX = Path(os.environ.get("HIKARI_PHOTO_OUTBOX") or REPO_ROOT / "data" / "pho
 APPEARANCE_MD = REPO_ROOT / "assets" / "APPEARANCE.md"
 
 OPENROUTER_IMG_URL = "https://openrouter.ai/api/v1/images/generations"
-DEFAULT_MODEL = "black-forest-labs/flux.2-klein"
-DAILY_CAP = 2
+
+def _load_cfg() -> dict:
+    try:
+        from agents import config as _cfg
+        return {
+            "default_model": str(_cfg.get("photos.default_model", "black-forest-labs/flux.2-klein")),
+            "daily_cap": int(_cfg.get("photos.daily_cap", 2)),
+        }
+    except Exception:
+        return {"default_model": "black-forest-labs/flux.2-klein", "daily_cap": 2}
+
+_PHOTOS_CFG = _load_cfg()
+DEFAULT_MODEL = _PHOTOS_CFG["default_model"]
+DAILY_CAP = _PHOTOS_CFG["daily_cap"]
 
 # Scenes available per mood. She's already-in-love so all scenes are reachable;
 # mood narrows the candidates by what she'd realistically send right now.
