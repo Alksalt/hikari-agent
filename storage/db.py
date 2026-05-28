@@ -5425,3 +5425,54 @@ def prune_proactive_events(older_than_days: int = 90) -> int:
 
 def _now_epoch() -> int:
     return int(datetime.now(UTC).timestamp())
+
+
+# ---------- belief_journal ----------
+
+def belief_journal_insert(*, statement: str, claim_type: str, resurface_days: int = 90) -> int:
+    """Insert into belief_journal table.
+
+    Returns the new row id (> 0) or 0 on a no-op (empty statement).
+    claim_type must be 'factual' or 'identity'.
+    """
+    from datetime import timedelta
+    if claim_type not in ("factual", "identity"):
+        raise ValueError(f"invalid claim_type: {claim_type}")
+    text = (statement or "").strip()[:500]
+    if not text:
+        return 0
+    resurface = (datetime.now(UTC) + timedelta(days=resurface_days)).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO belief_journal (stated_at, statement, claim_type, resurface_at, resolved_bool) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (_now(), text, claim_type, resurface),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def belief_journal_due(window_days: int = 0) -> list[dict]:
+    """Return matured (resurface_at <= now + window_days), unresolved beliefs.
+
+    window_days=0 = strictly due; >0 = approaching.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) + timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, stated_at, statement, claim_type, resurface_at "
+            "FROM belief_journal "
+            "WHERE resolved_bool = 0 AND resurface_at <= ? "
+            "ORDER BY resurface_at ASC LIMIT 10",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def belief_journal_resolve(belief_id: int, note: str | None = None) -> None:
+    """Mark a belief_journal row as resolved, optionally with a note."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE belief_journal SET resolved_bool = 1, resolution_note = ? WHERE id = ?",
+            ((note or "")[:300], belief_id),
+        )

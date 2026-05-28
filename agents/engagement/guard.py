@@ -96,6 +96,8 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "stale_pr_check":              ("branch", "title"),
     # Phase Q — anniversary callbacks
     "anniversary_callback":        ("summary",),
+    # Phase T — belief resurface
+    "belief_resurface":            ("statement",),
 }
 
 

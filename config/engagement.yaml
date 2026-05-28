@@ -1143,6 +1143,15 @@ engagement:
     send_mode: observation
     min_value_score: 0.3
     interruption_right: low
+  # Phase T: resurface matured belief_journal entries (90d resurface window).
+  belief_resurface:
+    enabled: true
+    min_stage: 3
+    priority_tier: 3
+    min_interval_minutes: 4320  # at most every 3 days
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
 
 aux_model:
   # Cheap model for stateless LLM ops: run_reflection_call, run_internal_control.

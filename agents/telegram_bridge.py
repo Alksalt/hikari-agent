@@ -815,6 +815,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"belief-frame detected: {bm_fragment!r}."
         )
 
+    # Phase T: capture forward-looking + identity beliefs alongside adversarial path.
+    try:
+        belief_mod.maybe_capture_belief(user_text)
+    except Exception:
+        logger.exception("belief capture failed (non-fatal)")
+
     # Phase 8: start the typing heartbeat IMMEDIATELY so the user sees the
     # indicator while the agent is actually working, not after the reply is
     # already in hand.
