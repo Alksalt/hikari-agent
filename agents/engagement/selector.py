@@ -65,7 +65,6 @@ _MORNING_PREFERRED = frozenset({
     "decision_resolve_due",
 })
 _EVENING_PREFERRED = frozenset({
-    "readwise_daily_review",
     "callback_episode",
     "weirdly_good_mood_leak",
 })

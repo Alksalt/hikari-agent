@@ -681,8 +681,6 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
                    inject_memory_enabled: bool = True,
                    model: str | None = None,
                    ) -> ClaudeAgentOptions:
-    if max_budget_usd is None:
-        max_budget_usd = float(cfg.get("runtime.chat_max_budget_usd", 0.50))
     allowed = list(_base_allowed_tools())
     if extra_allowed_tools:
         allowed.extend(extra_allowed_tools)
@@ -1032,6 +1030,7 @@ async def run_user_turn(user_text: str) -> str:
             resume=db.get_session_id(),
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
+            max_budget_usd=float(cfg.get("runtime.chat_max_budget_usd", 0.50)),
             retry_on_process_error=True,
             use_persistent_live=True,
         )
@@ -1060,6 +1059,7 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
             resume=db.get_session_id(),
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
+            max_budget_usd=float(cfg.get("runtime.chat_max_budget_usd", 0.50)),
             retry_on_process_error=True,
         )
         if sdk_pool.is_live_persistent_path_enabled():

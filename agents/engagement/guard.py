@@ -84,7 +84,6 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "weirdly_good_mood_leak":      (),
     "reengage_silence":            (),
     "location_arrived_recurring":  ("place_name",),
-    "readwise_daily_review":       ("highlight_count",),
     "gmail_important_thread":      ("subject",),
     # Sprint B Wave 1 — 5 new producers
     "book_just_finished":          ("finished_book",),

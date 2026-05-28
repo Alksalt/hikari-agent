@@ -226,17 +226,6 @@ RULES:
 payload: place_name={place_name}, visit_count={visit_count}
 """,
 
-    "readwise_daily_review": """\
-[proactive nudge — pattern=notify, source=readwise_daily_review]
-the user's daily Readwise review is available with {highlight_count} highlights.
-RULES:
-  - you MUST cite the count {highlight_count} verbatim.
-  - 1-2 sentences, lowercase, no markdown, denial layer ok.
-  - never start with a generic opener.
-  - if you can't write it true to voice with the count cited, output NO_MESSAGE.
-payload: highlight_count={highlight_count}
-""",
-
     "book_just_finished": """\
 [proactive nudge — pattern=notify, source=book_just_finished]
 hikari just noticed she finished a book. surface this in her voice.
