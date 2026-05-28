@@ -64,6 +64,9 @@ _VULNERABILITY_KEYWORDS = frozenset({
 # runtime_state key tracked across turns to gate i_keep_thinking.
 _LAST_I_KEEP_THINKING_KEY = "last_i_keep_thinking_at"
 
+# runtime_state key tracked across turns to gate slow_burn_tells.
+_LAST_SLOW_BURN_TELL_KEY = "last_slow_burn_tell_at"
+
 
 def _tokens(text: str) -> set[str]:
     return {
@@ -285,3 +288,82 @@ def pick_callback_candidate(recent_user_text: str) -> dict | None:
     best["framing_hint"] = framing_hint
     best["text"] = text_out
     return best
+
+
+def pick_slow_burn_tell() -> dict | None:
+    """Return the next session-milestone tell eligible to surface, or None.
+
+    Gates:
+    1. Feature enabled in config.
+    2. db.session_count() >= tell's min_session_count.
+    3. Cooldown: min_turns_between turns must have elapsed since last surface.
+    4. Once-per-session dedup via session_scratch (topic "slow_burn_surfaced").
+
+    Picks the highest-min_session_count eligible tell not yet surfaced this
+    session (newest unlocked truth), falling back to the first eligible one.
+    """
+    if not cfg.get("slow_burn_tells.enabled", True):
+        return None
+
+    count = db.session_count()
+    tells = cfg.get("slow_burn_tells.tells") or []
+    if not tells:
+        return None
+
+    eligible = [t for t in tells if count >= int(t.get("min_session_count", 0))]
+    if not eligible:
+        return None
+
+    current = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
+    last = db.runtime_get_int(_LAST_SLOW_BURN_TELL_KEY, 0)
+    min_between = int(cfg.get("slow_burn_tells.min_turns_between", 40))
+    if last > 0 and current - last < min_between:
+        return None
+
+    session_id = db.get_session_id() or ""
+    scratch_topic = "slow_burn_surfaced"
+    already_surfaced: set[str] = set()
+    if session_id:
+        try:
+            with db._conn() as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM session_scratch "
+                    "WHERE session_id = ? AND topic = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, scratch_topic),
+                ).fetchone()
+            if row:
+                already_surfaced = set(json.loads(row["payload_json"]).get("texts", []))
+        except Exception:
+            logger.exception("pick_slow_burn_tell: dedup read failed (non-fatal)")
+
+    unsurfaced = [t for t in eligible if t.get("text", "") not in already_surfaced]
+    if not unsurfaced:
+        # All eligible tells already surfaced this session — stay silent. A tell
+        # is said once across the arc, never re-surfaced after the cooldown.
+        return None
+    chosen = max(unsurfaced, key=lambda t: int(t.get("min_session_count", 0)))
+
+    tell_text = chosen.get("text", "")
+    gate = int(chosen.get("min_session_count", 0))
+
+    db.runtime_set(_LAST_SLOW_BURN_TELL_KEY, current)
+
+    if session_id:
+        try:
+            already_surfaced.add(tell_text)
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO session_scratch "
+                    "(session_id, topic, payload_json) VALUES (?, ?, ?)",
+                    (session_id, scratch_topic,
+                     json.dumps({"texts": sorted(already_surfaced)})),
+                )
+        except Exception:
+            logger.exception("pick_slow_burn_tell: dedup write failed (non-fatal)")
+
+    return {
+        "text": tell_text,
+        "framing_hint": cfg.get("slow_burn_tells.framing_hint", "i_keep_thinking"),
+        "min_session_count": gate,
+    }

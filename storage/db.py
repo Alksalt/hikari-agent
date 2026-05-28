@@ -1828,6 +1828,18 @@ def _conn():
 
 # ---------- session ----------
 
+def session_count() -> int:
+    """Distinct-calendar-day proxy for sessions (mirrors the relationship-stage query)."""
+    try:
+        with _conn() as c:
+            row = c.execute(
+                "SELECT COUNT(DISTINCT DATE(ts)) AS n FROM messages"
+            ).fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
 def get_session_id() -> str | None:
     with _conn() as c:
         row = c.execute("SELECT claude_session_id FROM session WHERE id = 1").fetchone()

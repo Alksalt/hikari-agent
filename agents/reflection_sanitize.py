@@ -133,6 +133,8 @@ _LABEL_ALLOWLIST: frozenset[str] = frozenset({
     "silenced_until_msg_id",
     "deferred_observations",
     "last_i_keep_thinking_at",
+    "last_slow_burn_tell_at",
+    "prior_session_heavy",
     # Sprint A — new tables / columns surfaced in context
     "peer_insights",
     "diary_entries",

@@ -350,6 +350,11 @@ def _anti_binge_check_and_increment() -> str | None:
     active_sid = db.get_session_id() or ""
     last_sid = db.runtime_get("session_turn_count_session_id") or ""
     if active_sid != last_sid:
+        try:
+            from agents import cross_session as _cross_session
+            _cross_session.arm_if_heavy()
+        except Exception:
+            logger.exception("cross_session.arm_if_heavy failed at session boundary (non-fatal)")
         db.runtime_set("session_turn_count", "0")
         db.runtime_set("session_turn_count_session_id", active_sid)
         db.runtime_set("session_closed", "")

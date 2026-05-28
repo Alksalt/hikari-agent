@@ -530,6 +530,10 @@ emotional_half_life:
     # fewer barbs in first 3-5 exchanges". Used by Phase L to scale
     # the deflection_rate baseline downward for opening turns.
     softness_factor: 0.18
+    # Wall-clock backstop: an armed prior_session_heavy flag older than this
+    # clears and never re-fires (guards an intervening short session that never
+    # advanced the turn counter past decay_turns to clear it).
+    max_arm_age_hours: 36
 
 cycle_modulation:
   enabled: true

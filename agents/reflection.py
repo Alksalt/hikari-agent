@@ -1436,11 +1436,7 @@ def compute_relationship_stage() -> int:
     Returns the current stage number (1-7).
     """
     try:
-        with db._conn() as c:
-            row = c.execute(
-                "SELECT COUNT(DISTINCT DATE(ts)) AS n FROM messages"
-            ).fetchone()
-        session_count = int(row["n"]) if row else 0
+        session_count = db.session_count()
     except Exception:
         logger.exception("compute_relationship_stage: session count query failed")
         return 1

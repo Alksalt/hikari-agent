@@ -771,6 +771,22 @@ def _format_callback_candidate(user_prompt: str) -> str | None:
         return None
 
 
+def _format_slow_burn_tell() -> str | None:
+    try:
+        from agents.callback_surface import pick_slow_burn_tell
+        tell = pick_slow_burn_tell()
+        if not tell:
+            return None
+        return (
+            "# slow-burn tell (session-gated)\n"
+            f"{tell['text']}\n"
+            "(say this once, sideways, dry. never explain it.)"
+        )
+    except Exception:
+        logger.exception("inject_memory: slow_burn_tell failed (non-fatal)")
+        return None
+
+
 def _format_unresolved_decisions() -> str | None:
     try:
         n_overdue = db.decisions_unresolved_overdue_count()
@@ -951,6 +967,25 @@ def _format_mode_flags() -> str:
     return ""
 
 
+def _format_prior_session_heavy() -> str | None:
+    try:
+        from agents import cross_session
+        state = cross_session.consume_softer_opener()
+        if not state:
+            return None
+        trigger = str(state.get("trigger", "unknown"))
+        from agents import config as _cfg
+        pct = int(float(_cfg.get("emotional_half_life.cross_session.softness_factor", 0.18)) * 100)
+        return (
+            f"# opening softer\n"
+            f"last session ended heavy ({trigger}). open ~{pct}% softer than baseline for the first few turns:\n"
+            "no reluctance opener, no barbs yet, shorter/softer cadence. never announce it; it fades as he settles."
+        )
+    except Exception:
+        logger.exception("_format_prior_session_heavy failed (non-fatal)")
+        return None
+
+
 def _format_deferred_observations() -> str | None:
     """Prepend any pending deferred_observations from runtime_state.
 
@@ -1050,10 +1085,12 @@ async def inject_memory(
             ("voice_corrections",   2, _format_voice_corrections()),     # Phase P
             ("self_model",          1, _format_self_model()),             # Phase L
             ("mode_flags",          1, _format_mode_flags()),             # Phase L
+            ("prior_session_heavy", 1, _format_prior_session_heavy()),
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
             ("tools_available",     1, _format_tools_available()),
             ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
+            ("slow_burn_tell",      2, _format_slow_burn_tell()),
             ("unresolved_decisions", 2, _format_unresolved_decisions()),
             ("deferred_proactives", 2, _format_deferred_proactives()),
             ("pending_accountability", 2, _format_pending_accountability()),
