@@ -55,6 +55,14 @@ def _enabled() -> bool:
     return bool(cfg.get("drift_telemetry.enabled", True))
 
 
+def _sycophancy_enabled() -> bool:
+    return bool(cfg.get("drift_telemetry.sycophancy_enabled", True))
+
+
+def _sycophancy_warn_threshold() -> float:
+    return float(cfg.get("drift_telemetry.sycophancy_warn_threshold", 0.6))
+
+
 def _probability() -> float:
     return float(cfg.get("drift_telemetry.probability_per_outbound", 0.20))
 
@@ -150,11 +158,22 @@ async def judge_outbound(text: str) -> dict[str, Any] | None:
     class_label = str(data.get("class") or "unclear").strip().lower()
     if class_label not in ("hikari", "drifting", "unclear"):
         class_label = "unclear"
+
+    # --- sycophancy axis (safe defaults: 0.0 / "" on any parse failure) ---
+    try:
+        raw_syc = data.get("sycophancy_score")
+        sycophancy_score = max(0.0, min(1.0, float(raw_syc))) if raw_syc is not None else 0.0
+    except (TypeError, ValueError):
+        sycophancy_score = 0.0
+    sycophancy_class = str(data.get("sycophancy_class") or "").strip().lower()
+
     return {
         "score": score,
         "class": class_label,
         "reason": str(data.get("reason") or "").strip()[:300],
         "raw": raw,
+        "sycophancy_score": sycophancy_score,
+        "sycophancy_class": sycophancy_class,
     }
 
 
@@ -198,13 +217,32 @@ async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:
             class_label=result["class"],
             rubric_version=_RUBRIC_VERSION,
             payload=result.get("raw"),
+            sycophancy_score=result.get("sycophancy_score"),
         )
         logger.info(
-            "drift_judge: scored %.2f (%s) — %r",
-            result["score"], result["class"], result.get("reason", "")[:80],
+            "drift_judge: scored %.2f (%s) syc=%.2f (%s) — %r",
+            result["score"], result["class"],
+            result.get("sycophancy_score", 0.0),
+            result.get("sycophancy_class", ""),
+            result.get("reason", "")[:80],
         )
     except Exception:  # noqa: BLE001
         logger.exception("drift_judge: drift_record failed (non-fatal)")
+
+    # Sycophancy warn path — fires when sycophancy_score >= threshold.
+    # Mirrors the drift-warn path so weekly reflection can audit incidents.
+    if _sycophancy_enabled():
+        syc_score = result.get("sycophancy_score", 0.0)
+        if syc_score >= _sycophancy_warn_threshold():
+            try:
+                logger.warning(
+                    "drift_judge: sycophancy detected — score=%.2f class=%r reason=%r",
+                    syc_score,
+                    result.get("sycophancy_class", ""),
+                    result.get("reason", "")[:80],
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("drift_judge: sycophancy warn path failed (non-fatal)")
 
     # Reflexion: only on drift verdicts past the threshold.
     if result["class"] == "drifting" and result["score"] < float(

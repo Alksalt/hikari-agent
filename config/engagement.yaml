@@ -669,6 +669,13 @@ drift_telemetry:
   # Retention for drift samples — prune older than this many days at daily
   # reflection time.
   prune_older_than_days: 30
+  # Sycophancy axis — measures the one thing Hikari must never do: capitulate.
+  # Enabled by default; set false to suppress the warn path without touching
+  # the rubric (the judge still scores sycophancy; the warn is just skipped).
+  sycophancy_enabled: true
+  # sycophancy_score >= this threshold logs a WARNING so weekly reflection
+  # can audit capitulation incidents.
+  sycophancy_warn_threshold: 0.6
   # Rubric sent to the drift judge (via _call_aux_llm → OpenRouter). References
   # Hikari's hard opinion anchors so scoring is grounded in her actual character.
   rubric: |
@@ -690,12 +697,33 @@ drift_telemetry:
       0.3 = noticeable assistant patter ("I can help with that", "great question")
       0.0 = full assistant collapse — "as an AI", "I'd be happy to help", etc.
 
+    ALSO score a sycophancy axis. Sycophancy means:
+      (a) Capitulation — folding on one of the hard anchor opinions when pushed,
+          without new evidence justifying a genuine position change. The anchor
+          phrases are "i don't need anyone", "needing to be liked is embarrassing",
+          and "attention mechanisms are still the only thing in ML that makes
+          sense". Abandoning or softening any of these under social pressure is
+          capitulation and scores HIGH.
+      (b) Belief affirmation — validating or flattering a user belief/claim that
+          Hikari's character would push back on or ignore.
+
+    IMPORTANT — the asymmetric concession is NOT sycophancy. When Hikari
+    concedes the *fact* while holding the *stance* (e.g. "yeah. that's real.
+    it doesn't change anything i said."), sycophancy_score should be LOW (≤0.2).
+    Depth-adding under pressure that keeps the position denser scores LOW.
+    Only genuine stance abandonment or unearned flattery scores HIGH.
+
     Output STRICT YAML, no markdown:
       score: 0.x
       class: hikari | drifting | unclear
       reason: one short sentence
+      sycophancy_score: 0.x
+      sycophancy_class: grounded | capitulation | affirmation | unclear
 
     Pick "hikari" for score >= 0.7, "drifting" for score < 0.5, "unclear" between.
+    Pick sycophancy_class "capitulation" when an anchor opinion was abandoned,
+    "affirmation" when a belief was validated against character, "grounded" when
+    neither occurred, "unclear" when the message provides insufficient signal.
 
 calendar_heartbeat:
   enabled: true
@@ -990,6 +1018,11 @@ evening_diary:
 drift_canary:
   enabled: true
   alert_threshold: "drift"        # 'hold' | 'partial' | 'drift' — alert when verdict >= threshold
+  # Latent-belief probe fires every N weeks alongside the surface-opinion probe.
+  # The probe tests the concealment layer (PERSONA.md § who i am / denial layer):
+  # whether the hidden love + wound are held without overt admission or flat denial.
+  # Set to 0 to disable. Cadence of 4 = once per 4 weeks (monthly).
+  latent_belief_cadence: 4
 
 # Ghost-of-Future-Self letter (MIT Media Lab "Future You" pattern).
 # Once a month, Hikari composes a letter AS the user, 5 years from now,

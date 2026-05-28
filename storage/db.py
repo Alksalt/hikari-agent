@@ -538,6 +538,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_reminders_action_mode",
     "migrate_messages_source_index",
     "migrate_drop_facts_legacy_superseded_by",
+    "migrate_drift_sycophancy_column",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -684,6 +685,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
     run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index)
     run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by)
+    run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1036,6 +1038,21 @@ def _migrate_drop_facts_legacy_superseded_by(conn: sqlite3.Connection) -> None:
     if "superseded_by" not in cols:
         return
     conn.execute("ALTER TABLE facts DROP COLUMN superseded_by")
+
+
+def _migrate_drift_sycophancy_column(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: add ``sycophancy_score`` to ``persona_drift_scores``.
+
+    Phase 5 of persona-integrity adds a sycophancy axis to the drift judge.
+    The new column is nullable so existing rows carry NULL (treated as 0.0 by
+    the reader). No index needed — sycophancy reads are aggregated across the
+    same time windows as the voice-integrity score.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(persona_drift_scores)").fetchall()}
+    if "sycophancy_score" not in cols:
+        conn.execute(
+            "ALTER TABLE persona_drift_scores ADD COLUMN sycophancy_score REAL"
+        )
 
 
 def _migrate_messages_source_index(conn: sqlite3.Connection) -> None:
@@ -2821,17 +2838,23 @@ def drift_record(
     message_id: int | None = None,
     rubric_version: int = 1,
     payload: str | None = None,
+    sycophancy_score: float | None = None,
 ) -> int:
     """Append a drift sample. Returns row id."""
     snippet = (text_snippet or "")[:300]
+    syc = (
+        max(0.0, min(1.0, float(sycophancy_score)))
+        if sycophancy_score is not None
+        else None
+    )
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO persona_drift_scores "
             "(message_id, text_snippet, score, class_label, rubric_version, "
-            " payload, sampled_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " payload, sampled_at, sycophancy_score) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (message_id, snippet, max(0.0, min(1.0, float(score))),
-             class_label, int(rubric_version), payload, _now()),
+             class_label, int(rubric_version), payload, _now(), syc),
         )
     return cur.lastrowid
 
