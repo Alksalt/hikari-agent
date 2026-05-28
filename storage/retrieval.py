@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -63,10 +64,36 @@ _ATTRIBUTION_MULTIPLIER: dict[str, float] = {
     "subagent_extracted": 0.8,
 }
 
+# Source → score multiplier. 'hikari' facts are dampened 0.7× to prevent
+# Hikari's own statements from reinforcing themselves across sessions.
+_SOURCE_MULTIPLIER: dict[str, float] = {
+    "hikari": 0.7,
+}
+
 # Spaced-surprise window: items aged between these bounds get a lift.
 _SURPRISE_MIN_DAYS = 28
 _SURPRISE_MAX_DAYS = 60
 _SURPRISE_MULTIPLIER = 1.4
+
+# ---------------------------------------------------------------------------
+# Phase M: ACT-R activation + Mem0 entity-match fusion
+# ---------------------------------------------------------------------------
+
+TAU_BY_CATEGORY: dict[str, float] = {
+    "event":      3  * 86400,
+    "preference": 21 * 86400,
+    "fact":       29 * 86400,
+}
+TAU_DEFAULT_SECONDS = 29 * 86400
+ACT_R_D = 0.5
+ENTITY_BONUS_MAX = 0.3
+_ACT_R_DEFAULT_EPSILON = 0.15
+_QUERY_ENTITY_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_\-]{2,}\b")
+_STOPWORDS = frozenset({
+    "the", "and", "for", "you", "your", "was", "that", "this", "with",
+    "from", "have", "has", "will", "but", "not", "are", "what", "when",
+    "where", "who", "why", "how", "one", "two", "may", "can", "its",
+})
 
 
 def _is_buried_lore(text: str) -> bool:
@@ -89,6 +116,11 @@ def _attribution_multiplier(attribution: str | None) -> float:
     return _ATTRIBUTION_MULTIPLIER.get(attribution.strip(), 1.0)
 
 
+def _source_multiplier(source: str | None) -> float:
+    """0.7x for source='hikari' to prevent self-reinforcement. 1.0 otherwise."""
+    return _SOURCE_MULTIPLIER.get((source or "").strip().lower(), 1.0)
+
+
 def _spaced_surprise_multiplier(iso: str | None) -> float:
     """Return 1.4 if the item is aged 28-60 days (spaced-surprise window)."""
     hours = _hours_since(iso or "")
@@ -96,6 +128,77 @@ def _spaced_surprise_multiplier(iso: str | None) -> float:
     if _SURPRISE_MIN_DAYS <= days <= _SURPRISE_MAX_DAYS:
         return _SURPRISE_MULTIPLIER
     return 1.0
+
+
+def _act_r_activation(
+    age_seconds: float,
+    hit_history_seconds: list[float],
+    category: str | None,
+    *,
+    epsilon: float | None = None,
+) -> float:
+    """ACT-R activation as a relevance multiplier. Returns exp(A) clamped (0, ~3].
+
+    Category-specific tau (seconds): event=3d, preference=21d, fact=29d.
+    ``hit_history_seconds`` approximates spaced practice: each prior recall
+    extends the activation sum. ``epsilon`` adds Gaussian noise for realistic
+    variation; set to 0.0 in tests for determinism.
+    """
+    cat = (category or "").strip().lower()
+    tau = TAU_BY_CATEGORY.get(cat, TAU_DEFAULT_SECONDS)
+    times = [max(1.0, age_seconds / tau)] + [
+        max(1.0, h / tau) for h in (hit_history_seconds or [])
+    ]
+    base = sum(t ** (-ACT_R_D) for t in times)
+    if base <= 0:
+        return 0.0
+    A = math.log(base)
+    eps = _ACT_R_DEFAULT_EPSILON if epsilon is None else float(epsilon)
+    if eps > 0:
+        A += random.gauss(0.0, eps)
+    return math.exp(min(2.0, A))
+
+
+def _extract_query_entity_ids(query: str) -> set[int]:
+    """One SQL round-trip: tokenize the query, look up canonical_name + alias matches."""
+    from storage import db as _db  # local import to mirror blueprint style
+    tokens = {
+        t.lower()
+        for t in _QUERY_ENTITY_RE.findall(query or "")
+        if len(t) >= 3
+    }
+    tokens -= _STOPWORDS
+    if not tokens:
+        return set()
+    placeholders = ",".join("?" * len(tokens))
+    sql = (
+        f"SELECT id FROM entities WHERE lower(canonical_name) IN ({placeholders}) "
+        f"UNION SELECT entity_id FROM entity_aliases WHERE lower(alias) IN ({placeholders})"
+    )
+    with _db._conn() as c:
+        try:
+            rows = c.execute(sql, (*tokens, *tokens)).fetchall()
+        except Exception:
+            return set()
+    return {int(r["id"]) for r in rows}
+
+
+def _facts_for_entity_ids(entity_ids: set[int]) -> set[int]:
+    """One SQL round-trip: which fact_ids are linked to any of these entities."""
+    from storage import db as _db
+    if not entity_ids:
+        return set()
+    placeholders = ",".join("?" * len(entity_ids))
+    with _db._conn() as c:
+        try:
+            rows = c.execute(
+                f"SELECT DISTINCT fact_id FROM fact_entities "
+                f"WHERE entity_id IN ({placeholders})",
+                tuple(entity_ids),
+            ).fetchall()
+        except Exception:
+            return set()
+    return {int(r["fact_id"]) for r in rows}
 
 
 @dataclass(frozen=True)
@@ -190,6 +293,8 @@ def _hydrate(kind: str, ref_id: int) -> dict[str, Any] | None:
             "last_recalled_at": rec.get("last_recalled_at"),
             "recall_hit_count": int(rec.get("recall_hit_count") or 0),
             "attribution": rec.get("attribution"),
+            "source": rec.get("source"),
+            "fact_category": rec.get("fact_category"),
         }
     elif kind == "episode":
         rec = db.get_episode(ref_id)
@@ -232,6 +337,9 @@ def _ebbinghaus_multiplier(
     tau_base_seconds: float,
 ) -> float:
     """T3.2 — exponential forgetting curve.
+
+    # DEPRECATED — Phase M, kept for rollback
+    # Replaced by _act_r_activation. Remove after one release.
 
     ``tau = tau_base * 1.5 ** hit_count`` — each successful recall stretches
     the half-life so frequently-touched facts decay slower (rehearsal effect).
@@ -300,6 +408,10 @@ def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
     except Exception:
         tau_base = 604800.0
 
+    # Phase M: entity-match pre-fetch — one SQL round-trip before retrieval.
+    query_entity_ids = _extract_query_entity_ids(query)
+    boosted_fact_ids = _facts_for_entity_ids(query_entity_ids)
+
     bm25_rank: dict[tuple[str, int], float] = {}
     vec_dist: dict[tuple[str, int], float] = {}
 
@@ -347,16 +459,23 @@ def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
         else:
             relevance = 0.0
 
-        # Ebbinghaus decay applies to fact relevance only. Episodes already
-        # have a recency term in the base score, and the recall_hit_count
-        # column doesn't exist on them.
+        # Phase M: ACT-R activation replaces Ebbinghaus for fact relevance.
+        # Episodes already have a recency term in the base score, and the
+        # recall_hit_count column doesn't exist on them.
         if kind == "fact":
-            last_seen = rec.get("last_recalled_at") or rec.get("iso")
+            age = _seconds_since(rec.get("iso"))
             hit_count = int(rec.get("recall_hit_count") or 0)
-            decay_multiplier = _ebbinghaus_multiplier(
-                last_seen, hit_count, tau_base
+            last_seen_age = (
+                _seconds_since(rec.get("last_recalled_at"))
+                if hit_count else age
             )
-            relevance *= decay_multiplier
+            hit_history = [last_seen_age] * min(hit_count, 5)
+            activation = _act_r_activation(
+                age_seconds=age,
+                hit_history_seconds=hit_history,
+                category=rec.get("fact_category"),
+            )
+            relevance *= activation
 
         recency = _recency_score(rec["iso"] or "")
         importance = rec["importance"] / 10.0
@@ -375,6 +494,15 @@ def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
         # Wave 2: attribution multiplier — trust the source; user_stated facts
         # outrank hikari-inferred or subagent-extracted ones.
         score *= _attribution_multiplier(rec.get("attribution"))
+
+        # Phase N: source provenance multiplier — dampen hikari-authored facts
+        # 0.7× to prevent Hikari's own statements from reinforcing themselves.
+        score *= _source_multiplier(rec.get("source"))
+
+        # Phase M: entity-match bonus — facts linked to entities in the query
+        # get an additive ENTITY_BONUS_MAX boost on the final score.
+        if kind == "fact" and ref_id in boosted_fact_ids:
+            score += ENTITY_BONUS_MAX
 
         hits.append(Hit(
             kind=kind, ref_id=ref_id, text=rec["text"],

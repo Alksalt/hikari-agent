@@ -7,6 +7,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents.reflection_sanitize import MemoryInstructionShape, sanitize
+from agents.research_intent import is_research_intent
 from storage import db
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
@@ -43,5 +44,7 @@ async def task_create(args: dict[str, Any]) -> dict[str, Any]:
             logger.warning("task_create: description rejected by sanitizer: %s", exc)
             return _ok("task_create: description contains instruction-shaped content and was rejected.")
     due_at = (args.get("due_at") or "").strip() or None
-    task_id = db.create_task(subject, description, due_at)
+    combined = f"{subject} {description or ''}".strip()
+    research, _ = is_research_intent(combined)
+    task_id = db.create_task(subject, description, due_at, research_intent=research)
     return _ok(f"task #{task_id} created: {subject}")

@@ -494,6 +494,37 @@ async def format_status(app) -> str:
     except Exception as exc:
         lines.append(f"cost: error ({exc})")
 
+    # main-chat cost rollup (llm_costs table — Phase C)
+    try:
+        from storage import db as _db_mod
+        from agents import config as _cfg
+        rollup_24h = _db_mod.llm_costs_rollup(window_hours=24)
+        rollup_30d = _db_mod.llm_costs_rollup(window_hours=30 * 24)
+        monthly_credit = float(
+            _cfg.get("runtime.agent_sdk_monthly_credit_usd", 200)
+        )
+        alert_threshold = monthly_credit * 0.80
+        alert_str = (
+            f"  ⚠ 80% of ${monthly_credit:.0f} credit"
+            if rollup_30d["total_cost_usd"] > alert_threshold
+            else ""
+        )
+        lines.append(
+            f"chat cost   24h: ${rollup_24h['total_cost_usd']:.2f}"
+            f" ({rollup_24h['n_rows']} turns)"
+        )
+        lines.append(
+            f"            30d: ${rollup_30d['total_cost_usd']:.2f}{alert_str}"
+        )
+        if rollup_30d["by_model"]:
+            top_models = list(rollup_30d["by_model"].items())[:3]
+            model_str = " · ".join(
+                f"{m} ${c:.2f}" for m, c in top_models
+            )
+            lines.append(f"            top models: {model_str}")
+    except Exception as exc:
+        lines.append(f"chat cost: error ({exc})")
+
     # proactive 7d count
     try:
         rows_7d = _db.proactive_events_recent(days=7)

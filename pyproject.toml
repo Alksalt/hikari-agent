@@ -32,6 +32,7 @@ dependencies = [
     "graphiti-core[anthropic,kuzu]==0.29.1",
     "kuzu==0.11.3",
     "bm25s[core]>=0.3.9,<0.4",
+    "faster-whisper>=1.0",  # local STT alternative to OpenAI Whisper API
 ]
 
 [dependency-groups]

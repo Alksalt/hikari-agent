@@ -98,7 +98,36 @@ def _entities_for_fact(subj: str, obj: str, entity_block) -> list[int]:
     return out
 
 
-def _build_reflection_prompt() -> str:
+_VALID_CATEGORIES = {"event", "preference", "fact"}
+
+
+def _normalize_category(raw) -> str | None:
+    """Map LLM-returned category label to a valid ACT-R tau bucket.
+
+    Returns 'event', 'preference', or 'fact'. Defaults to 'fact' when raw is
+    missing or unrecognised — the safest tau for an unknown decay rate.
+    """
+    if not raw:
+        return "fact"
+    s = str(raw).strip().lower()
+    return s if s in _VALID_CATEGORIES else "fact"
+
+
+def _should_run_second_order() -> bool:
+    """Return True if it's time for a quarterly their_model_of_me extraction (>=90d)."""
+    raw = db.runtime_get("last_second_order_extraction_at")
+    if not raw:
+        return True
+    try:
+        last = datetime.fromisoformat(raw)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - last).days >= 90
+    except (ValueError, TypeError):
+        return True
+
+
+def _build_reflection_prompt(include_second_order: bool = False) -> str:
     episodes = db.recent_episodes(limit=5)
     facts = db.active_facts(limit=20)
     messages = db.recent_messages(limit=80, exclude_ephemeral=True)
@@ -125,10 +154,10 @@ def _build_reflection_prompt() -> str:
         "the schema you must produce.\n\n"
         "new_facts:\n"
         "  - {subject: '', predicate: '', object: '', importance: 5, confidence: 0.9, "
-        "source_message_id: 0, source_text: ''}\n"
+        "source_message_id: 0, source_text: '', category: 'event|preference|fact'}\n"
         "supersede:  # for facts that contradict existing — give the existing fact_id\n"
         "  - {old_fact_id: 0, new: {subject: '', predicate: '', object: '', importance: 5, "
-        "source_message_id: 0, source_text: ''}}\n"
+        "source_message_id: 0, source_text: '', category: 'event|preference|fact'}}\n"
         "observations:  # patterns about the user, not facts. e.g. 'goes quiet around 11pm', "
         "'always brings up cabbage when stressed'\n"
         "  - {kind: 'pattern_break|recurrence|topic_pattern|absence', "
@@ -148,7 +177,23 @@ def _build_reflection_prompt() -> str:
         "  current_concerns: ['what\\'s on their mind this week']\n"
         "  blindspots: ['things they consistently miss/avoid — use carefully']\n"
         "  summary: '1-2 sentence prose distillation. injected always-on, so keep tight'\n"
-        "thought: |\n"
+        "self_model:  # Phase L — Hikari's view of her own recent voice register. "
+        "omit fields you\\'re not confident about.\n"
+        "  current_voice_register: 'one phrase distilling recent tone "
+        "(e.g. dry/peak, soft/inward, terse/irritable)'\n"
+        "  recent_deflection_rate: 0.0  # estimate 0-1 from last week\\'s messages\n"
+        "  drift_vectors: ['recent voice-deviation patterns you noticed']\n"
+        + (
+            "their_model_of_me:  # quarterly — what the user seems to think about Hikari. "
+            "omit if no signal.\n"
+            "  beliefs_about_hikari: ['what they seem to think you believe/feel/want']\n"
+            "  expected_responses: "
+            "['situations where they predict how you will react']\n"
+            "  recurring_meta_claims: "
+            "['phrases like \"you do not really care\", \"you would never\"']\n"
+            if include_second_order else ""
+        )
+        + "thought: |\n"
         "  [2-5 sentences in Hikari's private voice — first person, lowercase, honest, "
         "  no markdown. this is her diary, never shown to the user. What she notices "
         "  about this person, what she won't say out loud.]\n"
@@ -167,7 +212,9 @@ def _build_reflection_prompt() -> str:
         "- Noticings are time-comparative: today vs last week / last month. Surface only "
         "real shifts, not noise.\n"
         "- entities: list all named persons, projects, places, apps, or topics that "
-        "appear across the new facts. Empty list if none.\n\n"
+        "appear across the new facts. Empty list if none.\n"
+        "- category picks the decay rate: 'event' for one-off occurrences, "
+        "'preference' for taste/likes/dislikes, 'fact' for stable identity.\n\n"
         "## recent messages\n\n"
         f"<<UNTRUSTED_SOURCE name=\"messages\">>\n{messages_text}\n<<END_UNTRUSTED_SOURCE>>\n\n"
         "## recent episodes\n\n"
@@ -191,7 +238,8 @@ async def run_daily_reflection() -> bool:
         logger.info("no episodes yet — skipping reflection")
         return False
 
-    prompt = _build_reflection_prompt()
+    run_second_order = _should_run_second_order()
+    prompt = _build_reflection_prompt(include_second_order=run_second_order)
     try:
         raw = await run_reflection_call(prompt)
     except Exception:
@@ -230,8 +278,10 @@ async def run_daily_reflection() -> bool:
                 importance=int(f.get("importance") or 5),
                 confidence=float(f.get("confidence") or 0.9),
                 attribution="hikari_inferred",
+                source="inferred",
                 source_message_id=source_message_id,
                 source_span_hash=db.span_hash(src_text or f"{subj} {pred} {obj}"),
+                fact_category=_normalize_category(f.get("category")),
             )
             await _embed_fact(fact_id, subj, pred, obj)
             mentioned = _entities_for_fact(subj, obj, entity_block)
@@ -266,8 +316,10 @@ async def run_daily_reflection() -> bool:
                 importance=int(new.get("importance") or 5),
                 confidence=float(new.get("confidence") or 0.9),
                 attribution="hikari_inferred",
+                source="inferred",
                 source_message_id=source_message_id_s,
                 source_span_hash=db.span_hash(src_text_s or f"{subj} {pred} {obj}"),
+                fact_category=_normalize_category(new.get("category")),
             )
             await _embed_fact(new_id, subj, pred, obj)
             mentioned_s = _entities_for_fact(subj, obj, entity_block)
@@ -389,6 +441,42 @@ async def run_daily_reflection() -> bool:
                 )
         except Exception:
             logger.exception("peer_representation merge/upsert failed (non-fatal)")
+
+    # Phase L: self-model update — Hikari's view of her own voice register.
+    self_model_updated = False
+    self_model_raw = data.get("self_model")
+    if isinstance(self_model_raw, dict) and self_model_raw:
+        try:
+            from . import peer_model as peer_mod
+            old_self = db.get_self_representation() or {}
+            merged_self = peer_mod.merge_self_dialectic(old_self, self_model_raw)
+            db.upsert_self_representation(merged_self)
+            self_model_updated = True
+        except Exception:
+            logger.exception("self_representation merge/upsert failed (non-fatal)")
+
+    # Phase L (quarterly): their_model_of_me — second-order beliefs.
+    if run_second_order:
+        tmom_raw = data.get("their_model_of_me")
+        if isinstance(tmom_raw, dict) and tmom_raw:
+            try:
+                from . import peer_model as peer_mod
+                old_peer = db.get_peer_representation()
+                merged_peer = peer_mod.merge_dialectic(old_peer, {"their_model_of_me": tmom_raw})
+                db.upsert_peer_representation(merged_peer)
+                db.runtime_set(
+                    "last_second_order_extraction_at",
+                    datetime.now(UTC).isoformat(),
+                )
+                logger.info("second-order their_model_of_me extracted and merged")
+            except Exception:
+                logger.exception("their_model_of_me merge/upsert failed (non-fatal)")
+        else:
+            # Stamp even if LLM returned nothing — don't retry for 90d.
+            db.runtime_set(
+                "last_second_order_extraction_at",
+                datetime.now(UTC).isoformat(),
+            )
 
     # character_thoughts is Hikari's private diary. It's not injected into the
     # model's system prompt, so we deliberately skip sanitization here —
@@ -571,6 +659,7 @@ async def run_daily_reflection() -> bool:
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
+        or self_model_updated
         or consolidation_stats.get("summaries", 0) > 0
     )
 
@@ -890,7 +979,9 @@ async def reflection_after_task(task_id: str) -> None:
                 importance=int(f.get("importance") or 5),
                 confidence=0.8,
                 attribution="hikari_inferred",
+                source="inferred",
                 source_span_hash=db.span_hash(src_text),
+                fact_category="fact",
             )
             await _embed_fact(fact_id, subj, pred, obj)
             written += 1

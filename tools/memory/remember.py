@@ -52,6 +52,7 @@ async def remember(args: dict[str, Any]) -> dict[str, Any]:
     new_id = db.insert_fact(
         subject, predicate, object_, importance, confidence,
         attribution="user_stated",
+        source="user",
         source_message_id=_source_message_id,
         source_span_hash=db.span_hash(f"{subject} {predicate} {object_}"),
     )

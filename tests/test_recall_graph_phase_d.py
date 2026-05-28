@@ -209,7 +209,7 @@ async def test_backfill_idempotency_after_success(tmp_path: Path, monkeypatch):
 
     # Seed 3 facts into the temporary DB.
     for i in range(3):
-        db.fact_insert(text=f"user fact {i}", source="user_message")
+        db.fact_insert(text=f"user fact {i}", source="user")
 
     add_mock = AsyncMock(return_value=True)
     monkeypatch.setattr("storage.graph.add_episode_safe", add_mock)

@@ -35,6 +35,7 @@ class PeerRepresentation(TypedDict, total=False):
     current_concerns: list[str]
     blindspots: list[str]
     summary: str
+    their_model_of_me: dict
 
 
 def empty() -> PeerRepresentation:
@@ -46,7 +47,72 @@ def empty() -> PeerRepresentation:
         "current_concerns": [],
         "blindspots": [],
         "summary": "",
+        "their_model_of_me": {},
     }
+
+
+class SelfRepresentation(TypedDict, total=False):
+    current_voice_register: str
+    recent_deflection_rate: float
+    mood_prediction_accuracy: float
+    drift_vectors: list[str]
+    last_updated_iso: str
+
+
+def empty_self() -> SelfRepresentation:
+    return {
+        "current_voice_register": "",
+        "recent_deflection_rate": 0.0,
+        "mood_prediction_accuracy": 0.0,
+        "drift_vectors": [],
+        "last_updated_iso": "",
+    }
+
+
+def merge_self_dialectic(
+    old: SelfRepresentation | dict | None,
+    new: dict | None,
+) -> SelfRepresentation:
+    """Prose overwrite on string fields, list cap 5 on drift_vectors, floats
+    overwrite when non-zero. Returns dict for db storage."""
+    if not old:
+        old = empty_self()
+    if not new:
+        return dict(old)  # type: ignore[return-value]
+    out = dict(old)
+    for k in ("current_voice_register", "last_updated_iso"):
+        v = new.get(k)
+        if v:
+            out[k] = str(v)
+    for k in ("recent_deflection_rate", "mood_prediction_accuracy"):
+        v = new.get(k)
+        if v is not None and float(v) > 0:
+            out[k] = float(v)
+    drift = new.get("drift_vectors") or []
+    if drift:
+        combined = (out.get("drift_vectors") or []) + [str(x) for x in drift]
+        out["drift_vectors"] = combined[-5:]  # cap last 5
+    return out  # type: ignore[return-value]
+
+
+def format_self_for_injection(model: SelfRepresentation | dict | None) -> str:
+    """Render the # self-model block (<=100 tokens). Returns empty if all empty."""
+    if not model:
+        return ""
+    voice = (model.get("current_voice_register") or "").strip()
+    rate = model.get("recent_deflection_rate") or 0.0
+    drift = model.get("drift_vectors") or []
+    if not voice and not rate and not drift:
+        return ""
+    lines = ["# self-model"]
+    if voice:
+        lines.append(f"- voice: {voice}")
+    if rate:
+        lines.append(f"- recent deflection rate: {rate:.2f}")
+    if drift:
+        recent = drift[-3:] if len(drift) > 3 else drift
+        lines.append("- recent drifts: " + "; ".join(recent))
+    return "\n".join(lines)
 
 
 def _normalize(model: Any) -> PeerRepresentation:
@@ -68,6 +134,9 @@ def _normalize(model: Any) -> PeerRepresentation:
     s = model.get("summary")
     if isinstance(s, str):
         out["summary"] = s.strip()
+    tmom = model.get("their_model_of_me")
+    if isinstance(tmom, dict):
+        out["their_model_of_me"] = tmom
     return out
 
 
@@ -136,4 +205,10 @@ def merge_dialectic(
         if len(merged) > 10:
             merged = merged[-10:]
         base[list_key] = merged
+    # their_model_of_me: shallow merge — new keys overwrite, old keys preserved.
+    new_tmom = new.get("their_model_of_me") or {}
+    if new_tmom and isinstance(new_tmom, dict):
+        existing = dict(base.get("their_model_of_me") or {})
+        existing.update(new_tmom)
+        base["their_model_of_me"] = existing
     return base

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _PROACTIVE_LOCK = asyncio.Lock()
 
 ReservationStatus = Literal["sent", "aborted"]
-AbortReason = Literal["silence_window", "quiet_hours", "dedup", "send_failed", "empty_text"]
+AbortReason = Literal["silence_window", "quiet_hours", "silent_day", "dedup", "send_failed", "empty_text"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,27 @@ class ReservationResult:
 
 
 SendTextFn = Callable[[str], Awaitable[tuple[str, int | None, bool]]]
+
+
+def _is_silent_day_today() -> bool:
+    """Return True when today is the weekly silent day (all proactive sources gated off).
+
+    Reads ``silent_day_this_week`` from runtime_state (ISO date string written
+    every Sunday 18:00 by the scheduler's silent_day_picker job).  Returning
+    True short-circuits the send so no proactive message is sent today.
+    User-anchored responses (direct replies) are unaffected — this gate only
+    applies to the proactive pipeline.
+    """
+    from storage import db
+    from datetime import date
+
+    raw = db.runtime_get("silent_day_this_week")
+    if not raw:
+        return False
+    try:
+        return raw.strip() == date.today().isoformat()
+    except Exception:
+        return False
 
 
 def _is_quiet_now(_db=None) -> bool:
@@ -203,9 +224,11 @@ async def reserve_and_send(
             data_checked_json=reason.get("data_checked_json"),
         )
 
-        # 2. Final gate.
+        # 2. Final gate (silent_day checked first — short-circuits the whole chain).
         abort_reason: AbortReason | None = None
-        if _silence_active(db):
+        if _is_silent_day_today():
+            abort_reason = "silent_day"
+        elif _silence_active(db):
             abort_reason = "silence_window"
         elif _is_quiet_now(db):
             abort_reason = "quiet_hours"

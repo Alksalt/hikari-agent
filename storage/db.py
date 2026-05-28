@@ -532,6 +532,10 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_sprint_a_tables",
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
+    "migrate_phase_b_schema_tables",
+    "migrate_phase_l_self_representation",
+    "migrate_phase_n_facts_source_backfill",
+    "migrate_phase_o_research_columns",
     "migrate_reminders_action_mode",
 ]
 
@@ -672,6 +676,10 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
+    run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
+    run_once(conn, "migrate_phase_l_self_representation", _migrate_phase_l_self_representation)
+    run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill)
+    run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
@@ -1433,6 +1441,227 @@ def _migrate_proactive_events_reason_contract(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE proactive_events ADD COLUMN data_checked_json TEXT")
 
 
+def _migrate_phase_b_schema_tables(conn: sqlite3.Connection) -> None:
+    """Phase B: new tables, ALTER columns, and media_outbox CHECK widening.
+
+    New tables (all brand-new — no ALTER ADD COLUMN for these):
+      llm_costs            — per-turn token usage rollup
+      voice_corrections    — FIFO drift-correction log
+      belief_journal       — forward-looking belief capture with 90d resurface
+      significant_events   — date-keyed anniversaries
+
+    ALTER columns (indexes/triggers live INSIDE this fn per MEMORY.md rule):
+      lexicon.first_seen_date  — anniversary callbacks on in-jokes
+      facts.fact_category      — ACT-R decay tau selection hint
+      tasks.research_intent    — background research worker flag
+
+    CHECK widening:
+      media_outbox.kind — add 'voice' to existing text/photo/sticker/document.
+      Done via table-rebuild (SQLite can't ALTER a CHECK in place).
+      Wrapped in a savepoint so production data is safe.
+    """
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+
+    # ------------------------------------------------------------------
+    # llm_costs
+    # ------------------------------------------------------------------
+    if "llm_costs" not in tables:
+        conn.execute("""
+            CREATE TABLE llm_costs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                turn_id TEXT,
+                model TEXT NOT NULL,
+                path TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0
+            )
+        """)
+    # Index refs to the new table live here (not _SCHEMA) — consistent with
+    # the schema-migration-ordering rule even for brand-new tables.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_costs_ts ON llm_costs(ts)")
+
+    # ------------------------------------------------------------------
+    # voice_corrections
+    # ------------------------------------------------------------------
+    if "voice_corrections" not in tables:
+        conn.execute("""
+            CREATE TABLE voice_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                correction_text TEXT NOT NULL,
+                source_outbound_id INTEGER
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voice_corrections_ts_desc "
+        "ON voice_corrections(ts DESC)"
+    )
+
+    # ------------------------------------------------------------------
+    # belief_journal
+    # ------------------------------------------------------------------
+    if "belief_journal" not in tables:
+        conn.execute("""
+            CREATE TABLE belief_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stated_at TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                claim_type TEXT NOT NULL
+                    CHECK(claim_type IN ('factual', 'identity')),
+                resurface_at TEXT NOT NULL,
+                resolved_bool INTEGER NOT NULL DEFAULT 0,
+                resolution_note TEXT
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belief_journal_resurface "
+        "ON belief_journal(resurface_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_belief_journal_unresolved "
+        "ON belief_journal(resolved_bool, resurface_at) WHERE resolved_bool = 0"
+    )
+
+    # ------------------------------------------------------------------
+    # significant_events
+    # ------------------------------------------------------------------
+    if "significant_events" not in tables:
+        conn.execute("""
+            CREATE TABLE significant_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_date TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('good', 'hard', 'funny', 'milestone')),
+                created_at TEXT NOT NULL
+            )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_significant_events_date "
+        "ON significant_events(event_date)"
+    )
+
+    # ------------------------------------------------------------------
+    # ALTER columns
+    # ------------------------------------------------------------------
+    def _has_col(table: str, col: str) -> bool:
+        return any(
+            r["name"] == col
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+
+    # lexicon.first_seen_date — backfill from created_at for existing rows
+    if not _has_col("lexicon", "first_seen_date"):
+        conn.execute("ALTER TABLE lexicon ADD COLUMN first_seen_date TEXT")
+        conn.execute(
+            "UPDATE lexicon SET first_seen_date = date(created_at) "
+            "WHERE first_seen_date IS NULL AND created_at IS NOT NULL"
+        )
+
+    # facts.fact_category — nullable, no backfill needed
+    if not _has_col("facts", "fact_category"):
+        conn.execute("ALTER TABLE facts ADD COLUMN fact_category TEXT")
+
+    # tasks.research_intent — boolean 0/1, default 0
+    if not _has_col("tasks", "research_intent"):
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN research_intent INTEGER NOT NULL DEFAULT 0"
+        )
+
+    # ------------------------------------------------------------------
+    # media_outbox CHECK widening: add 'voice'
+    # SQLite cannot ALTER a CHECK; rebuild the table inside a savepoint.
+    # ------------------------------------------------------------------
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_outbox'"
+    ).fetchone()
+    if row is not None and "'voice'" not in (row[0] or ""):
+        conn.execute("SAVEPOINT phase_b_media_outbox")
+        try:
+            conn.execute("""
+                CREATE TABLE media_outbox_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL
+                        CHECK(kind IN ('text', 'photo', 'sticker', 'document', 'voice')),
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'sent', 'failed', 'aborted')),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    telegram_message_id INTEGER
+                )
+            """)
+            conn.execute(
+                "INSERT INTO media_outbox_new "
+                "(id, kind, idempotency_key, payload_json, status, attempts, "
+                " last_error, created_at, processed_at, telegram_message_id) "
+                "SELECT id, kind, idempotency_key, payload_json, status, attempts, "
+                "       last_error, created_at, processed_at, telegram_message_id "
+                "FROM media_outbox"
+            )
+            conn.execute("DROP TABLE media_outbox")
+            conn.execute("ALTER TABLE media_outbox_new RENAME TO media_outbox")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_outbox_status "
+                "ON media_outbox(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_outbox_kind_status "
+                "ON media_outbox(kind, status)"
+            )
+            conn.execute("RELEASE phase_b_media_outbox")
+        except Exception:
+            conn.execute("ROLLBACK TO phase_b_media_outbox")
+            conn.execute("RELEASE phase_b_media_outbox")
+            raise
+
+    conn.commit()
+
+
+def _migrate_phase_o_research_columns(conn: sqlite3.Connection) -> None:
+    """Phase O: add research tracking columns to tasks.
+
+    New columns:
+      tasks.research_summary         TEXT   — LLM-composed summary
+      tasks.research_sources_json    TEXT   — JSON list of source URLs
+      tasks.research_attempted_at    TEXT   — last worker attempt timestamp
+      tasks.research_surfaced_at     TEXT   — when the callback surfaced
+
+    Index:
+      idx_tasks_research_pending ON tasks(research_intent, status, research_summary)
+        WHERE research_intent = 1
+    """
+    def _has_col(table: str, col: str) -> bool:
+        return any(
+            r["name"] == col
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+
+    if not _has_col("tasks", "research_summary"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_summary TEXT")
+    if not _has_col("tasks", "research_sources_json"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_sources_json TEXT")
+    if not _has_col("tasks", "research_attempted_at"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_attempted_at TEXT")
+    if not _has_col("tasks", "research_surfaced_at"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN research_surfaced_at TEXT")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_research_pending "
+        "ON tasks(research_intent, status, research_summary) "
+        "WHERE research_intent = 1"
+    )
+
+
 _RUNTIME_STATE_KEYS_SPRINT_A: frozenset[str] = frozenset({
     "time_texture",
     "silenced_until_msg_id",
@@ -1489,6 +1718,62 @@ def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS fact_entities_entity "
                  "ON fact_entities(entity_id, fact_id DESC)")
+    conn.commit()
+
+
+def _migrate_phase_l_self_representation(conn: sqlite3.Connection) -> None:
+    """Phase L: self_representation table — Hikari's own internal model.
+
+    Lives in its own migration (NOT in ``_migrate_phase_b_schema_tables``)
+    so the recorded checksum for the Phase B migration doesn't drift on
+    DBs that already ran it pre-Phase L.
+
+    Single-row table mirroring peer_representation.
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='self_representation'"
+    )
+    if cur.fetchone() is not None:
+        conn.commit()
+        return
+    conn.execute("""
+        CREATE TABLE self_representation (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            content_json TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT OR IGNORE INTO self_representation (id, content_json, version, updated_at) "
+        "VALUES (1, '{}', 1, ?)",
+        (_now(),),
+    )
+    conn.commit()
+
+
+def _migrate_phase_n_facts_source_backfill(conn: sqlite3.Connection) -> None:
+    """Phase N: backfill facts.source from attribution where source IS NULL.
+
+    Lives in its own migration (NOT in the older
+    ``_migrate_entities_and_provenance``) so the recorded checksum for that
+    older migration doesn't drift on DBs that already ran it pre-Phase N.
+
+    Mapping:
+    - attribution='hikari_inferred' → source='inferred' (Hikari extracted
+      facts from user content; not Hikari-authored).
+    - attribution in ('user_stated','user_corrected') → source='user'.
+    - else → source stays NULL.
+    """
+    conn.execute("""
+        UPDATE facts
+        SET source = CASE
+            WHEN attribution = 'hikari_inferred' THEN 'inferred'
+            WHEN attribution IN ('user_stated', 'user_corrected') THEN 'user'
+            ELSE NULL
+        END
+        WHERE source IS NULL AND attribution IS NOT NULL
+    """)
     conn.commit()
 
 
@@ -1562,6 +1847,7 @@ def insert_fact(
     attribution: str | None = None,
     source_span_hash: str | None = None,
     recorded_at: int | None = None,
+    fact_category: str | None = None,
 ) -> int:
     """Insert a new fact. Returns row id. Caller is responsible for any
     contradiction/supersession logic — this function does NOT auto-supersede.
@@ -1577,7 +1863,16 @@ def insert_fact(
 
     ``source_span_hash`` is a 16-hex-char SHA-256 of the source text span.
     ``recorded_at`` is the UTC epoch at which the fact was recorded; defaults
-    to ``_utc_epoch()`` if not supplied."""
+    to ``_utc_epoch()`` if not supplied.
+
+    ``source`` (the provenance axis, orthogonal to ``attribution``) must be
+    one of ``'user'``, ``'hikari'``, ``'inferred'``, or ``None``."""
+    _VALID_SOURCES = {"user", "hikari", "inferred"}
+    if source is not None and source not in _VALID_SOURCES:
+        raise ValueError(
+            f"insert_fact: source {source!r} must be one of "
+            f"{sorted(_VALID_SOURCES)} or None"
+        )
     if recorded_at is None:
         recorded_at = _utc_epoch()
     now = _now()
@@ -1585,11 +1880,11 @@ def insert_fact(
         cur = c.execute(
             "INSERT INTO facts (subject, predicate, object, confidence, importance, "
             "valid_from, source_message_id, source, attribution, status, created_at, "
-            "source_span_hash, recorded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            "source_span_hash, recorded_at, fact_category) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
             (subject, predicate, object_, confidence, importance, now,
              source_message_id, source, attribution, now,
-             source_span_hash, recorded_at),
+             source_span_hash, recorded_at, fact_category),
         )
         fact_id = cur.lastrowid
         c.execute(
@@ -2061,12 +2356,14 @@ def weekly_consolidations_recent(limit: int = 10) -> list[dict[str, Any]]:
 # ---------- tasks ----------
 
 def create_task(subject: str, description: str | None = None,
-                due_at: str | None = None, importance: int = 5) -> int:
+                due_at: str | None = None, importance: int = 5,
+                research_intent: bool = False) -> int:
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO tasks (subject, description, due_at, importance, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (subject, description, due_at, max(1, min(10, int(importance))), _now()),
+            "INSERT INTO tasks (subject, description, due_at, importance, research_intent, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (subject, description, due_at, max(1, min(10, int(importance))),
+             1 if research_intent else 0, _now()),
         )
     return cur.lastrowid
 
@@ -2301,6 +2598,31 @@ def lexicon_get(phrase: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+# ---------- significant_events ----------
+
+def significant_event_insert(
+    *,
+    event_date: str,
+    summary: str,
+    kind: str,
+) -> int:
+    """Insert into significant_events table. Idempotent on (event_date, summary[:80])."""
+    with _conn() as c:
+        existing = c.execute(
+            "SELECT id FROM significant_events "
+            "WHERE event_date = ? AND substr(summary, 1, 80) = ?",
+            (event_date, summary[:80]),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
+        cur = c.execute(
+            "INSERT INTO significant_events (event_date, summary, kind, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (event_date, summary, kind, _now()),
+        )
+        return cur.lastrowid
+
+
 def all_messages_text_since(iso_cutoff: str, role: str | None = None) -> list[str]:
     """Helper for lexicon extraction: return raw message texts since cutoff."""
     sql = "SELECT content FROM messages WHERE ts >= ?"
@@ -2508,6 +2830,40 @@ def drift_count_today() -> int:
     return int(row["n"] or 0)
 
 
+# ---------- voice_corrections (Phase P reflexion loop) ----------
+
+
+def voice_corrections_insert(*, correction_text: str, source_outbound_id: int | None) -> int:
+    """Append a correction; trim to FIFO 10 in the same transaction."""
+    text = (correction_text or "").strip()[:300]
+    if not text:
+        return 0
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO voice_corrections (ts, correction_text, source_outbound_id) "
+            "VALUES (?, ?, ?)",
+            (_now(), text, source_outbound_id),
+        )
+        new_id = cur.lastrowid
+        c.execute(
+            "DELETE FROM voice_corrections WHERE id IN ("
+            "  SELECT id FROM voice_corrections ORDER BY id DESC LIMIT -1 OFFSET 10"
+            ")"
+        )
+    return new_id
+
+
+def voice_corrections_recent(limit: int = 3) -> list[dict]:
+    """Most-recent first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, correction_text, source_outbound_id "
+            "FROM voice_corrections ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------- drift_canary_answers (weekly hard-opinion probe) ----------
 
 def drift_canary_record(
@@ -2599,6 +2955,45 @@ def upsert_peer_representation(content: dict[str, Any]) -> None:
             "INSERT INTO peer_representation (id, content_json, version, updated_at) "
             "VALUES (1, ?, 1, ?) "
             "ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json, "
+            "updated_at = excluded.updated_at",
+            (json.dumps(content, ensure_ascii=False), _now()),
+        )
+
+
+def get_self_representation() -> dict[str, Any] | None:
+    """Return Hikari's self-model as a dict, or None if empty / not yet populated.
+
+    The self_representation table is a single-row table (id always = 1).
+    Seeded with '{}' on first migration; returns None until a real update is written.
+    """
+    import json
+    with _conn() as c:
+        row = c.execute(
+            "SELECT content_json FROM self_representation WHERE id = 1"
+        ).fetchone()
+    if not row or not row["content_json"]:
+        return None
+    try:
+        data = json.loads(row["content_json"])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return data
+
+
+def upsert_self_representation(content: dict[str, Any]) -> None:
+    """Persist Hikari's self-model. Overwrites on conflict — caller is
+    responsible for merge-before-upsert via ``peer_model.merge_self_dialectic``."""
+    import json
+    if not isinstance(content, dict):
+        raise TypeError(f"self_representation content must be dict, got {type(content)}")
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO self_representation (id, content_json, version, updated_at) "
+            "VALUES (1, ?, 1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json, "
+            "version = version + 1, "
             "updated_at = excluded.updated_at",
             (json.dumps(content, ensure_ascii=False), _now()),
         )
@@ -2777,6 +3172,53 @@ def runtime_increment(key: str, by: int = 1) -> int:
         return int(row["value"]) if row else int(by)
     except (ValueError, TypeError):
         return int(by)
+
+
+def llm_costs_insert(
+    *,
+    turn_id: str | None,
+    model: str,
+    path: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int,
+    cache_creation_input_tokens: int,
+    cost_usd: float,
+) -> int:
+    """Insert a per-turn cost row into llm_costs (table from Phase A)."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO llm_costs (ts, turn_id, model, path, "
+            "input_tokens, output_tokens, "
+            "cache_read_input_tokens, cache_creation_input_tokens, cost_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (_now(), turn_id, model, path, input_tokens, output_tokens,
+             cache_read_input_tokens, cache_creation_input_tokens, cost_usd),
+        )
+        return cur.lastrowid
+
+
+def llm_costs_rollup(window_hours: int = 24) -> dict:
+    """Return {n_rows, total_cost_usd, by_model: {model: cost}} for the last
+    window_hours. Filters by ts >= now - window_hours."""
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(UTC) - timedelta(hours=window_hours)).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0.0) AS total "
+            "FROM llm_costs WHERE ts >= ?",
+            (cutoff_iso,),
+        ).fetchone()
+        per_model = c.execute(
+            "SELECT model, COALESCE(SUM(cost_usd), 0.0) AS cost "
+            "FROM llm_costs WHERE ts >= ? GROUP BY model ORDER BY cost DESC",
+            (cutoff_iso,),
+        ).fetchall()
+    return {
+        "n_rows": int(row["n"] or 0),
+        "total_cost_usd": float(row["total"] or 0.0),
+        "by_model": {r["model"]: float(r["cost"]) for r in per_model},
+    }
 
 
 # ---------- tool_calls telemetry ----------
@@ -4417,6 +4859,49 @@ def decision_brier_score(window_days: int = 90) -> dict[str, Any]:
     }
 
 
+def decision_calibration_curve(window_days: int = 90, buckets: int = 5) -> list[dict]:
+    """Group resolved decisions into probability buckets and return actual
+    outcome rate per bucket. Default 5 buckets: [0-20], [20-40], [40-60],
+    [60-80], [80-100] percent.
+
+    Returns: list of {bucket_low, bucket_high, n, mean_predicted, actual_rate}
+    sorted by bucket ascending. Empty list if no resolved decisions in the
+    window.
+    """
+    from datetime import datetime, timedelta, UTC
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    width = 1.0 / buckets
+    out: list[dict] = []
+    with _conn() as c:
+        for i in range(buckets):
+            lo = i * width
+            hi = (i + 1) * width
+            # Include upper bound only on the last bucket to avoid double-counting.
+            upper_op = "<=" if i == buckets - 1 else "<"
+            row = c.execute(
+                f"""
+                SELECT COUNT(*) AS n,
+                       COALESCE(AVG(predicted_p), 0.0) AS mean_p,
+                       COALESCE(AVG(outcome), 0.0) AS actual_rate
+                FROM decisions
+                WHERE outcome IS NOT NULL
+                  AND resolved_at IS NOT NULL
+                  AND resolved_at >= ?
+                  AND predicted_p >= ?
+                  AND predicted_p {upper_op} ?
+                """,
+                (cutoff, lo, hi),
+            ).fetchone()
+            out.append({
+                "bucket_low": lo,
+                "bucket_high": hi,
+                "n": int(row["n"] or 0),
+                "mean_predicted": float(row["mean_p"] or 0.0),
+                "actual_rate": float(row["actual_rate"] or 0.0),
+            })
+    return out
+
+
 # ---------- 5B: messages FTS + fact helpers ----------
 
 def _migrate_messages_fts(conn: sqlite3.Connection) -> None:
@@ -5187,3 +5672,54 @@ def prune_proactive_events(older_than_days: int = 90) -> int:
 
 def _now_epoch() -> int:
     return int(datetime.now(UTC).timestamp())
+
+
+# ---------- belief_journal ----------
+
+def belief_journal_insert(*, statement: str, claim_type: str, resurface_days: int = 90) -> int:
+    """Insert into belief_journal table.
+
+    Returns the new row id (> 0) or 0 on a no-op (empty statement).
+    claim_type must be 'factual' or 'identity'.
+    """
+    from datetime import timedelta
+    if claim_type not in ("factual", "identity"):
+        raise ValueError(f"invalid claim_type: {claim_type}")
+    text = (statement or "").strip()[:500]
+    if not text:
+        return 0
+    resurface = (datetime.now(UTC) + timedelta(days=resurface_days)).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO belief_journal (stated_at, statement, claim_type, resurface_at, resolved_bool) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (_now(), text, claim_type, resurface),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def belief_journal_due(window_days: int = 0) -> list[dict]:
+    """Return matured (resurface_at <= now + window_days), unresolved beliefs.
+
+    window_days=0 = strictly due; >0 = approaching.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) + timedelta(days=window_days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, stated_at, statement, claim_type, resurface_at "
+            "FROM belief_journal "
+            "WHERE resolved_bool = 0 AND resurface_at <= ? "
+            "ORDER BY resurface_at ASC LIMIT 10",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def belief_journal_resolve(belief_id: int, note: str | None = None) -> None:
+    """Mark a belief_journal row as resolved, optionally with a note."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE belief_journal SET resolved_bool = 1, resolution_note = ? WHERE id = ?",
+            ((note or "")[:300], belief_id),
+        )

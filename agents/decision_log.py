@@ -15,6 +15,34 @@ from storage import db
 logger = logging.getLogger(__name__)
 
 
+def _format_calibration_surface(curve: list[dict]) -> str | None:
+    """Pick the bucket with the biggest |predicted - actual| gap, render as
+    one in-voice line. Returns None if no bucket has enough samples (n>=3)
+    or no gap is significant (>= 0.2 absolute)."""
+    if not curve:
+        return None
+    candidates = [b for b in curve if b["n"] >= 3]
+    if not candidates:
+        return None
+    worst = max(candidates, key=lambda b: abs(b["mean_predicted"] - b["actual_rate"]))
+    gap = abs(worst["mean_predicted"] - worst["actual_rate"])
+    if gap < 0.2:
+        return None
+    pred_pct = round(worst["mean_predicted"] * 100)
+    actual_pct = round(worst["actual_rate"] * 100)
+    direction = "overconfident" if worst["mean_predicted"] > worst["actual_rate"] else "underconfident"
+    if worst["bucket_low"] >= 0.6:
+        zone = "up high"
+    elif worst["bucket_high"] <= 0.4:
+        zone = "down low"
+    else:
+        zone = "in the middle"
+    return (
+        f"you said {pred_pct}% on things that only happened {actual_pct}% of the time. "
+        f"{direction} {zone}."
+    )
+
+
 async def run_decision_resolver(send_text) -> int:
     """Surface unresolved-and-overdue decisions to the user. Returns the
     number of decisions asked about this call."""
@@ -71,4 +99,20 @@ async def run_decision_resolver(send_text) -> int:
         cadence.record_ceremony_sent("decision_log")
         asked += 1
     logger.info("decision_resolver: asked about %d overdue decisions", asked)
+
+    # Calibration curve surface: after processing overdue decisions, check
+    # if we have enough resolved data (n >= 8 total) to surface a meaningful
+    # per-bucket calibration signal. Tetlock: bucketed feedback drives
+    # recalibration 2-3x faster than a scalar Brier score alone.
+    curve = db.decision_calibration_curve(window_days=90, buckets=5)
+    n_total = sum(b["n"] for b in curve)
+    if n_total >= 8:
+        surface = _format_calibration_surface(curve)
+        if surface:
+            try:
+                await send_text(surface)
+                logger.info("decision_resolver: calibration surface sent")
+            except Exception:
+                logger.exception("decision_resolver: calibration surface send failed")
+
     return asked

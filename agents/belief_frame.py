@@ -41,6 +41,27 @@ logger = logging.getLogger(__name__)
 # precedence when present — see :func:`_belief_patterns` / :func:`_exclusion_patterns`.
 # -----------------------------------------------------------------------------
 
+# Forward-looking belief patterns: "i will", "i'll", "i'm going to", etc.
+FUTURE_TENSE_RE = re.compile(
+    r"(?i)\b(i (will|'ll|am going to|going to|gonna|plan to|expect to|intend to)\b"
+    r"|i'm going to\b|i'm gonna\b)"
+)
+
+# Exclusion: "i'm going to bed" / "i'll think about it" — casual future that isn't a belief claim.
+FUTURE_TENSE_EXCLUSION_RE = re.compile(
+    r"(?i)\b(i('ll| will) (think|see|check|look)|going to (bed|sleep)|gonna (sleep|eat|go))\b"
+)
+
+# Identity claims: "i'm someone who X" / "i don't [identity]" / "i never [identity]"
+IDENTITY_CLAIM_RE = re.compile(
+    r"(?i)(\bi['']m (someone|a person) who\b|\bi (don['']t|never) \w)"
+)
+
+# Exclusion for identity: rhetorical/question forms — "am i someone who" / "you're someone who"
+IDENTITY_CLAIM_EXCLUSION_RE = re.compile(
+    r"(?i)\b(am i (someone|a person) who|you['']re (someone|a person) who|are you (someone|a person) who)\b"
+)
+
 # Matches epistemic markers — the user is framing something as their belief.
 BELIEF_RE = re.compile(
     r"(?i)\b(i think|i believe|i'm (pretty |fairly )?(sure|certain)|"
@@ -149,3 +170,70 @@ def adversarial_prompt_suffix(matched_fragment: str) -> str:
             "placeholder; sending without fragment interpolation"
         )
         return template
+
+
+# -----------------------------------------------------------------------------
+# Phase T: forward-looking belief capture + identity-claim detector
+# -----------------------------------------------------------------------------
+
+def detect_future_belief(text: str) -> tuple[bool, str | None]:
+    """Return (matched, fragment) if the text contains a forward-looking
+    claim (i will / i'm going to / i plan to / …) that is not merely a
+    casual scheduling phrase ('going to bed' etc.).
+
+    Conservative: false negatives preferred over false positives.
+    """
+    if not is_enabled() or not text or not text.strip():
+        return False, None
+    if FUTURE_TENSE_EXCLUSION_RE.search(text):
+        return False, None
+    m = FUTURE_TENSE_RE.search(text)
+    if m:
+        return True, m.group(0)
+    return False, None
+
+
+def detect_identity_claim(text: str) -> tuple[bool, str | None]:
+    """Return (matched, fragment) if the text contains an identity claim
+    ('i'm someone who X', 'i don't X', 'i never X') that is not a
+    rhetorical question ('am i someone who').
+
+    Conservative: false negatives preferred over false positives.
+    """
+    if not is_enabled() or not text or not text.strip():
+        return False, None
+    if IDENTITY_CLAIM_EXCLUSION_RE.search(text):
+        return False, None
+    m = IDENTITY_CLAIM_RE.search(text)
+    if m:
+        return True, m.group(0)
+    return False, None
+
+
+def maybe_capture_belief(text: str) -> None:
+    """Detect and persist forward-looking + identity beliefs from user text.
+
+    Called alongside the adversarial-recall path in the bridge; always
+    non-fatal (exceptions are logged and swallowed so the bridge stays up).
+    """
+    try:
+        from storage import db as _db
+        hit_future, fragment_future = detect_future_belief(text)
+        if hit_future and fragment_future:
+            _db.belief_journal_insert(
+                statement=text.strip()[:500],
+                claim_type="factual",
+                resurface_days=90,
+            )
+            logger.debug("belief_journal: captured future-tense claim %r", fragment_future)
+
+        hit_identity, fragment_identity = detect_identity_claim(text)
+        if hit_identity and fragment_identity:
+            _db.belief_journal_insert(
+                statement=text.strip()[:500],
+                claim_type="identity",
+                resurface_days=90,
+            )
+            logger.debug("belief_journal: captured identity claim %r", fragment_identity)
+    except Exception:
+        logger.exception("maybe_capture_belief failed (non-fatal)")

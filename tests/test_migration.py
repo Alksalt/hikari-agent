@@ -212,6 +212,30 @@ def test_migration_idempotent(synth_user, fresh_db):
     assert thoughts_n2 == thoughts_n1, f"thoughts duped: {thoughts_n1} -> {thoughts_n2}"
 
 
+def test_phase_b_migration_idempotent(fresh_db):
+    """Running _migrate_phase_b_schema_tables twice does not error."""
+    from storage import db as _db
+    from storage.migrations import run_once
+    with _db._conn() as c:
+        # First call is already stamped at boot; run the body directly a second
+        # time to confirm the CREATE IF NOT EXISTS / IF NOT EXISTS guards hold.
+        _db._migrate_phase_b_schema_tables(c)
+
+
+def test_phase_b_tables_exist(fresh_db):
+    """All Phase B tables exist after boot."""
+    from storage import db as _db
+    with _db._conn() as c:
+        tables = {
+            row[0]
+            for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    for t in ("llm_costs", "voice_corrections", "belief_journal", "significant_events"):
+        assert t in tables, f"missing table: {t}"
+
+
 def test_migration_fresh_truncates(synth_user, fresh_db):
     db = fresh_db
     mig = _migrator(db)

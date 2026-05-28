@@ -60,6 +60,47 @@ def _add_graph_outbox_drain_job(scheduler: AsyncIOScheduler) -> None:
     )
 
 
+def _pick_silent_day_this_week() -> None:
+    """Sunday 18:00 picker: choose one weekday for the coming week.
+
+    Writes the chosen date as an ISO string to runtime_state key
+    ``silent_day_this_week``.  When the feature is disabled the key is
+    cleared so a stale value never gates proactive sends indefinitely.
+    """
+    import random
+    from datetime import date, timedelta
+
+    from storage import db
+
+    enabled = bool(cfg.get("engagement.weekly_silent_day_enabled", True))
+    if not enabled:
+        db.runtime_set("silent_day_this_week", None)
+        logger.info("silent_day_picker: disabled — cleared runtime key")
+        return
+
+    pool = cfg.get("engagement.weekly_silent_day_pool", ["mon", "tue", "wed", "thu", "fri"])
+    if not isinstance(pool, list) or not pool:
+        logger.warning("silent_day_picker: pool is empty or invalid — skipping")
+        return
+
+    day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    pool_nums = [day_map[d.lower()] for d in pool if d.lower() in day_map]
+    if not pool_nums:
+        logger.warning("silent_day_picker: no valid weekday names in pool %r — skipping", pool)
+        return
+
+    today = date.today()
+    # Compute Monday of the coming week (the week that starts after this Sunday).
+    # today.weekday() == 6 (Sunday) so days_to_monday = 1.
+    days_to_monday = (7 - today.weekday()) % 7 or 7
+    monday = today + timedelta(days=days_to_monday)
+
+    chosen_offset = random.choice(pool_nums)          # 0=Mon … 4=Fri
+    target = monday + timedelta(days=chosen_offset)
+    db.runtime_set("silent_day_this_week", target.isoformat())
+    logger.info("silent_day_picker: picked %s for the week of %s", target.isoformat(), monday)
+
+
 async def _time_texture_job() -> None:
     """Hourly job: write time_texture to runtime_state based on current local hour."""
     import datetime as _dt
@@ -238,6 +279,22 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
+    # Phase S: Annual review ceremony — Dec 26-31, 11:00 local.
+    # Composes a year synthesis in Hikari voice (things worth more of /
+    # things worth less of) from episodes, receipts, decisions, and drift
+    # canary divergences. Idempotent via runtime_state key.
+    if bool(cfg.get("annual_review.enabled", True)):
+        from agents.annual_review import run_annual_review
+        ar_hour = int(cfg.get("annual_review.fire_hour", 11))
+        async def _annual_review_job():
+            return await run_annual_review(send_text=send_text)
+        scheduler.add_job(
+            _annual_review_job,
+            CronTrigger(month=12, day="26-31", hour=ar_hour, minute=0),
+            id="annual_review",
+            coalesce=True, max_instances=1, misfire_grace_time=86400,
+        )
+
     # Drift canary: weekly Sunday 20:00 local. Probes one of three hard
     # opinions, LLM-as-judge classifies the answer, alerts via send_text on
     # 'drift' verdict. Single-user Nautilus Compass.
@@ -248,6 +305,17 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             _drift_canary_job,
             CronTrigger(day_of_week="sun", hour=20, minute=0),
             id="drift_canary",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
+    # Phase F: silent-day picker — Sunday 18:00 local. Chooses one random
+    # weekday for the coming week and writes it to runtime_state so the
+    # proactive gate can skip all non-user-anchored sends on that day.
+    if bool(cfg.get("engagement.weekly_silent_day_enabled", True)):
+        scheduler.add_job(
+            _pick_silent_day_this_week,
+            CronTrigger(day_of_week="sun", hour=18, minute=0),
+            id="silent_day_picker",
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
@@ -364,6 +432,24 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         id="interests_refresh",
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
+
+    # Phase O: background research worker — 10:00 and 12:00 local.
+    # Processes tasks with research_intent=1 that have no summary yet.
+    if bool(cfg.get("research_worker.enabled", True)):
+        from agents.subagents.research_worker import run_research_worker
+        async def _research_worker_job():
+            try:
+                n = await run_research_worker()
+                if n:
+                    logger.info("research_worker: processed %d task(s)", n)
+            except Exception:
+                logger.exception("research_worker: unexpected failure")
+        scheduler.add_job(
+            _research_worker_job,
+            CronTrigger(hour="10,12", minute=0),
+            id="research_worker",
+            coalesce=True, max_instances=1, misfire_grace_time=1800,
+        )
 
     # Phase I: unified engagement_tick — replaces the per-producer wiki_new_file_tick.
     # Runs every 60s, collects candidates from all enabled producers, selects the

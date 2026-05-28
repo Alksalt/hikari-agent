@@ -4,8 +4,9 @@ Pipeline:
   1. Gate: core_block 'morning_brief_status' must not be 'disabled'
   2. Resolve location: most recent Telegram share (any age) -> HOME_LAT/LON
   3. Fetch multi-source forecast via tools/weather.py
-  4. Build prompt, call run_proactive -> Hikari writes in voice
-  5. send_text the result
+  4. Optionally fetch HuggingFace daily papers filtered by interests pool
+  5. Build prompt, call run_proactive -> Hikari writes in voice
+  6. send_text the result
 """
 from __future__ import annotations
 
@@ -13,7 +14,11 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+import httpx
+import yaml
 
 from agents import config as cfg
 from agents.runtime import run_visible_proactive
@@ -29,6 +34,96 @@ logger = logging.getLogger(__name__)
 # Presentation hint injected at the top of the model prompt so Hikari knows
 # which render contract to follow when writing the morning brief message.
 _WEATHER_PROMPT_HINT = "# presentation_hint: weather_three_window\n\n"
+
+# Path to the interests pool config, relative to the repo root.
+_INTERESTS_POOL_PATH = Path(__file__).parent.parent / "config" / "hikari_interests_pool.yaml"
+
+
+async def _fetch_hf_daily_papers(limit: int = 20) -> list[dict]:
+    """Fetch today's HuggingFace Daily Papers. No auth. Returns list of dicts
+    with keys: title, summary, url. Empty list on any failure."""
+    url = "https://huggingface.co/api/daily_papers"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params={"limit": limit})
+        if resp.status_code != 200:
+            logger.warning("hf_papers: HTTP %s", resp.status_code)
+            return []
+        data = resp.json()
+        if not isinstance(data, list):
+            return []
+        out: list[dict] = []
+        for item in data:
+            paper = item.get("paper", {}) if isinstance(item, dict) else {}
+            title = paper.get("title", "").strip()
+            summary = paper.get("summary", "").strip()
+            arxiv_id = paper.get("id", "").strip()
+            paper_url = f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""
+            if title and summary:
+                out.append({"title": title, "summary": summary, "url": paper_url})
+        return out
+    except Exception:
+        logger.exception("hf_papers: fetch failed (non-fatal)")
+        return []
+
+
+def _load_interests_keywords() -> list[str]:
+    """Load keyword strings from hikari_interests_pool.yaml for paper matching.
+
+    Extracts the ``title`` field from every interests entry as the keyword
+    pool, plus any bare words ≥3 chars found in those titles. Returns a
+    deduplicated, lowercased list suitable for ``in`` substring checks.
+    """
+    try:
+        if not _INTERESTS_POOL_PATH.exists():
+            return []
+        raw = _INTERESTS_POOL_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            return []
+        entries = data.get("interests", [])
+        if not isinstance(entries, list):
+            return []
+        keywords: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            title = entry.get("title", "")
+            if title:
+                # Add the full title (lowercased) as a phrase.
+                keywords.add(title.lower())
+                # Also add individual meaningful words (≥4 chars, skip stopwords).
+                _STOPWORDS = {"the", "and", "for", "was", "are", "with", "this",
+                              "that", "from", "have", "not", "been", "they",
+                              "will", "than", "also", "into", "more"}
+                for word in title.lower().split():
+                    word = word.strip("()[]—–-.,:")
+                    if len(word) >= 4 and word not in _STOPWORDS:
+                        keywords.add(word)
+        return sorted(keywords)
+    except Exception:
+        logger.exception("hf_papers: failed to load interests pool (non-fatal)")
+        return []
+
+
+def _filter_papers_by_interests(
+    papers: list[dict],
+    interests: list[str],
+    max_results: int = 2,
+) -> list[dict]:
+    """Return papers whose title+summary contains any interest keyword
+    (case-insensitive). Caps at max_results."""
+    if not interests or not papers:
+        return []
+    keywords = [k.lower() for k in interests if k and len(k) >= 3]
+    matched: list[dict] = []
+    for p in papers:
+        hay = (p.get("title", "") + " " + p.get("summary", "")).lower()
+        if any(kw in hay for kw in keywords):
+            matched.append(p)
+            if len(matched) >= max_results:
+                break
+    return matched
 
 
 def _is_disabled() -> bool:
@@ -74,7 +169,11 @@ def _resolve_location() -> tuple[float, float, str | None] | None:
     return None
 
 
-def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
+def _build_prompt(
+    forecast: dict[str, Any],
+    label: str | None,
+    papers: list[dict] | None = None,
+) -> str:
     from tools.weather._shared import wmo_label  # noqa: PLC0415
     raw_consensus = forecast["consensus"]
     c = raw_consensus["values"]
@@ -119,6 +218,18 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
             + _win(evening, "evening")
         )
 
+    papers_section = ""
+    if papers:
+        lines = "\n".join(
+            f"  - {p['title']}" + (f" — {p['url']}" if p.get("url") else "")
+            for p in papers
+        )
+        papers_section = (
+            f"\n\npapers worth a look (≤2, append after weather if you choose to "
+            f"mention them — only if they fit the beat naturally; silence is fine):\n"
+            f"{lines}"
+        )
+
     return (
         _WEATHER_PROMPT_HINT
         + "You are writing a morning weather brief. ONE short message, in your "
@@ -138,7 +249,8 @@ def _build_prompt(forecast: dict[str, Any], label: str | None) -> str:
         f"  sunset: {sunset}\n"
         f"  sources: {sources}"
         f"{window_text}"
-        f"{disagreement_note}\n\n"
+        f"{disagreement_note}"
+        f"{papers_section}\n\n"
         "Output ONLY the message text — no preamble, no quotes. If you can't "
         "write something true to her voice, output NO_MESSAGE."
     )
@@ -170,7 +282,23 @@ async def maybe_send_morning_brief(send_text) -> bool:
     if not forecast["sources"]:
         logger.info("morning_brief: all weather sources failed")
         return False
-    prompt = _build_prompt(forecast, label)
+
+    # HuggingFace daily papers — non-fatal; brief ships without them on failure.
+    papers: list[dict] = []
+    if bool(cfg.get("morning_brief.hf_papers_enabled", True)):
+        fetch_limit = int(cfg.get("morning_brief.hf_papers_fetch_limit", 20))
+        max_results = int(cfg.get("morning_brief.hf_papers_max_results", 2))
+        raw_papers = await _fetch_hf_daily_papers(limit=fetch_limit)
+        if raw_papers:
+            keywords = _load_interests_keywords()
+            papers = _filter_papers_by_interests(raw_papers, keywords, max_results=max_results)
+            logger.info(
+                "hf_papers: fetched=%d matched=%d",
+                len(raw_papers),
+                len(papers),
+            )
+
+    prompt = _build_prompt(forecast, label, papers=papers or None)
     try:
         # Look up via module globals so tests can monkeypatch
         # ``morning_brief.run_proactive``.

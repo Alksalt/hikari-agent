@@ -393,9 +393,21 @@ class TestProducerGmailImportantThread:
 class TestSelector:
     def test_picks_highest_score(self):
         from agents.engagement.selector import select
-        low = _make_candidate("reminder_fire", novelty=0.1, actionability=0.1, confidence=0.1)
-        mid = _make_candidate("wiki_new_file", novelty=0.5, actionability=0.5, confidence=0.5)
-        high = _make_candidate("decision_resolve_due", novelty=0.9, actionability=0.9, confidence=0.9)
+        # Sprint A added per-source min_value_score with an anchor weight in
+        # the value rubric — supply payload anchors so each candidate clears
+        # its source's min_value_score and only the score ordering is tested.
+        low = _make_candidate(
+            "reminder_fire", novelty=0.99, actionability=0.99, confidence=0.99,
+            payload={"text": "reminder body"},
+        )
+        mid = _make_candidate(
+            "wiki_new_file", novelty=0.5, actionability=0.5, confidence=0.5,
+            payload={"filename": "note.md"},
+        )
+        high = _make_candidate(
+            "decision_resolve_due", novelty=0.9, actionability=0.9, confidence=0.9,
+            payload={"statement": "ship X by friday"},
+        )
         ctx = _make_ctx(enabled={"reminder_fire", "wiki_new_file", "decision_resolve_due"})
         winner = select([low, mid, high], ctx)
         assert winner is not None

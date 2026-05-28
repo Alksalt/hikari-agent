@@ -74,6 +74,11 @@ def scan_inbound(text: str) -> tuple[bool, str | None]:
                 "trigger": m.group(0)[:80],
             }
             db.runtime_set(_KEY, json.dumps(state))
+            try:
+                from agents.mode_dispatch import activate_comfort_mode
+                activate_comfort_mode(trigger=m.group(0), kind=kind)
+            except Exception:
+                logger.warning("activate_comfort_mode failed (non-fatal)", exc_info=True)
             return True, m.group(0)
     return False, None
 

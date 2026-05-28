@@ -123,6 +123,7 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "ytmusic_recent": ANN_READ_EXTERNAL,
     # --- external write / dispatch ---
     "generate_photo": ANN_WRITE_EXTERNAL,
+    "scene_photo_send": ANN_WRITE_EXTERNAL,
     # dispatch_claude_session can be granted Bash / Edit / Write — arbitrary
     # host command execution on the operator's machine. Surface that as
     # destructive in external MCP clients so a single-click approval has
@@ -143,6 +144,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "run_skill": ANN_WRITE_EXTERNAL,
     # --- runtime progress signalling (Telegram send — external write) ---
     "progress": ANN_WRITE_EXTERNAL,
+    # --- voice outbound (ElevenLabs TTS → Telegram send — external write) ---
+    "voice_outbound_send": ANN_WRITE_EXTERNAL,
 }
 
 

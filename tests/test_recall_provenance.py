@@ -89,7 +89,7 @@ async def test_legacy_fact_hit_surfaces_provenance(monkeypatch):
         source_span_hash=db.span_hash("user loves cold rice"),
         recorded_at=999,
         attribution="user_stated",
-        source="test",
+        source="user",
     )
 
     hit = _make_hit("fact", fid, "user loves cold rice", score=0.9)

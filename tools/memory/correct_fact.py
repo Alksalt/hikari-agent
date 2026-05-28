@@ -14,6 +14,7 @@ def correct_fact(old_id: int, new_object: str, *,
         importance=old.get("importance", 5),
         confidence=1.0,
         attribution="user_corrected",
+        source="user",
         source_message_id=source_message_id,
         source_span_hash=db.span_hash(
             f"{old['subject']} {old['predicate']} {new_object}"

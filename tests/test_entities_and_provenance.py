@@ -172,7 +172,7 @@ def test_fact_provenance_join():
         source_span_hash=db.span_hash("user loves cold rice"),
         recorded_at=999,
         attribution="user_stated",
-        source="test",
+        source="user",
     )
     prov = db.fact_provenance(fid)
     assert prov is not None
@@ -182,7 +182,7 @@ def test_fact_provenance_join():
     assert len(prov["source_span_hash"]) == 16
     assert prov["recorded_at"] == 999
     assert prov["attribution"] == "user_stated"
-    assert prov["source"] == "test"
+    assert prov["source"] == "user"
     # Joined message fields.
     assert prov["message_id"] == mid
     assert prov["role"] == "user"
