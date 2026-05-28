@@ -51,6 +51,26 @@ def _resolve_local_tz_name() -> str:
     return "Europe/Oslo"
 
 
+def _resolve_local_city() -> str:
+    """City label that pairs with the IANA tz in the `# now` block.
+
+    Without this hint the model sometimes pattern-matches ``Europe/Oslo``
+    and refers to the user's location as Oslo even when they live
+    elsewhere in the same tz. Reads ``HOME_CITY`` env first, then
+    ``weather.default_location.city`` (also drives the weather fallback,
+    so the two stay in sync).
+    """
+    env_city = (os.environ.get("HOME_CITY") or "").strip()
+    if env_city:
+        return env_city
+    default = cfg.get("weather.default_location") or {}
+    if isinstance(default, dict):
+        city = str(default.get("city") or "").strip()
+        if city:
+            return city
+    return ""
+
+
 def _format_now() -> str:
     """Inject ``# now`` so the model can compute ISO timestamps for
     ``reminder_create`` from relative phrases ("in 1h", "через годину").
@@ -61,9 +81,11 @@ def _format_now() -> str:
     """
     now_utc = datetime.now(UTC).replace(second=0, microsecond=0)
     tz_name = _resolve_local_tz_name()
+    city = _resolve_local_city()
     try:
         local = now_utc.astimezone(ZoneInfo(tz_name))
-        local_line = f"local: {local.strftime('%Y-%m-%d %H:%M')} {tz_name}"
+        tz_suffix = f"{city} ({tz_name})" if city else tz_name
+        local_line = f"local: {local.strftime('%Y-%m-%d %H:%M')} {tz_suffix}"
     except ZoneInfoNotFoundError:
         logger.warning("inject_memory: unknown tz %r — falling back to UTC", tz_name)
         local_line = f"local: (unknown tz {tz_name!r}, using UTC)"
