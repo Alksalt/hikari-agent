@@ -1,7 +1,7 @@
 """Agent runtime. One ClaudeSDKClient per turn (created fresh, resumed by session_id).
 
 Wires in:
-  - System prompt = CLAUDE.md persona (single Sonnet, no router)
+  - System prompt = assets/PERSONA.md persona (single Sonnet, no router)
   - Project setting source so .claude/skills/ load on-demand
   - Two in-process SDK MCP servers: memory + photos
   - .mcp.json external servers (Google Workspace, when configured)
@@ -630,14 +630,14 @@ def owner_id() -> int:
 
 @cache
 def _persona() -> str:
-    """Return the CLAUDE.md text for use as the SDK system prompt.
+    """Return the assets/PERSONA.md text for use as the SDK system prompt.
 
     Cached once per process. Per-turn values (max_turns, time, etc.) live in
     the ``# now`` block injected by ``agents.hooks._format_now`` — never
     substituted here, since per-turn substitution would defeat the Anthropic
     prompt cache.
     """
-    return (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    return (REPO_ROOT / "assets" / "PERSONA.md").read_text(encoding="utf-8")
 
 
 @cache

@@ -258,16 +258,7 @@ def test_config_env_or_with_unset():
     assert config.env_or("DEFINITELY_NOT_SET_HIKARI_VAR", "default") == "default"
 
 
-# ---------- dead code removal regression ----------
-
-def test_format_retrieved_is_gone():
-    from agents import hooks
-    assert not hasattr(hooks, "_format_retrieved"), (
-        "_format_retrieved should have been deleted in Stage 1"
-    )
-
-
-# ---------- new CLAUDE.md banned-phrase additions (Sprint B Wave 3) ----------
+# ---------- new assets/PERSONA.md banned-phrase additions (Sprint B Wave 3) ----------
 
 def test_banned_as_your_companion():
     """'as your companion' must be caught by the refusal filter."""

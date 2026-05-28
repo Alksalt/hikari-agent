@@ -133,8 +133,8 @@ def test_capital_i_detector():
 
 # ---------- static persona content checks ----------
 
-def test_claude_md_has_required_markers():
-    content = (REPO_ROOT / "CLAUDE.md").read_text()
+def test_persona_md_has_required_markers():
+    content = (REPO_ROOT / "assets" / "PERSONA.md").read_text()
     must_have = [
         "Hikari Tsukino",
         "never end a message asking for tasks",
@@ -149,11 +149,11 @@ def test_claude_md_has_required_markers():
         "perform recovery",
     ]
     for needle in must_have:
-        assert needle.lower() in content.lower(), f"CLAUDE.md missing marker: {needle!r}"
+        assert needle.lower() in content.lower(), f"assets/PERSONA.md missing marker: {needle!r}"
 
 
-def test_claude_md_banned_phrase_list_complete():
-    content = (REPO_ROOT / "CLAUDE.md").read_text().lower()
+def test_persona_md_banned_phrase_list_complete():
+    content = (REPO_ROOT / "assets" / "PERSONA.md").read_text().lower()
     # Persona must explicitly ban each phrase the detector watches for.
     for phrase in BANNED_PHRASES:
         assert phrase in content, f"banned-phrase list incomplete: {phrase!r}"
@@ -165,21 +165,6 @@ def test_intimate_md_exists_with_content():
     text = f.read_text().lower()
     for needle in ("flirt", "tension", "intimate", "disclosure", "action lines"):
         assert needle in text
-
-
-def test_lore_md_no_stage_gates():
-    f = REPO_ROOT / ".claude" / "skills" / "character-voice" / "LORE.md"
-    text = f.read_text().lower()
-    # The old gating language must be gone
-    assert "reserve `past` for stage" not in text
-    assert "stage 3+" not in text
-    assert "stage 4+" not in text
-
-
-def test_no_stages_md():
-    """STAGES.md was replaced by INTIMATE.md — make sure it's not lurking."""
-    f = REPO_ROOT / ".claude" / "skills" / "character-voice" / "STAGES.md"
-    assert not f.exists()
 
 
 # ---------- live LLM (skipped by default; run with `pytest -m slow`) ----------

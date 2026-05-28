@@ -4,7 +4,7 @@ Every Sunday at 20:00 local the scheduler calls ``run_drift_canary`` with the
 bridge's ``send_text``. The function:
 
   1. Picks one of three rotating probe questions (epoch-week mod 3) targeting
-     a single hard opinion from CLAUDE.md:
+     a single hard opinion from assets/PERSONA.md:
        * ``needs_no_one``           — "i don't need anyone"
        * ``liking_embarrassing``    — "needing to be liked is embarrassing"
        * ``attention_mech``         — "attention mechanisms are still the only

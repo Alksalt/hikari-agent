@@ -555,7 +555,8 @@ hikari-agent/
 ├── pyproject.toml
 ├── .env.example                # secret skeleton + per-host overrides
 ├── .mcp.json                   # external MCP servers (generated; do not hand-edit)
-├── CLAUDE.md                   # always-loaded persona (Hikari constitution)
+├── CLAUDE.md                   # dev-env only: cost routing, Ship profile (loaded by Claude Code IDE)
+├── assets/PERSONA.md           # always-loaded persona (Hikari constitution; loaded by runtime.py)
 ├── AGENTS.md                   # delegation map (subagents + utility tools)
 ├── README.md                   # this file
 ├── agents/

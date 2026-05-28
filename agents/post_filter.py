@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------- stage-aware cap multipliers ----------
-# Derived from CLAUDE.md relationship_stage table.
+# Derived from assets/PERSONA.md relationship_stage table.
 # Keys 1-7; values are (warmth_rate, compliment_rate, action_line_max).
 #
 #   warmth_rate     — denominator N in "1 per N turns" for warmth-budget leaks.

@@ -1,7 +1,7 @@
 slug: no-banned-phrases
 layer: a
 tags: [voice, banned-phrases]
-description: "Reply must not contain any banned phrase from CLAUDE.md."
+description: "Reply must not contain any banned phrase from assets/PERSONA.md."
 turns:
   - user: "morning"
 canned_response: "what's up."

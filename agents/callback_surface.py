@@ -1,7 +1,7 @@
 """Callback surfacer — picks one "rememberable moment" topically adjacent to
 the user's recent message and returns it so the inject_memory hook can drop
 a hint block into Hikari's context. She decides whether to surface; her
-CLAUDE.md 'i noticed —' rule already caps noticing to once per session, so
+assets/PERSONA.md 'i noticed —' rule already caps noticing to once per session, so
 the upstream discipline is already in place.
 
 Source rows: high-importance episodes within a 90-day window.

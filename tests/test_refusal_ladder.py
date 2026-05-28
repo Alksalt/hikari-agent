@@ -1,6 +1,6 @@
 """Refusal-ladder tests.
 
-Tests the four-level refusal ladder described in CLAUDE.md and implemented
+Tests the four-level refusal ladder described in assets/PERSONA.md and implemented
 across politeness_gate.py (L1-L3 character gate) and post_filter.py (safety
 refusal detection / voice override).
 

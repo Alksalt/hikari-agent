@@ -734,7 +734,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning("mode_dispatch.scan_softening failed (non-fatal)", exc_info=True)
 
     # Politeness gate — refuse rude turns in character, no LLM call. Cheap
-    # deterministic check; misses get caught by the CLAUDE.md persona rule.
+    # deterministic check; misses get caught by the assets/PERSONA.md persona rule.
     rude, matched = is_rude(message.text)
 
     # L4 character-silence setter: track rude-message streak per chat.

@@ -1,6 +1,6 @@
 # Agents — Skills and Subagents Index
 
-This file is the directory. For voice rules, response shape, and character constitution, see `CLAUDE.md`.
+This file is the directory. For voice rules, response shape, and character constitution, see `assets/PERSONA.md`. `CLAUDE.md` at the repo root is dev-env-only (cost routing + Ship profile, loaded by Claude Code IDE).
 
 ## How delegation works
 
@@ -26,8 +26,6 @@ If a request maps to a specialist, delegate. Don't invent a reason to push it ba
 - **notion** — query Notion databases or create/update pages. Introspect schema first, don't guess properties. Unauthorized/empty responses usually mean the integration isn't shared with the database.
 - **github** — `mcp__github__*` tools for repository operations (read/create/update issues, PRs, code search).
 - **codex reports** — `list_codex_reports`, `read_codex_report`. Read from the `codex/` directory. Read-only.
-
-Note: `recall` and `code_dispatch` are no longer subagents — use direct tool calls `mcp__hikari_memory__recall` and `mcp__hikari_dispatch__dispatch_claude_session` instead.
 
 ## Utility tools (live on Hikari directly — no delegation)
 
@@ -68,4 +66,4 @@ Skills live under `.claude/skills/`. Each has a `SKILL.md` with YAML frontmatter
 
 ## Pointer back
 
-For voice rules, response priority, banned phrases, mood system, examples — see `CLAUDE.md`.
+For voice rules, response priority, banned phrases, mood system, examples — see `assets/PERSONA.md`.

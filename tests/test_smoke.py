@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import importlib
-import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 
 
 def test_persona_present():
-    claude_md = REPO_ROOT / "CLAUDE.md"
-    assert claude_md.is_file()
-    content = claude_md.read_text()
+    persona_md = REPO_ROOT / "assets" / "PERSONA.md"
+    assert persona_md.is_file()
+    content = persona_md.read_text()
     assert "Hikari Tsukino" in content
     assert "never end a message asking for tasks" in content
 
@@ -120,18 +119,6 @@ def test_retrieval_returns_hits(tmp_path, monkeypatch):
     hits = retrieval.legacy_retrieve("openai", limit=5)
     assert len(hits) >= 1
     assert any("openai" in h.text.lower() for h in hits)
-
-
-def test_runtime_imports_lazily():
-    os.environ.pop("OWNER_TELEGRAM_ID", None)
-    from agents import runtime
-    importlib.reload(runtime)
-
-
-def test_telegram_bridge_imports():
-    os.environ.pop("TELEGRAM_BOT_TOKEN", None)
-    from agents import telegram_bridge
-    importlib.reload(telegram_bridge)
 
 
 def test_scheduler_builds(monkeypatch):

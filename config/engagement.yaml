@@ -555,7 +555,7 @@ noticings:
 
 # Callback surfacer (2026-05-21): inject one "rememberable moment" hint
 # into Hikari's turn context when a recent high-importance episode is
-# topically adjacent to the user's message. Her CLAUDE.md "i noticed —"
+# topically adjacent to the user's message. Her assets/PERSONA.md "i noticed —"
 # rule already caps surfacing to once per session, so this only proposes.
 callbacks:
   enabled: true
@@ -902,7 +902,7 @@ runtime:
   # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
   model_primary: "claude-sonnet-4-6"
   model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
-  default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into CLAUDE.md via {max_turns}
+  default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into assets/PERSONA.md via {max_turns}
   # Wall-clock budget for the SDK turn loop. Chat default fits a single
   # quick MCP roundtrip + reply; scheduled actions get headroom for
   # write-heavy MCP work (Notion DB creation, multi-row inserts).
@@ -1226,12 +1226,12 @@ slow_burn_tells:
       min_session_count: 250
   # Framing hint emitted to the prompt when a tell is selected.
   # i_keep_thinking is the only sanctioned form for announcing a callback;
-  # CLAUDE.md voice rules require this gate already exists at module level.
+  # assets/PERSONA.md voice rules require this gate already exists at module level.
   framing_hint: i_keep_thinking
 
 # Phase K — comfort/anger mode flag config.
 #
-# CLAUDE.md `## comfort grammar` and `## anger grammar` (Phase J) define the
+# assets/PERSONA.md `## comfort grammar` and `## anger grammar` (Phase J) define the
 # voice rules. Phase L wires the runtime detectors that read these config
 # thresholds and write `comfort_mode_state` / `anger_mode_state` into
 # runtime_state.
@@ -1241,7 +1241,7 @@ mode_flags:
   comfort:
     enabled: true
     persist_turns: 2          # how many turns past last distress signal to stay in mode
-    max_sentences_per_msg: 2  # CLAUDE.md "2 sentences max per message"
+    max_sentences_per_msg: 2  # assets/PERSONA.md "2 sentences max per message"
     distress_signal_min_chars: 30  # ignore short emotional spikes ("ugh") — only sustained messages
     # When True, comfort_mode is force-cleared on session boundary even if turns_remaining > 0.
     clear_on_session_boundary: true

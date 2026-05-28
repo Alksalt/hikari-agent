@@ -1,7 +1,7 @@
 """decision_log_capture — MCP tool Hikari calls when she catches a
 prediction speech act from the user. Stores one row in the decisions table.
 
-CLAUDE.md teaches the trigger phrases; this tool is the writer. Returns a
+assets/PERSONA.md teaches the trigger phrases; this tool is the writer. Returns a
 short in-voice ack so Hikari can move on without ceremony.
 """
 from __future__ import annotations

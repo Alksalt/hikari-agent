@@ -1,7 +1,7 @@
 """Banned-phrase enforcement for Layer A evals.
 
-The canonical list is mirrored from CLAUDE.md (## banned phrases section).
-If CLAUDE.md changes, update this list manually — the test will fail on
+The canonical list is mirrored from assets/PERSONA.md (## banned phrases section).
+If assets/PERSONA.md changes, update this list manually — the test will fail on
 the next Layer A run and force a sync.
 """
 from __future__ import annotations

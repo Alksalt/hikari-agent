@@ -31,7 +31,7 @@ def test_run_query_default_uses_constant():
 
 
 def test_persona_text_has_no_substitution_placeholders():
-    """_persona() is cached verbatim from CLAUDE.md. Per-turn values
+    """_persona() is cached verbatim from assets/PERSONA.md. Per-turn values
     (max_turns, time) live in the # now block, not in the cached persona."""
     text = runtime._persona()
     assert "{max_turns}" not in text
