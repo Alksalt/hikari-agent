@@ -1528,6 +1528,25 @@ def _migrate_phase_b_schema_tables(conn: sqlite3.Connection) -> None:
         )
 
     # ------------------------------------------------------------------
+    # self_representation
+    # ------------------------------------------------------------------
+    if "self_representation" not in tables:
+        conn.execute("""
+            CREATE TABLE self_representation (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                content_json TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        # Single-row table — insert empty seed.
+        conn.execute(
+            "INSERT OR IGNORE INTO self_representation (id, content_json, version, updated_at) "
+            "VALUES (1, '{}', 1, ?)",
+            (_now(),),
+        )
+
+    # ------------------------------------------------------------------
     # media_outbox CHECK widening: add 'voice'
     # SQLite cannot ALTER a CHECK; rebuild the table inside a savepoint.
     # ------------------------------------------------------------------
@@ -2827,6 +2846,45 @@ def upsert_peer_representation(content: dict[str, Any]) -> None:
             "INSERT INTO peer_representation (id, content_json, version, updated_at) "
             "VALUES (1, ?, 1, ?) "
             "ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json, "
+            "updated_at = excluded.updated_at",
+            (json.dumps(content, ensure_ascii=False), _now()),
+        )
+
+
+def get_self_representation() -> dict[str, Any] | None:
+    """Return Hikari's self-model as a dict, or None if empty / not yet populated.
+
+    The self_representation table is a single-row table (id always = 1).
+    Seeded with '{}' on first migration; returns None until a real update is written.
+    """
+    import json
+    with _conn() as c:
+        row = c.execute(
+            "SELECT content_json FROM self_representation WHERE id = 1"
+        ).fetchone()
+    if not row or not row["content_json"]:
+        return None
+    try:
+        data = json.loads(row["content_json"])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return data
+
+
+def upsert_self_representation(content: dict[str, Any]) -> None:
+    """Persist Hikari's self-model. Overwrites on conflict — caller is
+    responsible for merge-before-upsert via ``peer_model.merge_self_dialectic``."""
+    import json
+    if not isinstance(content, dict):
+        raise TypeError(f"self_representation content must be dict, got {type(content)}")
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO self_representation (id, content_json, version, updated_at) "
+            "VALUES (1, ?, 1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json, "
+            "version = version + 1, "
             "updated_at = excluded.updated_at",
             (json.dumps(content, ensure_ascii=False), _now()),
         )

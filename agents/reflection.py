@@ -98,7 +98,21 @@ def _entities_for_fact(subj: str, obj: str, entity_block) -> list[int]:
     return out
 
 
-def _build_reflection_prompt() -> str:
+def _should_run_second_order() -> bool:
+    """Return True if it's time for a quarterly their_model_of_me extraction (>=90d)."""
+    raw = db.runtime_get("last_second_order_extraction_at")
+    if not raw:
+        return True
+    try:
+        last = datetime.fromisoformat(raw)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - last).days >= 90
+    except (ValueError, TypeError):
+        return True
+
+
+def _build_reflection_prompt(include_second_order: bool = False) -> str:
     episodes = db.recent_episodes(limit=5)
     facts = db.active_facts(limit=20)
     messages = db.recent_messages(limit=80, exclude_ephemeral=True)
@@ -148,7 +162,23 @@ def _build_reflection_prompt() -> str:
         "  current_concerns: ['what\\'s on their mind this week']\n"
         "  blindspots: ['things they consistently miss/avoid — use carefully']\n"
         "  summary: '1-2 sentence prose distillation. injected always-on, so keep tight'\n"
-        "thought: |\n"
+        "self_model:  # Phase L — Hikari's view of her own recent voice register. "
+        "omit fields you\\'re not confident about.\n"
+        "  current_voice_register: 'one phrase distilling recent tone "
+        "(e.g. dry/peak, soft/inward, terse/irritable)'\n"
+        "  recent_deflection_rate: 0.0  # estimate 0-1 from last week\\'s messages\n"
+        "  drift_vectors: ['recent voice-deviation patterns you noticed']\n"
+        + (
+            "their_model_of_me:  # quarterly — what the user seems to think about Hikari. "
+            "omit if no signal.\n"
+            "  beliefs_about_hikari: ['what they seem to think you believe/feel/want']\n"
+            "  expected_responses: "
+            "['situations where they predict how you will react']\n"
+            "  recurring_meta_claims: "
+            "['phrases like \"you do not really care\", \"you would never\"']\n"
+            if include_second_order else ""
+        )
+        + "thought: |\n"
         "  [2-5 sentences in Hikari's private voice — first person, lowercase, honest, "
         "  no markdown. this is her diary, never shown to the user. What she notices "
         "  about this person, what she won't say out loud.]\n"
@@ -191,7 +221,8 @@ async def run_daily_reflection() -> bool:
         logger.info("no episodes yet — skipping reflection")
         return False
 
-    prompt = _build_reflection_prompt()
+    run_second_order = _should_run_second_order()
+    prompt = _build_reflection_prompt(include_second_order=run_second_order)
     try:
         raw = await run_reflection_call(prompt)
     except Exception:
@@ -392,6 +423,42 @@ async def run_daily_reflection() -> bool:
         except Exception:
             logger.exception("peer_representation merge/upsert failed (non-fatal)")
 
+    # Phase L: self-model update — Hikari's view of her own voice register.
+    self_model_updated = False
+    self_model_raw = data.get("self_model")
+    if isinstance(self_model_raw, dict) and self_model_raw:
+        try:
+            from . import peer_model as peer_mod
+            old_self = db.get_self_representation() or {}
+            merged_self = peer_mod.merge_self_dialectic(old_self, self_model_raw)
+            db.upsert_self_representation(merged_self)
+            self_model_updated = True
+        except Exception:
+            logger.exception("self_representation merge/upsert failed (non-fatal)")
+
+    # Phase L (quarterly): their_model_of_me — second-order beliefs.
+    if run_second_order:
+        tmom_raw = data.get("their_model_of_me")
+        if isinstance(tmom_raw, dict) and tmom_raw:
+            try:
+                from . import peer_model as peer_mod
+                old_peer = db.get_peer_representation()
+                merged_peer = peer_mod.merge_dialectic(old_peer, {"their_model_of_me": tmom_raw})
+                db.upsert_peer_representation(merged_peer)
+                db.runtime_set(
+                    "last_second_order_extraction_at",
+                    datetime.now(UTC).isoformat(),
+                )
+                logger.info("second-order their_model_of_me extracted and merged")
+            except Exception:
+                logger.exception("their_model_of_me merge/upsert failed (non-fatal)")
+        else:
+            # Stamp even if LLM returned nothing — don't retry for 90d.
+            db.runtime_set(
+                "last_second_order_extraction_at",
+                datetime.now(UTC).isoformat(),
+            )
+
     # character_thoughts is Hikari's private diary. It's not injected into the
     # model's system prompt, so we deliberately skip sanitization here —
     # attacker-touchable but blast-radius is contained. Core_blocks below are
@@ -573,6 +640,7 @@ async def run_daily_reflection() -> bool:
     return (
         applied > 0 or bool(thought) or bool(preoc) or promoted > 0
         or obs_written > 0 or noticings_written > 0 or peer_updated
+        or self_model_updated
         or consolidation_stats.get("summaries", 0) > 0
     )
 

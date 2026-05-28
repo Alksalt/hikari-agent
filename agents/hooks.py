@@ -24,6 +24,7 @@ from tools import location as location_mod
 from . import affect as affect_mod
 from . import config as cfg
 from . import handoff as handoff_mod
+from . import mode_dispatch
 from . import tool_inventory as tool_inventory_mod
 
 logger = logging.getLogger(__name__)
@@ -885,6 +886,41 @@ def _format_deferred_proactives() -> str | None:
         return None
 
 
+def _format_self_model() -> str:
+    """Render Hikari's self-model block from the self_representation table."""
+    try:
+        from agents import peer_model as peer_mod
+        model = db.get_self_representation()
+        if not model:
+            return ""
+        return peer_mod.format_self_for_injection(model)
+    except Exception:
+        logger.exception("_format_self_model failed (non-fatal)")
+        return ""
+
+
+def _format_mode_flags() -> str:
+    """Render # comfort-mode or # anger-mode block when active."""
+    try:
+        comfort = mode_dispatch.current_comfort_mode()
+        anger = mode_dispatch.current_anger_mode()
+        if comfort:
+            return (
+                "# comfort mode\n"
+                f"trigger: {comfort.get('trigger', '')[:80]!r}. "
+                "drop reluctance, max 2 sentences, no barbs, one 'are you okay' per exchange. "
+                f"expires in {comfort.get('turns_remaining', 0)} turns."
+            )
+        if anger:
+            return (
+                "# anger mode\n"
+                "they doubled down rude. colder/flatter. one-line repair if YOU cross a line."
+            )
+    except Exception:
+        logger.exception("_format_mode_flags failed (non-fatal)")
+    return ""
+
+
 def _format_deferred_observations() -> str | None:
     """Prepend any pending deferred_observations from runtime_state.
 
@@ -954,6 +990,12 @@ async def inject_memory(
     if isinstance(input_data, dict):
         user_prompt = str(input_data.get("prompt") or input_data.get("user_prompt") or "")
     try:
+        # Decrement comfort mode turn count at the start of each user turn.
+        try:
+            mode_dispatch.decrement_comfort_turn()
+        except Exception:
+            logger.exception("decrement_comfort_turn failed (non-fatal)")
+
         # Read BEFORE the runtime.py respond() path updates it so gap_since_last
         # sees the previous turn's timestamp (not the current one).
         last_msg = db.runtime_get("last_user_message")
@@ -976,6 +1018,8 @@ async def inject_memory(
             ("peer_insights",       3, _format_peer_insights()),
             ("emotional_register",  2, _format_emotional_register()),
             ("voice_corrections",   2, _format_voice_corrections()),     # Phase P
+            ("self_model",          1, _format_self_model()),             # Phase L
+            ("mode_flags",          1, _format_mode_flags()),             # Phase L
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
             ("tools_available",     1, _format_tools_available()),

@@ -725,6 +725,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if consumed:
         return
 
+    # Mode dispatch — scan for softening patterns before the politeness gate so
+    # anger_mode clears on the same turn the apology lands.
+    try:
+        from agents import mode_dispatch as _mode_dispatch
+        _mode_dispatch.scan_softening(message.text)
+    except Exception:
+        logger.warning("mode_dispatch.scan_softening failed (non-fatal)", exc_info=True)
+
     # Politeness gate — refuse rude turns in character, no LLM call. Cheap
     # deterministic check; misses get caught by the CLAUDE.md persona rule.
     rude, matched = is_rude(message.text)
@@ -736,6 +744,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         _rude_flags = _RUDE_FLAGS.setdefault(message.chat_id, deque(maxlen=4))
         _rude_flags.append(rude)
+        # anger_mode: 2+ consecutive rude messages trigger colder/flatter mode.
+        if rude and len(_rude_flags) >= 2 and list(_rude_flags)[-2]:
+            try:
+                from agents import mode_dispatch as _mode_dispatch_anger
+                _mode_dispatch_anger.activate_anger_mode(trigger=message.text or "")
+            except Exception:
+                logger.warning("activate_anger_mode failed (non-fatal)", exc_info=True)
         if len(_rude_flags) == 4 and all(_rude_flags):
             db.runtime_set("silenced_until_msg_id", str(message.message_id))
             db.runtime_set("silenced_set_at", datetime.now(timezone.utc).isoformat())
