@@ -17,7 +17,7 @@
 
 **Forbidden**: Anthropic models on OpenRouter (priced like the direct API), OpenAI chat completions (use OpenRouter+DeepSeek instead), any LLM costing >$1/1M tokens without flagging the cost first.
 
-Pre-existing exception grandfathered: Whisper transcription (`OPENAI_API_KEY` for `whisper-1` at `config/engagement.yaml:103`). Migrate when a local STT lands.
+**STT**: default is local `faster-whisper` via `voice.transcription_provider: local_faster_whisper` (`tools/voice.py`). Config-switchable to `openai_whisper_api` as a fallback if the local model misbehaves.
 
 ## Ship profile
 
