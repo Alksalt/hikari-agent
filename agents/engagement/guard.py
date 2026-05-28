@@ -26,6 +26,16 @@ def should_wake(source_id: str | None = None) -> bool:
         return True  # gate disabled — always wake
 
     try:
+        from agents.proactive_gate import _is_silent_day_today
+        if _is_silent_day_today():
+            logger.debug("should_wake: silent_day active — skip")
+            return False
+    except Exception as exc:
+        logger.warning("silent_day check failed (fail-open for this gate): %s", exc)
+        # fail-open here: if the check itself errors we don't want to permanently
+        # suppress ticks — the reserve_and_send gate is still the final authority.
+
+    try:
         from agents.proactive import _is_quiet_now
         if _is_quiet_now():
             logger.debug("should_wake: quiet hours active — skip")

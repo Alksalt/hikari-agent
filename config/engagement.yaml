@@ -980,6 +980,14 @@ sqlite:
   busy_timeout_ms: 5000
 
 engagement:
+  # Phase F: "The Daily Nothing" — one random weekday per week, all proactive
+  # sources gate silent. User-anchored responses still work normally.
+  # Scarcity drives perceived value (iOS notification fatigue research).
+  weekly_silent_day_enabled: true
+  # Eligible weekdays for the silent-day draw (sat/sun excluded by default:
+  # sat is "unstructured", sun is "low" and already persona-soft).
+  weekly_silent_day_pool: [mon, tue, wed, thu, fri]
+
   # priority_tier: 1=high (time-sensitive), 2=normal, 3=background
   # min_interval_minutes: hard gate — source is silenced until this window elapses
   # send_mode: proactive | observation | silent
