@@ -82,7 +82,7 @@ async def _run_send(reply_text: str, *, fail_send: bool = False, monkeypatch) ->
     # Patch filter_outgoing to short-replace DRAFT_TEXT → FINAL_TEXT.
     from agents.post_filter import FilterResult
 
-    def fake_filter_outgoing(text: str) -> FilterResult:
+    def fake_filter_outgoing(text: str, *, source=None) -> FilterResult:
         return FilterResult(
             text="FINAL_TEXT",
             refusal_short_replaced=True,

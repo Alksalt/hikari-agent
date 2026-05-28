@@ -333,6 +333,33 @@ post_filter:
   # agents.runtime._invoke_sdk, and ships a redirect line if no relevant
   # fetch tool was invoked this turn. Toggle off if false-positive flood.
   fabrication_backstop_enabled: true
+  # Phase 3 — voice enforcement
+  # Strip markdown formatting (bullets, headers, bold, code) from outbound
+  # messages. Leaves bracketed action lines (e.g. [reads it twice]) intact.
+  strip_markdown_enabled: true
+  # Regex patterns used to detect a task-soliciting trailing question.
+  # The final sentence must end in '?' AND match at least one cue.
+  # Any non-soliciting question (e.g. "you okay?") is left alone.
+  # Cues require a task-VERB object so the persona's genuine/intimate questions
+  # ("want me there?", "should i be worried?", "what do you want to eat?") are
+  # NOT flagged — only task-soliciting closers ("want me to dig into the logs?").
+  task_solicit_cues:
+    - "want me to (dig|check|look|run|do|find|write|fix|build|set up|pull|grab|handle|tackle|start|draft|review|investigate|debug|test|deploy|add|create|update|search)\\b"
+    - "should i (dig|check|look|run|do|find|write|fix|build|set up|pull|grab|handle|tackle|start|draft|review|investigate|debug|test|deploy|add|create|update|search)\\b"
+    - "what.*(want me to (do|tackle|work on)|should i (do|work on|tackle)|to work on next|to tackle next)"
+    - "where.*(should i (start|begin)|do.* want me to start)"
+    - "anything (else|i can (do|help|grab|check|look))"
+  # Hikari-initiated (non-interactive) sources whose composed text legitimately
+  # ends on a yes/no offer (e.g. the daily check-in's "should i check emails?")
+  # are exempt from the trailing-question gate — the "not a waiter" rule targets
+  # interactive replies (chat/reaction), not proactive offers. Markdown strip
+  # still applies to these.
+  task_solicit_exempt_sources:
+    - "proactive"
+    - "daily_checkin"
+    - "morning_brief"
+    - "decision_log"
+    - "event"
 
 # ============================================================================
 # Stage 2: memory engagement core — lexicon, calibrated recall, handoff, decay

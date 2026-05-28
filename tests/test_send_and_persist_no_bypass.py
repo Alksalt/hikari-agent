@@ -27,7 +27,18 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     import storage.db as _db_mod
     importlib.reload(_db_mod)
     monkeypatch.setattr(db, "_DB_PATH", db_path)
+    # Tests below replace agents.post_filter / agents.messaging in sys.modules
+    # with stubs and never restore them; snapshot + restore so a stub module
+    # does not leak into other test files (it broke test_post_filter_voice_enforce
+    # under non-default ordering).
+    import sys as _sys
+    _orig_mods = {k: _sys.modules.get(k) for k in ("agents.post_filter", "agents.messaging")}
     yield
+    for _k, _v in _orig_mods.items():
+        if _v is not None:
+            _sys.modules[_k] = _v
+        else:
+            _sys.modules.pop(_k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +71,7 @@ async def test_already_filtered_true_skips_filter():
     """already_filtered=True: filter_outgoing must NOT be called; raw text persisted."""
     mod = types.ModuleType("agents.post_filter")
 
-    def filter_outgoing(text: str):
+    def filter_outgoing(text: str, *, source=None):
         raise AssertionError("filter_outgoing called despite already_filtered=True")
 
     async def rewrite_or_fallback(*a, **kw):
@@ -110,7 +121,7 @@ async def test_already_filtered_false_runs_filter():
             self.needs_llm_rewrite = False
             self.rewrite_instruction = None
 
-    def filter_outgoing(text: str):
+    def filter_outgoing(text: str, *, source=None):
         called["n"] += 1
         return _FR(text)
 

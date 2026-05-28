@@ -114,7 +114,7 @@ async def send_and_persist(
     if text and not already_filtered:
         from agents.post_filter import filter_outgoing, rewrite_or_fallback
 
-        result = filter_outgoing(text)
+        result = filter_outgoing(text, source=source)
         if result.needs_llm_rewrite:
             final_text = await rewrite_or_fallback(text, result, mood=None)
         else:

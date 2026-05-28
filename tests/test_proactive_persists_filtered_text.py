@@ -59,7 +59,7 @@ async def test_send_text_returns_filtered_text_and_message_id(monkeypatch, tmp_p
     monkeypatch.setattr(
         post_filter_mod,
         "filter_outgoing",
-        lambda text: _make_filter_result("FILTERED_TEXT" if text == "DRAFT_TEXT" else text),
+        lambda text, *, source=None: _make_filter_result("FILTERED_TEXT" if text == "DRAFT_TEXT" else text),
     )
 
     # Verify _unpack_send_result handles the (filtered_text, message_id, ok) tuple:

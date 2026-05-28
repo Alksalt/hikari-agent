@@ -110,6 +110,61 @@ def stage_caps() -> dict[str, int | float]:
     return _STAGE_CAP_MULTIPLIERS.get(_current_stage(), _DEFAULT_STAGE_CAPS)
 
 
+# ---------- markdown strip ----------
+# Strips chat-markdown formatting from outbound text while preserving
+# bracketed action lines (e.g. [reads it twice]) that form part of Hikari's
+# character voice.  Runs after the fabrication backstop and before
+# apply_regex_counters.  Gated by post_filter.strip_markdown_enabled.
+
+_ACTION_LINE_RE_MD = re.compile(r"\[[a-z ]+\]")
+
+# Inline bold/italic: **text** or __text__
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+# Inline code: `text`
+_MD_CODE_RE = re.compile(r"`([^`]+)`")
+# Leading block markers on a line: - / * / # (any count) / >
+_MD_LINE_PREFIX_RE = re.compile(r"^(\s*)[-*#>]+ ?", re.MULTILINE)
+
+
+def _strip_chat_markdown(text: str) -> str:
+    """Remove markdown formatting, preserving bracketed action lines.
+
+    Strips per line:
+    - Leading ``- `` / ``* `` / ``#...`` / ``>`` block markers
+    Strips inline:
+    - ``**bold**`` / ``__bold__`` → plain text
+    - `` `code` `` → plain text
+
+    Bracketed spans matching ``[word word]`` (action lines) are left intact.
+    """
+    if not text:
+        return text
+
+    # Replace action-line spans with placeholders so subsequent regexes
+    # don't alter them, then restore after all substitutions.
+    placeholders: list[str] = []
+
+    def _save_action(m: re.Match) -> str:
+        idx = len(placeholders)
+        placeholders.append(m.group(0))
+        return f"\x00AL{idx}\x00"
+
+    text = _ACTION_LINE_RE_MD.sub(_save_action, text)
+
+    # Strip inline bold/italic and code.
+    text = _MD_BOLD_RE.sub(lambda m: m.group(1) or m.group(2), text)
+    text = _MD_CODE_RE.sub(r"\1", text)
+
+    # Strip leading block markers per line.
+    text = _MD_LINE_PREFIX_RE.sub(r"\1", text)
+
+    # Restore action-line placeholders.
+    for idx, span in enumerate(placeholders):
+        text = text.replace(f"\x00AL{idx}\x00", span)
+
+    return text
+
+
 # ---------- per-turn regex counters ----------
 # All three counters are reset per-turn via runtime_state keys prefixed with
 # the current turn_id so concurrent turns don't bleed into each other.
@@ -840,7 +895,37 @@ async def rewrite_or_fallback(
     return rewritten
 
 
-def filter_outgoing(text: str) -> FilterResult:
+def _detect_task_solicit_question(text: str) -> bool:
+    """Return True when the final sentence ends in ``?`` and contains a
+    task-soliciting cue from ``post_filter.task_solicit_cues``.
+
+    A non-soliciting question (e.g. "you okay?") is NOT flagged.
+    """
+    if not text:
+        return False
+    # Split into candidate sentences by terminal punctuation.
+    # We only care whether the very last sentence ends in '?'.
+    stripped = text.rstrip()
+    if not stripped.endswith("?"):
+        return False
+    # Extract the last sentence — split on sentence-ending punctuation.
+    sentences = re.split(r"[.!?]", stripped)
+    last = sentences[-1].strip() if sentences else ""
+    if not last:
+        # Last split produced empty string — grab the penultimate fragment
+        # which is the actual last sentence before the terminal '?'.
+        last = sentences[-2].strip() if len(sentences) >= 2 else ""
+    if not last:
+        return False
+
+    cues_raw = cfg.get("post_filter.task_solicit_cues") or []
+    for raw_pattern in cues_raw:
+        if re.search(raw_pattern, last, re.IGNORECASE):
+            return True
+    return False
+
+
+def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
     """Run all filters. Cheap to call on every outbound message.
 
     Caller contract:
@@ -853,9 +938,11 @@ def filter_outgoing(text: str) -> FilterResult:
       0. Canary leak (catastrophic — blocks outright)
       1. Click-Allow backstop (deterministic replacement)
       2. Fabricated external-data backstop
-      3. Regex counters + stage-aware caps (action-line strip, sentence/romaji log)
-      4. Refusal-voice filter
-      5. Sycophancy guard
+      3. Markdown strip (deterministic, gated by strip_markdown_enabled)
+      4. Regex counters + stage-aware caps (action-line strip, sentence/romaji log)
+      5. Trailing task-question gate (routes to LLM rewrite)
+      6. Refusal-voice filter
+      7. Sycophancy guard
     """
     # Canary leak check runs first — catastrophic, never let through.
     try:
@@ -906,9 +993,28 @@ def filter_outgoing(text: str) -> FilterResult:
             rewrite_instruction=None,
         )
 
+    # Markdown strip — remove bullet/header/bold/code formatting from outbound
+    # text before it reaches the user. Action lines are preserved.
+    if cfg.get("post_filter.strip_markdown_enabled", True):
+        text = _strip_chat_markdown(text)
+
     # Regex counters + stage-aware caps — action-line strip, verbosity log,
     # romaji overuse log.  Mutates text when excess action-lines are stripped.
     text = apply_regex_counters(text)
+
+    # Trailing task-question gate — detect a final sentence ending in '?' that
+    # contains a task-soliciting cue.  Routes to the LLM rewrite path (same
+    # mechanism as the refusal filter) so the question is dropped in voice, not
+    # mechanically deleted.
+    # The "not a waiter" gate targets interactive replies (source=None for the
+    # chat/reaction pre-filter). Hikari-initiated sources (proactive, ceremonies)
+    # legitimately end on an offer, so they're exempt — the markdown strip above
+    # still applies to them.
+    _task_q_exempt = set(cfg.get("post_filter.task_solicit_exempt_sources") or [])
+    task_q_flagged = (
+        source not in _task_q_exempt
+        and _detect_task_solicit_question(text)
+    )
 
     refusal = scan_refusal_voice(text)
     sycophancy = scan_sycophancy(text)
@@ -950,6 +1056,16 @@ def filter_outgoing(text: str) -> FilterResult:
             "post_filter: sycophancy triggered (collapses=%d, violations=%d)",
             sycophancy.collapse_count, len(sycophancy.anchor_violations),
         )
+
+    if task_q_flagged:
+        needs_rewrite = True
+        task_q_instr = (
+            "drop the closing question — she doesn't solicit tasks."
+        )
+        rewrite_instruction = (
+            f"{rewrite_instruction or ''}\n\n{task_q_instr}".strip()
+        )
+        logger.info("post_filter: trailing task-soliciting question flagged for rewrite")
 
     # Short-replacement supersedes rewrite — if we already swapped to a curt phrase,
     # there's nothing to rewrite.
