@@ -447,7 +447,7 @@ def test_selector_skips_snoozed():
         confidence=1.0,
     )
     ctx = SimpleNamespace(
-        now_local=_dt.datetime.now(),
+        now_local=_dt.datetime.now(_dt.UTC),
         mood="focused",
         enabled_sources={"wiki_new_file"},
         pool_caps={"user_anchored": True},

@@ -186,6 +186,7 @@ def test_eleven_ninety_nine_sessions_is_stage_6():
 # Stage 7: 1200+ sessions
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_twelve_hundred_sessions_is_stage_7():
     """1200 sessions (exactly the stage-7 threshold) → stage 7."""
     _seed_sessions(1200)
@@ -194,6 +195,7 @@ def test_twelve_hundred_sessions_is_stage_7():
     assert stage == 7
 
 
+@pytest.mark.slow
 def test_fifteen_hundred_sessions_is_stage_7():
     """1500 sessions (well above the stage-7 threshold) → stage 7."""
     _seed_sessions(1500)
@@ -202,6 +204,7 @@ def test_fifteen_hundred_sessions_is_stage_7():
     assert stage == 7
 
 
+@pytest.mark.slow
 def test_two_thousand_sessions_is_stage_7():
     _seed_sessions(2000)
     from agents.reflection import compute_relationship_stage

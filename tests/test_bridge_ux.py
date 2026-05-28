@@ -261,7 +261,7 @@ async def test_plain_text_reaches_respond(monkeypatch):
     chat = Chat(id=owner, type="private")
     message = Message(
         message_id=1,
-        date=datetime.datetime.now(),
+        date=datetime.datetime.now(datetime.UTC),
         chat=chat,
         from_user=user,
         text="what's the weather like",

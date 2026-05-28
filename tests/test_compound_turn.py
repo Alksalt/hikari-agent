@@ -402,7 +402,7 @@ async def test_run_compound_turn_typed_read_step_timeout(monkeypatch, _isolated_
 
     async def _fake_ric(prompt, **_kwargs):
         if prompt == "slow":
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
             return "slow-done"
         return f"[{prompt}]"
 
@@ -410,7 +410,7 @@ async def test_run_compound_turn_typed_read_step_timeout(monkeypatch, _isolated_
     monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
 
     result = await run_compound_turn_typed(
-        "x" * 20, user_turn_id="t6", step_timeout=0.1,
+        "x" * 20, user_turn_id="t6", step_timeout=0.05,
     )
     assert "[fast]" in result
     assert "failed" in result.lower() or "Timeout" in result
