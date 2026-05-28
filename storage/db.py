@@ -533,6 +533,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
     "migrate_phase_b_schema_tables",
+    "migrate_phase_l_self_representation",
     "migrate_phase_n_facts_source_backfill",
     "migrate_phase_o_research_columns",
 ]
@@ -675,6 +676,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
     run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
+    run_once(conn, "migrate_phase_l_self_representation", _migrate_phase_l_self_representation)
     run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill)
     run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
     # Commit any pending implicit transaction left open by migrations that
@@ -1532,25 +1534,6 @@ def _migrate_phase_b_schema_tables(conn: sqlite3.Connection) -> None:
         )
 
     # ------------------------------------------------------------------
-    # self_representation
-    # ------------------------------------------------------------------
-    if "self_representation" not in tables:
-        conn.execute("""
-            CREATE TABLE self_representation (
-                id INTEGER PRIMARY KEY CHECK(id=1),
-                content_json TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        # Single-row table — insert empty seed.
-        conn.execute(
-            "INSERT OR IGNORE INTO self_representation (id, content_json, version, updated_at) "
-            "VALUES (1, '{}', 1, ?)",
-            (_now(),),
-        )
-
-    # ------------------------------------------------------------------
     # media_outbox CHECK widening: add 'voice'
     # SQLite cannot ALTER a CHECK; rebuild the table inside a savepoint.
     # ------------------------------------------------------------------
@@ -1694,6 +1677,37 @@ def _migrate_entities_and_provenance(conn: sqlite3.Connection) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS fact_entities_entity "
                  "ON fact_entities(entity_id, fact_id DESC)")
+    conn.commit()
+
+
+def _migrate_phase_l_self_representation(conn: sqlite3.Connection) -> None:
+    """Phase L: self_representation table — Hikari's own internal model.
+
+    Lives in its own migration (NOT in ``_migrate_phase_b_schema_tables``)
+    so the recorded checksum for the Phase B migration doesn't drift on
+    DBs that already ran it pre-Phase L.
+
+    Single-row table mirroring peer_representation.
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='self_representation'"
+    )
+    if cur.fetchone() is not None:
+        conn.commit()
+        return
+    conn.execute("""
+        CREATE TABLE self_representation (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            content_json TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT OR IGNORE INTO self_representation (id, content_json, version, updated_at) "
+        "VALUES (1, '{}', 1, ?)",
+        (_now(),),
+    )
     conn.commit()
 
 
