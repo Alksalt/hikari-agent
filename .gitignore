@@ -21,6 +21,7 @@ hikari.db
 
 # Claude Code agent worktree cache (created by Agent subagents running in isolation)
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # /ship plan working notes (per-feature, not source of truth)
 plans/
