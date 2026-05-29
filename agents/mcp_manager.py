@@ -145,6 +145,36 @@ async def _spawn_session(server_name: str) -> tuple[ClientSession, AsyncExitStac
         raise
 
 _DEFAULT_TTL_S = 60
+_DEFAULT_CALL_TIMEOUT_S = 30
+
+
+def _load_call_timeouts() -> dict[str, int]:
+    """Read direct_call_timeout_sec per server from config/tools.yaml.
+
+    Returns a mapping of server_name -> timeout_seconds. Servers that don't
+    define the key are not included; callers fall back to _DEFAULT_CALL_TIMEOUT_S.
+
+    Best-effort: returns {} on any parse/IO error so a missing or malformed
+    config never prevents the manager from starting.
+    """
+    import yaml  # pyyaml is already a dep (used by agents/config.py)
+
+    _TOOLS_YAML = Path(__file__).parent.parent / "config" / "tools.yaml"
+    try:
+        with _TOOLS_YAML.open() as fh:
+            data = yaml.safe_load(fh)
+        servers = (data or {}).get("mcp_servers") or {}
+        out: dict[str, int] = {}
+        for name, spec in servers.items():
+            if isinstance(spec, dict) and "direct_call_timeout_sec" in spec:
+                try:
+                    out[str(name)] = int(spec["direct_call_timeout_sec"])
+                except (ValueError, TypeError):
+                    pass
+        return out
+    except Exception:
+        logger.debug("mcp_manager: could not load call timeouts from tools.yaml", exc_info=True)
+        return {}
 
 
 class McpManager:
@@ -154,14 +184,28 @@ class McpManager:
         self._lock = asyncio.Lock()
         # per-server TTL config (seconds)
         self._ttl: dict[str, int] = {}
+        # per-server direct-call timeout (seconds); populated at configure time
+        self._call_timeouts: dict[str, int] = {}
         # Direct-call session cache (server_name -> _SessionHandle)
         self._sessions: dict[str, _SessionHandle] = {}
 
     def configure_ttls(self, ttls: dict[str, int]) -> None:
         self._ttl = dict(ttls)
+        # Also reload per-server call timeouts when TTLs are reconfigured —
+        # both come from config/tools.yaml so they're updated together.
+        self._call_timeouts = _load_call_timeouts()
 
     def _ttl_for(self, server_name: str) -> int:
         return int(self._ttl.get(server_name, _DEFAULT_TTL_S))
+
+    def _call_timeout_for(self, server_name: str) -> int:
+        """Return the per-call asyncio.wait_for timeout (seconds) for this server.
+
+        Source priority:
+          1. ``direct_call_timeout_sec`` from config/tools.yaml for this server.
+          2. Module-level ``_DEFAULT_CALL_TIMEOUT_S`` (30 s).
+        """
+        return int(self._call_timeouts.get(server_name, _DEFAULT_CALL_TIMEOUT_S))
 
     async def acquire(self, server_name: str) -> None:
         """Mark a server as actively in use. Idempotent. Returns immediately."""
@@ -223,11 +267,31 @@ class McpManager:
             session = handle.session
             assert session is not None
 
+        timeout = self._call_timeout_for(server_name)
         try:
-            result: CallToolResult = await session.call_tool(
-                tool_name, arguments=arguments
+            result: CallToolResult = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments=arguments),
+                timeout=timeout,
             )
-        except Exception as exc:
+        except (Exception, asyncio.TimeoutError) as exc:
+            # Tear down the dead / timed-out session under its own lock so the
+            # next call respawns a fresh subprocess rather than retrying a
+            # wedged one.
+            async with handle._lock:
+                if handle._exit_stack is not None:
+                    try:
+                        await handle._exit_stack.aclose()
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "mcp_manager: error closing stale exit_stack for %s",
+                            server_name, exc_info=True,
+                        )
+                handle.session = None
+                handle._exit_stack = None
+            logger.warning(
+                "mcp_manager: evicted session for %s after error: %s",
+                server_name, exc,
+            )
             raise McpCallError(server_name, tool_name, str(exc)) from exc
 
         if result.isError:

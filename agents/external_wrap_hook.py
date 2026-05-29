@@ -257,10 +257,30 @@ def make_post_tool_use_hook(
             updated = _wrap_tool_response(tool_name, tool_response)
         except Exception:
             logger.exception(
-                "external_wrap_hook: wrap failed for %s; passing through raw",
+                "external_wrap_hook: wrap failed for %s; suppressing raw output",
                 tool_name,
             )
-            return {}
+            # Fail CLOSED: a matched (untrusted) tool whose wrap raised must
+            # NOT deliver the raw response to the model — that silently disables
+            # the only structural prompt-injection defense for this tool.
+            # Return a safe placeholder so the SDK replaces the output.
+            suppressed: dict[str, Any] = {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[untrusted output from {tool_name} suppressed:"
+                            " wrap failed]"
+                        ),
+                    }
+                ]
+            }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "updatedToolOutput": suppressed,
+                }
+            }
 
         if updated is tool_response:
             # Nothing to do — non-string, non-MCP shape.

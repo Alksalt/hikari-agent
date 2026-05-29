@@ -521,3 +521,54 @@ async def test_data_field_preserved_not_wrapped_for_untrusted_tool():
     assert "<<<HIKARI_UNTRUSTED_BEGIN>>>" in updated["content"][0]["text"]
     # data must be preserved unchanged (SDK never exposes it to the model)
     assert updated["data"] == hostile_data
+
+
+# ---------------------------------------------------------------------------
+# Phase D fix: fail CLOSED on wrap exception — suppressed placeholder, not {}
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_wrap_failure_returns_suppressed_placeholder_not_empty_dict(monkeypatch):
+    """When _wrap_tool_response raises for a matched (untrusted) tool, the hook
+    must return a suppressed-placeholder updatedToolOutput instead of {} (which
+    would leave the raw untrusted content visible to the model)."""
+    # Patch wrap_untrusted in the external_wrap_hook module's own namespace
+    # (it was imported with `from .injection_guard import wrap_untrusted`).
+    monkeypatch.setattr(
+        external_wrap_hook,
+        "wrap_untrusted",
+        lambda tool_name, text: (_ for _ in ()).throw(RuntimeError("wrap exploded")),
+    )
+
+    hook = external_wrap_hook.make_post_tool_use_hook()
+    out = await hook(
+        {
+            "tool_name": "mcp__google_workspace__get_thread",
+            "tool_response": {
+                "content": [{"type": "text", "text": "hostile email body"}],
+            },
+        },
+        None, None,
+    )
+
+    # Must return a suppressed placeholder, NOT the empty dict that would
+    # deliver the raw untrusted content to the model.
+    assert out != {}, (
+        "wrap failure for a matched tool must not return {} "
+        "(would pass raw untrusted content to the model)"
+    )
+    assert "hookSpecificOutput" in out
+    updated = out["hookSpecificOutput"]["updatedToolOutput"]
+    # Placeholder must be structured content (not the original hostile text)
+    blocks = updated.get("content", [])
+    assert blocks, "suppressed placeholder must have content blocks"
+    placeholder_text = blocks[0].get("text", "")
+    assert "suppressed" in placeholder_text.lower(), (
+        "placeholder text must mention 'suppressed'"
+    )
+    assert "hostile email body" not in placeholder_text, (
+        "raw untrusted text must not appear in the placeholder"
+    )
+    assert "mcp__google_workspace__get_thread" in placeholder_text, (
+        "placeholder must name the tool for auditability"
+    )

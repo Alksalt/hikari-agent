@@ -301,3 +301,130 @@ def test_build_server_params_missing_server():
 
     with pytest.raises(KeyError, match="nonexistent_server"):
         _build_server_params("nonexistent_server")
+
+
+# ---------------------------------------------------------------------------
+# Phase D fix: per-call timeout + session eviction on error / timeout
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_call_evicts_session_and_raises_on_exception():
+    """When session.call_tool raises, the manager must evict the session
+    (session=None, _exit_stack=None) and re-raise as McpCallError so the
+    next call spawns a fresh subprocess instead of retrying the wedged one."""
+    session = AsyncMock()
+    session.call_tool = AsyncMock(side_effect=RuntimeError("pipe broken"))
+    stack = AsyncMock()
+    stack.aclose = AsyncMock()
+
+    manager = _make_manager()
+    with patch(
+        "agents.mcp_manager._spawn_session",
+        new=AsyncMock(return_value=(session, stack)),
+    ):
+        with pytest.raises(McpCallError) as exc_info:
+            await manager.call("notion", "API-post-search", {"query": "test"})
+
+    err = exc_info.value
+    assert err.server == "notion"
+    assert "pipe broken" in err.message
+
+    # Session must be evicted — handle must be reset to None.
+    handle = manager._sessions.get("notion")
+    assert handle is not None, "handle entry stays in _sessions dict"
+    assert handle.session is None, "session must be evicted to None after error"
+    assert handle._exit_stack is None, "_exit_stack must be cleared after error"
+
+    # exit_stack.aclose() must have been called to clean up the subprocess.
+    stack.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_call_evicts_session_and_raises_on_timeout():
+    """asyncio.TimeoutError from wait_for evicts the session and re-raises
+    as McpCallError — the next call respawns instead of getting stuck."""
+    session = AsyncMock()
+
+    # Make call_tool hang long enough to be timed out by wait_for.
+    async def _hang(*args, **kwargs):
+        await asyncio.sleep(100)
+
+    session.call_tool = _hang
+    stack = AsyncMock()
+    stack.aclose = AsyncMock()
+
+    manager = _make_manager()
+    # Override the timeout to something tiny so the test finishes quickly.
+    manager._call_timeouts["playwright"] = 0  # effectively immediate timeout
+
+    with patch(
+        "agents.mcp_manager._spawn_session",
+        new=AsyncMock(return_value=(session, stack)),
+    ):
+        with pytest.raises(McpCallError) as exc_info:
+            await manager.call("playwright", "browser_snapshot", {})
+
+    err = exc_info.value
+    assert err.server == "playwright"
+
+    handle = manager._sessions.get("playwright")
+    assert handle is not None
+    assert handle.session is None, "session must be evicted after timeout"
+    assert handle._exit_stack is None, "_exit_stack must be cleared after timeout"
+    stack.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_call_respawns_after_eviction():
+    """After a session is evicted (session=None), the next call must trigger
+    a fresh spawn rather than reusing a dead session reference."""
+    call_count = 0
+    session = AsyncMock()
+
+    async def _fail_then_succeed(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("first call fails")
+        return _make_text_result("recovered")
+
+    session.call_tool = _fail_then_succeed
+    stack = AsyncMock()
+    stack.aclose = AsyncMock()
+
+    spawn_count = 0
+
+    async def fake_spawn(server_name: str):
+        nonlocal spawn_count
+        spawn_count += 1
+        return session, stack
+
+    manager = _make_manager()
+    with patch("agents.mcp_manager._spawn_session", side_effect=fake_spawn):
+        # First call → fails and evicts.
+        with pytest.raises(McpCallError):
+            await manager.call("github", "search_code", {"query": "foo"})
+
+        assert spawn_count == 1
+        handle = manager._sessions["github"]
+        assert handle.session is None, "session evicted after first failure"
+
+        # Second call → must respawn.
+        result = await manager.call("github", "search_code", {"query": "foo"})
+
+    assert spawn_count == 2, "a fresh spawn must happen after eviction"
+    assert result == {"text": "recovered"}
+
+
+@pytest.mark.asyncio
+async def test_call_timeout_for_uses_per_server_config():
+    """_call_timeout_for returns the per-server value from _call_timeouts
+    and falls back to _DEFAULT_CALL_TIMEOUT_S for unknown servers."""
+    from agents.mcp_manager import _DEFAULT_CALL_TIMEOUT_S
+
+    manager = _make_manager()
+    manager._call_timeouts = {"notion": 45, "playwright": 10}
+
+    assert manager._call_timeout_for("notion") == 45
+    assert manager._call_timeout_for("playwright") == 10
+    assert manager._call_timeout_for("unknown_server") == _DEFAULT_CALL_TIMEOUT_S
