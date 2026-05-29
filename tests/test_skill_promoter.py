@@ -269,6 +269,85 @@ class TestSkillPromoterLlmParsing:
         assert not rows
 
     @pytest.mark.asyncio
+    async def test_invalid_skill_id_not_staged(self, monkeypatch, tmp_path):
+        """found=true with an invalid skill_id (uppercase / illegal chars) must
+        NOT stage a row and must apply cooldown (finding-2)."""
+        from storage import db
+
+        for i in range(10):
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO character_thoughts (thought, created_at) VALUES (?, datetime('now'))",
+                    (f"tool call sequence pattern {i}",),
+                )
+
+        response = json.dumps({
+            "found": True,
+            "skill_id": "../escape Evil",  # invalid: spaces, uppercase, path bits
+            "description": "malicious id",
+            "content": "# evil\nDo bad.",
+        })
+        monkeypatch.setattr(
+            "agents.runtime._call_aux_llm",
+            _make_fake_aux_llm([], response),
+        )
+        monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
+
+        await skill_promoter.maybe_promote_skill()
+
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM session_scratch WHERE topic LIKE 'staged_skill:%'"
+            ).fetchall()
+        assert not rows, "invalid skill_id must not be staged"
+
+        last_run = db.runtime_get("skill_promoter.last_run")
+        assert last_run is not None, "cooldown must be applied when id is rejected"
+
+    @pytest.mark.asyncio
+    async def test_redraft_replaces_existing_staged_row(self, monkeypatch, tmp_path):
+        """A promoter re-draft for the same skill_id must REPLACE the prior
+        staged row (DELETE+INSERT), keeping exactly ONE row so skill_approve's
+        ambiguity guard isn't tripped into denial-of-approval (finding-2)."""
+        from storage import db
+
+        for i in range(10):
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO character_thoughts (thought, created_at) VALUES (?, datetime('now'))",
+                    (f"tool call sequence pattern {i}",),
+                )
+
+        def _resp(content: str) -> str:
+            return json.dumps({
+                "found": True,
+                "skill_id": "redraft-skill",
+                "description": "v",
+                "content": content,
+            })
+
+        monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
+
+        # First draft.
+        monkeypatch.setattr(
+            "agents.runtime._call_aux_llm", _make_fake_aux_llm([], _resp("# draft v1")),
+        )
+        await skill_promoter.maybe_promote_skill()
+        # Second draft for the same id (re-run).
+        monkeypatch.setattr(
+            "agents.runtime._call_aux_llm", _make_fake_aux_llm([], _resp("# draft v2")),
+        )
+        await skill_promoter.maybe_promote_skill()
+
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM session_scratch WHERE topic = ?",
+                ("staged_skill:redraft-skill",),
+            ).fetchall()
+        assert len(rows) == 1, "re-draft must replace, not stack, the staged row"
+        assert json.loads(rows[0][0])["content"] == "# draft v2"
+
+    @pytest.mark.asyncio
     async def test_non_dict_json_applies_cooldown_no_crash(self, monkeypatch, tmp_path):
         """LLM returning a JSON array (not a dict) applies cooldown and doesn't
         crash — regression for the AttributeError that looped aux-LLM cost."""

@@ -107,16 +107,21 @@ async def test_skill_approve_promotes_to_disk(tmp_path, isolated_db, monkeypatch
     import tools.skills.core as sc
     monkeypatch.setattr(sc, "_SKILLS_ROOT", skills_root)
 
+    import hashlib
+
     from tools.skills.core import skill_approve, skill_create
     # First, stage
+    content = "# My Skill\nDo Y."
     await skill_create.handler({
         "skill_id": "my-skill",
         "description": "desc",
-        "content": "# My Skill\nDo Y.",
+        "content": content,
     })
 
-    # Then, approve
-    result = await skill_approve.handler({"skill_id": "my-skill"})
+    # Then, approve — pass the consent hash the gatekeeper would have stamped
+    # (sha256 prefix of the staged content the owner saw at CONFIRM-SEND).
+    consent = hashlib.sha256(content.encode()).hexdigest()[:12]
+    result = await skill_approve.handler({"skill_id": "my-skill", "_approved_sha256": consent})
     text = result["content"][0]["text"]
     assert "saved" in text
 

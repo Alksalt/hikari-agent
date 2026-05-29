@@ -132,17 +132,34 @@ async def maybe_promote_skill() -> None:
         _set_cooldown("incomplete_fields")
         return
 
+    # Validate the LLM-proposed skill_id with the same rule skill_create uses.
+    # An invalid id would either be rejected later (wasting the staged row) or,
+    # worse, escape the skills root via _skill_path; reject it here before any
+    # mutation. (finding-2)
+    from tools.skills.core import _validate_skill_id
+    id_err = _validate_skill_id(skill_id)
+    if id_err is not None:
+        logger.warning("skill_promoter: invalid skill_id %r (%s) — not staging", skill_id, id_err)
+        _set_cooldown("invalid_skill_id")
+        return
+
     session_id = _db.get_session_id() or "pending"
     payload = json.dumps({
         "skill_id": skill_id,
         "description": description,
         "content": content,
     }, ensure_ascii=False)
+    topic = f"staged_skill:{skill_id}"
     try:
         with _db._conn() as conn:
+            # Replace-on-restage, mirroring skill_create: a skill_id has at most
+            # ONE staged draft. Without the DELETE, a promoter re-draft on the
+            # next cycle would create a 2nd row → skill_approve's ambiguity guard
+            # would refuse every approval (denial-of-approval). (finding-2)
+            conn.execute("DELETE FROM session_scratch WHERE topic = ?", (topic,))
             conn.execute(
                 "INSERT INTO session_scratch (session_id, topic, payload_json) VALUES (?, ?, ?)",
-                (session_id, f"staged_skill:{skill_id}", payload),
+                (session_id, topic, payload),
             )
         logger.info("skill_promoter: drafted skill %r → session_scratch", skill_id)
     except Exception:

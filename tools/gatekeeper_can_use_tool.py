@@ -286,6 +286,32 @@ async def gatekeeper_can_use_tool(
     if gate != "gatekeeper":
         return PermissionResultAllow(updated_input=input)
 
+    # Consent-to-bytes binding for skill_approve. The owner reads the exact
+    # staged content + sha256 in the CONFIRM-SEND prompt; we stamp that same
+    # sha into the input so the tool handler can verify the bytes it promotes
+    # are the bytes the owner consented to. A concurrent skill_create that
+    # swaps the staged payload during the approval window keeps row-count==1
+    # (defeating the multi-row ambiguity guard), so without this the handler
+    # would promote bytes the owner never saw. Computing the sha BEFORE
+    # GATEKEEPER.request() pins it to the moment the prompt is rendered.
+    approval_input = input
+    if tool_name == "mcp__hikari_utility__skill_approve":
+        try:
+            from tools.skills.core import _staged_skill_preview  # noqa: PLC0415
+            skill_id = (input.get("skill_id") or "").strip()
+            _content, _sha = _staged_skill_preview(skill_id)
+        except Exception:
+            logger.debug(
+                "gatekeeper_can_use_tool: staged-skill preview failed for %s",
+                tool_name, exc_info=True,
+            )
+            _sha = None
+        if _sha is None:
+            return PermissionResultDeny(
+                message="refused: no single staged draft to approve"
+            )
+        approval_input = {**input, "_approved_sha256": _sha}
+
     tool_use_id = getattr(context, "tool_use_id", None) or f"missing-{tool_name}-{id(input)}"
     deadline = _deadline_for(tool_name)
     summary = _summarize(tool_name, input)
@@ -371,5 +397,7 @@ async def gatekeeper_can_use_tool(
         return PermissionResultDeny(message=f"gatekeeper error: {e}")
 
     if outcome == "approved":
-        return PermissionResultAllow(updated_input=input)
+        # For skill_approve, ``approval_input`` carries the consented sha256 so
+        # the handler can refuse if the staged bytes were swapped mid-window.
+        return PermissionResultAllow(updated_input=approval_input)
     return PermissionResultDeny(message=f"approval {outcome}")

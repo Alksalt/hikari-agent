@@ -71,6 +71,19 @@ def run() -> list[str]:
             return True
         return any(name.startswith(p) for p in wildcard_prefixes)
 
+    # Phase 5 (control-plane-lies sweep): these tools must always be gatekeeper-gated.
+    _MUST_BE_GATED: dict[str, str] = {
+        "mcp__hikari_utility__skill_approve": "gatekeeper",
+    }
+    for tool_id, required_gate in _MUST_BE_GATED.items():
+        spec = registry._resolve(tool_id)
+        if spec is None:
+            errors.append(f"tool {tool_id!r} is missing from the registry (must be gate: {required_gate!r})")
+        elif spec.gate != required_gate:
+            errors.append(
+                f"tool {tool_id!r} must be gate: {required_gate!r}, found {spec.gate!r}"
+            )
+
     uncovered = [n for n in sorted(utility_names) if not _covered(n)]
     if uncovered:
         # Utility tools are auto-discovered; if they're not explicitly in yaml

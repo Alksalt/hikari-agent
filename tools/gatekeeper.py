@@ -452,6 +452,18 @@ def summarize(tool_name: str, tool_input: dict) -> str:
             parts.append(f"  allowed_tools: {allowed_tools!r}")
         return "\n".join(parts)
 
+    if tool_name == "mcp__hikari_utility__skill_approve":
+        skill_id = (tool_input.get("skill_id") or "").strip()
+        from tools.skills.core import _staged_skill_preview
+        content, sha_prefix = _staged_skill_preview(skill_id)
+        if content is None:
+            return f"approve+activate skill {skill_id!r} — ⚠ no single staged draft found"
+        return (
+            f"approve+activate skill {skill_id!r}\n"
+            f"sha256: {sha_prefix}\n"
+            f"content:\n{content}"
+        )
+
     if tool_name == "mcp__hikari_utility__python_run":
         code_preview = (tool_input.get("code") or "")[:120]
         return f"run python: {code_preview!r}"

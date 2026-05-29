@@ -106,13 +106,30 @@ async def send_defer_prompt(chat_id: int, tier: int, summary: str) -> None:  # n
 
 _ALWAYS_APPROVE: dict[tuple[int, str], float] = {}  # (chat_id, tool_name) -> expires_at_epoch
 
+# Tools that must NEVER be whitelisted via always_approve — they require a real
+# human turn (typed CONFIRM-SEND) every single call.  Closing the always_approve
+# bypass hole is Phase 5, decision A.
+_NEVER_ALWAYS_APPROVE: frozenset[str] = frozenset({
+    "mcp__hikari_utility__skill_approve",
+})
+
 
 def always_approve(chat_id: int, tool_name: str, ttl_seconds: int = 3600) -> None:
     """Whitelist (chat_id, tool_name) for ttl_seconds.
 
     Gatekeeper.request returns PermissionResultAllow without prompting during
     the TTL. State is in-process (not durable across restarts).
+
+    Tools in _NEVER_ALWAYS_APPROVE are silently refused — they require a typed
+    CONFIRM-SEND on every call and must never be bulk-whitelisted.
     """
+    if tool_name in _NEVER_ALWAYS_APPROVE:
+        logger.warning(
+            "always_approve: refused for %s (in _NEVER_ALWAYS_APPROVE) — "
+            "this tool requires a real human turn every call",
+            tool_name,
+        )
+        return
     _ALWAYS_APPROVE[(chat_id, tool_name)] = time.time() + ttl_seconds
     logger.info(
         "always_approve: whitelisted %s for chat_id=%s for %ds",

@@ -11,6 +11,7 @@ skill_approve: promotes a staged skill to .agents/skills/<id>/SKILL.md.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -58,6 +59,37 @@ def _skill_path(skill_id: str) -> Path:
     if not str(candidate).startswith(str(root) + "/"):
         raise ValueError(f"skill_id escapes skills root: {skill_id!r}")
     return candidate
+
+
+def _staged_skill_preview(skill_id: str) -> tuple[str | None, str | None]:
+    """Return (content_preview, sha256_prefix) for the single staged draft.
+
+    Returns (None, None) when:
+      - no staged row exists for skill_id,
+      - more than one row exists (ambiguous),
+      - or any exception occurs (exception-safe; runs inside can_use_tool path).
+
+    content_preview: the full staged content (gatekeeper summarizer caps at
+    2000 chars, so we return the whole string and let it truncate).
+    sha256_prefix: first 12 hex chars of sha256(content.encode()).
+    """
+    try:
+        from storage import db as _db
+        topic = f"staged_skill:{skill_id}"
+        with _db._conn() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM session_scratch WHERE topic = ? ORDER BY created_at DESC",
+                (topic,),
+            ).fetchall()
+        if len(rows) != 1:
+            return None, None
+        data = json.loads(rows[0][0])
+        content = data.get("content") or ""
+        digest = hashlib.sha256(content.encode()).hexdigest()[:12]
+        return content, digest
+    except Exception:
+        logger.debug("_staged_skill_preview: failed for %r", skill_id, exc_info=True)
+        return None, None
 
 
 @tool(
@@ -118,11 +150,18 @@ async def skill_create(args: dict[str, Any]) -> dict[str, Any]:
         "description": description,
         "content": content,
     }, ensure_ascii=False)
+    topic = f"staged_skill:{skill_id}"
     try:
         with _db._conn() as conn:
+            # Replace-on-restage: a skill_id has at most ONE staged draft. Drop
+            # any prior unresolved draft for this id before inserting so that
+            # re-staging to fix a draft works (and the skill_approve multi-row
+            # ambiguity guard can't be tripped by a legitimate re-stage). The
+            # owner still sees the exact content+hash at CONFIRM-SEND time.
+            conn.execute("DELETE FROM session_scratch WHERE topic = ?", (topic,))
             conn.execute(
                 "INSERT INTO session_scratch (session_id, topic, payload_json) VALUES (?, ?, ?)",
-                (session_id, f"staged_skill:{skill_id}", payload),
+                (session_id, topic, payload),
             )
     except Exception:
         logger.exception("skill_create: failed to write to session_scratch")
@@ -146,21 +185,49 @@ async def skill_approve(args: dict[str, Any]) -> dict[str, Any]:
     topic = f"staged_skill:{skill_id}"
     try:
         with _db._conn() as conn:
-            row = conn.execute(
-                "SELECT id, payload_json FROM session_scratch WHERE topic = ? ORDER BY created_at DESC LIMIT 1",
+            rows = conn.execute(
+                "SELECT id, payload_json FROM session_scratch WHERE topic = ? ORDER BY created_at DESC",
                 (topic,),
-            ).fetchone()
+            ).fetchall()
     except Exception:
         logger.exception("skill_approve: failed to read session_scratch")
         return _ok("error: could not read staged skill")
-    if not row:
+    n = len(rows)
+    if n == 0:
         return _ok(f"error: no staged skill {skill_id!r} found — run skill_create first")
+    if n > 1:
+        return _ok(
+            f"error: {n} conflicting staged drafts for {skill_id!r} exist — "
+            "ambiguous; re-stage a single clean draft and approve that"
+        )
+    row = rows[0]
     row_id, payload_json = row
     try:
         data = json.loads(payload_json)
         content = data["content"]
     except (json.JSONDecodeError, KeyError) as exc:
         return _ok(f"error: corrupt staged skill payload ({exc})")
+
+    # Consent-to-bytes binding (finding-1). The gatekeeper hook stamps the
+    # sha256 of the staged content the owner saw at CONFIRM-SEND time into
+    # ``_approved_sha256``. Recompute it from the bytes we are about to promote
+    # and require an exact match. A concurrent skill_create that swapped the
+    # staged payload during the ~300s approval window keeps row-count==1, so
+    # the ambiguity guard above can't catch it — this does: a swap promotes
+    # NOTHING (refused), not malicious bytes.
+    consented = (args.get("_approved_sha256") or "").strip()
+    if not consented:
+        return _ok(
+            "error: skill_approve must be invoked through the gatekeeper — "
+            "no consent hash present; nothing promoted"
+        )
+    actual = hashlib.sha256(content.encode()).hexdigest()[:12]
+    if actual != consented:
+        return _ok(
+            f"error: staged bytes for {skill_id!r} changed since approval "
+            f"(consented {consented}, now {actual}) — re-stage and re-approve; "
+            "nothing promoted"
+        )
     target = _skill_path(skill_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
