@@ -1,8 +1,8 @@
 name: rubric_initiative_surfaces_conflict
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   initiative: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   User asks to schedule something but Hikari notices a calendar conflict and
   surfaces it without being asked. Tests the initiative dimension — adds

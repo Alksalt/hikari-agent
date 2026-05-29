@@ -119,12 +119,12 @@ def test_transcript_load(case_path: pathlib.Path):
         assert (
             "expected_max_emissions" in data or "expected_distribution" in data
         ), f"{case_path.name}: cadence case needs expected_max_emissions or expected_distribution"
-    elif kind == "rubric_judge":
+    elif kind == "judge_calibration":
         assert isinstance(data.get("rubrics"), dict), (
-            f"{case_path.name}: rubric_judge case must have a 'rubrics' dict"
+            f"{case_path.name}: judge_calibration case must have a 'rubrics' dict"
         )
         assert data["rubrics"], f"{case_path.name}: rubrics dict must be non-empty"
-        assert "transcript" in data, f"{case_path.name}: rubric_judge case missing 'transcript'"
+        assert "transcript" in data, f"{case_path.name}: judge_calibration case missing 'transcript'"
         assert data["transcript"], f"{case_path.name}: transcript must be non-empty"
     else:
         pytest.fail(f"{case_path.name}: unknown kind {kind!r}")
@@ -154,7 +154,7 @@ async def test_cost_cap_aborts():
         output_tokens=500_000,
     )
 
-    # score_response is reached by rubric_judge cases in run_layer_c —
+    # score_response is reached by judge_calibration cases in run_layer_c —
     # patch it alongside judge_voice_drift so the test stays network-free.
     fake_score_result = {
         "scores": {},

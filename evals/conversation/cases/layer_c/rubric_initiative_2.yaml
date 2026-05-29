@@ -1,8 +1,8 @@
 name: rubric_initiative_flags_deadline
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   initiative: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   User mentions a task and Hikari notices it's the same day as a deadline
   the user mentioned two turns ago. Surfaces the connection unprompted.

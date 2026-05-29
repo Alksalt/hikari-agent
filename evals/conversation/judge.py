@@ -100,7 +100,10 @@ async def judge_voice_drift(
         if content.startswith("json"):
             content = content[4:]
         content = content.strip()
-    verdict_json = json.loads(content)
+    try:
+        verdict_json = json.loads(content)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"judge returned non-JSON: {content[:200]!r}") from exc
 
     usage = data.get("usage", {})
     in_tok = usage.get("prompt_tokens", 0)

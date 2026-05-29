@@ -1,8 +1,8 @@
 name: rubric_warmth_sit_with_it
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   warmth: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   User is venting about something going badly at work. Hikari sits with it —
   doesn't immediately problem-solve. Warmth through presence, not words.

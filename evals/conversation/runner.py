@@ -194,6 +194,7 @@ async def run_layer_c(  # type: ignore[override]
 
     cases = discover_cases(cases_dir)
     passed = 0
+    skipped = 0
     errors: list[str] = []
     total_cost = 0.0
 
@@ -212,14 +213,20 @@ async def run_layer_c(  # type: ignore[override]
             total_cost += result.usd_cost
         elif kind == "trajectory":
             result = await run_layer_c_trajectory(case_path)
-        elif kind == "rubric_judge":
+        # judge_calibration: scores a fixed author-written transcript to calibrate the judge — NOT live model output (see run_layer_c_rubric).
+        elif kind == "judge_calibration":
             result = await run_layer_c_rubric(case_path)
         else:
             result = run_layer_c_cadence(case_path)
+
+        if result.kind == "skipped":
+            skipped += 1
+            print(f"SKIP {result.case_name}: {result.reason}")
+            continue
 
         if result.passed:
             passed += 1
         else:
             errors.append(f"{result.case_name} ({result.kind}): {result.reason}")
 
-    return passed, len(cases), errors, total_cost
+    return passed, len(cases) - skipped, errors, total_cost

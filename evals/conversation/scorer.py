@@ -119,7 +119,10 @@ async def score_response(
         if content.startswith("json"):
             content = content[4:]
         content = content.strip()
-    verdict = json.loads(content)
+    try:
+        verdict = json.loads(content)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"scorer returned non-JSON: {content[:200]!r}") from exc
 
     usage = data.get("usage", {})
     in_tok = usage.get("prompt_tokens", 0)

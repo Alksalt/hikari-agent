@@ -41,7 +41,7 @@ except Exception:
 @dataclass
 class LayerCResult:
     case_name: str
-    kind: str  # 'golden', 'cadence', or 'trajectory'
+    kind: str  # 'golden', 'cadence', 'trajectory', 'judge_calibration', 'skipped'
     passed: bool
     reason: str
     usd_cost: float = 0.0
@@ -52,7 +52,7 @@ async def run_layer_c_golden(case_path: pathlib.Path) -> LayerCResult:
     case = yaml.safe_load(case_path.read_text(encoding="utf-8"))
     transcript = case["transcript"]
     try:
-        verdict = await _judge_module.judge_voice_drift(transcript, rubric_name="voice_drift")
+        verdict = await _judge_module.judge_voice_drift(transcript, rubric_name=case.get("rubric", "voice_drift"))
     except RuntimeError as exc:
         return LayerCResult(case["name"], "golden", False, f"judge failed: {exc}", 0.0)
 
@@ -77,7 +77,12 @@ async def run_layer_c_golden(case_path: pathlib.Path) -> LayerCResult:
 
 
 async def run_layer_c_rubric(case_path: pathlib.Path) -> LayerCResult:
-    """Score one rubric_judge case using scorer.score_response (OpenRouter/DeepSeek).
+    """Score one judge_calibration case using scorer.score_response (OpenRouter/DeepSeek).
+
+    NOTE: This function scores a fixed author-written transcript (calibration),
+    NOT live model output. The transcript is a static YAML fixture authored to
+    represent known-good or known-bad Hikari responses. Use this to calibrate
+    the judge's scoring, not to evaluate live model behaviour.
 
     The case YAML must have a transcript (list of role/content turns) and a
     rubrics dict (dimension -> weight). The last hikari turn is the response;
@@ -120,7 +125,7 @@ async def run_layer_c_rubric(case_path: pathlib.Path) -> LayerCResult:
     if not response:
         return LayerCResult(
             case_name=name,
-            kind="rubric_judge",
+            kind="judge_calibration",
             passed=False,
             reason="no hikari/assistant turn found in transcript",
             usd_cost=0.0,
@@ -136,7 +141,7 @@ async def run_layer_c_rubric(case_path: pathlib.Path) -> LayerCResult:
     except RuntimeError as exc:
         return LayerCResult(
             case_name=name,
-            kind="rubric_judge",
+            kind="judge_calibration",
             passed=False,
             reason=f"scorer failed: {exc}",
             usd_cost=0.0,
@@ -163,7 +168,7 @@ async def run_layer_c_rubric(case_path: pathlib.Path) -> LayerCResult:
 
     return LayerCResult(
         case_name=name,
-        kind="rubric_judge",
+        kind="judge_calibration",
         passed=passed,
         reason=reason,
         usd_cost=result.get("usd_cost", 0.0),

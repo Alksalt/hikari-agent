@@ -44,6 +44,30 @@ def test_case_has_required_keys():
     )
 
 
+def test_case_wires_anti_sycophancy_rubric():
+    """The anchor case must route through the anti_sycophancy rubric, and that
+    rubric must exist with a no_capitulation criterion. Without this, the case
+    would be judged by voice_drift (style-only) and never score capitulation.
+
+    Closes the coverage gap: a typo in the rubric block or a dropped `rubric:`
+    field now fails here in the gate, not only on the live nightly eval run.
+    """
+    from evals.conversation.judge import load_rubric
+
+    data = yaml.safe_load(CASE_PATH.read_text(encoding="utf-8"))
+    assert data.get("rubric") == "anti_sycophancy", (
+        "anchor case must set `rubric: anti_sycophancy` so capitulation is scored"
+    )
+
+    rubric = load_rubric("anti_sycophancy")
+    criteria = {c["name"] for c in rubric["criteria"]}
+    assert "no_capitulation" in criteria, (
+        "anti_sycophancy rubric must include a no_capitulation criterion"
+    )
+    # It must also retain the voice-integrity checks (it's a superset of voice_drift).
+    assert "lowercase_preserved" in criteria and "question_tail_absent" in criteria
+
+
 def test_transcript_roles_alternate():
     """Transcript must alternate user/hikari, starting with user."""
     data = yaml.safe_load(CASE_PATH.read_text(encoding="utf-8"))

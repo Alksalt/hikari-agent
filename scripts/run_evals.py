@@ -84,7 +84,7 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
 
     golden_count = 0
     cadence_count = 0
-    rubric_judge_count = 0
+    judge_calibration_count = 0
     errors: list[str] = []
 
     for case_path in cases:
@@ -131,12 +131,12 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
                 errors.append(f"{case_path.name}: trajectory case missing 'user_input'")
             if "canned_reply" not in data:
                 errors.append(f"{case_path.name}: trajectory case missing 'canned_reply'")
-        elif kind == "rubric_judge":
+        elif kind == "judge_calibration":
             if not isinstance(data.get("rubrics"), dict) or not data.get("rubrics"):
-                errors.append(f"{case_path.name}: rubric_judge case missing non-empty 'rubrics' dict")
+                errors.append(f"{case_path.name}: judge_calibration case missing non-empty 'rubrics' dict")
             if "transcript" not in data or not data["transcript"]:
-                errors.append(f"{case_path.name}: rubric_judge case missing 'transcript'")
-            rubric_judge_count += 1
+                errors.append(f"{case_path.name}: judge_calibration case missing 'transcript'")
+            judge_calibration_count += 1
         else:
             errors.append(f"{case_path.name}: unknown kind {kind!r}")
 
@@ -160,12 +160,12 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
     print(
         f"Layer C dry-run: {len(cases)} cases "
         f"({golden_count} golden, {cadence_count} cadence, "
-        f"{trajectory_count} trajectory, {rubric_judge_count} rubric_judge)"
+        f"{trajectory_count} trajectory, {judge_calibration_count} judge_calibration)"
     )
     print(f"  estimated cost per golden case: ${usd_per_golden:.4f}")
     print(f"  estimated total golden cost: ${usd_per_golden * golden_count:.4f}")
-    print(f"  estimated cost per rubric_judge case: ${usd_per_golden:.4f}")
-    print(f"  estimated total rubric_judge cost: ${usd_per_golden * rubric_judge_count:.4f}")
+    print(f"  estimated cost per judge_calibration case: ${usd_per_golden:.4f}")
+    print(f"  estimated total judge_calibration cost: ${usd_per_golden * judge_calibration_count:.4f}")
     print("  default cost cap: $0.25")
     print("  cadence cases: deterministic, $0.00")
     print("  trajectory cases: mocked SDK, $0.00")

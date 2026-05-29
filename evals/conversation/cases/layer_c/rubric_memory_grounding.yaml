@@ -1,8 +1,8 @@
 name: rubric_memory_grounding_surfaces_seeded_fact
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   memory_grounding: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   Hikari is asked about something from a prior session that was explicitly
   stored. She surfaces the fact accurately without embellishing.

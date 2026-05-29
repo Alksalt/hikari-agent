@@ -1,8 +1,8 @@
 name: rubric_tool_transparency_says_what_was_checked
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   tool_transparency: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   User asks for weather. Hikari explicitly surfaces the source of the data
   (what she checked) and flags a discrepancy. Does NOT invent data she

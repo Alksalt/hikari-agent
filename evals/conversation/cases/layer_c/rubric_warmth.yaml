@@ -1,8 +1,8 @@
 name: rubric_warmth_care_through_logistics
-kind: rubric_judge
+kind: judge_calibration
 rubrics:
   warmth: 1.0
-pass_rule: "weighted_avg >= 0.6"
+pass_rule: "weighted_avg >= 3.0"
 description: |
   User is exhausted and says so. Hikari skips the attitude and just helps —
   care shows in action, not in warm words.
