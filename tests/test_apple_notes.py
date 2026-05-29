@@ -151,29 +151,16 @@ async def test_note_create_with_folder_scopes_script(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_note_create_confirm_true_short_circuits_without_osascript(monkeypatch):
-    """Sprint 6E: confirm=True must redirect to wiki/memory without writing."""
-    captured = _install_subprocess_mock(monkeypatch, stdout=b"x-coredata://x")
-    from tools import apple_notes
-    out = await apple_notes.note_create.handler(
-        {"title": "x", "body": "y", "confirm": True},
-    )
-    assert not captured["calls"], "confirm=True must NOT spawn osascript"
-    text = out["content"][0]["text"].lower()
-    assert "wiki" in text or "memory" in text
-
-
-@pytest.mark.asyncio
-async def test_note_create_confirm_false_proceeds(monkeypatch):
-    """Sprint 6E: confirm=False (default branch) preserves prior behavior."""
+async def test_note_create_no_confirm_param_creates_note(monkeypatch):
+    """Sprint A: confirm param removed; note_create is gated externally via
+    gate:gatekeeper. Calling the handler directly must create the note (no
+    in-function short-circuit)."""
     captured = _install_subprocess_mock(
         monkeypatch, stdout=b"x-coredata://abc\n", returncode=0,
     )
     from tools import apple_notes
-    out = await apple_notes.note_create.handler(
-        {"title": "x", "body": "y", "confirm": False},
-    )
-    assert captured["calls"], "confirm=False must invoke osascript"
+    out = await apple_notes.note_create.handler({"title": "x", "body": "y"})
+    assert captured["calls"], "note_create must invoke osascript"
     assert out["data"]["id"] == "x-coredata://abc"
 
 

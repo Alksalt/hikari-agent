@@ -52,12 +52,12 @@ def test_access_mode_destructive_on_apple_shortcuts(registry):
     assert spec.access_mode == "destructive"
 
 
-def test_access_mode_read_on_playwright(registry):
-    # Restricted to read-only so the wildcard-write deny does not block
-    # research subagent calls.
+def test_access_mode_write_on_playwright(registry):
+    # Sprint A: wildcard flipped to write so any future persistent-state
+    # playwright tool fails closed via the gatekeeper wildcard-write deny path.
     spec = registry._resolve("mcp__playwright__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
 def test_access_mode_write_on_notion_wildcard(registry):
@@ -74,16 +74,21 @@ def test_access_mode_write_on_github_wildcard(registry):
     assert spec.access_mode == "write"
 
 
-def test_access_mode_read_on_youtube_transcript(registry):
+def test_access_mode_write_on_youtube_transcript(registry):
+    # Sprint A: wildcard flipped to write so any future write tool fails
+    # closed via the gatekeeper wildcard-write deny path.
     spec = registry._resolve("mcp__youtube_transcript__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
-def test_access_mode_read_on_duckdb(registry):
+def test_access_mode_write_on_duckdb(registry):
+    # Sprint A: wildcard flipped to write so any future write tool (e.g.
+    # CREATE TABLE, INSERT) fails closed via the gatekeeper wildcard-write
+    # deny path rather than silently passing.
     spec = registry._resolve("mcp__duckdb__*")
     assert spec is not None
-    assert spec.access_mode == "read"
+    assert spec.access_mode == "write"
 
 
 # ---------------------------------------------------------------------------

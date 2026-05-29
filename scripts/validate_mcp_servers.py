@@ -56,11 +56,8 @@ def _coverage_gaps(server_name: str, live_tools: set[str]) -> list[str]:
     return gaps
 
 
-_INITIALIZE_ERROR_MARKER = "MCP server did not respond to initialize"
-
-
 async def _main(skip: frozenset[str], allow_unreachable: frozenset[str], timeout: float) -> int:
-    from tools.mcp_introspect import introspect_all
+    from tools.mcp_introspect import McpInitializeTimeout, introspect_all
     mcp = _load_mcp_json()
     servers = mcp.get("mcpServers", {})
     if not servers:
@@ -71,14 +68,18 @@ async def _main(skip: frozenset[str], allow_unreachable: frozenset[str], timeout
     exit_code = 0
     for server_name, result in sorted(results.items()):
         if isinstance(result, Exception):
-            err_str = str(result)
-            is_initialize_error = _INITIALIZE_ERROR_MARKER in err_str
-            if is_initialize_error or server_name in allow_unreachable:
+            # Soft-skip ONLY genuine initialize timeouts or explicitly
+            # allow-listed unreachable servers. Every other error (e.g.
+            # McpProtocolError — server initialized then failed) is a hard
+            # fail so broken-but-reachable servers are never silently skipped.
+            if isinstance(result, McpInitializeTimeout) or server_name in allow_unreachable:
                 print(f"  {server_name}: skipped ({type(result).__name__}: {result})")
             else:
                 exit_code = 1
-                print(f"  {server_name}: HARD FAIL -- unexpected error (not an initialize timeout): "
-                      f"{type(result).__name__}: {result}")
+                print(
+                    f"  {server_name}: HARD FAIL -- server error after initialize "
+                    f"(not a timeout): {type(result).__name__}: {result}"
+                )
             continue
         gaps = _coverage_gaps(server_name, result)
         if gaps:

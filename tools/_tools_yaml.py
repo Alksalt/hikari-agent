@@ -33,7 +33,12 @@ DEFAULT_YAML_PATH = REPO_ROOT / "config" / "tools.yaml"
 # Valid gate values for tool entries.  None means ungated; "gatekeeper" routes
 # through the single owner-approval state machine.  confirm_send was retired in
 # Phase 4 of the control-plane-lies sweep — this constant prevents re-introduction.
-_VALID_GATES = (None, "gatekeeper")
+_VALID_GATES = frozenset({None, "gatekeeper"})
+
+# Valid access_mode values.  Wildcards MUST declare one of these; explicit
+# tool entries MAY leave it None.  The gatekeeper deny-on-wildcard-write check
+# uses this to fail closed when an unregistered write tool resolves via wildcard.
+_VALID_ACCESS_MODES = frozenset({None, "read", "write", "destructive"})
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +313,11 @@ def _parse_tool(raw: dict) -> ToolSpec:
     scopes_block = raw.get("scopes") or {}
     tool_id = str(raw["id"])
     access_mode = raw.get("access_mode")
+    if access_mode not in _VALID_ACCESS_MODES:
+        raise ValueError(
+            f"tool {tool_id!r} has invalid access_mode={access_mode!r}; "
+            f"valid: {sorted(str(v) for v in _VALID_ACCESS_MODES if v is not None) + ['null']}"
+        )
     if access_mode is None and tool_id.endswith("*"):
         raise ValueError(
             f"wildcard tool {tool_id!r} requires explicit access_mode "

@@ -2,6 +2,16 @@
 
 Used by CI/preflight (scripts/validate_mcp_servers.py). NOT invoked at
 agent runtime -- too costly + depends on external server liveness.
+
+Typed exceptions
+----------------
+``McpInitializeTimeout`` — the server process never sent a response to the
+    MCP ``initialize`` request (empty first line). This is the expected failure
+    mode for credential-gated servers in CI.
+
+``McpProtocolError`` — the server sent an ``initialize`` response but failed
+    on a subsequent step (e.g. ``tools/list`` returned an error or bad JSON).
+    This is a hard fail: the server is live but misbehaving.
 """
 from __future__ import annotations
 
@@ -12,6 +22,21 @@ import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class McpInitializeTimeout(RuntimeError):
+    """Server did not respond to the MCP initialize handshake.
+
+    Soft-skippable in CI: expected when the server requires credentials that
+    are not present in the CI environment.
+    """
+
+
+class McpProtocolError(RuntimeError):
+    """Server responded to initialize but failed on a subsequent MCP step.
+
+    Hard fail: the server is reachable and started but is misbehaving.
+    """
 
 _INIT_MSG = {
     "jsonrpc": "2.0",
@@ -56,13 +81,27 @@ async def list_server_tools(
             await proc.stdin.drain()
             init_line = await proc.stdout.readline()
             if not init_line:
-                raise RuntimeError("MCP server did not respond to initialize")
+                raise McpInitializeTimeout(
+                    "MCP server did not respond to initialize"
+                )
             proc.stdin.write((json.dumps(_LIST_MSG) + "\n").encode())
             await proc.stdin.drain()
             list_line = await proc.stdout.readline()
             if not list_line:
-                raise RuntimeError("MCP server did not respond to tools/list")
-            payload = json.loads(list_line.decode())
+                raise McpProtocolError(
+                    "MCP server did not respond to tools/list "
+                    "(initialize succeeded)"
+                )
+            try:
+                payload = json.loads(list_line.decode())
+            except json.JSONDecodeError as exc:
+                raise McpProtocolError(
+                    f"MCP server tools/list returned invalid JSON: {exc}"
+                ) from exc
+            if "error" in payload:
+                raise McpProtocolError(
+                    f"MCP server tools/list returned error: {payload['error']}"
+                )
             tools = payload.get("result", {}).get("tools", []) or []
             return {t["name"] for t in tools if isinstance(t, dict) and "name" in t}
         return await asyncio.wait_for(_io(), timeout=timeout_sec)

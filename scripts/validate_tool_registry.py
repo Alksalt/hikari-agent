@@ -85,17 +85,8 @@ def run() -> list[str]:
             )
 
     uncovered = [n for n in sorted(utility_names) if not _covered(n)]
-    if uncovered:
-        # Utility tools are auto-discovered; if they're not explicitly in yaml
-        # that's fine as long as a wildcard covers them or they're under
-        # hikari_utility (which is covered by the utility index).
-        # Only fail if they're NOT covered by any wildcard.
-        still_uncovered = [
-            n for n in uncovered
-            if not n.startswith("mcp__hikari_utility__")
-        ]
-        for n in still_uncovered:
-            errors.append(f"handler {n!r} has no yaml registration (no explicit id or wildcard)")
+    for n in uncovered:
+        errors.append(f"handler {n!r} has no yaml registration (no explicit id or wildcard)")
 
     # (d) .mcp.json matches projection from yaml
     import json

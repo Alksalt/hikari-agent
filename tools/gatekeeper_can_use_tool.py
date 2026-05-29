@@ -13,16 +13,24 @@ outbound args against the chat's URL taint deque (populated by
 ``agents.external_wrap_hook``) and the gate prepends a `⚠ TAINT` badge to
 the CONFIRM-SEND prompt when a match is found. Defense-in-depth on top of
 the existing canary tripwire.
+
+The ``_walk_strings`` helper used by both this module and
+``agents.injection_guard.flag_args_with_untrusted_content`` (canary tripwire)
+is defined in ``agents.injection_guard`` and imported here — single definition,
+no divergence risk.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agents import config as cfg
+from agents.injection_guard import _walk_strings  # shared deep-walk helper
 
 logger = logging.getLogger(__name__)
 
@@ -125,36 +133,6 @@ def _resolve_chat_id() -> int:
     if not raw:
         raise RuntimeError("OWNER_TELEGRAM_ID / telegram.owner_chat_id not set")
     return int(raw)
-
-
-def _walk_strings(value: Any) -> list[str]:
-    """Deep-walk dicts/lists/tuples/sets and return every string scalar found.
-
-    Used by ``flag_args_with_untrusted_content`` so taint matching works on
-    nested args (e.g. ``{"message": {"body": "https://taint/…"}}``) — the
-    legacy single-level scan in injection_guard.py missed these.
-    """
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return [bytes(value).decode("utf-8", errors="replace")]
-        except (UnicodeDecodeError, AttributeError):
-            return []
-    if isinstance(value, dict):
-        out: list[str] = []
-        for k, v in value.items():
-            if isinstance(k, str):
-                out.append(k)
-            out.extend(_walk_strings(v))
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        out = []
-        for item in value:
-            out.extend(_walk_strings(item))
-        return out
-    # Numbers / None / unknown types — nothing to match against.
-    return []
 
 
 def flag_args_with_untrusted_content(
@@ -312,7 +290,12 @@ async def gatekeeper_can_use_tool(
             )
         approval_input = {**input, "_approved_sha256": _sha}
 
-    tool_use_id = getattr(context, "tool_use_id", None) or f"missing-{tool_name}-{id(input)}"
+    tool_use_id = getattr(context, "tool_use_id", None) or (
+        "synth-"
+        + hashlib.sha256(
+            (tool_name + json.dumps(input, sort_keys=True, default=str)).encode()
+        ).hexdigest()[:24]
+    )
     deadline = _deadline_for(tool_name)
     summary = _summarize(tool_name, input)
 

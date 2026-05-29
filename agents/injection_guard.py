@@ -156,6 +156,37 @@ def extract_urls(text: str) -> list[str]:
     return _URL_REGEX.findall(text or "")
 
 
+def _walk_strings(value: Any) -> list[str]:
+    """Deep-walk dicts/lists/tuples/sets and return every string scalar found.
+
+    Shared helper used by ``flag_args_with_untrusted_content`` (canary
+    tripwire) and ``gatekeeper_can_use_tool.flag_args_with_untrusted_content``
+    (URL-taint badge). Both call sites import this so there is one definition
+    and no duplicate divergence risk.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return [bytes(value).decode("utf-8", errors="replace")]
+        except (UnicodeDecodeError, AttributeError):
+            return []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for k, v in value.items():
+            if isinstance(k, str):
+                out.append(k)
+            out.extend(_walk_strings(v))
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out = []
+        for item in value:
+            out.extend(_walk_strings(item))
+        return out
+    # Numbers / None / unknown types — nothing to match against.
+    return []
+
+
 def flag_args_with_untrusted_content(
     args: dict[str, Any],
     recently_seen_untrusted: list[str] | None = None,
@@ -163,11 +194,13 @@ def flag_args_with_untrusted_content(
     """Return ``(flag, reason)`` if the outbound args contain content from a
     known-untrusted source (URLs matching recent fetches, canary tokens).
 
-    Cheap, best-effort. Audit_log writes use this to mark suspicious calls.
+    Deep-walks nested dicts/lists so canary tokens buried in nested payloads
+    (e.g. ``{"message": {"body": "<canary>"}}``) are detected. Cheap,
+    best-effort. Audit_log writes use this to mark suspicious calls.
     """
     if not _enabled():
         return False, None
-    blob = " ".join(str(v) for v in args.values() if isinstance(v, str | int | float))
+    blob = "\n".join(_walk_strings(args))
     if outbound_contains_canary(blob):
         return True, "canary_in_outbound_args"
     if recently_seen_untrusted:

@@ -661,7 +661,8 @@ tools:
   - id: "mcp__hikari_utility__note_create"
     bucket: 1
     server: hikari_utility
-    gate: null
+    gate: gatekeeper
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__hikari_utility__note_create$"]
     domain: notes
@@ -995,17 +996,18 @@ tools:
     presentation_hint: list_of_records
 
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
-  # Needed so that the gatekeeper's "unknown tool → deny" branch does NOT fire
-  # for auto-discovered utility tools (calc, reminder_create, receipt_add, etc.).
+  # access_mode:write so unregistered write tools fail closed via the
+  # gatekeeper wildcard-write deny path. Explicit read-only entries above
+  # (note_search, weather_fetch, etc.) take precedence over this wildcard.
   - id: "mcp__hikari_utility__*"
     bucket: 1
     server: hikari_utility
     gate: null
-    access_mode: read
+    access_mode: write
     untrusted_output: false
     wrap_patterns: []
     domain: utility
-    operation: read
+    operation: write
     risk_tier: low
     credentials: null
     example: "calc('2**32')"
@@ -2916,8 +2918,9 @@ tools:
     presentation_hint: list_of_records
 
   # Apple Events — wildcard catch-all (no gate; low-risk local device)
-  # Wildcard-write would normally be denied by gatekeeper; the explicit entries
-  # above cover the actually-invoked tools so they take precedence.
+  # access_mode:write so any unlisted apple_events tool is DENIED by the
+  # gatekeeper wildcard-write deny path. The explicit entries above cover
+  # all actually-invoked tools and take precedence over this wildcard.
   - id: "mcp__apple_events__*"
     bucket: 3
     server: apple_events
@@ -2949,15 +2952,14 @@ tools:
     example: "run shortcut 'Morning Summary'"
     presentation_hint: null
 
-  # Playwright — read-only navigation/inspection. Playwright tools do not
-  # persist external state (no email, no file writes, no API mutations); the
-  # wildcard access_mode is read so any future tool resolves without triggering
-  # the wildcard-write deny path.
+  # Playwright — navigation/inspection tools. access_mode:write so any
+  # future persistent-state playwright tool fails closed via the
+  # gatekeeper wildcard-write deny path rather than silently passing.
   - id: "mcp__playwright__*"
     bucket: 3
     server: playwright
     gate: null
-    access_mode: read
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__playwright__"]
     domain: web
@@ -2967,12 +2969,13 @@ tools:
     example: "playwright navigate to 'https://...'"
     presentation_hint: null
 
-  # YouTube Transcript — wildcard
+  # YouTube Transcript — wildcard. access_mode:write so any future
+  # write tool fails closed via the gatekeeper wildcard-write deny path.
   - id: "mcp__youtube_transcript__*"
     bucket: 3
     server: youtube_transcript
     gate: null
-    access_mode: read
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__youtube_transcript__"]
     domain: media
@@ -2982,12 +2985,14 @@ tools:
     example: "get_transcript('https://youtu.be/...')"
     presentation_hint: wiki_note
 
-  # DuckDB — wildcard
+  # DuckDB — wildcard. access_mode:write so any future write tool
+  # (e.g. CREATE TABLE, INSERT) fails closed via the gatekeeper
+  # wildcard-write deny path rather than silently passing.
   - id: "mcp__duckdb__*"
     bucket: 3
     server: duckdb
     gate: null
-    access_mode: read
+    access_mode: write
     untrusted_output: true
     wrap_patterns: ["^mcp__duckdb__"]
     domain: analytics
