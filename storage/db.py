@@ -2908,6 +2908,25 @@ def drift_count_today() -> int:
     return int(row["n"] or 0)
 
 
+def sycophancy_recent_count(*, window_days: int = 7, threshold: float = 0.6) -> int:
+    """Count persona_drift_scores rows in the last window_days whose
+    sycophancy_score >= threshold. Used by the weekly reflection audit."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=int(window_days))).isoformat()
+    try:
+        with _conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM persona_drift_scores "
+                "WHERE sycophancy_score IS NOT NULL "
+                "AND sycophancy_score >= ? "
+                "AND sampled_at >= ?",
+                (float(threshold), cutoff),
+            ).fetchone()
+        return int(row["n"] or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 # ---------- voice_corrections (Phase P reflexion loop) ----------
 
 

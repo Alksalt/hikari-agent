@@ -332,6 +332,102 @@ async def test_stickers_llm_hallucinated_id_annotates_diary(monkeypatch, tmp_pat
     )
 
 
+# ---------- warmth-band scaling ----------
+
+def test_stickers_low_warmth_band_reduces_probability(monkeypatch, tmp_path):
+    """When the warmth band is 'low', _effective_probability() must be lower
+    than the base probability (control-plane lie C6 fix)."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  probability_per_reply: 0.5\n"
+        "  cooldown_min_messages: 0\n"
+        "  mood_blocklist: []\n"
+        "  pool: ['FAKE_ID']\n"
+        "cycle_modulation:\n"
+        "  enabled: true\n"
+        "  low_tolerance_below: 0.6\n"
+        "  open_at_or_above: 1.2\n"
+        "  low_tolerance_proactive_cap_scale: 0.5\n"
+        "  open_proactive_cap_scale: 1.25\n"
+    )
+    monkeypatch.setattr("agents.stickers._warmth_band", lambda: "low")
+    prob = stickers._effective_probability()
+    assert prob == pytest.approx(0.25)  # 0.5 * 0.5
+
+
+def test_stickers_open_warmth_band_increases_probability(monkeypatch, tmp_path):
+    """When the warmth band is 'open', _effective_probability() must be higher
+    than the base probability, clamped to 1.0."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  probability_per_reply: 0.5\n"
+        "  cooldown_min_messages: 0\n"
+        "  mood_blocklist: []\n"
+        "  pool: ['FAKE_ID']\n"
+        "cycle_modulation:\n"
+        "  enabled: true\n"
+        "  open_at_or_above: 1.2\n"
+        "  open_proactive_cap_scale: 1.25\n"
+    )
+    monkeypatch.setattr("agents.stickers._warmth_band", lambda: "open")
+    prob = stickers._effective_probability()
+    assert prob == pytest.approx(0.625)  # 0.5 * 1.25
+
+
+def test_stickers_open_warmth_band_clamps_to_one(monkeypatch, tmp_path):
+    """_effective_probability() must never exceed 1.0."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  probability_per_reply: 0.9\n"
+        "  cooldown_min_messages: 0\n"
+        "  mood_blocklist: []\n"
+        "  pool: ['FAKE_ID']\n"
+        "cycle_modulation:\n"
+        "  enabled: true\n"
+        "  open_at_or_above: 1.2\n"
+        "  open_proactive_cap_scale: 1.25\n"
+    )
+    monkeypatch.setattr("agents.stickers._warmth_band", lambda: "open")
+    prob = stickers._effective_probability()
+    assert prob <= 1.0
+
+
+def test_stickers_mid_warmth_band_is_unchanged(monkeypatch, tmp_path):
+    """When the warmth band is 'mid' (or None), probability is not scaled."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  probability_per_reply: 0.42\n"
+        "  cooldown_min_messages: 0\n"
+        "  mood_blocklist: []\n"
+        "  pool: ['FAKE_ID']\n"
+    )
+    for band in ("mid", None):
+        monkeypatch.setattr("agents.stickers._warmth_band", lambda b=band: b)
+        prob = stickers._effective_probability()
+        assert prob == pytest.approx(0.42), f"band={band!r}: expected 0.42, got {prob}"
+
+
+def test_stickers_low_warmth_blocks_when_scaled_to_zero(monkeypatch, tmp_path):
+    """With a scale of 0.0, even probability_per_reply=1.0 should gate-fail."""
+    _write_cfg(tmp_path, monkeypatch,
+        "stickers:\n"
+        "  enabled: true\n"
+        "  probability_per_reply: 1.0\n"
+        "  cooldown_min_messages: 0\n"
+        "  mood_blocklist: []\n"
+        "  pool: ['FAKE_ID']\n"
+        "cycle_modulation:\n"
+        "  enabled: true\n"
+        "  low_tolerance_proactive_cap_scale: 0.0\n"
+    )
+    monkeypatch.setattr("agents.stickers._warmth_band", lambda: "low")
+    assert not stickers.should_send_sticker(now_counter=1)
+
+
 def test_stickers_bump_uses_runtime_increment(monkeypatch, tmp_path):
     """_bump_outbound_counter must delegate to db.runtime_increment (atomic),
     not a raw read/write. Verify by checking the underlying SQL uses an

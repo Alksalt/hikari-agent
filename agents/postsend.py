@@ -39,6 +39,10 @@ OBS_KEY = "pending_surfaced_observation_ids"
 NOT_KEY = "pending_surfaced_noticing_ids"
 DEFER_KEY = "pending_consumed_defer_ids"
 
+# Imported here (not at top of module) to avoid a circular-import at load time:
+# callback_surface imports config/db but not postsend; postsend imports db.
+# We do a lazy import inside mark_pending_surfaced instead — see below.
+
 _WS_RE = re.compile(r"\s+")
 
 
@@ -99,6 +103,14 @@ def mark_pending_surfaced(sent_text: str = "") -> None:
             _restash(NOT_KEY, not_id)
         # Defer rows keep their IDs for next turn re-injection on send failure.
         # _format_deferred_proactives clears the stash on next invocation.
+        # Slow-burn stash: clear it on send failure so a stale stash from a
+        # previous turn cannot accidentally commit on a future unrelated send.
+        # pick_slow_burn_tell() is pure-read so it will re-pick next eligible turn.
+        try:
+            from agents.callback_surface import PENDING_SLOW_BURN_TELL_KEY
+            db.runtime_set(PENDING_SLOW_BURN_TELL_KEY, None)
+        except Exception:
+            pass
         return
 
     sent_norm = _normalize(sent_text)
@@ -136,3 +148,27 @@ def mark_pending_surfaced(sent_text: str = "") -> None:
             logger.debug("postsend: cleaned %d deferred proactive row(s)", len(defer_ids))
         except Exception:
             logger.exception("postsend: failed to delete deferred proactive rows %s", defer_ids)
+
+    # Commit slow-burn tell cooldown + dedup after confirmed delivery.
+    # C3 (hooks._format_slow_burn_tell) stashes the picked tell text under
+    # PENDING_SLOW_BURN_TELL_KEY immediately after calling pick_slow_burn_tell().
+    # We match that stashed text against sent_text; if present we call
+    # mark_slow_burn_surfaced to write the cooldown and session_scratch dedup
+    # that pick_slow_burn_tell deliberately omitted.
+    try:
+        from agents.callback_surface import (  # local import avoids circular dep
+            PENDING_SLOW_BURN_TELL_KEY,
+            mark_slow_burn_surfaced,
+        )
+        stashed_tell = db.runtime_get(PENDING_SLOW_BURN_TELL_KEY) or ""
+        if stashed_tell:
+            db.runtime_set(PENDING_SLOW_BURN_TELL_KEY, None)
+            if _normalize(stashed_tell) in sent_norm:
+                mark_slow_burn_surfaced(stashed_tell)
+                logger.debug("postsend: slow_burn tell committed post-send")
+            else:
+                # Tell was injected but not delivered — leave cooldown/dedup
+                # unconsumed so it remains eligible on the next eligible turn.
+                logger.debug("postsend: slow_burn tell not found in sent text; cooldown deferred")
+    except Exception:
+        logger.exception("postsend: slow_burn post-send commit failed (non-fatal)")

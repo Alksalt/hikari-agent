@@ -71,16 +71,28 @@ def test_returns_highest_unlocked_tell():
 
 
 def test_cooldown_blocks_second_call():
-    """After a tell is returned, a second call within min_turns_between returns None."""
+    """Cooldown only engages after mark_slow_burn_surfaced, not at pick time.
+
+    pick_slow_burn_tell is a pure read — it does NOT write the cooldown.
+    A second pick call with the same counter should still return the tell
+    because mark_slow_burn_surfaced has not been called yet.  After calling
+    mark_slow_burn_surfaced the cooldown IS written, so a subsequent pick
+    (with the same counter) returns None.
+    """
     _seed_sessions(80)
-    # Set inbound counter to 100 so first call succeeds (last=0, so no cooldown).
     db.runtime_set(db.INBOUND_MSG_COUNTER_KEY, 100)
-    from agents.callback_surface import pick_slow_burn_tell
+    from agents.callback_surface import mark_slow_burn_surfaced, pick_slow_burn_tell
     first = pick_slow_burn_tell()
     assert first is not None
-    # Now last_slow_burn_tell_at == 100; current still 100 → delta 0 < 40
+    # Pure-read: second pick still succeeds (cooldown not yet written).
     second = pick_slow_burn_tell()
-    assert second is None
+    assert second is not None
+    assert second["text"] == first["text"]
+    # Now commit the cooldown as postsend would do.
+    mark_slow_burn_surfaced(first["text"])
+    # Counter unchanged → delta 0 < min_turns_between → blocked.
+    blocked = pick_slow_burn_tell()
+    assert blocked is None
 
 
 def test_cooldown_clears_after_min_turns_between():

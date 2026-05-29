@@ -88,21 +88,15 @@ def current_turn_timeout() -> float | None:
     return _CURRENT_TURN_TIMEOUT.get()
 
 
-# ---------- autonomous action mode ----------
-# Set by run_scheduled_action so gated tools (notion writes) bypass
-# CONFIRM-SEND for this turn. The user opted in by creating the schedule —
-# they explicitly chose to delegate these writes. Other gated ops (gmail,
-# calendar delete, github merge) still gate.
-_AUTONOMOUS_ACTION: ContextVar[bool] = ContextVar(
-    "hikari_autonomous_action", default=False
+# ---------- pending session_id ----------
+# Set inside the receive loop when the SDK emits a ResultMessage with a new
+# session_id; committed to db only AFTER _invoke_sdk returns successfully
+# inside the caller's _RUN_LOCK block. This prevents a committed session_id
+# from pointing at a turn that was never successfully returned to the caller.
+# Error-path clears (db.set_session_id("")) are still direct and immediate.
+_PENDING_SESSION_ID: ContextVar[str | None] = ContextVar(
+    "hikari_pending_session_id", default=None
 )
-
-
-def in_autonomous_action() -> bool:
-    """True if the current turn was launched by ``run_scheduled_action`` and
-    is allowed to bypass per-write approval for whitelisted autonomous-safe
-    tools."""
-    return _AUTONOMOUS_ACTION.get()
 
 
 class _TurnIdFilter(logging.Filter):
@@ -355,6 +349,11 @@ def _anti_binge_check_and_increment() -> str | None:
             _cross_session.arm_if_heavy()
         except Exception:
             logger.exception("cross_session.arm_if_heavy failed at session boundary (non-fatal)")
+        try:
+            from agents import mode_dispatch as _mode_dispatch
+            _mode_dispatch.clear_on_session_boundary()
+        except Exception:
+            logger.exception("mode_dispatch.clear_on_session_boundary failed at session boundary (non-fatal)")
         db.runtime_set("session_turn_count", "0")
         db.runtime_set("session_turn_count_session_id", active_sid)
         db.runtime_set("session_closed", "")
@@ -840,7 +839,7 @@ async def _invoke_sdk_persistent_live(
                             tool_names_this_turn.add(str(block.name))
                 elif isinstance(msg, ResultMessage):
                     if log_session_id and msg.session_id:
-                        db.set_session_id(msg.session_id)
+                        _PENDING_SESSION_ID.set(msg.session_id)
                     if msg.subtype != "success":
                         logger.warning("agent loop ended subtype=%s", msg.subtype)
                     if msg.usage:
@@ -977,7 +976,7 @@ async def _invoke_sdk(
                                 tool_names_this_turn.add(str(block.name))
                     elif isinstance(msg, ResultMessage):
                         if log_session_id and msg.session_id:
-                            db.set_session_id(msg.session_id)
+                            _PENDING_SESSION_ID.set(msg.session_id)
                         if msg.subtype != "success":
                             logger.warning("agent loop ended subtype=%s", msg.subtype)
                         # Cache telemetry — the Claude Code CLI already caches
@@ -1049,15 +1048,21 @@ async def run_user_turn(user_text: str) -> str:
     if closeline is not None:
         return closeline
     async with _RUN_LOCK:
-        return await _invoke_sdk(
+        _PENDING_SESSION_ID.set(None)
+        _resume_sid = db.get_session_id()
+        result = await _invoke_sdk(
             user_text,
-            resume=db.get_session_id(),
+            resume=_resume_sid,
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
             max_budget_usd=float(cfg.get("runtime.chat_max_budget_usd", 0.50)),
             retry_on_process_error=True,
             use_persistent_live=True,
         )
+        _pid = _PENDING_SESSION_ID.get()
+        if _pid:
+            db.set_session_id(_pid)
+        return result
 
 
 async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
@@ -1078,14 +1083,19 @@ async def run_user_turn_blocks(content_blocks: list[dict]) -> str:
     if closeline is not None:
         return closeline
     async with _RUN_LOCK:
+        _PENDING_SESSION_ID.set(None)
+        _resume_sid = db.get_session_id()
         result = await _invoke_sdk(
             content_blocks,
-            resume=db.get_session_id(),
+            resume=_resume_sid,
             log_session_id=True,
             max_turns=DEFAULT_MAX_TURNS,
             max_budget_usd=float(cfg.get("runtime.chat_max_budget_usd", 0.50)),
             retry_on_process_error=True,
         )
+        _pid = _PENDING_SESSION_ID.get()
+        if _pid:
+            db.set_session_id(_pid)
         if sdk_pool.is_live_persistent_path_enabled():
             try:
                 await sdk_pool._reconnect_live(
@@ -1115,15 +1125,21 @@ async def run_visible_proactive(seed_prompt: str) -> str:
     """
     _CURRENT_TURN_ID.set(uuid.uuid4().hex)
     async with _RUN_LOCK:
-        return await _invoke_sdk(
+        _PENDING_SESSION_ID.set(None)
+        _resume_sid = db.get_session_id()
+        result = await _invoke_sdk(
             seed_prompt,
-            resume=db.get_session_id(),
+            resume=_resume_sid,
             log_session_id=True,
             max_turns=5,
             max_budget_usd=0.20,
             retry_on_process_error=True,
             use_persistent_live=True,
         )
+        _pid = _PENDING_SESSION_ID.get()
+        if _pid:
+            db.set_session_id(_pid)
+        return result
 
 
 async def run_scheduled_action(
@@ -1136,9 +1152,10 @@ async def run_scheduled_action(
     """Autonomous turn fired by a scheduled action reminder.
 
     Resumes the live session so context carries between fires; budget elevated
-    (default 180 s, $0.40, 6 turns) for write-heavy MCP work. Sets the
-    ``_AUTONOMOUS_ACTION`` flag so gatekeeper-gated tools tagged
-    ``autonomous_action_safe`` bypass per-write CONFIRM-SEND.
+    (default 180 s, $0.40, 6 turns) for write-heavy MCP work. Sets
+    ``sdk_pool.set_autonomous_window(True)`` inside ``_RUN_LOCK`` so
+    gatekeeper-gated tools tagged ``autonomous_action_safe`` bypass
+    per-write CONFIRM-SEND for the duration of this turn.
 
     The single retry inside ``_invoke_sdk_persistent_live`` still applies — a
     persistent-client SDK timeout is rare and one reconnect typically clears
@@ -1166,20 +1183,28 @@ async def run_scheduled_action(
         else cfg.get("runtime.scheduled_action_max_budget_usd", 0.40)
     )
     timeout_token = _CURRENT_TURN_TIMEOUT.set(effective_timeout)
-    action_token = _AUTONOMOUS_ACTION.set(True)
     try:
         async with _RUN_LOCK:
-            return await _invoke_sdk(
-                seed_prompt,
-                resume=db.get_session_id(),
-                log_session_id=True,
-                max_turns=effective_max_turns,
-                max_budget_usd=effective_budget,
-                retry_on_process_error=True,
-                use_persistent_live=True,
-            )
+            sdk_pool.set_autonomous_window(True)
+            try:
+                _PENDING_SESSION_ID.set(None)
+                _resume_sid = db.get_session_id()
+                result = await _invoke_sdk(
+                    seed_prompt,
+                    resume=_resume_sid,
+                    log_session_id=True,
+                    max_turns=effective_max_turns,
+                    max_budget_usd=effective_budget,
+                    retry_on_process_error=True,
+                    use_persistent_live=True,
+                )
+                _pid = _PENDING_SESSION_ID.get()
+                if _pid:
+                    db.set_session_id(_pid)
+                return result
+            finally:
+                sdk_pool.set_autonomous_window(False)
     finally:
-        _AUTONOMOUS_ACTION.reset(action_token)
         _CURRENT_TURN_TIMEOUT.reset(timeout_token)
 
 

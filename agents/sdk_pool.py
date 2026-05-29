@@ -51,6 +51,28 @@ _live: _Handle = _Handle()
 _started: bool = False
 _startup_lock: asyncio.Lock = asyncio.Lock()
 _live_recycle_pending: bool = False
+_autonomous_window: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# Autonomous window                                                             #
+# --------------------------------------------------------------------------- #
+
+
+def set_autonomous_window(on: bool) -> None:
+    """Mark that the current turn is an autonomous scheduled-action window.
+
+    Called by run_scheduled_action inside ``_RUN_LOCK`` so that gatekeeper can
+    bypass CONFIRM-SEND for whitelisted writes without a ContextVar that might
+    propagate across asyncio tasks.
+    """
+    global _autonomous_window
+    _autonomous_window = bool(on)
+
+
+def in_autonomous_window() -> bool:
+    """True while run_scheduled_action holds ``_RUN_LOCK``."""
+    return _autonomous_window
 
 
 # --------------------------------------------------------------------------- #

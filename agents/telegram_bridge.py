@@ -861,7 +861,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 except Exception:
                     pass
                 reply = await run_compound_turn_typed(
-                    user_text, user_turn_id=user_turn_id, is_voice=False,
+                    user_text,
+                    user_turn_id=user_turn_id,
+                    is_voice=False,
+                    internal_belief_context=internal_belief_context,
                 )
             else:
                 reply = await respond(

@@ -147,8 +147,26 @@ def scan_softening(text: str) -> bool:
 
 
 def clear_on_session_boundary() -> None:
-    """Called when SDK session_id rotates. Clears modes if configured."""
-    if bool(cfg.get("mode_flags.comfort.clear_on_session_boundary", True)):
-        db.runtime_set(_COMFORT_KEY, None)
-    if bool(cfg.get("mode_flags.anger.clear_on_session_boundary", True)):
-        db.runtime_set(_ANGER_KEY, None)
+    """Called when SDK session_id rotates.
+
+    Clears session-scoped mode flags that must not leak across session
+    boundaries: comfort_mode_state and anger_mode_state.
+
+    Does NOT clear cross-session state (``prior_session_heavy``, relationship
+    stage, facts, etc.) — that state is intentionally written at the boundary
+    and consumed by the next session.
+
+    Behaviour is config-gated per mode via
+    ``mode_flags.{comfort,anger}.clear_on_session_boundary`` (both default True).
+    Safe to call when no modes are active (idempotent). Never raises.
+    """
+    try:
+        if bool(cfg.get("mode_flags.comfort.clear_on_session_boundary", True)):
+            db.runtime_set(_COMFORT_KEY, None)
+    except Exception:
+        logger.exception("clear_on_session_boundary: failed to clear comfort_mode (non-fatal)")
+    try:
+        if bool(cfg.get("mode_flags.anger.clear_on_session_boundary", True)):
+            db.runtime_set(_ANGER_KEY, None)
+    except Exception:
+        logger.exception("clear_on_session_boundary: failed to clear anger_mode (non-fatal)")

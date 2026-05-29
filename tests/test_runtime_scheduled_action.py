@@ -3,7 +3,8 @@
 Pins the contract that:
   - run_scheduled_action sets _CURRENT_TURN_TIMEOUT to the elevated default
   - the chat-path read of sdk_turn_timeout_s consults the contextvar first
-  - in_autonomous_action() reads the _AUTONOMOUS_ACTION contextvar
+  - sdk_pool.in_autonomous_window() is True during the SDK call and False
+    before/after (contract #1 — window is module-level, not ContextVar)
   - the gatekeeper bypass fires only when both the flag is set AND the tool
     is in the autonomous-safe whitelist
 """
@@ -15,14 +16,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agents import runtime
+from agents import runtime, sdk_pool
 from tools import gatekeeper_can_use_tool as gk
 
 
 def test_context_vars_default_to_inactive():
     """Outside a scheduled action, the flags must be off and timeout None."""
     assert runtime.current_turn_timeout() is None
-    assert runtime.in_autonomous_action() is False
+    assert sdk_pool.in_autonomous_window() is False
 
 
 def test_run_scheduled_action_signature():
@@ -37,13 +38,14 @@ def test_run_scheduled_action_signature():
 
 @pytest.mark.asyncio
 async def test_run_scheduled_action_sets_context_vars_then_clears():
-    """During the SDK call, _CURRENT_TURN_TIMEOUT and _AUTONOMOUS_ACTION must
-    be set. After the call returns, both must reset to defaults."""
+    """During the SDK call, _CURRENT_TURN_TIMEOUT must be set and
+    sdk_pool.in_autonomous_window() must be True.
+    After the call returns, both must reset to defaults."""
     observed = {}
 
     async def _fake_invoke_sdk(*args, **kwargs):
         observed["timeout"] = runtime.current_turn_timeout()
-        observed["action"] = runtime.in_autonomous_action()
+        observed["action"] = sdk_pool.in_autonomous_window()
         observed["max_turns"] = kwargs.get("max_turns")
         observed["max_budget_usd"] = kwargs.get("max_budget_usd")
         return "ok"
@@ -58,9 +60,9 @@ async def test_run_scheduled_action_sets_context_vars_then_clears():
     assert observed["action"] is True
     assert observed["max_turns"] == 8
     assert observed["max_budget_usd"] == 0.5
-    # After return, the contextvars must be reset.
+    # After return, the state must be reset.
     assert runtime.current_turn_timeout() is None
-    assert runtime.in_autonomous_action() is False
+    assert sdk_pool.in_autonomous_window() is False
 
 
 @pytest.mark.asyncio
@@ -86,7 +88,7 @@ async def test_run_scheduled_action_defaults_from_config():
 
 @pytest.mark.asyncio
 async def test_run_scheduled_action_resets_contextvars_on_exception():
-    """If _invoke_sdk raises, the contextvars must still reset."""
+    """If _invoke_sdk raises, the contextvars and module state must still reset."""
     async def _fake_invoke_sdk(*args, **kwargs):
         raise RuntimeError("simulated SDK failure")
 
@@ -95,7 +97,7 @@ async def test_run_scheduled_action_resets_contextvars_on_exception():
             await runtime.run_scheduled_action("explode")
 
     assert runtime.current_turn_timeout() is None
-    assert runtime.in_autonomous_action() is False
+    assert sdk_pool.in_autonomous_window() is False
 
 
 @pytest.mark.asyncio
@@ -106,14 +108,14 @@ async def test_chat_turn_timeout_unaffected_by_run_scheduled_action():
 
     async def _fake_invoke_sdk(*args, **kwargs):
         observed_during_chat["timeout"] = runtime.current_turn_timeout()
-        observed_during_chat["action"] = runtime.in_autonomous_action()
+        observed_during_chat["action"] = sdk_pool.in_autonomous_window()
         return "ok"
 
     with patch.object(runtime, "_invoke_sdk", _fake_invoke_sdk):
         await runtime.run_user_turn("hi")
 
     assert observed_during_chat["timeout"] is None
-    assert observed_during_chat["action"] is False
+    assert observed_during_chat["action"] is False  # window stays False during normal turns
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +147,7 @@ async def test_gatekeeper_bypasses_notion_write_in_autonomous_action(monkeypatch
     from tools.gatekeeper import GATEKEEPER
     monkeypatch.setattr(GATEKEEPER, "request", request_mock)
 
-    token = runtime._AUTONOMOUS_ACTION.set(True)
+    sdk_pool.set_autonomous_window(True)
     try:
         result = await gk.gatekeeper_can_use_tool(
             "mcp__notion__API-post-page",
@@ -153,7 +155,7 @@ async def test_gatekeeper_bypasses_notion_write_in_autonomous_action(monkeypatch
             _FakeContext(),
         )
     finally:
-        runtime._AUTONOMOUS_ACTION.reset(token)
+        sdk_pool.set_autonomous_window(False)
 
     assert isinstance(result, PermissionResultAllow)
     request_mock.assert_not_awaited()
@@ -176,7 +178,7 @@ async def test_gatekeeper_still_gates_non_whitelisted_tool_in_autonomous_action(
     from tools.gatekeeper import GATEKEEPER
     monkeypatch.setattr(GATEKEEPER, "request", request_mock)
 
-    token = runtime._AUTONOMOUS_ACTION.set(True)
+    sdk_pool.set_autonomous_window(True)
     try:
         await gk.gatekeeper_can_use_tool(
             "mcp__notion__API-delete-a-block",   # NOT whitelisted
@@ -184,7 +186,7 @@ async def test_gatekeeper_still_gates_non_whitelisted_tool_in_autonomous_action(
             _FakeContext(),
         )
     finally:
-        runtime._AUTONOMOUS_ACTION.reset(token)
+        sdk_pool.set_autonomous_window(False)
 
     request_mock.assert_awaited_once()
 
@@ -205,7 +207,7 @@ async def test_gatekeeper_gates_normally_outside_autonomous_action(monkeypatch):
     from tools.gatekeeper import GATEKEEPER
     monkeypatch.setattr(GATEKEEPER, "request", request_mock)
 
-    assert runtime.in_autonomous_action() is False
+    assert sdk_pool.in_autonomous_window() is False
 
     await gk.gatekeeper_can_use_tool(
         "mcp__notion__API-post-page",

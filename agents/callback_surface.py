@@ -67,6 +67,12 @@ _LAST_I_KEEP_THINKING_KEY = "last_i_keep_thinking_at"
 # runtime_state key tracked across turns to gate slow_burn_tells.
 _LAST_SLOW_BURN_TELL_KEY = "last_slow_burn_tell_at"
 
+# runtime_state key used to stash the picked slow-burn tell text between
+# injection (hooks.py) and confirmed delivery (postsend.py).  C3 writes this
+# key immediately after calling pick_slow_burn_tell(); postsend reads and
+# clears it inside mark_pending_surfaced() to trigger mark_slow_burn_surfaced.
+PENDING_SLOW_BURN_TELL_KEY = "pending_slow_burn_tell_text"
+
 
 def _tokens(text: str) -> set[str]:
     return {
@@ -347,23 +353,64 @@ def pick_slow_burn_tell() -> dict | None:
     tell_text = chosen.get("text", "")
     gate = int(chosen.get("min_session_count", 0))
 
-    db.runtime_set(_LAST_SLOW_BURN_TELL_KEY, current)
-
-    if session_id:
-        try:
-            already_surfaced.add(tell_text)
-            with db._conn() as conn:
-                conn.execute(
-                    "INSERT INTO session_scratch "
-                    "(session_id, topic, payload_json) VALUES (?, ?, ?)",
-                    (session_id, scratch_topic,
-                     json.dumps({"texts": sorted(already_surfaced)})),
-                )
-        except Exception:
-            logger.exception("pick_slow_burn_tell: dedup write failed (non-fatal)")
+    # NOTE: cooldown write (_LAST_SLOW_BURN_TELL_KEY) and session_scratch dedup
+    # are intentionally NOT written here.  They are deferred to
+    # mark_slow_burn_surfaced(), called by postsend.mark_pending_surfaced() only
+    # after the reply is confirmed delivered to the user.  This prevents the
+    # "she finally said it" payoff from being consumed at injection time when the
+    # model may choose not to surface the tell at all.
 
     return {
         "text": tell_text,
         "framing_hint": cfg.get("slow_burn_tells.framing_hint", "i_keep_thinking"),
         "min_session_count": gate,
     }
+
+
+def mark_slow_burn_surfaced(tell_text: str) -> None:
+    """Commit dedup + cooldown for a slow-burn tell AFTER it is confirmed
+    emitted (post-send). Writes _LAST_SLOW_BURN_TELL_KEY and the
+    session_scratch dedup row — the writes formerly done at pick time.
+
+    Called by postsend.mark_pending_surfaced() when the delivered text
+    contains the stashed slow-burn tell text, confirming the tell reached
+    the user.
+    """
+    if not tell_text:
+        return
+
+    try:
+        current = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
+        db.runtime_set(_LAST_SLOW_BURN_TELL_KEY, current)
+    except Exception:
+        logger.debug(
+            "mark_slow_burn_surfaced: failed to write %s (non-fatal)",
+            _LAST_SLOW_BURN_TELL_KEY,
+        )
+
+    session_id = db.get_session_id() or ""
+    if not session_id:
+        return
+
+    scratch_topic = "slow_burn_surfaced"
+    try:
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM session_scratch "
+                "WHERE session_id = ? AND topic = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id, scratch_topic),
+            ).fetchone()
+        already: set[str] = set()
+        if row:
+            already = set(json.loads(row["payload_json"]).get("texts", []))
+        already.add(tell_text)
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO session_scratch "
+                "(session_id, topic, payload_json) VALUES (?, ?, ?)",
+                (session_id, scratch_topic,
+                 json.dumps({"texts": sorted(already)})),
+            )
+    except Exception:
+        logger.exception("mark_slow_burn_surfaced: dedup write failed (non-fatal)")

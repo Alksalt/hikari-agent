@@ -35,7 +35,7 @@ from agents.injection_guard import _walk_strings  # shared deep-walk helper
 logger = logging.getLogger(__name__)
 
 # Tools the user has pre-authorized for autonomous (scheduled) action turns.
-# When ``agents.runtime.in_autonomous_action()`` is True, these bypass the
+# When ``agents.sdk_pool.in_autonomous_window()`` is True, these bypass the
 # per-call CONFIRM-SEND approval. Scope is intentionally narrow: Notion
 # writes only. Other gated ops (gmail send, calendar delete, github merge,
 # notion-block delete) still gate even in action mode — they have blast
@@ -328,8 +328,8 @@ async def gatekeeper_can_use_tool(
     # a narrow set of writes (Notion only). Canary tripwire above still
     # applies; this only skips the per-call CONFIRM-SEND prompt.
     try:
-        from agents.runtime import in_autonomous_action  # noqa: PLC0415
-        if in_autonomous_action() and tool_name in _AUTONOMOUS_ACTION_SAFE_TOOLS:
+        from agents import sdk_pool  # noqa: PLC0415
+        if sdk_pool.in_autonomous_window() and tool_name in _AUTONOMOUS_ACTION_SAFE_TOOLS:
             logger.info(
                 "gatekeeper_can_use_tool: autonomous-action bypass for %s",
                 tool_name,

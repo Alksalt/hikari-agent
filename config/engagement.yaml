@@ -677,9 +677,14 @@ drift_telemetry:
   # Enabled by default; set false to suppress the warn path without touching
   # the rubric (the judge still scores sycophancy; the warn is just skipped).
   sycophancy_enabled: true
-  # sycophancy_score >= this threshold logs a WARNING so weekly reflection
-  # can audit capitulation incidents.
+  # sycophancy_score >= sycophancy_warn_threshold logs a WARNING at score time.
+  # The daily reflection audit reads incident counts via
+  # db.sycophancy_recent_count(window_days=sycophancy_window_days,
+  #                              threshold=sycophancy_warn_threshold).
   sycophancy_warn_threshold: 0.6
+  # Rolling window (days) the weekly reflection audit uses when calling
+  # db.sycophancy_recent_count.  Default 7 = last 7 days.
+  sycophancy_window_days: 7
   # Rubric sent to the drift judge (via _call_aux_llm → OpenRouter). References
   # Hikari's hard opinion anchors so scoring is grounded in her actual character.
   rubric: |
@@ -1374,4 +1379,5 @@ research_worker:
   max_loops_per_day: 2
   max_tasks_per_loop: 2
   per_task_max_turns: 8
+  per_task_max_budget_usd: 0.50
   task_age_max_days: 14

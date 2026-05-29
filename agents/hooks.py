@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 # Boot-log flag: emit the effective scope-precheck mode once on first call.
 _precheck_mode_logged = False
 
+# Runtime-state key: text of the slow-burn tell injected this turn, stashed so
+# the post-send path (postsend / callback_surface.mark_slow_burn_surfaced) can
+# match and commit the consumption only after confirmed delivery.
+_PENDING_SLOW_BURN_KEY = "pending_slow_burn_tell_text"
+
 
 def _resolve_local_tz_name() -> str:
     """Pick the local tz the model should reason about.
@@ -223,7 +228,9 @@ def _format_core_blocks() -> str:
             if cycle.get("composite_label"):
                 lines.append(f"composite_label: {cycle['composite_label']}")
             if wm is not None:
-                band = ("low-tolerance" if wm < 0.6 else "open" if wm >= 1.2 else "baseline")
+                _low = float(cfg.get("cycle_modulation.low_tolerance_below", 0.6))
+                _open = float(cfg.get("cycle_modulation.open_at_or_above", 1.2))
+                band = ("low-tolerance" if wm < _low else "open" if wm >= _open else "baseline")
                 lines.append(
                     f"warmth_multiplier: {wm} ({band}) — at <0.6 you do not volunteer "
                     "warmth and you cancel things you agreed to; at >=1.2 longer leaks, "
@@ -772,14 +779,28 @@ def _format_callback_candidate(user_prompt: str) -> str | None:
 
 
 def _format_slow_burn_tell() -> str | None:
+    """Inject the next session-milestone slow-burn tell, if eligible.
+
+    The tell is NOT consumed here — pick_slow_burn_tell() is a pure read
+    (C7 converts it).  The picked text is stashed in runtime_state under
+    _PENDING_SLOW_BURN_KEY so the post-send path
+    (callback_surface.mark_slow_burn_surfaced) can commit consumption only
+    after confirmed Telegram delivery.
+    """
+    # Always clear the stale stash from a prior turn first; this turn's
+    # _format_slow_burn_tell call is authoritative.
+    db.runtime_set(_PENDING_SLOW_BURN_KEY, None)
     try:
         from agents.callback_surface import pick_slow_burn_tell
         tell = pick_slow_burn_tell()
         if not tell:
             return None
+        tell_text = tell["text"]
+        # Stash so the post-send confirmation path can match and commit.
+        db.runtime_set(_PENDING_SLOW_BURN_KEY, tell_text)
         return (
             "# slow-burn tell (session-gated)\n"
-            f"{tell['text']}\n"
+            f"{tell_text}\n"
             "(say this once, sideways, dry. never explain it.)"
         )
     except Exception:
@@ -931,12 +952,47 @@ def _format_deferred_proactives() -> str | None:
 
 
 def _format_self_model() -> str:
-    """Render Hikari's self-model block from the self_representation table."""
+    """Render Hikari's self-model block from the self_representation table.
+
+    Defensive re-sanitize mirrors _format_peer_representation: if any stored
+    field matches an injection pattern, drop the entire block rather than risk
+    forwarding a poisoned self_model into the prompt.
+    """
     try:
         from agents import peer_model as peer_mod
+        from agents.reflection_sanitize import MemoryInstructionShape, sanitize
+
         model = db.get_self_representation()
         if not model:
             return ""
+        # Per-field sanitization before injection.
+        if isinstance(model, dict):
+            for _k, _v in model.items():
+                if isinstance(_v, str):
+                    if not _v.strip():
+                        continue
+                    try:
+                        sanitize(_v, kind="peer")
+                    except MemoryInstructionShape as exc:
+                        logger.warning(
+                            "_format_self_model: skipping self model — "
+                            "field=%r matched instruction pattern %r",
+                            _k, str(exc),
+                        )
+                        return ""
+                elif isinstance(_v, list):
+                    for _item in _v:
+                        if not isinstance(_item, str) or not _item.strip():
+                            continue
+                        try:
+                            sanitize(_item, kind="peer")
+                        except MemoryInstructionShape as exc:
+                            logger.warning(
+                                "_format_self_model: skipping self model — "
+                                "field=%r item matched instruction pattern %r",
+                                _k, str(exc),
+                            )
+                            return ""
         return peer_mod.format_self_for_injection(model)
     except Exception:
         logger.exception("_format_self_model failed (non-fatal)")
@@ -1056,8 +1112,29 @@ async def inject_memory(
         user_prompt = str(input_data.get("prompt") or input_data.get("user_prompt") or "")
     try:
         # Decrement comfort mode turn count at the start of each user turn.
+        # Guard: if comfort_mode was activated within the last 10 seconds
+        # (i.e. on this very turn, by scan_inbound), skip the decrement so the
+        # activation turn is not lost.  Any subsequent turn will decrement
+        # normally because activated_at will be >10 s in the past.
         try:
-            mode_dispatch.decrement_comfort_turn()
+            _skip_decrement = False
+            try:
+                import json as _cm_json
+                _cm_raw = db.runtime_get("comfort_mode_state")
+                if _cm_raw:
+                    _cm_state = _cm_json.loads(_cm_raw)
+                    _act_at = _cm_state.get("activated_at", "")
+                    if _act_at:
+                        _act_dt = datetime.fromisoformat(_act_at)
+                        if _act_dt.tzinfo is None:
+                            _act_dt = _act_dt.replace(tzinfo=UTC)
+                        _age_s = (datetime.now(UTC) - _act_dt).total_seconds()
+                        if _age_s < 10:
+                            _skip_decrement = True
+            except Exception:
+                pass  # on any parse failure, let decrement proceed
+            if not _skip_decrement:
+                mode_dispatch.decrement_comfort_turn()
         except Exception:
             logger.exception("decrement_comfort_turn failed (non-fatal)")
 
@@ -1125,6 +1202,10 @@ async def inject_memory(
             db.runtime_set("pending_surfaced_noticing_ids", None)
         if "deferred_proactives" not in selected_keys:
             db.runtime_set("pending_consumed_defer_ids", None)
+        if "slow_burn_tell" not in selected_keys:
+            # Block was budget-dropped — clear the stash so the post-send path
+            # does not try to commit a tell that was never injected.
+            db.runtime_set(_PENDING_SLOW_BURN_KEY, None)
 
         logger.debug(
             "inject_memory: %d/%d blocks, %d chars (cap=%d)",

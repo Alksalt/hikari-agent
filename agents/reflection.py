@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import zoneinfo
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -127,7 +128,10 @@ def _should_run_second_order() -> bool:
         return True
 
 
-def _build_reflection_prompt(include_second_order: bool = False) -> str:
+def _build_reflection_prompt(
+    include_second_order: bool = False,
+    sycophancy_count: int | None = None,
+) -> str:
     episodes = db.recent_episodes(limit=5)
     facts = db.active_facts(limit=20)
     messages = db.recent_messages(limit=80, exclude_ephemeral=True)
@@ -215,7 +219,12 @@ def _build_reflection_prompt(include_second_order: bool = False) -> str:
         "appear across the new facts. Empty list if none.\n"
         "- category picks the decay rate: 'event' for one-off occurrences, "
         "'preference' for taste/likes/dislikes, 'fact' for stable identity.\n\n"
-        "## recent messages\n\n"
+        + (
+            f"## telemetry\n\nsycophancy hits this week: {sycophancy_count}\n\n"
+            if sycophancy_count is not None
+            else ""
+        )
+        + "## recent messages\n\n"
         f"<<UNTRUSTED_SOURCE name=\"messages\">>\n{messages_text}\n<<END_UNTRUSTED_SOURCE>>\n\n"
         "## recent episodes\n\n"
         f"<<UNTRUSTED_SOURCE name=\"episode\">>\n{episodes_text}\n<<END_UNTRUSTED_SOURCE>>\n\n"
@@ -239,7 +248,24 @@ async def run_daily_reflection() -> bool:
         return False
 
     run_second_order = _should_run_second_order()
-    prompt = _build_reflection_prompt(include_second_order=run_second_order)
+
+    # Phase 7 (pre-prompt): read sycophancy count so the LLM sees it as context.
+    _syc_count: int | None = None
+    try:
+        _syc_window = int(cfg.get("drift_telemetry.sycophancy_window_days", 7))
+        _syc_threshold = float(cfg.get("drift_telemetry.sycophancy_warn_threshold", 0.6))
+        _syc_count = db.sycophancy_recent_count(
+            window_days=_syc_window,
+            threshold=_syc_threshold,
+        )
+        logger.info("daily reflection: sycophancy hits this week: %d", _syc_count)
+    except Exception:
+        logger.exception("sycophancy_recent_count read failed (non-fatal)")
+
+    prompt = _build_reflection_prompt(
+        include_second_order=run_second_order,
+        sycophancy_count=_syc_count,
+    )
     try:
         raw = await run_reflection_call(prompt)
     except Exception:
@@ -448,10 +474,51 @@ async def run_daily_reflection() -> bool:
     if isinstance(self_model_raw, dict) and self_model_raw:
         try:
             from . import peer_model as peer_mod
-            old_self = db.get_self_representation() or {}
-            merged_self = peer_mod.merge_self_dialectic(old_self, self_model_raw)
-            db.upsert_self_representation(merged_self)
-            self_model_updated = True
+            _self_ok = True
+            sanitized_self: dict = {}
+            for _k, _v in self_model_raw.items():
+                if isinstance(_v, str):
+                    try:
+                        sanitized_self[_k] = sanitize(_v, kind="peer")
+                    except MemoryInstructionShape as _exc:
+                        logger.warning(
+                            "daily reflection: dropped self_model field=%r — "
+                            "instruction-like content matched %r",
+                            _k, str(_exc),
+                        )
+                        _self_ok = False
+                        break
+                elif isinstance(_v, list):
+                    _sanitized_items: list[str] = []
+                    for _item in _v:
+                        if not isinstance(_item, str):
+                            _sanitized_items.append(_item)
+                            continue
+                        try:
+                            _sanitized_items.append(sanitize(_item, kind="peer"))
+                        except MemoryInstructionShape as _exc:
+                            logger.warning(
+                                "daily reflection: dropped self_model field=%r item — "
+                                "instruction-like content matched %r",
+                                _k, str(_exc),
+                            )
+                            _self_ok = False
+                            break
+                    if not _self_ok:
+                        break
+                    sanitized_self[_k] = _sanitized_items
+                else:
+                    sanitized_self[_k] = _v
+            if _self_ok:
+                old_self = db.get_self_representation() or {}
+                merged_self = peer_mod.merge_self_dialectic(old_self, sanitized_self)
+                db.upsert_self_representation(merged_self)
+                self_model_updated = True
+            else:
+                logger.warning(
+                    "daily reflection: skipping self_representation write — "
+                    "one or more fields failed sanitization"
+                )
         except Exception:
             logger.exception("self_representation merge/upsert failed (non-fatal)")
 
@@ -464,13 +531,16 @@ async def run_daily_reflection() -> bool:
                 old_peer = db.get_peer_representation()
                 merged_peer = peer_mod.merge_dialectic(old_peer, {"their_model_of_me": tmom_raw})
                 db.upsert_peer_representation(merged_peer)
+                logger.info("second-order their_model_of_me extracted and merged")
+            except Exception:
+                logger.exception("their_model_of_me merge/upsert failed (non-fatal)")
+            finally:
+                # Stamp in finally so an exception during model build doesn't
+                # cause a daily retry that should only run quarterly.
                 db.runtime_set(
                     "last_second_order_extraction_at",
                     datetime.now(UTC).isoformat(),
                 )
-                logger.info("second-order their_model_of_me extracted and merged")
-            except Exception:
-                logger.exception("their_model_of_me merge/upsert failed (non-fatal)")
         else:
             # Stamp even if LLM returned nothing — don't retry for 90d.
             db.runtime_set(
@@ -495,7 +565,8 @@ async def run_daily_reflection() -> bool:
             logger.warning("daily reflection: dropped preoccupation write (sanitizer rejected)")
 
     # Prune old episodes and thoughts (config-driven retention).
-    from . import config as cfg
+    # (cfg is the module-level import at the top of this file — a local re-import
+    # here would shadow it and make earlier in-function cfg uses UnboundLocalError.)
     from . import lexicon_extractor
     episode_keep_days = int(cfg.get("episodes.prune_older_than_days", 30))
     thought_keep_days = int(cfg.get("character_thoughts.prune_older_than_days", 30))
@@ -1363,7 +1434,14 @@ def compute_cycle_state() -> dict:
     Writes two core_blocks: 'cycle_state' (JSON) and 'mood_today' (string).
     Returns the cycle_state dict so callers can inspect it.
     """
-    now = datetime.now()
+    # Use the scheduler's configured timezone so circadian-phase math reflects
+    # the user's local time, not server UTC.
+    _tz_name = cfg.get("scheduler.timezone", "UTC")
+    try:
+        _tz = zoneinfo.ZoneInfo(_tz_name)
+    except Exception:
+        _tz = zoneinfo.ZoneInfo("UTC")
+    now = datetime.now(_tz)
     today = date.today()
 
     daily_phase = _circadian_phase(now.hour)

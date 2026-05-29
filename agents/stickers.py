@@ -32,6 +32,7 @@ from storage import db
 from storage.db import OUTBOUND_MSG_COUNTER_KEY
 
 from . import config as cfg
+from .cadence import _warmth_band
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -63,6 +64,26 @@ def _enabled() -> bool:
 
 def _probability() -> float:
     return float(cfg.get("stickers.probability_per_reply", 0.05))
+
+
+def _warmth_factor() -> float:
+    """Scale factor derived from the current warmth band (same source as cadence.py).
+
+    low  → cycle_modulation.low_tolerance_proactive_cap_scale  (default 0.5)
+    open → cycle_modulation.open_proactive_cap_scale            (default 1.25)
+    mid / None (disabled / absent) → 1.0
+    """
+    band = _warmth_band()
+    if band == "low":
+        return float(cfg.get("cycle_modulation.low_tolerance_proactive_cap_scale", 0.5))
+    if band == "open":
+        return float(cfg.get("cycle_modulation.open_proactive_cap_scale", 1.25))
+    return 1.0
+
+
+def _effective_probability() -> float:
+    """Base probability scaled by the current warmth band, clamped to [0, 1]."""
+    return min(1.0, max(0.0, _probability() * _warmth_factor()))
 
 
 def _cooldown() -> int:
@@ -129,7 +150,7 @@ def should_send_sticker(now_counter: int) -> bool:
     last_at = db.runtime_get_int("stickers_last_at_counter", 0)
     if last_at > 0 and (now_counter - last_at) < _cooldown():
         return False
-    return random.random() < _probability()
+    return random.random() < _effective_probability()
 
 
 async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | None:

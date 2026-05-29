@@ -163,3 +163,31 @@ def test_clear_on_session_boundary_respects_config(monkeypatch):
     activate_anger_mode(trigger="rude")
     clear_on_session_boundary()
     assert current_anger_mode() is not None
+
+
+def test_clear_on_session_boundary_idempotent_when_no_modes_active():
+    """clear_on_session_boundary is safe to call when no modes are set."""
+    from agents.mode_dispatch import (
+        clear_on_session_boundary,
+        current_anger_mode,
+        current_comfort_mode,
+    )
+    # Ensure no modes are active
+    assert current_comfort_mode() is None
+    assert current_anger_mode() is None
+    # Must not raise and must leave state as None
+    clear_on_session_boundary()
+    assert current_comfort_mode() is None
+    assert current_anger_mode() is None
+
+
+def test_clear_on_session_boundary_never_raises_on_db_error(monkeypatch):
+    """clear_on_session_boundary swallows DB errors instead of propagating."""
+    import agents.mode_dispatch as md
+
+    def _boom(key, value):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(md.db, "runtime_set", _boom)
+    # Must not raise even when every db.runtime_set fails
+    md.clear_on_session_boundary()

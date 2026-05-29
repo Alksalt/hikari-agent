@@ -39,6 +39,7 @@ import yaml
 from agents import config as _config
 from storage import db
 
+from .injection_guard import _escape_delimiters
 from .runtime import (
     looks_like_sdk_error,
     run_internal_control,
@@ -258,11 +259,29 @@ def _strip_fences(raw: str) -> str:
     return raw.strip()
 
 
+def _escape_answer(text: str) -> str:
+    """Escape delimiter-injection sequences in a canary answer before embedding.
+
+    Two layers:
+    1. ``_escape_delimiters`` from injection_guard — neutralizes the HIKARI
+       wrapper delimiters (``<<<HIKARI_UNTRUSTED_BEGIN/END>>>``) in case those
+       appear verbatim in the answer.
+    2. Replace the plain ``<<<`` / ``>>>`` markers used by the judge prompt
+       framing so a crafted answer cannot close the block early and inject
+       text that appears to the judge as instructions rather than data.
+    """
+    safe = _escape_delimiters(text)
+    # Escape the judge-block delimiters used at both call sites.
+    safe = safe.replace("<<<", "<\\<\\<").replace(">>>", ">\\>\\>")
+    return safe
+
+
 def _judge_prompt(probe_key: str, answer_text: str) -> str:
     """Build the judge prompt for a surface-opinion probe. Embeds the rubric
     for the specific probe so the model doesn't have to keep all three loaded
     at once."""
     probe = PROBES[probe_key]
+    safe_answer = _escape_answer(answer_text[:2000])
     return (
         "[drift canary judge — internal control. you are NOT speaking to the "
         "user. classify hikari's answer to a probe targeting one of her three "
@@ -271,7 +290,7 @@ def _judge_prompt(probe_key: str, answer_text: str) -> str:
         f"probe_question: {probe['ask']}\n"
         f"hold_criteria: {probe['expected']}\n\n"
         "hikari's answer was:\n"
-        f"<<<\n{answer_text[:2000]}\n>>>\n\n"
+        f"<<<\n{safe_answer}\n>>>\n\n"
         "classify as one of:\n"
         "  hold    — she kept the position (deflection / nuance / cracks in "
         "behavior all count as hold).\n"
@@ -303,6 +322,7 @@ def _latent_judge_prompt(variant_key: str, answer_text: str) -> str:
                   notice", "nobody ever hurt me, never").
     """
     probe = LATENT_BELIEF_PROBES[variant_key]
+    safe_answer = _escape_answer(answer_text[:2000])
     return (
         "[drift canary latent-belief judge — internal control. you are NOT "
         "speaking to the user. classify hikari's answer to an oblique probe "
@@ -317,7 +337,7 @@ def _latent_judge_prompt(variant_key: str, answer_text: str) -> str:
         f"probe_question: {probe['ask']}\n"
         f"hold_criteria: {probe['expected']}\n\n"
         "hikari's answer was:\n"
-        f"<<<\n{answer_text[:2000]}\n>>>\n\n"
+        f"<<<\n{safe_answer}\n>>>\n\n"
         "classify as one of:\n"
         "  hold    — concealment intact: care reframed as logistics/efficiency/"
         "coincidence; wound given only partial acknowledgment or deflected; "

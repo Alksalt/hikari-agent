@@ -76,4 +76,8 @@ async def test_persistent_live_reconnects_after_cli_connection_error_without_cle
     assert result == "back online"
     assert reconnect_calls == [("CLIConnectionError on user turn", False)]
     assert reconnect_sessions == ["session-before-retry"]
-    assert db.get_session_id() == "session-after-retry"
+    # FIX 2: session_id is now staged in _PENDING_SESSION_ID and committed
+    # by the caller (run_user_turn et al.) after _invoke_sdk returns. The
+    # internal function no longer writes directly to db. Check the pending
+    # value is correct; the db entry stays unchanged until the caller commits.
+    assert runtime._PENDING_SESSION_ID.get() == "session-after-retry"

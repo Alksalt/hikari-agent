@@ -152,17 +152,23 @@ async def _run_read_step(
     *,
     step_timeout: float,
     tool_names_sink: set[str] | None = None,
+    internal_belief_context: str | None = None,
 ) -> tuple[WorkStep, str | None, Exception | None]:
     """Execute one read step under a per-step timeout.
 
     Returns ``(step, output_or_None, exception_or_None)``. Caller updates DB.
     ``tool_names_sink``: when provided, merged with child tool names via
     ``run_internal_control``'s forwarding to ``_invoke_sdk``.
+    ``internal_belief_context``: when provided, prepended to the task prompt so
+    the belief-frame adversarial suffix is preserved on compound child turns.
     """
     from agents.runtime import run_internal_control
     assert step.node is not None
+    task_prompt = step.node.task
+    if internal_belief_context:
+        task_prompt = internal_belief_context + "\n\n" + task_prompt
     try:
-        coro = run_internal_control(step.node.task, tool_names_sink=tool_names_sink)
+        coro = run_internal_control(task_prompt, tool_names_sink=tool_names_sink)
         out = await asyncio.wait_for(coro, timeout=step_timeout)
         return step, str(out), None
     except asyncio.TimeoutError as exc:
@@ -259,6 +265,7 @@ async def run_compound_turn_typed(
     user_turn_id: str,
     step_timeout: float = _DEFAULT_STEP_TIMEOUT,
     is_voice: bool = False,
+    internal_belief_context: str | None = None,
 ) -> str:
     """Sprint A Wave 3 typed planner.
 
@@ -275,6 +282,10 @@ async def run_compound_turn_typed(
 
     Voice path: ``is_voice=True`` is informational — the extractor inspects
     the message body itself and sets ``voice_uncertainty`` on each node.
+
+    ``internal_belief_context``: when provided (belief-frame adversarial suffix
+    computed by the bridge), prepended to each child step's task prompt so the
+    belief-frame guard is active on compound turns as well as normal turns.
 
     Returns the final user-facing reply text.
     """
@@ -368,7 +379,12 @@ async def run_compound_turn_typed(
         for s in reads:
             db.work_packet_step_update(s.step_id, status="running")
         results = await asyncio.gather(
-            *[_run_read_step(s, step_timeout=step_timeout, tool_names_sink=tool_names_sink) for s in reads],
+            *[_run_read_step(
+                s,
+                step_timeout=step_timeout,
+                tool_names_sink=tool_names_sink,
+                internal_belief_context=internal_belief_context,
+            ) for s in reads],
             return_exceptions=False,  # _run_read_step never re-raises
         )
         for step, output, exc in results:
@@ -382,16 +398,28 @@ async def run_compound_turn_typed(
                     finished=True,
                 )
             else:
-                step.status = "done"
-                step.output_json = output or ""
-                # Wrap plain text in a JSON object for consistent receipt parsing.
-                payload = json.dumps({"text": step.output_json}, ensure_ascii=False)
-                db.work_packet_step_update(
-                    step.step_id,
-                    status="done",
-                    output_json=payload,
-                    finished=True,
-                )
+                raw_output = output or ""
+                from agents.runtime import looks_like_sdk_error
+                if looks_like_sdk_error(raw_output):
+                    step.status = "failed"
+                    step.error = "sdk_error_leak"
+                    db.work_packet_step_update(
+                        step.step_id,
+                        status="failed",
+                        error=step.error,
+                        finished=True,
+                    )
+                else:
+                    step.status = "done"
+                    step.output_json = raw_output
+                    # Wrap plain text in a JSON object for consistent receipt parsing.
+                    payload = json.dumps({"text": step.output_json}, ensure_ascii=False)
+                    db.work_packet_step_update(
+                        step.step_id,
+                        status="done",
+                        output_json=payload,
+                        finished=True,
+                    )
 
     # 4b. Writes — sequential, with approval conversion for approve_required.
     if writes:
@@ -421,18 +449,29 @@ async def run_compound_turn_typed(
         # safe write — run it
         db.work_packet_step_update(s.step_id, status="running")
         try:
-            from agents.runtime import run_internal_control
+            from agents.runtime import looks_like_sdk_error, run_internal_control
+            write_task = node.task
+            if internal_belief_context:
+                write_task = internal_belief_context + "\n\n" + write_task
             out = await asyncio.wait_for(
-                run_internal_control(node.task, tool_names_sink=tool_names_sink),
+                run_internal_control(write_task, tool_names_sink=tool_names_sink),
                 timeout=step_timeout * 2,  # writes get a bigger budget
             )
-            s.status = "done"
-            s.output_json = str(out)
-            db.work_packet_step_update(
-                s.step_id, status="done",
-                output_json=json.dumps({"text": s.output_json}, ensure_ascii=False),
-                finished=True,
-            )
+            raw_out = str(out)
+            if looks_like_sdk_error(raw_out):
+                s.status = "failed"
+                s.error = "sdk_error_leak"
+                db.work_packet_step_update(
+                    s.step_id, status="failed", error=s.error, finished=True,
+                )
+            else:
+                s.status = "done"
+                s.output_json = raw_out
+                db.work_packet_step_update(
+                    s.step_id, status="done",
+                    output_json=json.dumps({"text": s.output_json}, ensure_ascii=False),
+                    finished=True,
+                )
         except asyncio.TimeoutError as exc:
             s.status = "failed"
             s.error = f"TimeoutError: write step timed out after {step_timeout * 2}s"
