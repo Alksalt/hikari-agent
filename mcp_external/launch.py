@@ -20,12 +20,14 @@ import logging
 import os
 import secrets
 import sys
+import time
 
 from agents import config as cfg
 from agents.log_scrub import install_root_filter
 from storage import db
 
 from . import server as server_module
+from ._base_url import resolve_public_base_url
 from .server import build_server
 
 logger = logging.getLogger(__name__)
@@ -69,22 +71,10 @@ def _public_base_url(scope: dict) -> str:
     """Return the externally-visible base URL for building OAuth metadata
     pointers.
 
-    Resolution order:
-    1. ``mcp_external.public_base_url_env`` — name of an env var holding the URL
-       (Sprint A indirection so the URL isn't hardcoded in config).
-    2. ``mcp_external.public_base_url`` — legacy direct value (backward compat).
-    3. Derive from ASGI ``scope`` (scheme + host).
+    Delegates to the shared resolver; derives a fallback from the ASGI
+    ``scope`` (scheme + host) when no config/env override is set.
     """
-    import os as _os
-    env_key = cfg.get("mcp_external.public_base_url_env")
-    if env_key:
-        val = _os.environ.get(str(env_key))
-        if val:
-            return val.rstrip("/")
-    configured = cfg.get("mcp_external.public_base_url")
-    if configured:
-        return str(configured).rstrip("/")
-    # Derive from scope. ``scope["server"]`` is (host, port) or None.
+    # Derive fallback from scope. ``scope["server"]`` is (host, port) or None.
     server = scope.get("server") or ("127.0.0.1", 0)
     host, port = server[0], server[1]
     # ASGI doesn't always expose scheme; default to "http" behind the tunnel.
@@ -92,8 +82,10 @@ def _public_base_url(scope: dict) -> str:
     if (scheme == "http" and port and port != 80) or (
         scheme == "https" and port and port != 443
     ):
-        return f"{scheme}://{host}:{port}"
-    return f"{scheme}://{host}"
+        fallback = f"{scheme}://{host}:{port}"
+    else:
+        fallback = f"{scheme}://{host}"
+    return resolve_public_base_url(fallback)
 
 
 class AuthMiddleware:
@@ -181,7 +173,8 @@ class AuthMiddleware:
                         "auth middleware: RFC 8707 — token has no audience binding; "
                         "rejecting (cycle this token)"
                     )
-                    await self._send_401(scope, send)
+                    await self._send_401(scope, send, error="invalid_token",
+                                         error_description="token has no audience binding")
                     return
                 server_base = _public_base_url(scope).rstrip("/")
                 if token_aud.rstrip("/") != server_base:
@@ -190,7 +183,8 @@ class AuthMiddleware:
                         "token aud=%r, server=%r; rejecting",
                         token_aud, server_base,
                     )
-                    await self._send_401(scope, send)
+                    await self._send_401(scope, send, error="invalid_token",
+                                         error_description="audience mismatch")
                     return
                 auth_info = {
                     "auth_method": "oauth",
@@ -214,23 +208,55 @@ class AuthMiddleware:
         finally:
             server_module.reset_auth_context(ctx_token)
 
-    async def _send_401(self, scope, send) -> None:
+    async def _send_401(
+        self,
+        scope,
+        send,
+        *,
+        error: str | None = None,
+        error_description: str | None = None,
+    ) -> None:
+        """Send a 401 response per RFC 6750.
+
+        When ``error`` is provided (e.g. ``"invalid_token"``), both the
+        ``WWW-Authenticate`` challenge and the JSON body include the error
+        code so callers can distinguish token-specific failures from a
+        simple missing-credential 401.
+        """
+        import json as _json
+
         base = _public_base_url(scope)
-        challenge = (
-            f'Bearer realm="hikari", '
-            f'resource_metadata="{base}/.well-known/oauth-protected-resource"'
-        )
+        challenge_parts = [
+            'Bearer realm="hikari"',
+            f'resource_metadata="{base}/.well-known/oauth-protected-resource"',
+        ]
+        if error:
+            challenge_parts.append(f'error="{error}"')
+        if error_description:
+            challenge_parts.append(f'error_description="{error_description}"')
+        challenge = ", ".join(challenge_parts)
+
+        if error:
+            body_obj: dict = {"error": error}
+            if error_description:
+                body_obj["error_description"] = error_description
+            body_bytes = _json.dumps(body_obj).encode("utf-8")
+            content_type = b"application/json"
+        else:
+            body_bytes = b"401 unauthorized\n"
+            content_type = b"text/plain"
+
         await send({
             "type": "http.response.start",
             "status": 401,
             "headers": [
-                (b"content-type", b"text/plain"),
+                (b"content-type", content_type),
                 (b"www-authenticate", challenge.encode("latin-1")),
             ],
         })
         await send({
             "type": "http.response.body",
-            "body": b"401 unauthorized\n",
+            "body": body_bytes,
         })
 
 
@@ -241,6 +267,11 @@ BearerAuthMiddleware = AuthMiddleware
 
 
 def main() -> int:
+    # Set UTC timestamps on all log records before any handlers are installed.
+    # Must be set before Formatter instances are created so %(asctime)s renders
+    # UTC everywhere (matching health-check and audit log assumptions).
+    logging.Formatter.converter = time.gmtime
+
     from logging.handlers import RotatingFileHandler
     from pathlib import Path
     _log_dir = Path(__file__).resolve().parent.parent / "data" / "logs"

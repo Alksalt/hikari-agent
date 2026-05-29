@@ -46,9 +46,13 @@ def _isolated_db(tmp_path: Path, monkeypatch):
             False if key == "mcp_external.behind_tls_proxy" else _orig(key, default)
         ),
     )
-    # Reset rate limiter — module-level singleton survives across tests.
+    # Reset rate limiters — module-level singletons survive across tests.
+    # register_limiter now counts every /register (success included), so without
+    # a per-test reset the shared window trips after a handful of registrations.
     from mcp_external._rate_limit import passphrase_limiter
+    from mcp_external.oauth import register_limiter
     passphrase_limiter.reset()
+    register_limiter.reset()
     yield
 
 

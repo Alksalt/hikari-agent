@@ -44,7 +44,8 @@ from starlette.routing import Route
 from agents import config as cfg
 from storage import db
 
-from ._rate_limit import passphrase_limiter
+from ._base_url import resolve_public_base_url
+from ._rate_limit import RateLimiter, passphrase_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -85,27 +86,30 @@ def _passphrase_window_seconds() -> int:
     return int(cfg.get("mcp_external.oauth.passphrase_window_seconds", 300))
 
 
+def _register_window_seconds() -> int:
+    return int(cfg.get("mcp_external.oauth.register_window_seconds", 3600))
+
+
+# Module-level singleton for /register IP-keyed rate limiting.
+register_limiter = RateLimiter(
+    max_attempts_key="mcp_external.oauth.register_max_attempts",
+    window_seconds_key="mcp_external.oauth.register_window_seconds",
+    max_attempts_default=10,
+    window_seconds_default=3600,
+)
+
+
 def _public_base_url(request: Request) -> str:
     """Configured public origin (used in discovery docs) or fall back to the
     inbound request's scheme+host. Trailing slash stripped.
 
-    Resolution order:
-    1. ``mcp_external.public_base_url_env`` — name of an env var holding the URL.
-    2. ``mcp_external.public_base_url`` — legacy direct value (backward compat).
-    3. Derive from inbound request's scheme+host.
+    Delegates to the shared resolver; derives the fallback from the inbound
+    request's scheme+host when no config/env override is set.
     """
-    import os as _os
-    env_key = cfg.get("mcp_external.public_base_url_env")
-    if env_key:
-        val = _os.environ.get(str(env_key))
-        if val:
-            return val.rstrip("/")
-    configured = cfg.get("mcp_external.public_base_url")
-    if configured:
-        return str(configured).rstrip("/")
     url = request.url
     host = url.netloc or url.hostname or ""
-    return f"{url.scheme}://{host}".rstrip("/")
+    fallback = f"{url.scheme}://{host}"
+    return resolve_public_base_url(fallback)
 
 
 def _cookie_signing_key() -> bytes:
@@ -132,6 +136,31 @@ def _state_signer() -> URLSafeTimedSerializer:
 
 
 def _client_ip(request: Request) -> str:
+    """Resolve the real client IP.
+
+    When ``mcp_external.trusted_forwarded_ip`` is true AND
+    ``mcp_external.behind_tls_proxy`` is true (Cloudflare Tunnel deployment),
+    prefer the forwarded headers that Cloudflare injects:
+      1. ``CF-Connecting-IP`` — Cloudflare's canonical real-IP header.
+      2. Left-most value of ``X-Forwarded-For`` — industry standard.
+      3. Fall back to ``request.client.host`` (always 127.0.0.1 behind the
+         tunnel — used as last resort when headers are absent).
+
+    When not in trusted-proxy mode, use ``request.client.host`` directly so
+    we never trust forwarded headers from an untrusted transport.
+    """
+    trust = (
+        bool(cfg.get("mcp_external.trusted_forwarded_ip", False))
+        and bool(cfg.get("mcp_external.behind_tls_proxy", False))
+    )
+    if trust:
+        cf = request.headers.get("cf-connecting-ip", "").strip()
+        if cf:
+            return cf
+        xff = request.headers.get("x-forwarded-for", "").strip()
+        if xff:
+            # Left-most entry is the originating client.
+            return xff.split(",")[0].strip()
     client = request.client
     return client.host if client and client.host else "unknown"
 
@@ -280,6 +309,17 @@ def _dcr_error(description: str) -> JSONResponse:
 
 async def register_client(request: Request) -> JSONResponse:
     """Open DCR — anyone can mint a public client_id. PKCE is the gate."""
+    ip = _client_ip(request)
+    if not register_limiter.check(ip):
+        return JSONResponse(
+            {"error": "rate_limited",
+             "error_description": "too many registration attempts from this IP"},
+            status_code=429,
+            headers={"Retry-After": str(_register_window_seconds())},
+        )
+    # Count every request that passes the check — successes and failures alike
+    # — so well-formed floods are bounded, not just validation-error floods.
+    register_limiter.record_attempt(ip)
     try:
         body: Any = await request.json()
     except Exception:
@@ -375,8 +415,17 @@ def _render_authorize_page(client_label: str, scope: str | None,
             .replace("__ERROR__", err_block))
 
 
-def _normalize_resource(resource: str | None, request: Request) -> str | None:
+_INVALID_RESOURCE = object()  # sentinel — resource was supplied but invalid
+
+
+def _normalize_resource(
+    resource: str | None, request: Request
+) -> str | None | object:
     """Return a normalized RFC 8707 resource URI, or None if not provided.
+
+    Returns the ``_INVALID_RESOURCE`` sentinel when a value was supplied but
+    is not a valid http(s) URL — callers MUST distinguish "absent" (None) from
+    "bad" (sentinel) to avoid silently minting unusable tokens.
 
     Rejects non-http(s) values so a malformed resource parameter can't
     be smuggled into the scope field as arbitrary text.
@@ -385,7 +434,7 @@ def _normalize_resource(resource: str | None, request: Request) -> str | None:
         return None
     r = resource.strip()
     if not _valid_http_url(r):
-        return None
+        return _INVALID_RESOURCE
     return r
 
 
@@ -399,7 +448,10 @@ async def _authorize_get(request: Request) -> Response:
     state = q.get("state")
     scope = _sanitize_scope(q.get("scope"))
     # RFC 8707: optional resource indicator; validated and stashed in cookie.
-    resource = _normalize_resource(q.get("resource"), request)
+    # Treat invalid resource as absent at authorize time — the token endpoint
+    # enforces invalid_target; we don't fail the whole authorize flow here.
+    _raw_resource = _normalize_resource(q.get("resource"), request)
+    resource = None if _raw_resource is _INVALID_RESOURCE else _raw_resource
 
     # Validate client first so we know whether it's safe to redirect errors.
     client = db.oauth_client_get(client_id) if client_id else None
@@ -598,7 +650,12 @@ async def token(request: Request) -> Response:
     grant_type = (form.get("grant_type") or "").strip()
     ip = _client_ip(request)
     # RFC 8707: optional resource indicator supplied at token request time.
-    req_resource = _normalize_resource(form.get("resource"), request)
+    # If a resource was supplied but is invalid, return invalid_target immediately
+    # rather than silently minting a token without an audience.
+    _raw_req_resource = _normalize_resource(form.get("resource"), request)
+    if _raw_req_resource is _INVALID_RESOURCE:
+        return _token_error("invalid_target", 400)
+    req_resource = _raw_req_resource  # type: ignore[assignment]  # None or str
 
     if grant_type == "authorization_code":
         code = (form.get("code") or "").strip()
@@ -630,7 +687,10 @@ async def token(request: Request) -> Response:
                  "bound": bound_resource, "requested": req_resource},
             )
             return _token_error("invalid_target", 400)
-        effective_resource = req_resource or bound_resource
+        # Bind aud: if no resource was negotiated, fall back to this server's
+        # own public base URL so the token always carries an audience and
+        # launch.py's RFC 8707 validator accepts it.
+        effective_resource = req_resource or bound_resource or _public_base_url(request)
         # Store the effective resource in the minted tokens' scope field too.
         user_scope, _ = _decode_scope_and_resource(persisted_scope)
         mint_scope = _encode_resource_into_scope(user_scope, effective_resource)
@@ -671,7 +731,9 @@ async def token(request: Request) -> Response:
                  "bound": bound_resource, "requested": req_resource},
             )
             return _token_error("invalid_target", 400)
-        effective_resource = req_resource or bound_resource
+        # Bind aud: fall back to this server's own public base URL when no
+        # resource was negotiated, matching the authorization_code grant behaviour.
+        effective_resource = req_resource or bound_resource or _public_base_url(request)
         user_scope, _ = _decode_scope_and_resource(persisted_scope)
         mint_scope = _encode_resource_into_scope(user_scope, effective_resource)
         new_refresh = db.oauth_token_mint(

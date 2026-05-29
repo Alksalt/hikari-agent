@@ -636,6 +636,10 @@ mcp_external:
   # Default false — conservative; flip to true for production (the
   # install_cloudflared.md doc tells you to).
   behind_tls_proxy: true
+  # Trust CF-Connecting-IP / X-Forwarded-For for rate-limiter IP keying.
+  # Correct for the Cloudflare-Tunnel deployment (behind_tls_proxy: true).
+  # Must be set to false if the origin is ever reachable not-through-the-proxy.
+  trusted_forwarded_ip: true
   oauth:
     # Phase 14: OAuth 2.1 + PKCE + DCR for claude.ai Custom Connectors.
     access_token_ttl_seconds: 3600          # 1h — short, refreshable

@@ -65,6 +65,19 @@ class RateLimiter:
             self._prune(ip, now)
             self._failures.setdefault(ip, deque()).append(now)
 
+    def record_attempt(self, ip: str) -> None:
+        """Count any attempt (success or failure) toward the sliding window.
+
+        Identical body to ``record_failure``; separate name so call-sites
+        are self-documenting — use this for limiters that must count ALL
+        requests (e.g. /register), use ``record_failure`` only where the
+        intent is to count bad attempts (e.g. passphrase brute-force).
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._prune(ip, now)
+            self._failures.setdefault(ip, deque()).append(now)
+
     def reset(self, ip: str | None = None) -> None:
         """Wipe one IP's history, or the whole table if None. For tests."""
         with self._lock:
