@@ -30,6 +30,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_YAML_PATH = REPO_ROOT / "config" / "tools.yaml"
 
+# Valid gate values for tool entries.  None means ungated; "gatekeeper" routes
+# through the single owner-approval state machine.  confirm_send was retired in
+# Phase 4 of the control-plane-lies sweep — this constant prevents re-introduction.
+_VALID_GATES = (None, "gatekeeper")
+
 
 # ---------------------------------------------------------------------------
 # Specs (frozen dataclasses — immutable value objects)
@@ -309,11 +314,16 @@ def _parse_tool(raw: dict) -> ToolSpec:
             "(read | write | destructive) so the gatekeeper deny-on-wildcard-write "
             "check fails closed"
         )
+    gate = raw.get("gate")
+    if gate not in _VALID_GATES:
+        raise ValueError(
+            f"tool {tool_id!r} has invalid gate={gate!r}; valid: null | gatekeeper"
+        )
     return ToolSpec(
         id=tool_id,
         bucket=int(raw.get("bucket", 1)),
         server=raw.get("server"),
-        gate=raw.get("gate"),
+        gate=gate,
         gate_timeout_sec=int(raw_timeout) if raw_timeout is not None else None,
         untrusted_output=bool(raw.get("untrusted_output", False)),
         wrap_patterns=tuple(raw.get("wrap_patterns") or []),

@@ -328,34 +328,3 @@ async def test_gatekeeper_approve_writes_audit_row(gatekeeper):
     assert row["approved_by"] == "owner"
     assert "gatekeeper approved" in (row["result_summary"] or "")
 
-
-# ---------- Fix 4: confirm_send and gatekeeper rows don't collide ----------
-
-def test_confirm_send_and_gatekeeper_dont_collide_on_unique_index():
-    """Two concurrent pending approvals — one confirm_send, one gatekeeper —
-    must NOT collide on approvals_one_pending_per_chat. The partial index is
-    scoped to gate_kind='gatekeeper'; confirm_send rows must use a different
-    gate_kind value so they don't share the index slot."""
-    db.upsert_core_block("ping", "pong")
-    chat = 12345
-    # First: confirm_send approval (apple_events-style)
-    id1 = db.approval_create_gatekeeper(
-        chat_id=chat,
-        tool_name="mcp__apple_events__create_reminder",
-        tool_use_id="tu_1",
-        args_json="{}",
-        summary="create reminder",
-        deadline_iso="2099-01-01T00:00:00Z",
-        gate_kind="confirm_send",
-    )
-    # Second: gatekeeper approval — must NOT raise IntegrityError
-    id2 = db.approval_create_gatekeeper(
-        chat_id=chat,
-        tool_name="mcp__google_workspace__gmail_send_email",
-        tool_use_id="tu_2",
-        args_json="{}",
-        summary="send email",
-        deadline_iso="2099-01-01T00:00:00Z",
-        gate_kind="gatekeeper",
-    )
-    assert id1 != id2

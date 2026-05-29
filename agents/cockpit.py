@@ -458,7 +458,8 @@ async def format_status(app) -> str:
                 "SELECT COUNT(*) FROM tasks WHERE status='open'"
             ).fetchone()[0]
             n_pending_approvals = c.execute(
-                "SELECT COUNT(*) FROM approvals WHERE status='pending'"
+                "SELECT COUNT(*) FROM approvals "
+                "WHERE status='pending' AND gate_kind='gatekeeper'"
             ).fetchone()[0]
         n_tasks = n_tasks_raw
         lines.append(

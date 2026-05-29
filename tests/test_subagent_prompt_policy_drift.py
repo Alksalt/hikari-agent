@@ -224,7 +224,7 @@ def test_no_llm_facing_destructive_write_ungated():
     # apple_shortcuts wildcard has access_mode=destructive but no explicit write
     # entries — exempted because it has no network-reachable external accounts.
     # apple_events is NOT exempted: its LLM-facing write tools carry gate:
-    # confirm_send (added in 8B), so they pass the gate != null check naturally.
+    # gatekeeper (Phase 4 unification), so they pass the gate != null check naturally.
     _EXEMPT_SERVERS = {"apple_shortcuts"}
 
     registry = load_registry()
@@ -245,8 +245,8 @@ def test_no_llm_facing_destructive_write_ungated():
         if spec.gate is None:
             failures.append(
                 f"{spec.id!r}: access_mode={spec.access_mode!r} but gate=null. "
-                "Add gate: gatekeeper or gate: confirm_send, or use the _unsafe "
-                "suffix convention for scheduler-internal bypass paths."
+                "Add gate: gatekeeper, or use the _unsafe suffix convention "
+                "for scheduler-internal bypass paths."
             )
     assert not failures, (
         f"{len(failures)} LLM-facing destructive tool(s) with gate: null:\n"

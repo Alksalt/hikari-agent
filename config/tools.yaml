@@ -2765,17 +2765,16 @@ tools:
     example: "* wildcard for GitHub tools"
     presentation_hint: null
 
-  # Apple Events — split: LLM-facing entries use gate: confirm_send so the
-  # registry test can assert no LLM-facing destructive tool has gate: null.
-  # confirm_send does not trigger the gatekeeper state machine (only gate:
-  # gatekeeper does); it is a policy marker only. Scheduler-internal callers
-  # use MANAGER.call() directly and never go through can_use_tool, so they are
-  # unaffected by the gate value. The _unsafe variants below (gate: null) are
-  # registry documentation for that scheduler-bypass path.
+  # Apple Events — LLM-facing write tools are owner-gated through the single
+  # gatekeeper state machine (gate: gatekeeper). The _unsafe variants below
+  # (gate: null) are documentation/test markers: scheduler-internal writes go
+  # through MANAGER.call(), which invokes the raw MCP session and never passes
+  # through can_use_tool, so the gate value is moot on that path regardless of
+  # the tool name.
   - id: "mcp__apple_events__create_reminder"
     bucket: 3
     server: apple_events
-    gate: confirm_send
+    gate: gatekeeper
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -2789,7 +2788,7 @@ tools:
   - id: "mcp__apple_events__delete_reminder"
     bucket: 3
     server: apple_events
-    gate: confirm_send
+    gate: gatekeeper
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -2803,7 +2802,7 @@ tools:
   - id: "mcp__apple_events__create_calendar_event"
     bucket: 3
     server: apple_events
-    gate: confirm_send
+    gate: gatekeeper
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -2817,7 +2816,7 @@ tools:
   - id: "mcp__apple_events__delete_calendar_event"
     bucket: 3
     server: apple_events
-    gate: confirm_send
+    gate: gatekeeper
     access_mode: write
     untrusted_output: true
     wrap_patterns: []
@@ -2831,7 +2830,7 @@ tools:
   - id: "mcp__apple_events__reminders_tasks"
     bucket: 3
     server: apple_events
-    gate: confirm_send
+    gate: gatekeeper
     access_mode: write
     untrusted_output: true
     wrap_patterns: []

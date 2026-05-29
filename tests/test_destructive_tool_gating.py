@@ -2,7 +2,11 @@
 
 Phase E update: all destructive tools migrated from gate: defer → gate: gatekeeper.
 The old _is_matched_by_patterns / defer hook trigger tests are replaced with
-gatekeeper-gate assertions. The Apple Events ungated section is unchanged.
+gatekeeper-gate assertions.
+
+Phase 4 (control-plane-lies sweep): Apple Events writes migrated from
+gate: confirm_send → gate: gatekeeper, unified onto the single owner-approval
+state machine.
 """
 
 from __future__ import annotations
@@ -79,17 +83,13 @@ def test_github_create_tools_are_gatekeeper_gated(tool_name):
 
 
 # ---------------------------------------------------------------------------
-# Apple Events writes — intentionally NOT gated (Phase 13.1 review).
-# Apple Reminders / Calendar writes are local-device only (iPhone/Mac via
-# iCloud), not internet-attached, so the spam-attack value from prompt
-# injection is low. The bot also relies on these tools to mirror its own
-# legitimate reminders. Gating would require either a caller-tag arg the MCP
-# server doesn't expose, or a contextvar-based exemption. Skipping the gate
-# keeps the mirror path working and avoids name-drift bugs between the prompt
-# and the gate regex.
+# Apple Events writes — Phase 4 (control-plane-lies sweep): all gate: gatekeeper.
+# Apple Reminders / Calendar writes are now owner-gated through the single
+# gatekeeper state machine.  The _unsafe variants (gate: null) remain the
+# scheduler-internal MANAGER.call() bypass and are never presented to the LLM.
 # ---------------------------------------------------------------------------
 
-_APPLE_UNGATED_TOOLS = [
+_APPLE_GATEKEEPER_TOOLS = [
     "mcp__apple_events__create_reminder",
     "mcp__apple_events__delete_reminder",
     "mcp__apple_events__create_calendar_event",
@@ -98,24 +98,19 @@ _APPLE_UNGATED_TOOLS = [
 ]
 
 
-@pytest.mark.parametrize("tool_name", _APPLE_UNGATED_TOOLS)
-def test_apple_events_writes_intentionally_not_gated(tool_name):
-    """Apple Events writes use confirm_send gate (not gatekeeper, not defer)."""
-    gate = _gate_for(tool_name)
-    assert gate not in ("gatekeeper", "defer"), (
-        f"{tool_name!r} has gate={gate!r}; apple_events tools must use confirm_send, "
-        "not gatekeeper or defer."
-    )
-    assert gate == "confirm_send", (
-        f"{tool_name!r} has gate={gate!r}; expected confirm_send so apple_events "
-        "writes go through the approval state machine."
+@pytest.mark.parametrize("tool_name", _APPLE_GATEKEEPER_TOOLS)
+def test_apple_events_writes_are_gatekeeper_gated(tool_name):
+    """Phase 4: Apple Events writes must have gate: gatekeeper."""
+    assert _gate_for(tool_name) == "gatekeeper", (
+        f"{tool_name!r} must have gate: gatekeeper after Phase 4 migration."
     )
 
 
-@pytest.mark.parametrize("tool_name", _APPLE_UNGATED_TOOLS)
+@pytest.mark.parametrize("tool_name", _APPLE_GATEKEEPER_TOOLS)
 @pytest.mark.asyncio
 async def test_apple_events_writes_do_not_trigger_defer_hook(tool_name, monkeypatch):
-    """Apple Events writes must NOT trigger permissionDecision='defer'."""
+    """Apple Events writes must NOT trigger the legacy permissionDecision='defer' hook.
+    (They go through the gatekeeper state machine instead.)"""
     from agents import hooks
     from tools import approvals as approval_tools
 

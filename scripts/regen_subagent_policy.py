@@ -6,8 +6,8 @@ Each subagent prompt may contain an auto-managed section delimited by:
   <!-- END AUTO-POLICY -->
 
 This script derives the canonical policy block for each subagent by:
-  1. Reading config/tools.yaml to find all gated tools (gate: gatekeeper or
-     gate: confirm_send) that are not wildcards and not _unsafe variants.
+  1. Reading config/tools.yaml to find all gated tools (gate: gatekeeper)
+     that are not wildcards and not _unsafe variants.
   2. Filtering to the subset reachable from that subagent's tool allowlist
      (defined in the subagents: block of config/tools.yaml).
   3. Formatting the filtered set as a policy snippet and writing it back
@@ -71,7 +71,7 @@ def _build_policy_block(subagent_id: str, tools_allowlist: tuple[str, ...]) -> s
             continue
         if spec.id.endswith("_unsafe"):
             continue
-        if spec.gate not in ("gatekeeper", "confirm_send"):
+        if spec.gate != "gatekeeper":
             continue
         if not _tool_in_allowlist(spec.id, tools_allowlist):
             continue
@@ -83,7 +83,6 @@ def _build_policy_block(subagent_id: str, tools_allowlist: tuple[str, ...]) -> s
 
     gate_label = {
         "gatekeeper": "gated",
-        "confirm_send": "confirm_send",
     }
     lines: list[str] = []
     lines.append("Gated tools (require owner approval before executing):")
