@@ -459,6 +459,19 @@ async def _call_aux_llm(
             resp.raise_for_status()
 
         payload = resp.json()
+        try:
+            _usage = payload.get("usage") or {}
+            _record_llm_cost(
+                None,
+                path="aux_llm",
+                fallback_model=effective_model,
+                fallback_usage={
+                    "input_tokens": int(_usage.get("prompt_tokens") or 0),
+                    "output_tokens": int(_usage.get("completion_tokens") or 0),
+                },
+            )
+        except Exception:
+            logger.debug("aux_llm cost log failed (non-fatal)", exc_info=True)
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise RuntimeError(

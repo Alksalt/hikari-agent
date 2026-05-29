@@ -269,9 +269,10 @@ single `startup_health: {...}` line to `data/logs/hikari.log` covering:
 | `scheduler_jobs`       | at least 1 job registered            |
 | `mcp_warm_pool`        | reachable (size is informational)    |
 | `oauth_google`         | refresh-token exchange succeeds      |
-| `graph_outbox_pending` | < 50 pending writes (Sprint 5D)      |
+| `graph_outbox_pending` | < 10 pending writes                  |
 | `last_backup_age_h`    | ≤ 30 hours                           |
-| `log_recent_errors`    | ≤ 5 ERROR lines in the last hour     |
+| `log_recent_errors`    | ≤ 10 ERROR/CRITICAL lines in the last hour |
+| `graph_recall`         | hit_ratio ≥ 0.5 and graph_search_error = 0 |
 
 If anything is degraded, the owner gets a single short DM with the
 failing checks. Tune via `HIKARI_STARTUP_DIGEST=always|on_degrade|never`

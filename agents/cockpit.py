@@ -477,7 +477,9 @@ async def format_status(app) -> str:
 
     # cost today
     try:
-        chat_today = float(_db.runtime_get("cost_today") or 0.0)
+        from tools import budget as _budget
+        # Live llm_costs SUM (was a never-written runtime_state key → always $0).
+        chat_today = _budget.cost_today()
         today_iso = datetime.now(UTC).date().isoformat()
         with _db._conn() as c:
             row = c.execute(
@@ -486,7 +488,6 @@ async def format_status(app) -> str:
                 (today_iso,),
             ).fetchone()
         bg_cost = float(row["bg"] or 0.0)
-        from tools import budget as _budget
         cap = _budget.daily_cap()
         lines.append(
             f"cost today: ~${chat_today + bg_cost:.3f} "

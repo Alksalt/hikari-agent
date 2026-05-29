@@ -30,9 +30,12 @@ import threading
 _canary_reentry = threading.local()
 
 _PATTERNS = [
-    (re.compile(r"sk-[a-zA-Z0-9_-]{20,}"), "[REDACTED-API-KEY]"),
+    # Specific sk- prefixes MUST come before the generic sk- pattern, or the
+    # generic pattern consumes the entire token first and the specific label is
+    # never reached (regex alternation is ordered, not longest-match).
     (re.compile(r"sk-ant-[a-zA-Z0-9_-]{20,}"), "[REDACTED-ANTHROPIC-KEY]"),
     (re.compile(r"sk-or-[a-zA-Z0-9_-]{20,}"), "[REDACTED-OPENROUTER-KEY]"),
+    (re.compile(r"sk-[a-zA-Z0-9_-]{20,}"), "[REDACTED-API-KEY]"),
     (re.compile(r"ya29\.[a-zA-Z0-9_-]+"), "[REDACTED-OAUTH-TOKEN]"),
     (re.compile(r"Bearer [a-zA-Z0-9._-]+"), "Bearer [REDACTED]"),
     (re.compile(r"\b[0-9]{9,11}:[A-Za-z0-9_-]{30,}"), "[REDACTED-TG-BOT-TOKEN]"),

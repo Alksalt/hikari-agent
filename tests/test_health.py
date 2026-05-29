@@ -10,6 +10,7 @@ import pytest
 
 from agents.health import (
     _check_graph_outbox,
+    _check_graph_recall,
     _check_graphiti_reachable,
     _check_last_backup,
     _check_mcp_warm_pool,
@@ -270,6 +271,7 @@ async def test_collect_startup_report_returns_all_keys():
         "media_outbox_pending",
         "last_backup_age_h",
         "log_recent_errors",
+        "graph_recall",
     }
     for check in report.values():
         assert "ok" in check
@@ -390,5 +392,70 @@ async def test_graphiti_reachable_exception():
 
     with patch("storage.graph.get_graph", new=_fail):
         result = await _check_graphiti_reachable()
+    assert result.ok is False
+    assert "exception:RuntimeError" in (result.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# _check_graph_recall (Phase 3B B5)
+# ---------------------------------------------------------------------------
+
+def test_graph_recall_no_lookups_ok():
+    """All counters zero → hit_ratio=1.0, ok=True (no lookups yet)."""
+    with patch("storage.db.runtime_get_int", return_value=0):
+        result = _check_graph_recall()
+    assert result.ok is True
+    assert result.value == {"hit": 0, "fallback": 0, "error": 0, "hit_ratio": 1.0}
+    assert result.reason is None
+
+
+def test_graph_recall_good_ratio_ok():
+    """High hit count, no errors → ok."""
+    def _get(key: str, default: int = 0) -> int:
+        return {"recall_graph_hit": 8, "recall_graph_fallback": 2, "graph_search_error": 0}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_graph_recall()
+    assert result.ok is True
+    assert result.value["hit_ratio"] == 0.8
+    assert result.value["hit"] == 8
+    assert result.value["fallback"] == 2
+
+
+def test_graph_recall_low_ratio_degraded():
+    """hit_ratio below threshold → ok=False."""
+    def _get(key: str, default: int = 0) -> int:
+        return {"recall_graph_hit": 1, "recall_graph_fallback": 9, "graph_search_error": 0}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_graph_recall()
+    assert result.ok is False
+    assert result.value["hit_ratio"] == 0.1
+    assert result.reason is not None
+    assert "hit_ratio" in (result.reason or "")
+
+
+def test_graph_recall_error_nonzero_degraded():
+    """graph_search_error > 0 → ok=False even with perfect hit ratio."""
+    def _get(key: str, default: int = 0) -> int:
+        return {"recall_graph_hit": 10, "recall_graph_fallback": 0, "graph_search_error": 3}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_graph_recall()
+    assert result.ok is False
+    assert result.value["error"] == 3
+    assert "graph_search_error=3" in (result.reason or "")
+
+
+def test_graph_recall_value_dict_shape():
+    """value dict must contain exactly hit, fallback, error, hit_ratio keys."""
+    with patch("storage.db.runtime_get_int", return_value=0):
+        result = _check_graph_recall()
+    assert set(result.value.keys()) == {"hit", "fallback", "error", "hit_ratio"}
+
+
+def test_graph_recall_db_exception_returns_degraded():
+    with patch("storage.db.runtime_get_int", side_effect=RuntimeError("db gone")):
+        result = _check_graph_recall()
     assert result.ok is False
     assert "exception:RuntimeError" in (result.reason or "")

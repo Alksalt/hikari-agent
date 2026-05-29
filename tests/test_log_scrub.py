@@ -57,6 +57,67 @@ def _filter_record(msg: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# sk- pattern ordering (B6 regression)
+# ---------------------------------------------------------------------------
+
+class TestSkPatternOrdering:
+    """Generic sk- must NOT shadow the specific sk-ant-/sk-or- patterns.
+
+    Before B6 the generic `sk-[a-zA-Z0-9_-]{20,}` pattern was listed first, so
+    Anthropic and OpenRouter keys received the wrong `[REDACTED-API-KEY]` label
+    instead of their specific labels.  The specific patterns must appear first.
+    """
+
+    def test_sk_ant_gets_anthropic_label(self):
+        token = "sk-ant-api03-ABCDefghijklmnopq1234567890XXXX"
+        result = _scrub(f"Authorization: {token}")
+        assert token not in result
+        assert "[REDACTED-ANTHROPIC-KEY]" in result, (
+            f"Expected [REDACTED-ANTHROPIC-KEY], got: {result!r}"
+        )
+        assert "[REDACTED-API-KEY]" not in result, (
+            "Generic label must not be used for sk-ant- tokens"
+        )
+
+    def test_sk_or_gets_openrouter_label(self):
+        token = "sk-or-v1-ABCDefghijklmnopqrstuvwxyz12345"
+        result = _scrub(f"key={token}")
+        assert token not in result
+        assert "[REDACTED-OPENROUTER-KEY]" in result, (
+            f"Expected [REDACTED-OPENROUTER-KEY], got: {result!r}"
+        )
+        assert "[REDACTED-API-KEY]" not in result, (
+            "Generic label must not be used for sk-or- tokens"
+        )
+
+    def test_generic_sk_still_catches_openai_style_key(self):
+        # An OpenAI-style sk- key (no ant/or infix) must still be redacted.
+        token = "sk-proj-ABCDefghijklmnopqrstuvwxyz12345"
+        result = _scrub(f"OPENAI_API_KEY={token}")
+        assert token not in result
+        assert "[REDACTED-API-KEY]" in result
+
+    def test_specific_patterns_before_generic_in_list(self):
+        """Structural: verify the pattern list has sk-ant- and sk-or- before sk-."""
+        patterns_text = [p.pattern for p, _ in _PATTERNS]
+        generic_idx = next(
+            i for i, p in enumerate(patterns_text) if p == r"sk-[a-zA-Z0-9_-]{20,}"
+        )
+        ant_idx = next(
+            i for i, p in enumerate(patterns_text) if p == r"sk-ant-[a-zA-Z0-9_-]{20,}"
+        )
+        or_idx = next(
+            i for i, p in enumerate(patterns_text) if p == r"sk-or-[a-zA-Z0-9_-]{20,}"
+        )
+        assert ant_idx < generic_idx, (
+            f"sk-ant- pattern (idx {ant_idx}) must precede generic sk- (idx {generic_idx})"
+        )
+        assert or_idx < generic_idx, (
+            f"sk-or- pattern (idx {or_idx}) must precede generic sk- (idx {generic_idx})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # GitHub PAT patterns
 # ---------------------------------------------------------------------------
 

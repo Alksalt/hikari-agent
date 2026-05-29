@@ -50,18 +50,19 @@ def _mood_profile(mood_key: str) -> dict[str, float]:
 
 
 def _resolve_mood() -> tuple[str, str]:
-    """Returns (daily_mood, cycle_phase). Reads core_blocks.cycle_state."""
+    """Returns (daily_mood, cycle_phase). Reads dedicated mood_today core block."""
     import json as _json
-    raw = db.get_core_block("cycle_state") or ""
-    daily = "focused"
+    # P1 fix: read the dedicated mood_today core block instead of cycle_state JSON's
+    # unreliable mood_today field — cycle_state is not reliably updated by all writers.
+    daily = (db.get_core_block("mood_today") or "focused").strip().lower()
     cycle = "default"
     try:
+        raw = db.get_core_block("cycle_state") or ""
         data = _json.loads(raw) if raw else {}
         composite = data.get("composite_label", "")
         parts = [p.strip() for p in composite.split("/")]
         if len(parts) >= 1:
             cycle = parts[0] or "default"
-        daily = data.get("mood_today") or "focused"
     except Exception:
         pass
     return daily, cycle
@@ -75,12 +76,14 @@ def _sent_today() -> int:
 
 
 def _bump_sent() -> None:
+    # P3 fix: atomic increment via SQL UPSERT — eliminates read-modify-write race.
+    # Date-rollover guard: if stored date != today, reset counter to 0 first so
+    # the subsequent increment starts from 1 (not from yesterday's total).
     today = time.strftime("%Y-%m-%d")
     if db.runtime_get("voice_outbound_sent_date") != today:
         db.runtime_set("voice_outbound_sent_date", today)
-        db.runtime_set("voice_outbound_sent_today", 1)
-    else:
-        db.runtime_set("voice_outbound_sent_today", _sent_today() + 1)
+        db.runtime_set("voice_outbound_sent_today", 0)
+    db.runtime_increment("voice_outbound_sent_today", by=1)
 
 
 async def _tts_mp3(text: str, voice_id: str, profile: dict) -> bytes:
@@ -207,15 +210,19 @@ async def voice_outbound_send(args: dict[str, Any]) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": "refused: dedup_or_insert_failed"}]}
 
     _bump_sent()
-    # Log to llm_costs (Phase B helper) using char-based approximation.
-    # ElevenLabs is not in _MODEL_RATES_USD_PER_1M so cost will be $0 + a warning.
+    # P2 fix: record ElevenLabs cost directly via db.llm_costs_insert.
+    # ElevenLabs Flash v2.5 is char-billed at ~$0.50/1M chars.
+    # Bypasses runtime._log_aux_cost which lacks a rate entry for this provider.
     try:
-        from agents.runtime import _log_aux_cost
-        _log_aux_cost(
+        db.llm_costs_insert(
+            turn_id=None,
             model="elevenlabs/flash_v2_5",
-            prompt_chars=len(text),
-            completion_chars=0,
             path="voice_outbound",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+            cost_usd=len(text) / 1_000_000 * 0.50,
         )
     except Exception:
         logger.exception("voice_outbound: llm_costs write failed (non-fatal)")

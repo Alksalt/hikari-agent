@@ -85,10 +85,12 @@ async def _research_one(task: dict) -> tuple[str, list[str]] | None:
         )
 
     max_turns = int(cfg.get("research_worker.per_task_max_turns", 8))
+    max_budget_usd = float(cfg.get("research_worker.per_task_max_budget_usd", 0.50))
     options = ClaudeAgentOptions(
         system_prompt=system,
         allowed_tools=["WebSearch", "WebFetch"],
         max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
         permission_mode="default",
         setting_sources=["project"],
     )
@@ -103,6 +105,16 @@ async def _research_one(task: dict) -> tuple[str, list[str]] | None:
                         if isinstance(block, TextBlock):
                             parts.append(block.text)
                 if isinstance(msg, ResultMessage):
+                    try:
+                        from agents.runtime import _record_llm_cost
+                        _record_llm_cost(
+                            getattr(msg, "model_usage", None),
+                            path="research_worker",
+                            fallback_model="claude-sonnet-4-6",
+                            fallback_usage=getattr(msg, "usage", None),
+                        )
+                    except Exception:
+                        logger.debug("research_worker cost log failed", exc_info=True)
                     break
     except Exception:
         logger.exception("research_worker: SDK session failed for task %s", task.get("id"))

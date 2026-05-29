@@ -32,11 +32,13 @@ def _default_daily_cap() -> float:
 
 
 def cost_today() -> float:
-    today_iso = datetime.now(UTC).date().isoformat()
-    last_date = db.runtime_get("cost_today_date")
-    if last_date != today_iso:
-        return 0.0
-    return float(db.runtime_get("cost_today") or 0.0)
+    midnight_iso = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with db._conn() as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) AS s FROM llm_costs WHERE ts >= ?",
+            (midnight_iso,),
+        ).fetchone()
+    return float(row["s"] or 0.0)
 
 
 def background_cost_today() -> float:

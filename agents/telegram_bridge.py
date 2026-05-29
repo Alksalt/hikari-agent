@@ -3325,6 +3325,7 @@ def main() -> None:
     _log_dir = REPO_ROOT / "data" / "logs"
     _log_dir.mkdir(parents=True, exist_ok=True)
     _fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.Formatter.converter = time.gmtime  # contract #4: all log timestamps in UTC
     _rot = logging.handlers.RotatingFileHandler(
         _log_dir / "hikari.log",
         maxBytes=20_000_000,
@@ -3344,6 +3345,12 @@ def main() -> None:
     # Install secret-redacting + canary-leak filter on the root logger so
     # secrets never hit stdout/files.
     install_root_filter()
+    # P3: double-bill guard — warn if both auth paths are set simultaneously.
+    if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        logging.getLogger(__name__).warning(
+            "double-bill risk: both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set — "
+            "SDK may bill the API on top of the Max subscription. Unset ANTHROPIC_API_KEY."
+        )
     # Lazy/opt-in observability — no-op unless HIKARI_LOGFIRE_ENABLED is set
     # AND the logfire package is installed.
     from . import observability

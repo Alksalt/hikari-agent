@@ -43,6 +43,7 @@ _OUTBOX_FAILED_WARN = 5
 _BACKUP_AGE_WARN_HOURS = 30
 _LOG_RECENT_ERRORS_WARN = 10
 _MEDIA_OUTBOX_PENDING_WARN = 10
+_GRAPH_RECALL_HIT_WARN = 0.5  # hit/(hit+fallback) must be >= this; 1.0 when no lookups yet
 
 # Where the daily backup writes (scripts/backup.sh:15).
 # Override via HIKARI_BACKUP_DIR env or backups.dir config key.
@@ -60,7 +61,7 @@ _BACKUP_DIR = Path(
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOG_PATH = _REPO_ROOT / "data" / "logs" / "hikari.log"
 
-_ERROR_LINE_RE = re.compile(r"\bERROR\b")
+_ERROR_LINE_RE = re.compile(r"\b(ERROR|CRITICAL)\b")
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 
 
@@ -229,7 +230,9 @@ def _check_recent_log_errors(log_path: Path = _LOG_PATH, window_sec: int = 3600)
                 continue
             try:
                 # Both 'YYYY-MM-DD HH:MM:SS' and 'YYYY-MM-DDTHH:MM:SS' are accepted.
-                # Attach UTC so .timestamp() math is correct regardless of host TZ.
+                # Contract #4: log timestamps are UTC because telegram_bridge.main()
+                # sets logging.Formatter.converter = time.gmtime (Sprint 3 Phase 3B).
+                # We attach UTC here so .timestamp() math is host-TZ-independent.
                 ts = _dt.datetime.fromisoformat(
                     m.group(1).replace("T", " ")
                 ).replace(tzinfo=_dt.timezone.utc)
@@ -246,6 +249,36 @@ def _check_recent_log_errors(log_path: Path = _LOG_PATH, window_sec: int = 3600)
                 if count <= _LOG_RECENT_ERRORS_WARN
                 else f"errors>{_LOG_RECENT_ERRORS_WARN}/hr"
             ),
+        )
+    except Exception as e:
+        return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
+
+
+def _check_graph_recall() -> CheckResult:
+    """Check graph-recall counters written by Phase 3A (runtime_state keys).
+
+    Reads ``recall_graph_hit``, ``recall_graph_fallback``, and
+    ``graph_search_error`` from runtime_state (all default to 0 if absent).
+    hit_ratio = hit / (hit + fallback); defaults to 1.0 when both are zero
+    (no lookups have happened yet — healthy by definition).
+    ok = error == 0 and hit_ratio >= _GRAPH_RECALL_HIT_WARN.
+    """
+    try:
+        hit = db.runtime_get_int("recall_graph_hit", 0)
+        fallback = db.runtime_get_int("recall_graph_fallback", 0)
+        err = db.runtime_get_int("graph_search_error", 0)
+        total = hit + fallback
+        ratio = hit / total if total > 0 else 1.0
+        ok = err == 0 and ratio >= _GRAPH_RECALL_HIT_WARN
+        reason = None
+        if err > 0:
+            reason = f"graph_search_error={err}"
+        if ratio < _GRAPH_RECALL_HIT_WARN:
+            reason = (f"{reason}; " if reason else "") + f"hit_ratio={round(ratio, 3)}<{_GRAPH_RECALL_HIT_WARN}"
+        return CheckResult(
+            ok=ok,
+            value={"hit": hit, "fallback": fallback, "error": err, "hit_ratio": round(ratio, 3)},
+            reason=reason,
         )
     except Exception as e:
         return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
@@ -274,6 +307,7 @@ async def collect_startup_report(
         "media_outbox_pending": _check_media_outbox().to_dict(),
         "last_backup_age_h": _check_last_backup().to_dict(),
         "log_recent_errors": _check_recent_log_errors().to_dict(),
+        "graph_recall": _check_graph_recall().to_dict(),
     }
     return report
 
