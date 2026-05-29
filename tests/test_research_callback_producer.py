@@ -86,9 +86,10 @@ def test_mark_consumed_sets_surfaced_at(tmp_path, monkeypatch):
     task_id = _seed_research_task(db, summary="some result")
 
     # Before mark_consumed it should appear.
-    assert len(producer.collect()) == 1
+    candidates = producer.collect()
+    assert len(candidates) == 1
 
-    producer.mark_consumed(task_id=task_id)
+    producer.mark_consumed(candidates[0])
 
     # After marking consumed it should be gone.
     assert producer.collect() == []

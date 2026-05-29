@@ -56,10 +56,17 @@ def collect() -> list[TriggerCandidate]:
     )]
 
 
-def mark_consumed(belief_id: int | None = None) -> None:
+def mark_consumed(candidate: TriggerCandidate) -> None:
     from storage import db
     sid = db.get_session_id() or ""
     if sid:
         db.runtime_set("belief_resurface_last_session_id", sid)
+    belief_id = candidate.payload.get("belief_id")
     if belief_id:
         db.belief_journal_resolve(int(belief_id), note="surfaced")
+    else:
+        logger.error(
+            "belief_resurface.mark_consumed: belief_id missing from payload — "
+            "belief_journal row NOT resolved, belief will re-fire next session. "
+            "payload=%r", candidate.payload,
+        )

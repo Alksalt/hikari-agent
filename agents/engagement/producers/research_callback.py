@@ -65,9 +65,14 @@ def collect() -> list[TriggerCandidate]:
     )]
 
 
-def mark_consumed(task_id: int | None = None) -> None:
+def mark_consumed(candidate: TriggerCandidate) -> None:
     from storage import db
+    task_id = candidate.payload.get("task_id")
     if not task_id:
+        logger.error(
+            "research_callback.mark_consumed: task_id missing from payload — marker "
+            "NOT written, producer will re-fire. payload=%r", candidate.payload,
+        )
         return
     with db._conn() as c:
         c.execute(

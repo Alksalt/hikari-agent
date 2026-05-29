@@ -161,7 +161,7 @@ def test_respects_per_session_cap(tmp_path, monkeypatch):
     assert len(first) == 1
 
     # Simulate the scheduler calling mark_consumed after a successful send.
-    producer.mark_consumed()
+    producer.mark_consumed(first[0])
 
     second = producer.collect()
     assert second == []

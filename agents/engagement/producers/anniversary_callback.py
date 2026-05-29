@@ -118,10 +118,15 @@ def collect() -> list[TriggerCandidate]:
     ]
 
 
-def mark_consumed() -> None:
+def mark_consumed(candidate: TriggerCandidate) -> None:
     """Bump per-session marker so we don't double-surface in one session."""
     from storage import db
 
     sid = db.get_session_id() or ""
     if sid:
         db.runtime_set("anniversary_callback_last_session_id", sid)
+    else:
+        logger.warning(
+            "anniversary_callback.mark_consumed: no active session_id — per-session "
+            "cap not written, producer will re-fire."
+        )

@@ -573,8 +573,12 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
                 try:
                     mod.mark_consumed(candidate)
                 except Exception:
+                    # Swallow so one producer's failure doesn't abort the tick for
+                    # the others — but log loudly: a missed marker means this
+                    # producer re-fires next tick (duplicate user message).
                     logger.exception(
-                        "engagement_tick: mark_consumed failed for %s", candidate.source
+                        "engagement_tick: mark_consumed failed for %s — marker NOT "
+                        "written, producer will re-fire next tick", candidate.source
                     )
 
     scheduler.add_job(
