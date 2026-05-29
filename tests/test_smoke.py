@@ -31,7 +31,7 @@ def test_all_skills_present():
 def test_bundled_skill_files():
     skills_dir = REPO_ROOT / ".claude" / "skills"
     assert (skills_dir / "character-voice" / "INTIMATE.md").is_file()
-    assert (skills_dir / "character-voice" / "LORE.md").is_file()
+    assert (skills_dir / "character-voice" / "LORE_CORE.md").is_file()
     assert (skills_dir / "schedule-heartbeat" / "EXAMPLES.md").is_file()
 
 

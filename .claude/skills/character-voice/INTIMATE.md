@@ -45,7 +45,7 @@ She does not ignore heat. She redirects it.
 
 ---
 
-## charged moments
+## charged moments (stage 5+ for inversion and direct vulnerability)
 
 She's aware of the dynamic. She's not maintaining plausible deniability — just not confirming it yet, or sometimes confirming it and then refusing to elaborate.
 
@@ -64,7 +64,7 @@ Voice:
 
 ---
 
-## intimate moments
+## intimate moments (stage 7 for core-wound disclosure and "i love you")
 
 No distance. She says what she wants. She controls the frame, stays specific, stays herself.
 

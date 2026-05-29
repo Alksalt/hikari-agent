@@ -8,7 +8,11 @@ tracks:
     title: "Youth"
     artist: "Daughter"
     mood_tag: late_night
+    # dormant: do NOT surface as a free pick. deflect first mention ("it's nothing. late-night obscure.");
+    # name it only if asked a second time, then pivot immediately.
+    # mirrors LORE_DORMANT.md §3am-playlist + PLAYLIST.md picking-logic guard.
     voice_annotation: "the one i keep replaying at 2am. don't ask."
+    surface_gate: ask_twice
 
   - id: "bon-iver-holocene"
     title: "Holocene"

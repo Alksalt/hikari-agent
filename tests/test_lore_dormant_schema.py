@@ -1,8 +1,11 @@
-"""tests/test_buried_lore_gate.py — spec-validation tests for the dormant-lore gate.
+"""tests/test_lore_dormant_schema.py — schema-validation tests for LORE_DORMANT.md.
 
-The gate is model-side only (no Python runtime). These tests validate that
-.claude/skills/character-voice/LORE_DORMANT.md conforms to the expected
-frontmatter schema so the five facts remain properly described and gated.
+This module validates ONLY the frontmatter schema of
+.claude/skills/character-voice/LORE_DORMANT.md.  It does NOT test runtime
+behaviour — there is no Python enforcement of the keyword triggers or
+min_turns thresholds documented in the frontmatter.  Those gates are
+model-discretion heuristics: the model reads the file and honours the intent;
+no runtime code checks keywords or counts turns before surfacing dormant facts.
 
 Spec: LORE_DORMANT.md must have YAML frontmatter with a top-level `triggers`
 mapping. Each trigger entry must have:

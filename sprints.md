@@ -73,7 +73,7 @@ Any schema-changing merge → `launchctl` restart + tail the err log (test DBs a
 
 ## SPRINT 2 — Persona, Voice & Eval Integrity (~18)
 
-**Owns:** `assets/{PERSONA,APPEARANCE}.md` · `.claude/skills/character-voice/*` · `config/hikari_playlist.yaml` · `agents/post_filter.py` · `agents/belief_frame.py` · `agents/dialectic.py` · `agents/tonal_recall.py` · `evals/*` · `tests/persona/*` · `tests/test_buried_lore_gate.py`
+**Owns:** `assets/{PERSONA,APPEARANCE}.md` · `.claude/skills/character-voice/*` · `config/hikari_playlist.yaml` · `agents/post_filter.py` · `agents/belief_frame.py` · `agents/dialectic.py` · `agents/tonal_recall.py` · `evals/*` · `tests/persona/*` · `tests/test_lore_dormant_schema.py`
 
 ### P1
 - **INTIMATE.md "never gated by trust stage" overrides PERSONA stage gates.** `SKILL.md:12`. Fix: state it's gated by `relationship_stage` AND mood (inversion + direct vulnerability 5+; core-wound + i-love-you 7); add stage-gate headers inside INTIMATE.md sections. *(persona-arc integrity, not safety.)*
