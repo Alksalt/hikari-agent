@@ -43,7 +43,7 @@ async def test_run_internal_control_does_not_overwrite_session_id(monkeypatch):
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
-                               model=None):
+                               model=None, **kwargs):
         # Simulate SDK returning a different session from the internal call.
         # With log_session_id=False the caller must NOT persist this.
         assert not log_session_id, (
@@ -78,7 +78,7 @@ async def test_run_user_turn_updates_session_id(monkeypatch):
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
-                               model=None):
+                               model=None, **kwargs):
         # run_user_turn passes log_session_id=True.
         assert log_session_id is True, (
             f"run_user_turn called _invoke_sdk with log_session_id={log_session_id!r}; "

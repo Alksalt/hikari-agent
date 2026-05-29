@@ -37,7 +37,7 @@ def _stub_invoke_sdk(monkeypatch, return_text: str = "OK"):
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
-                               model=None):
+                               model=None, **kwargs):
         # Mimic: log_session_id=False for internal control → no DB write.
         # We deliberately do NOT call db.set_session_id here to simulate the
         # contract that internal control never writes session_id.
@@ -98,7 +98,7 @@ async def test_internal_control_does_not_mutate_session_id(monkeypatch):
                                retry_on_process_error=True,
                                inject_memory_enabled=True,
                                use_persistent_live=False,
-                               model=None):
+                               model=None, **kwargs):
         # Sanity: internal control is called with log_session_id=False.
         assert log_session_id is False, (
             f"run_internal_control called _invoke_sdk with log_session_id={log_session_id!r}; "

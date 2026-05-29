@@ -774,6 +774,7 @@ async def _invoke_sdk_persistent_live(
     prompt: str | list[dict],
     *,
     log_session_id: bool,
+    tool_names_sink: set[str] | None = None,
 ) -> str:
     """Persistent-client path for run_user_turn + run_visible_proactive.
 
@@ -877,6 +878,8 @@ async def _invoke_sdk_persistent_live(
         result = await _run_one()   # one retry; re-raises on second failure
 
     sdk_pool._maybe_schedule_live_recycle()
+    if tool_names_sink is not None:
+        tool_names_sink |= tool_names_this_turn
     return result
 
 
@@ -892,6 +895,7 @@ async def _invoke_sdk(
     inject_memory_enabled: bool = True,
     use_persistent_live: bool = False,
     model: str | None = None,
+    tool_names_sink: set[str] | None = None,
 ) -> str:
     """Phase 13 (Stream C) — single private SDK invocation helper.
 
@@ -913,7 +917,7 @@ async def _invoke_sdk(
     """
     if use_persistent_live and sdk_pool.is_live_persistent_path_enabled():
         return await _invoke_sdk_persistent_live(
-            prompt, log_session_id=log_session_id,
+            prompt, log_session_id=log_session_id, tool_names_sink=tool_names_sink,
         )
 
     session_id = resume
@@ -1008,6 +1012,8 @@ async def _invoke_sdk(
                 continue
             raise
 
+    if tool_names_sink is not None:
+        tool_names_sink |= tool_names_this_turn
     return "".join(parts).strip()
 
 
@@ -1170,6 +1176,7 @@ async def run_internal_control(
     max_turns: int = 5,
     max_budget_usd: float = 0.30,
     extra_allowed_tools: list[str] | None = None,
+    tool_names_sink: set[str] | None = None,
 ) -> str:
     """Stateless internal control prompt.
 
@@ -1188,6 +1195,10 @@ async def run_internal_control(
     Uses ``MODEL_PRIMARY`` (Sonnet) — internal control prompts may invoke SDK
     tools (approval resume, GCal sync, etc.) and must use the subscription
     model. Never Haiku.
+
+    ``tool_names_sink``: when provided by compound_turn, the set of tool names
+    invoked during this child turn is merged into it (via ``_invoke_sdk``).
+    Pass ``None`` (the default) for all non-compound callers — strict no-op.
     """
     return await _invoke_sdk(
         prompt,
@@ -1199,6 +1210,7 @@ async def run_internal_control(
         retry_on_process_error=False,
         inject_memory_enabled=False,
         model=MODEL_PRIMARY,
+        tool_names_sink=tool_names_sink,
     )
 
 

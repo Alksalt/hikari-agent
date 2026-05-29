@@ -73,13 +73,19 @@ async def run_compound_turn(tasks: list[dict]) -> str:
     """Execute dict-shaped tasks in dependency order and return combined results.
 
     Legacy entry point. Kept verbatim for existing callers and tests.
-    Single-task list: direct run_internal_control, no overhead.
-    Multi-task: topological waves, parallel within each wave.
+    Single-task list: direct run_internal_control, no overhead (no sink — the
+    lone child's _invoke_sdk sets LAST_TURN_TOOL_NAMES directly for that call).
+    Multi-task: topological waves, parallel within each wave. A shared sink
+    collects child tool names across waves and is merged into
+    LAST_TURN_TOOL_NAMES via aggregate_compound_tool_calls before returning.
     """
     from agents.runtime import run_internal_control
 
     if len(tasks) == 1:
         return await run_internal_control(tasks[0]["task"])
+
+    # Shared sink for multi-task path: collects all child tool names.
+    sink: set[str] = set()
 
     try:
         waves = _build_waves(tasks)
@@ -93,11 +99,11 @@ async def run_compound_turn(tasks: list[dict]) -> str:
     for wave in waves:
         if len(wave) == 1:
             idx = wave[0]
-            results[idx] = await run_internal_control(tasks[idx]["task"])
+            results[idx] = await run_internal_control(tasks[idx]["task"], tool_names_sink=sink)
             total_successes += 1
         else:
             wave_results = await asyncio.gather(
-                *[run_internal_control(tasks[idx]["task"]) for idx in wave],
+                *[run_internal_control(tasks[idx]["task"], tool_names_sink=sink) for idx in wave],
                 return_exceptions=True,
             )
             for idx, res in zip(wave, wave_results):
@@ -112,6 +118,9 @@ async def run_compound_turn(tasks: list[dict]) -> str:
 
     if total_successes == 0 and first_exc is not None:
         raise first_exc
+
+    from agents.post_filter import aggregate_compound_tool_calls
+    aggregate_compound_tool_calls(sink)
 
     parts = [results[i].strip() for i in range(len(tasks)) if results.get(i, "").strip()]
     return "\n\n".join(parts)
@@ -139,16 +148,21 @@ def _partition_steps(steps: list[WorkStep]) -> tuple[list[WorkStep], list[WorkSt
 
 
 async def _run_read_step(
-    step: WorkStep, *, step_timeout: float
+    step: WorkStep,
+    *,
+    step_timeout: float,
+    tool_names_sink: set[str] | None = None,
 ) -> tuple[WorkStep, str | None, Exception | None]:
     """Execute one read step under a per-step timeout.
 
     Returns ``(step, output_or_None, exception_or_None)``. Caller updates DB.
+    ``tool_names_sink``: when provided, merged with child tool names via
+    ``run_internal_control``'s forwarding to ``_invoke_sdk``.
     """
     from agents.runtime import run_internal_control
     assert step.node is not None
     try:
-        coro = run_internal_control(step.node.task)
+        coro = run_internal_control(step.node.task, tool_names_sink=tool_names_sink)
         out = await asyncio.wait_for(coro, timeout=step_timeout)
         return step, str(out), None
     except asyncio.TimeoutError as exc:
@@ -278,6 +292,16 @@ async def run_compound_turn_typed(
         "single_step": False,
     })
 
+    # Shared sink that collects every tool name invoked by child
+    # run_internal_control calls. Passed into _run_read_step (parallel reads)
+    # and the sequential write dispatch so aggregation catches both. Merged
+    # into LAST_TURN_TOOL_NAMES before the final receipt via
+    # aggregate_compound_tool_calls — prevents the fabrication backstop from
+    # clobbering real inbox/calendar receipts produced in child turns.
+    # set.update / |= holds the GIL and there is no await between a child's
+    # SDK loop returning and its sink update, so no lock is needed.
+    tool_names_sink: set[str] = set()
+
     # 1. Extract typed nodes
     try:
         nodes = await extract_typed_nodes(user_text)
@@ -344,7 +368,7 @@ async def run_compound_turn_typed(
         for s in reads:
             db.work_packet_step_update(s.step_id, status="running")
         results = await asyncio.gather(
-            *[_run_read_step(s, step_timeout=step_timeout) for s in reads],
+            *[_run_read_step(s, step_timeout=step_timeout, tool_names_sink=tool_names_sink) for s in reads],
             return_exceptions=False,  # _run_read_step never re-raises
         )
         for step, output, exc in results:
@@ -399,7 +423,7 @@ async def run_compound_turn_typed(
         try:
             from agents.runtime import run_internal_control
             out = await asyncio.wait_for(
-                run_internal_control(node.task),
+                run_internal_control(node.task, tool_names_sink=tool_names_sink),
                 timeout=step_timeout * 2,  # writes get a bigger budget
             )
             s.status = "done"
@@ -441,7 +465,12 @@ async def run_compound_turn_typed(
     packet.status = final_status
     db.work_packet_update_status(packet_id, final_status, finished=finished)
 
-    # 6. Receipt
+    # 6. Aggregate child tool names into parent LAST_TURN_TOOL_NAMES so the
+    #    fabrication backstop (filter_outgoing) sees real fetches from child turns.
+    from agents.post_filter import aggregate_compound_tool_calls
+    aggregate_compound_tool_calls(tool_names_sink)
+
+    # 7. Receipt
     return _compose_receipt(packet)
 
 
