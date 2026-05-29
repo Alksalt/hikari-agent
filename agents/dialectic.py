@@ -61,12 +61,14 @@ async def extract_post_turn(message_window: list[dict]) -> int:
         return 0
 
     raw = raw.strip()
-    # Strip markdown fences if present.
+    # Strip markdown fences if present (splitlines-based, mirrors drift_judge/_strip_fences).
+    # Using split("```") is fragile: a stray backtick inside a JSON string value
+    # splits the payload and discards everything after it.
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
+        raw = "\n".join(raw.splitlines()[1:])
+    if raw.endswith("```"):
+        raw = "\n".join(raw.splitlines()[:-1])
+    raw = raw.strip()
 
     try:
         insights = json.loads(raw)

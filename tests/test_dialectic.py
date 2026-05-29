@@ -170,6 +170,42 @@ async def test_more_than_3_capped_at_3(monkeypatch):
 # 7. Empty message window → returns 0 without calling LLM
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 8. Fenced JSON with stray backtick inside a string value → fully parsed
+#    (regression for fragile split("```") approach that discarded tail content)
+# ---------------------------------------------------------------------------
+
+async def test_fenced_json_with_stray_backtick_parses_fully(monkeypatch):
+    """A backtick inside a JSON string value must not truncate the payload.
+
+    The old split('```')[1] approach splits on the stray backtick and discards
+    everything after it, causing partial or empty insight lists. The splitlines-
+    based fence-strip only removes the first (opening) and last (closing) fence
+    lines, leaving the body intact.
+    """
+    from agents import dialectic
+    from storage import db
+
+    # Fenced JSON where one string value contains a stray backtick
+    stray_backtick_payload = (
+        "```json\n"
+        '["user avoids `direct` confrontation", "brings up deadlines under stress"]\n'
+        "```"
+    )
+
+    async def _fake_aux(prompt, *, system=None, max_tokens=256):
+        return stray_backtick_payload
+
+    monkeypatch.setattr("agents.dialectic.run_aux_composition", _fake_aux)
+
+    count = await dialectic.extract_post_turn(_SAMPLE_WINDOW)
+    assert count == 2, f"expected 2 insights, got {count} — stray backtick may have truncated the payload"
+
+    rows = db.peer_insights_unsurfaced(limit=10)
+    observations = {r["observation"] for r in rows}
+    assert "user avoids `direct` confrontation" in observations
+    assert "brings up deadlines under stress" in observations
+
 async def test_empty_window_returns_zero(monkeypatch):
     from agents import dialectic
 

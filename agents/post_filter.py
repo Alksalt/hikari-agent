@@ -55,6 +55,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ResultMessage,
     TextBlock,
 )
 
@@ -122,8 +123,35 @@ _ACTION_LINE_RE_MD = re.compile(r"\[[a-z ]+\]")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 # Inline code: `text`
 _MD_CODE_RE = re.compile(r"`([^`]+)`")
+# Fenced code blocks: ```[lang]\nbody\n``` — unwrap to inner body
+_MD_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 # Leading block markers on a line: - / * / # (any count) / >
 _MD_LINE_PREFIX_RE = re.compile(r"^(\s*)[-*#>]+ ?", re.MULTILINE)
+
+# Trailing decoration after a sentence-ending '?' — used by
+# _detect_task_solicit_question to strip trailing emoji, smart/straight quotes,
+# closing brackets/parens, whitespace, and action-line spans [word word], so
+# endswith("?") isn't fooled by e.g. "what's next? <emoji>" or "need? [smiles]".
+#
+# The pattern is a non-empty sequence of any of:
+#   - A complete action-line-style bracketed span [word word]
+#   - A single decoration character: whitespace, emoji (supplementary planes
+#     and Misc Symbols/Dingbats ranges), smart/straight quotes, or a closing
+#     bracket/paren.
+#
+# Unicode emoji ranges:
+#   U+2600-U+27BF  -- Misc Symbols + Dingbats
+#   U+1F000-U+2FFFF -- supplementary emoji planes (most emoji)
+_TRAILING_DECORATION_RE = re.compile(
+    r'(?:'
+    r'\[[a-z ]+\]'                    # action-line span [word word]
+    r'|[\s'
+    r'\u2600-\u27BF'                  # Misc Symbols + Dingbats
+    r'\U0001F000-\U0002FFFF'          # supplementary emoji planes
+    r'\u201C\u201D\u2018\u2019\u00AB\u00BB\'"'  # smart+straight quotes
+    r'\)\]\}]'                        # closing brackets/parens
+    r')+$'
+)
 
 
 def _strip_chat_markdown(text: str) -> str:
@@ -150,6 +178,9 @@ def _strip_chat_markdown(text: str) -> str:
         return f"\x00AL{idx}\x00"
 
     text = _ACTION_LINE_RE_MD.sub(_save_action, text)
+
+    # Unwrap fenced code blocks (``` ... ```) to their inner body text (Fix 3).
+    text = _MD_FENCE_RE.sub(lambda m: m.group(1).rstrip("\n"), text)
 
     # Strip inline bold/italic and code.
     text = _MD_BOLD_RE.sub(lambda m: m.group(1) or m.group(2), text)
@@ -820,6 +851,24 @@ async def bounded_rewrite(
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             parts.append(block.text)
+                elif isinstance(msg, ResultMessage):
+                    # Record cost so billing telemetry sees bounded_rewrite
+                    # spend. Lazy import to avoid a circular import at module
+                    # load (same pattern as _turn_key above). Never raises:
+                    # cost-logging failure must never break the rewrite.
+                    if msg.usage:
+                        try:
+                            from agents.runtime import _record_llm_cost
+                            _record_llm_cost(
+                                getattr(msg, "model_usage", None),
+                                path="bounded_rewrite",
+                                fallback_model=model,
+                                fallback_usage=msg.usage,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "bounded_rewrite: _record_llm_cost failed (non-fatal)"
+                            )
     except Exception:
         logger.exception("bounded_rewrite: SDK call failed")
         return None
@@ -892,7 +941,8 @@ async def rewrite_or_fallback(
         f"sycophancy={filtered.sycophancy_triggered} "
         f"len_before={len(original)} len_after={len(rewritten)}"
     )
-    return rewritten
+    # Return the markdown-stripped second-pass text, not the raw rewrite.
+    return second.text
 
 
 def _detect_task_solicit_question(text: str) -> bool:
@@ -903,12 +953,15 @@ def _detect_task_solicit_question(text: str) -> bool:
     """
     if not text:
         return False
-    # Split into candidate sentences by terminal punctuation.
-    # We only care whether the very last sentence ends in '?'.
-    stripped = text.rstrip()
+    # Strip trailing decoration (whitespace, emoji, quotes, brackets) first so
+    # a question hidden behind a trailing emoji or action-line — e.g.
+    # "what's next? <emoji>" or "need anything? [smiles]" — still reads as
+    # ending in '?'.
+    stripped = _TRAILING_DECORATION_RE.sub("", text)
     if not stripped.endswith("?"):
         return False
     # Extract the last sentence — split on sentence-ending punctuation.
+    # Use the decoration-stripped form so cue matching works on clean text.
     sentences = re.split(r"[.!?]", stripped)
     last = sentences[-1].strip() if sentences else ""
     if not last:

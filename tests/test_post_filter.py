@@ -490,3 +490,88 @@ def test_filter_outgoing_normal_reply_passes_through():
         assert result.text == "ugh. fine. give me a minute."
     finally:
         LAST_TURN_TOOL_NAMES.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — _detect_task_solicit_question with trailing emoji / quote / bracket
+# ---------------------------------------------------------------------------
+
+
+def _with_task_solicit_config(monkeypatch):
+    """Patch config.get so task_solicit_cues returns a small set."""
+    from agents import config as cfg_mod
+    original_get = cfg_mod.get
+
+    def _patched_get(key, default=None):
+        if key == "post_filter.task_solicit_cues":
+            return [r"\bwhat.*help\b", r"\bwhat.*work\b", r"\bwhat.*need\b", r"\bwhat.*next\b"]
+        return original_get(key, default)
+
+    monkeypatch.setattr(cfg_mod, "get", _patched_get)
+
+
+def test_detect_task_solicit_question_trailing_emoji(monkeypatch):
+    """A task-soliciting question ending with a trailing emoji is detected."""
+    _with_task_solicit_config(monkeypatch)
+    from agents.post_filter import _detect_task_solicit_question
+    # "what's next? 😊" — trailing emoji must not fool endswith check
+    assert _detect_task_solicit_question("what's next? 😊") is True
+
+
+def test_detect_task_solicit_question_trailing_quote(monkeypatch):
+    """A task-soliciting question with trailing smart quote is detected."""
+    _with_task_solicit_config(monkeypatch)
+    from agents.post_filter import _detect_task_solicit_question
+    assert _detect_task_solicit_question('what\'s next?"') is True
+
+
+def test_detect_task_solicit_question_trailing_bracket(monkeypatch):
+    """A task-soliciting question with trailing bracket is detected."""
+    _with_task_solicit_config(monkeypatch)
+    from agents.post_filter import _detect_task_solicit_question
+    assert _detect_task_solicit_question("what do you need next? [smiles]") is True
+
+
+def test_detect_task_solicit_question_plain_non_soliciting(monkeypatch):
+    """A plain non-soliciting question is NOT flagged, even with trailing emoji."""
+    _with_task_solicit_config(monkeypatch)
+    from agents.post_filter import _detect_task_solicit_question
+    # "you okay?" has no task-solicit cue
+    assert _detect_task_solicit_question("you okay?") is False
+    assert _detect_task_solicit_question("you okay? 😊") is False
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — _strip_chat_markdown unwraps fenced code blocks
+# ---------------------------------------------------------------------------
+
+
+def test_strip_chat_markdown_unwraps_fenced_code_block():
+    """A ```python ... ``` fenced block is unwrapped to its inner body."""
+    from agents.post_filter import _strip_chat_markdown
+    text = "here it is:\n```python\nprint('hello')\n```\ndone."
+    result = _strip_chat_markdown(text)
+    assert "```" not in result
+    assert "print('hello')" in result
+
+
+def test_strip_chat_markdown_preserves_action_line_and_strips_inline_code():
+    """Action lines survive; inline `code` is still stripped."""
+    from agents.post_filter import _strip_chat_markdown
+    text = "[reads it twice] try `rm -rf /` — just kidding."
+    result = _strip_chat_markdown(text)
+    # Action line must be intact
+    assert "[reads it twice]" in result
+    # Inline code backticks must be stripped (text content kept)
+    assert "`" not in result
+    assert "rm -rf /" in result
+
+
+def test_strip_chat_markdown_fenced_block_and_action_line_together():
+    """Action line placeholder survives even when fenced block is present."""
+    from agents.post_filter import _strip_chat_markdown
+    text = "[looks away]\n```bash\necho hi\n```"
+    result = _strip_chat_markdown(text)
+    assert "[looks away]" in result
+    assert "echo hi" in result
+    assert "```" not in result

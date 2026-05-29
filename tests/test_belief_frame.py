@@ -183,6 +183,50 @@ def test_adversarial_prompt_tolerates_template_without_placeholder(tmp_path, mon
     assert "[adversarial mode]" in suffix
 
 
+# ---------- detect_identity_claim: benign negations must NOT match ----------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "i don't know",
+        "i don't mind",
+        "i never said that",
+        "i don't think so",
+        "i don't remember",
+        "i never meant that",
+        "i don't understand",
+        "i don't have time",
+    ],
+)
+def test_identity_claim_rejects_benign_negations(text: str):
+    hit, fragment = belief_frame.detect_identity_claim(text)
+    assert not hit, f"benign negation {text!r} should NOT register as identity claim"
+    assert fragment is None
+
+
+# ---------- detect_identity_claim: genuine identity claims must match ----------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "i'm someone who always shows up",
+        "i'm a person who cares deeply",
+        "i don't quit",
+        "i never give up",
+        "i don't believe in shortcuts",
+        "i don't back down",
+        "i'm not a quitter",
+        "i'm not someone who runs from problems",
+        "i don't identify with that label",
+        "i don't trust people easily",
+    ],
+)
+def test_identity_claim_matches_genuine_claims(text: str):
+    hit, fragment = belief_frame.detect_identity_claim(text)
+    assert hit, f"genuine identity claim {text!r} should match"
+    assert fragment is not None
+
+
 # ---------- config override of pattern lists ----------
 
 def test_config_override_belief_patterns(tmp_path, monkeypatch):

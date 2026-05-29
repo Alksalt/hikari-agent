@@ -88,10 +88,16 @@ async def compute_session_register(session_id: str) -> str:
 
     try:
         with db._conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE session SET emotional_register = ? WHERE id = 1",
                 (register,),
             )
+            if cur.rowcount == 0:
+                logger.warning(
+                    "tonal_recall: session row id=1 missing — emotional_register not persisted "
+                    "(session_id=%s, register=%s)",
+                    session_id, register,
+                )
     except Exception:
         logger.exception(
             "tonal_recall: failed to write emotional_register for session %s", session_id

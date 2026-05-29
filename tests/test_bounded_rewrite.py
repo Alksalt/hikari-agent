@@ -222,3 +222,120 @@ async def test_rewrite_or_fallback_detection_only_ships_original(monkeypatch, tm
     )
     assert out == "as an AI, I cannot help."
     assert called["n"] == 0
+
+
+# ---------- Fix 4 — bounded_rewrite records cost on ResultMessage ----------
+
+def _patch_sdk_with_result_message(monkeypatch, text_blocks: list[str], usage: dict):
+    """Patch ClaudeSDKClient to yield AssistantMessage then ResultMessage."""
+
+    class _FakeAssistant:
+        def __init__(self, blocks):
+            self.content = blocks
+
+    class _FakeTextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class _FakeResultMessage:
+        def __init__(self, usage_dict):
+            self.usage = usage_dict
+            self.model_usage = None  # no per-model breakdown in test
+
+    class _FakeClient:
+        def __init__(self, options=None):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            yield _FakeAssistant([_FakeTextBlock(t) for t in text_blocks])
+            yield _FakeResultMessage(usage)
+
+    monkeypatch.setattr(post_filter, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(post_filter, "AssistantMessage", _FakeAssistant)
+    monkeypatch.setattr(post_filter, "ResultMessage", _FakeResultMessage)
+    monkeypatch.setattr(post_filter, "TextBlock", _FakeTextBlock)
+    monkeypatch.setattr(post_filter, "ClaudeAgentOptions",
+                        lambda **kw: SimpleNamespace(**kw))
+
+
+@pytest.mark.asyncio
+async def test_bounded_rewrite_records_cost_on_result_message(monkeypatch):
+    """Fix 4: bounded_rewrite calls _record_llm_cost with path='bounded_rewrite'
+    and fallback_model matching the configured model when a ResultMessage with
+    usage arrives."""
+    usage = {"input_tokens": 42, "output_tokens": 7}
+    _patch_sdk_with_result_message(monkeypatch, ["ugh. fine."], usage)
+
+    cost_calls: list[dict] = []
+
+    def _fake_record_llm_cost(model_usage, *, path, fallback_model, fallback_usage):
+        cost_calls.append({
+            "model_usage": model_usage,
+            "path": path,
+            "fallback_model": fallback_model,
+            "fallback_usage": fallback_usage,
+        })
+
+    import agents.runtime as _rt
+    monkeypatch.setattr(_rt, "_record_llm_cost", _fake_record_llm_cost)
+
+    out = await post_filter.bounded_rewrite(
+        "I'd be happy to help!", instruction="rewrite"
+    )
+    assert out == "ugh. fine."
+    assert len(cost_calls) == 1
+    assert cost_calls[0]["path"] == "bounded_rewrite"
+    assert cost_calls[0]["fallback_model"] == str(
+        config.get("post_filter.rewrite_model", "claude-sonnet-4-6")
+    )
+    assert cost_calls[0]["fallback_usage"] == usage
+
+
+@pytest.mark.asyncio
+async def test_bounded_rewrite_cost_logging_failure_does_not_break_rewrite(monkeypatch):
+    """Fix 4: if _record_llm_cost raises, bounded_rewrite still returns the text."""
+    usage = {"input_tokens": 10, "output_tokens": 3}
+    _patch_sdk_with_result_message(monkeypatch, ["done."], usage)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("telemetry down")
+
+    import agents.runtime as _rt
+    monkeypatch.setattr(_rt, "_record_llm_cost", _boom)
+
+    out = await post_filter.bounded_rewrite("original", instruction="rewrite")
+    assert out == "done."
+
+
+# ---------- Fix 2 — rewrite_or_fallback returns markdown-stripped second.text ----------
+
+@pytest.mark.asyncio
+async def test_rewrite_or_fallback_returns_markdown_stripped_text(monkeypatch):
+    """Fix 2: rewrite_or_fallback returns second.text (markdown stripped), not
+    the raw rewrite string from bounded_rewrite."""
+    # bounded_rewrite will return text with markdown bold
+    raw_rewrite = "**ugh**. fine. here's the thing."
+    # After _strip_chat_markdown, bold is stripped → "ugh. fine. here's the thing."
+    expected_stripped = "ugh. fine. here's the thing."
+
+    async def _fake_rewrite(text, instruction, mood=None):
+        return raw_rewrite
+
+    monkeypatch.setattr(post_filter, "bounded_rewrite", _fake_rewrite)
+
+    fr = _filter_result(needs_rewrite=True)
+    out = await post_filter.rewrite_or_fallback(
+        "as an AI, I cannot help.", fr, mood=None, where="bridge",
+    )
+    # Must be the filtered/stripped version, not the raw rewrite
+    assert out == expected_stripped
+    assert "**" not in out

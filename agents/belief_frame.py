@@ -52,9 +52,31 @@ FUTURE_TENSE_EXCLUSION_RE = re.compile(
     r"(?i)\b(i('ll| will) (think|see|check|look)|going to (bed|sleep)|gonna (sleep|eat|go))\b"
 )
 
-# Identity claims: "i'm someone who X" / "i don't [identity]" / "i never [identity]"
+# Identity claims: "i'm someone who X" / "i don't/never [behavioral verb/category]"
+#
+# The negation branch is deliberately restricted to avoid false-positives on
+# benign epistemic / speech / state phrases ("i don't know", "i never said",
+# "i don't mind", "i don't remember", "i don't have time", "i don't think so",
+# "i don't understand", "i never meant that").  These benign phrases share a
+# small, closed vocabulary of verbs, so the exclusion is handled by a
+# *negative lookahead* that rejects only those specific verbs.
+# Anything else after "i don't/never" is treated as a behavioral identity
+# claim ("i don't procrastinate", "i never miss a deadline", "i don't quit").
+#
+# Pattern groups:
+#   1. "i'm someone who …" / "i'm a person who …"
+#   2. "i'm not a/an/the <noun>" / "i'm not someone/a person who"
+#   3. "i don't/i never" NOT followed by a benign epistemic/state/speech verb
+_NEGATION_BENIGN_VERBS = (
+    r"know|mind|remember|understand|think|said|say|have|get|mean|meant|feel like"
+)
 IDENTITY_CLAIM_RE = re.compile(
-    r"(?i)(\bi['']m (someone|a person) who\b|\bi (don['']t|never) \w)"
+    r"(?i)("
+    r"\bi['']m (someone|a person) who\b"
+    r"|\bi['']m not (a|an|the) \w+"
+    r"|\bi['']m not (someone|a person) who\b"
+    r"|(?:\bi (don['']t|never) )(?!(?:" + _NEGATION_BENIGN_VERBS + r")\b)\w"
+    r")"
 )
 
 # Exclusion for identity: rhetorical/question forms — "am i someone who" / "you're someone who"

@@ -195,6 +195,35 @@ async def test_llm_failure_returns_neutral(monkeypatch):
 # 6. All allowed register tokens are accepted and persisted
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 7. No session row (id=1 absent) → warning logged, no raise, returns register
+# ---------------------------------------------------------------------------
+
+async def test_missing_session_row_logs_warning(monkeypatch, caplog):
+    """When session row id=1 does not exist the UPDATE silently matches 0 rows.
+    The function must log a warning rather than silently swallowing the miss,
+    and must still return the classified register without raising.
+    """
+    import logging
+    from agents import tonal_recall
+
+    # Intentionally do NOT call _seed_session_row() — session table is empty.
+    _insert_message("user", "something interesting today")
+
+    async def _fake_aux(prompt, *, system=None, max_tokens=16):
+        return "warm"
+
+    monkeypatch.setattr("agents.tonal_recall.run_aux_composition", _fake_aux)
+
+    with caplog.at_level(logging.WARNING, logger="agents.tonal_recall"):
+        result = await tonal_recall.compute_session_register("no-session-session")
+
+    assert result == "warm"
+    warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("missing" in w or "id=1" in w or "not persisted" in w for w in warning_texts), (
+        f"expected a warning about missing session row, got: {warning_texts}"
+    )
+
 @pytest.mark.parametrize("register", ["warm", "neutral", "tense", "frosty", "significant"])
 async def test_all_allowed_registers_persist(register, monkeypatch):
     from agents import tonal_recall
