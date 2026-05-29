@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _PROACTIVE_LOCK = asyncio.Lock()
 
 ReservationStatus = Literal["sent", "aborted"]
-AbortReason = Literal["silence_window", "quiet_hours", "silent_day", "dedup", "send_failed", "empty_text"]
+AbortReason = Literal["silence_window", "quiet_hours", "silent_day", "dedup", "send_failed", "empty_text", "proactive_disabled"]
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,38 @@ def _silence_active(db) -> bool:
     if until.tzinfo is None:
         until = until.replace(tzinfo=UTC)
     return datetime.now(UTC) < until
+
+
+def _proactive_globally_disabled(db) -> bool:
+    """Return True only when the user has explicitly set proactive.enabled=false.
+
+    The signal is ``proactive_enabled_sources_override == "[]"`` (the empty JSON
+    list) written by cockpit._write_proactive_enabled when the user turns off the
+    global toggle.  A NULL / absent override means "use defaults = ON".  A
+    non-empty list means specific sources are ON.  Only the empty-list value means
+    "everything off".
+
+    Fails CLOSED (treat as disabled) if the runtime read raises: for a privacy
+    off-switch, a transient DB error must never let proactive content leak.
+    """
+    try:
+        raw = db.runtime_get("proactive_enabled_sources_override")
+    except Exception:
+        logger.error(
+            "proactive_gate: runtime_get failed reading proactive override — "
+            "failing CLOSED (suppressing proactive)"
+        )
+        return True
+    return raw is not None and raw.strip() == "[]"
+
+
+def _is_reminder_producer(producer_id: str) -> bool:
+    """Return True when the producer is a user-created reminder.
+
+    Both reminder call sites in agents/proactive.py use producer_id="reminder".
+    This is the sole exemption from the proactive_disabled gate.
+    """
+    return producer_id == "reminder"
 
 
 def _extract_reason_contract(candidate: Any) -> dict[str, Any]:
@@ -224,9 +256,13 @@ async def reserve_and_send(
             data_checked_json=reason.get("data_checked_json"),
         )
 
-        # 2. Final gate (silent_day checked first — short-circuits the whole chain).
+        # 2. Final gate — proactive_disabled checked FIRST (before silent_day).
+        #    Reminder producers (producer_id="reminder") are exempt so user-created
+        #    reminders always fire regardless of the global toggle.
         abort_reason: AbortReason | None = None
-        if _is_silent_day_today():
+        if _proactive_globally_disabled(db) and not _is_reminder_producer(producer_id):
+            abort_reason = "proactive_disabled"
+        elif _is_silent_day_today():
             abort_reason = "silent_day"
         elif _silence_active(db):
             abort_reason = "silence_window"
