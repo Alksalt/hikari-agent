@@ -80,7 +80,11 @@ async def _sync_gcal_reminder(
     start_iso: str,
     calendar_id: str = "primary",
 ) -> GCalReminderResult:
-    """Call google_workspace/create_calendar_event and parse the result.
+    """Create or update a Google Calendar event for the given reminder.
+
+    If ``db.reminder_get`` reports an existing ``gcal_event_id`` the existing
+    event is deleted and recreated (google_workspace MCP exposes no update
+    endpoint). On a net-new reminder a plain create is issued.
 
     Args mirror what the proactive.py prompt was requesting: title (verbatim),
     start_time, end_time (start + 30 min), description, calendar_id.
@@ -88,6 +92,25 @@ async def _sync_gcal_reminder(
     Raises ``McpCallError`` on tool error.
     """
     end_time = _compute_end_time(start_iso)
+
+    # Delete the stale event when rescheduling (snooze) — avoids orphaned
+    # duplicates. Failures are logged but not fatal so the create still runs.
+    existing_row = db.reminder_get(reminder_id)
+    existing_gcal_id = (existing_row or {}).get("gcal_event_id") or ""
+    if existing_gcal_id:
+        try:
+            await MANAGER.call(
+                "google_workspace",
+                "delete_calendar_event",
+                {"event_id": existing_gcal_id, "calendar_id": calendar_id},
+            )
+        except Exception:
+            logger.warning(
+                "sync_gcal: could not delete stale event %s for reminder %d — continuing",
+                existing_gcal_id,
+                reminder_id,
+            )
+
     result = await MANAGER.call(
         "google_workspace",
         "create_calendar_event",

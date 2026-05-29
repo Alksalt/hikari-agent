@@ -131,7 +131,9 @@ def _parse_yaml_response(text: str) -> dict[str, Any]:
     return {"intent": intent, "confidence": confidence, "details": details}
 
 
-async def _call_vision_api(image_bytes: bytes, media_type: str, api_key: str) -> str:
+async def _call_vision_api(
+    image_bytes: bytes, media_type: str, api_key: str
+) -> tuple[str, dict]:
     """Hit the Anthropic Messages API with a single image + the YAML prompt.
 
     ``api_key`` may be an OAuth access token (``sk-ant-oat01-...``) or a
@@ -139,8 +141,10 @@ async def _call_vision_api(image_bytes: bytes, media_type: str, api_key: str) ->
     OAuth tokens go via ``Authorization: Bearer`` and route billing through
     the Max subscription; API keys go via ``x-api-key`` and bill pay-per-use.
 
-    Returns the assistant's text content. Raises on transport/API errors —
-    the caller wraps in try/except and falls back to the safe default.
+    Returns ``(text, body)`` where ``text`` is the assistant's text content
+    and ``body`` is the full response dict (used by the caller to log token
+    usage). Raises on transport/API errors — the caller wraps in try/except
+    and falls back to the safe default.
     """
     payload = {
         "model": _MODEL,
@@ -179,8 +183,8 @@ async def _call_vision_api(image_bytes: bytes, media_type: str, api_key: str) ->
     # Extract first text block from the response.
     for block in body.get("content", []):
         if block.get("type") == "text":
-            return str(block.get("text", ""))
-    return ""
+            return str(block.get("text", "")), body
+    return "", body
 
 
 async def classify_photo_intent(image_path: str | Path) -> dict[str, Any]:
@@ -209,7 +213,18 @@ async def classify_photo_intent(image_path: str | Path) -> dict[str, Any]:
             return dict(_SAFE_DEFAULT)
         image_bytes = path.read_bytes()
         media_type = _media_type_for(path)
-        text = await _call_vision_api(image_bytes, media_type, api_key)
+        text, body = await _call_vision_api(image_bytes, media_type, api_key)
+        try:
+            from agents import runtime as _rt
+            usage = body.get("usage", {})
+            _rt._log_aux_cost(
+                model=_MODEL,
+                prompt_chars=usage.get("input_tokens", 0) * 4,
+                completion_chars=usage.get("output_tokens", 0) * 4,
+                path="photo_classify",
+            )
+        except Exception:
+            pass  # cost logging must never break the never-raises contract
         return _parse_yaml_response(text)
     except Exception:
         logger.exception("classify_photo_intent: classification failed")

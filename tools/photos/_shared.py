@@ -22,10 +22,12 @@ import os
 import random
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
 
+from agents import config as _agents_cfg
 from storage import db
 
 logger = logging.getLogger(__name__)
@@ -36,19 +38,35 @@ APPEARANCE_MD = REPO_ROOT / "assets" / "APPEARANCE.md"
 
 OPENROUTER_IMG_URL = "https://openrouter.ai/api/v1/images/generations"
 
+_DEFAULT_FLUX_URL_HOSTS: tuple[str, ...] = ("openrouter.ai",)
+
+
 def _load_cfg() -> dict:
     try:
-        from agents import config as _cfg
+        raw_allowlist = _agents_cfg.get(
+            "photos.flux_url_host_allowlist",
+            list(_DEFAULT_FLUX_URL_HOSTS),
+        )
+        if isinstance(raw_allowlist, list):
+            allowlist: tuple[str, ...] = tuple(str(h) for h in raw_allowlist)
+        else:
+            allowlist = _DEFAULT_FLUX_URL_HOSTS
         return {
-            "default_model": str(_cfg.get("photos.default_model", "black-forest-labs/flux.2-klein")),
-            "daily_cap": int(_cfg.get("photos.daily_cap", 2)),
+            "default_model": str(_agents_cfg.get("photos.default_model", "black-forest-labs/flux.2-klein")),
+            "daily_cap": int(_agents_cfg.get("photos.daily_cap", 2)),
+            "flux_url_host_allowlist": allowlist,
         }
     except Exception:
-        return {"default_model": "black-forest-labs/flux.2-klein", "daily_cap": 2}
+        return {
+            "default_model": "black-forest-labs/flux.2-klein",
+            "daily_cap": 2,
+            "flux_url_host_allowlist": _DEFAULT_FLUX_URL_HOSTS,
+        }
 
 _PHOTOS_CFG = _load_cfg()
 DEFAULT_MODEL = _PHOTOS_CFG["default_model"]
 DAILY_CAP = _PHOTOS_CFG["daily_cap"]
+_FLUX_URL_HOST_ALLOWLIST: tuple[str, ...] = _PHOTOS_CFG["flux_url_host_allowlist"]
 
 # Scenes available per mood. She's already-in-love so all scenes are reachable;
 # mood narrows the candidates by what she'd realistically send right now.
@@ -94,8 +112,8 @@ def _record_photo_sent() -> None:
     today = time.strftime("%Y-%m-%d")
     if db.runtime_get("photos_sent_date") != today:
         db.runtime_set("photos_sent_date", today)
-        db.runtime_set("photos_sent_today", 0)
-    db.runtime_set("photos_sent_today", _photos_sent_today() + 1)
+        db.runtime_set("photos_sent_today", "0")
+    db.runtime_increment("photos_sent_today")
 
 
 def _resolve_mood(mood_arg: str) -> str:
@@ -125,6 +143,16 @@ async def _call_flux(prompt: str, model: str) -> bytes | None:
             if "b64_json" in item:
                 return base64.b64decode(item["b64_json"])
             if "url" in item:
+                parsed = urllib.parse.urlparse(item["url"])
+                hostname = parsed.hostname or ""
+                allowlist = _FLUX_URL_HOST_ALLOWLIST
+                if parsed.scheme != "https" or not any(
+                    hostname == h or hostname.endswith("." + h)
+                    for h in allowlist
+                ):
+                    raise ValueError(
+                        f"flux url host {hostname!r} not in allowlist {allowlist!r}"
+                    )
                 img = await client.get(item["url"])
                 img.raise_for_status()
                 return img.content

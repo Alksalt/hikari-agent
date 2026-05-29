@@ -6,7 +6,6 @@ Prompts built from hikari_current_activity + time_texture + season.
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from typing import Any
 
@@ -15,7 +14,13 @@ from claude_agent_sdk import tool
 from agents import config as cfg
 from storage import db
 from tools._annotations import annotations_for
-from tools.photos._shared import DEFAULT_MODEL, OUTBOX, _call_flux
+from tools.photos._shared import (
+    DEFAULT_MODEL,
+    OUTBOX,
+    _call_flux,
+    _photos_sent_today,
+    _record_photo_sent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +81,10 @@ def _scene_for_activity(activity: str, time_phase: str, season: str) -> str:
     return subject + light + ambient
 
 
-def _sent_today() -> int:
-    today = time.strftime("%Y-%m-%d")
-    if db.runtime_get("scene_photos_sent_date") != today:
-        return 0
-    return db.runtime_get_int("scene_photos_sent_today", 0)
-
-
-def _bump_sent() -> None:
-    today = time.strftime("%Y-%m-%d")
-    if db.runtime_get("scene_photos_sent_date") != today:
-        db.runtime_set("scene_photos_sent_date", today)
-        db.runtime_set("scene_photos_sent_today", 1)
-    else:
-        db.runtime_set("scene_photos_sent_today", _sent_today() + 1)
+# _sent_today and _bump_sent delegate to the shared counter in _shared.py so
+# selfie + scene sends draw from a single daily pool.
+_sent_today = _photos_sent_today
+_bump_sent = _record_photo_sent
 
 
 def _resolve_context() -> tuple[str, str, str]:

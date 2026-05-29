@@ -57,8 +57,8 @@ async def test_classify_returns_intent_dict_on_mock_success(
         "details: looks like a whiteboard\n"
     )
 
-    async def fake_call(image_bytes: bytes, media_type: str, api_key: str) -> str:
-        return yaml_text
+    async def fake_call(image_bytes: bytes, media_type: str, api_key: str):
+        return yaml_text, {}
 
     monkeypatch.setattr(classify_mod, "_call_vision_api", fake_call)
     result = await classify_photo_intent(fake_image)
@@ -74,8 +74,8 @@ async def test_classify_returns_other_on_unknown_intent(
 ) -> None:
     yaml_text = "intent: martian\nconfidence: 1.0\ndetails: x\n"
 
-    async def fake_call(image_bytes: bytes, media_type: str, api_key: str) -> str:
-        return yaml_text
+    async def fake_call(image_bytes: bytes, media_type: str, api_key: str):
+        return yaml_text, {}
 
     monkeypatch.setattr(classify_mod, "_call_vision_api", fake_call)
     result = await classify_photo_intent(fake_image)
@@ -101,8 +101,8 @@ async def test_classify_returns_other_on_exception(
 async def test_classify_returns_other_on_malformed_yaml(
     fake_image: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fake_call(image_bytes: bytes, media_type: str, api_key: str) -> str:
-        return "garbage garbage no colons here just words"
+    async def fake_call(image_bytes: bytes, media_type: str, api_key: str):
+        return "garbage garbage no colons here just words", {}
 
     monkeypatch.setattr(classify_mod, "_call_vision_api", fake_call)
     result = await classify_photo_intent(fake_image)

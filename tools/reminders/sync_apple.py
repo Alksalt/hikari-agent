@@ -62,18 +62,39 @@ async def _sync_apple_reminder(
     due_iso: str,
     list_name: str = "Reminders",
 ) -> AppleReminderResult:
-    """Call apple_events/reminders_tasks with action='create' and parse the result.
+    """Create or update an Apple Reminders item for the given reminder.
+
+    If ``db.reminder_get`` reports an existing ``apple_event_id`` the stale
+    item is deleted before creating a fresh one (the apple_events MCP exposes
+    no update endpoint). Failures on the delete step are logged but not fatal.
 
     Args match what the proactive.py path was sending: title (verbatim),
     dueDate (ISO string), list name.
 
     Raises ``McpCallError`` on tool error.
     """
+    # Delete the stale item when rescheduling (snooze) — avoids orphaned
+    # duplicates. Failures are logged but not fatal so the create still runs.
+    existing_row = db.reminder_get(reminder_id)
+    existing_apple_id = (existing_row or {}).get("apple_event_id") or ""
+    if existing_apple_id:
+        try:
+            await MANAGER.call(
+                "apple_events",
+                "delete_reminder",
+                {"id": existing_apple_id},
+            )
+        except Exception:
+            logger.warning(
+                "sync_apple: could not delete stale reminder %s for reminder %d — continuing",
+                existing_apple_id,
+                reminder_id,
+            )
+
     result = await MANAGER.call(
         "apple_events",
-        "reminders_tasks",
+        "create_reminder",
         {
-            "action": "create",
             "title": title,
             "dueDate": due_iso,
             "listName": list_name,
@@ -83,7 +104,7 @@ async def _sync_apple_reminder(
     if not apple_event_id:
         raise McpCallError(
             "apple_events",
-            "reminders_tasks",
+            "create_reminder",
             f"no event_id in result: {result!r}",
         )
     db.reminder_update_apple_event(reminder_id, apple_event_id)

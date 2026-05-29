@@ -80,11 +80,11 @@ class TestDailyCap:
     async def test_respects_daily_cap(self, _scene_env, monkeypatch):
         db, outbox, scene_mod = _scene_env
 
-        # Seed counter at cap.
+        # Seed the shared counter at cap (scene now shares photos_sent_* with selfie).
         today = time.strftime("%Y-%m-%d")
-        db.runtime_set("scene_photos_sent_date", today)
+        db.runtime_set("photos_sent_date", today)
         # Use the same default as the module (2); no need to import cfg here.
-        db.runtime_set("scene_photos_sent_today", 2)
+        db.runtime_set("photos_sent_today", 2)
 
         h = _handler(scene_mod)
         result = await h({"hint": ""})
