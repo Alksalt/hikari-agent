@@ -144,8 +144,13 @@ class FastembedAdapter(EmbedderClient):
         if isinstance(input_data, str):
             return await _embed.aembed(input_data)
         if isinstance(input_data, list) and input_data and isinstance(input_data[0], str):
+            # graphiti's EmbedderClient.create contract returns ONE flat vector for the
+            # input list, mirroring the reference OpenAIEmbedder (which returns
+            # data[0].embedding). Returning the whole batch double-nests the result
+            # ([[...384...]]), so graphiti builds CAST(... AS FLOAT[1]) and every Kuzu
+            # cosine search fails. Return the first vector only; use create_batch for many.
             batch = await _embed.aembed_batch(input_data)
-            return batch if batch else [[0.0] * _embed.EMBEDDING_DIM for _ in input_data]
+            return batch[0] if batch else [0.0] * _embed.EMBEDDING_DIM
         raise TypeError(f"FastembedAdapter: unsupported input type {type(input_data).__name__}")
 
     async def create_batch(self, input_data_list):

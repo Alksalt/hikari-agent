@@ -5,9 +5,15 @@ once Graphiti reads have been confirmed sound in production for 2+ weeks.
 
 Run once post-deploy:
     uv run python -m scripts.backfill_facts_to_graph
+
+After the FastembedAdapter FLOAT[1] embedding fix, the graph must be rebuilt
+from a clean Kuzu store; pass --force to ignore a stale graph_backfill_done
+flag (otherwise the rebuild silently no-ops and corrupt vectors persist):
+    uv run python -m scripts.backfill_facts_to_graph --force
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from datetime import UTC, datetime
@@ -19,9 +25,9 @@ from storage import db
 from storage.graph import add_episode_safe
 
 
-async def main() -> int:
-    if db.runtime_get("graph_backfill_done") == "1":
-        print("backfill: already done; skip.")
+async def main(force: bool = False) -> int:
+    if not force and db.runtime_get("graph_backfill_done") == "1":
+        print("backfill: already done; skip. (pass --force to rebuild after the embedding fix)")
         return 0
 
     # Cost safety: throttle + hard cap. Each episode triggers ~2-4 DeepSeek
@@ -90,4 +96,10 @@ def _parse_iso(s: str | None) -> datetime:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    _ap = argparse.ArgumentParser(description=__doc__)
+    _ap.add_argument(
+        "--force", action="store_true",
+        help="ignore graph_backfill_done; required after the FLOAT[1] embedding fix",
+    )
+    _args = _ap.parse_args()
+    sys.exit(asyncio.run(main(force=_args.force)))
