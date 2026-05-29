@@ -24,6 +24,7 @@ def correct_fact(old_id: int, new_object: str, *,
         source_span_hash=db.span_hash(
             f"{old['subject']} {old['predicate']} {new_object}"
         ),
+        fact_category=old.get("fact_category"),
     )
     # Embed for semantic recall — mirror tools/memory/remember.py. Without this
     # the corrected fact (the highest-trust version) had no vector and was

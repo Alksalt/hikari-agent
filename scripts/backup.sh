@@ -38,6 +38,7 @@ if [ "$DRY_RUN" = "1" ]; then
         command -v age >/dev/null 2>&1 && echo "backup: self-test: age OK" || { echo "backup: self-test: age MISSING (install via: brew install age)" >&2; _st_ok=0; }
         echo "backup: self-test: checking sqlite3 binary..."
         command -v sqlite3 >/dev/null 2>&1 && echo "backup: self-test: sqlite3 OK" || { echo "backup: self-test: sqlite3 MISSING" >&2; _st_ok=0; }
+        echo "backup: self-test: Kuzu graph DB (data/hikari.kuzu) is included when present (best-effort hot cp -R)."
         if [ "$_st_ok" = "1" ]; then
             echo "backup: self-test: PASS"
         else
@@ -95,6 +96,11 @@ chmod 700 "$TMP_DIR"
 DB_SNAP="$TMP_DIR/hikari.db"
 "$SQLITE_BIN" "$SRC" ".backup '$DB_SNAP'"
 
+# --- Snapshot Kuzu graph DB (best-effort hot copy) ---
+if [ -e "$REPO_DIR/data/hikari.kuzu" ]; then
+    cp -R "$REPO_DIR/data/hikari.kuzu" "$TMP_DIR/" || true
+fi
+
 # --- Assemble a tarball in a temp file ---
 TMP_TAR=$(mktemp -t hikari-bak.XXXXXX.tar)
 chmod 600 "$TMP_TAR"
@@ -132,6 +138,9 @@ if [ -d "$HOME/.cloudflared" ]; then
     tar --append --file "$TMP_TAR" -C "$HOME" .cloudflared 2>/dev/null || true
 fi
 
+# Append Kuzu graph DB if the snapshot copy succeeded
+[ -e "$REPO_DIR/data/hikari.kuzu" ] && cp -R "$REPO_DIR/data/hikari.kuzu" "$TMP_DIR/" && tar --append --file "$TMP_TAR" -C "$TMP_DIR" hikari.kuzu 2>/dev/null || true
+
 # --- Encrypt with age into a .tmp file, verify, then atomically rename ---
 "$AGE_BIN" -R "$RECIPIENT_KEY" -o "$BACKUP_TMP" "$TMP_TAR"
 
@@ -141,6 +150,7 @@ VERIFY_DIR=$(mktemp -d -t hikari-bak-verify.XXXXXX)
 VERIFY_TAR="$VERIFY_DIR/check.tar"
 VERIFY_DB="$VERIFY_DIR/hikari.db"
 verify_ok=0
+kuzu_ok=1  # optimistic: no kuzu in archive is acceptable; wrong only if it's present but empty
 if "$AGE_BIN" -d -i "${HIKARI_BACKUP_AGE_KEY:-$HOME/.config/hikari/backup_age.key}" \
         -o "$VERIFY_TAR" "$BACKUP_TMP" 2>/dev/null; then
     if tar -xf "$VERIFY_TAR" -C "$VERIFY_DIR" hikari.db 2>/dev/null && [ -f "$VERIFY_DB" ]; then
@@ -151,10 +161,23 @@ if "$AGE_BIN" -d -i "${HIKARI_BACKUP_AGE_KEY:-$HOME/.config/hikari/backup_age.ke
             echo "backup: PRAGMA quick_check returned: $result" >&2
         fi
     fi
+    # Verify Kuzu artifact if it was included in the archive
+    if tar -xf "$VERIFY_TAR" -C "$VERIFY_DIR" hikari.kuzu 2>/dev/null; then
+        VERIFY_KUZU="$VERIFY_DIR/hikari.kuzu"
+        if [ -f "$VERIFY_KUZU" ] && [ -s "$VERIFY_KUZU" ]; then
+            : # file artifact present and non-empty — ok
+        elif [ -d "$VERIFY_KUZU" ] && [ -n "$(ls -A "$VERIFY_KUZU" 2>/dev/null)" ]; then
+            : # directory artifact present and non-empty — ok
+        else
+            echo "backup: Kuzu artifact is present in archive but empty." >&2
+            kuzu_ok=0
+        fi
+    fi
+    # If hikari.kuzu was not in the archive at all, kuzu_ok stays 1 (not backed up = acceptable)
 fi
 rm -rf "$VERIFY_DIR"
 
-if [ "$verify_ok" != "1" ]; then
+if [ "$verify_ok" != "1" ] || [ "$kuzu_ok" != "1" ]; then
     rm -f "$BACKUP_TMP"
     echo "backup: smoke-test failed — encrypted archive discarded." >&2
     rm -rf "$TMP_DIR"

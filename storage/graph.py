@@ -25,6 +25,7 @@ from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EpisodeType
 
 from agents import config as _cfg
+from storage import db as _db
 from tools import embeddings as _embed
 
 logger = logging.getLogger(__name__)
@@ -329,5 +330,6 @@ async def search(query: str, *, group_id: str = "hikari_chat", num_results: int 
         g = await get_graph()
         return await g.search(query=query, group_ids=[group_id], num_results=num_results)
     except Exception:
+        _db.runtime_increment("graph_search_error")
         logger.exception("graph.search failed")
         return []

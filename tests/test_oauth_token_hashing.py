@@ -166,6 +166,19 @@ class TestOauthTokenHashMigrationLedger:
                           _migrate_oauth_tokens_to_hash)
         assert result is False
 
+    def test_add_hash_columns_idempotent(self, isolated_db):
+        conn, db = isolated_db
+        from storage.db import _migrate_oauth_tokens_add_hash_columns
+        from storage.migrations import run_once
+        # Re-running via run_once should return False (skipped — already ledgered)
+        result = run_once(conn, "migrate_oauth_tokens_add_hash_columns",
+                          _migrate_oauth_tokens_add_hash_columns)
+        assert result is False
+
+    def test_add_hash_columns_in_known_migrations(self):
+        from storage.db import KNOWN_MIGRATIONS
+        assert "migrate_oauth_tokens_add_hash_columns" in KNOWN_MIGRATIONS
+
 
 # ---------------------------------------------------------------------------
 # Test 6 — AuthMiddleware uses hashed validation path

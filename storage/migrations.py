@@ -27,7 +27,12 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _checksum_for(fn: Callable) -> str:
+_HEX16 = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _checksum_for(fn: Callable, tag: str | None = None) -> str:
+    if tag is not None:
+        return f"tag:{tag}"
     return hashlib.sha256(inspect.getsource(fn).encode()).hexdigest()[:16]
 
 
@@ -37,18 +42,30 @@ def run_once(
     fn: Callable[[sqlite3.Connection], None],
     *,
     checksum: str | None = None,
+    tag: str | None = None,
 ) -> bool:
     """Idempotent migration wrapper. Returns True if fn ran, False if skipped.
 
     Raises RuntimeError if a recorded checksum differs from current source,
     unless the recorded checksum is the backfill sentinel.
+
+    When ``tag`` is provided the checksum stored in the ledger is ``"tag:<tag>"``
+    rather than a sha256 of the function source.  This lets you edit the
+    migration body (docstrings, comments, refactors) without triggering drift as
+    long as you bump the tag.
+
+    Backward-compat ledger-migrate: if a migration was previously recorded with
+    a legacy 16-hex source-hash and is now called with a ``tag``, the ledger row
+    is silently updated to the new tag-checksum and the migration is NOT re-run.
+    This is a one-time transition; subsequent calls with the same tag are normal
+    no-ops.
     """
     if not _SAFE_NAME.match(name):
         raise ValueError(
             f"run_once: migration name {name!r} must match [a-z][a-z0-9_]{{0,63}}"
         )
     BACKFILL_SENTINEL = "<unknown-backfilled>"
-    actual = checksum or _checksum_for(fn)
+    actual = checksum or _checksum_for(fn, tag)
 
     row = conn.execute(
         "SELECT checksum, source FROM schema_migrations WHERE name = ?",
@@ -64,6 +81,15 @@ def run_once(
                 )
             return False
         if recorded == actual:
+            return False
+        # Backward-compat ledger-migrate: legacy 16-hex source-hash → tag-checksum.
+        # When the recorded value is a plain hex16 (old source-hash) and the
+        # caller is now supplying a tag, update the ledger without re-running fn.
+        if tag is not None and _HEX16.match(recorded):
+            conn.execute(
+                "UPDATE schema_migrations SET checksum = ? WHERE name = ?",
+                (actual, name),
+            )
             return False
         raise RuntimeError(
             f"schema_migrations checksum drift for {name!r}: "

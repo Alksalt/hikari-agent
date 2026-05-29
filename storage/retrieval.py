@@ -95,6 +95,42 @@ _STOPWORDS = frozenset({
     "where", "who", "why", "how", "one", "two", "may", "can", "its",
 })
 
+# Predicate substring → TAU_BY_CATEGORY key.  Case-insensitive substring match
+# is applied in order; first hit wins.  "fact" (the TAU_DEFAULT) is the fallback
+# and is NOT listed here — _infer_category returns it explicitly.
+_PREDICATE_CATEGORY_MAP: dict[str, str] = {
+    "like":      "preference",
+    "love":      "preference",
+    "hate":      "preference",
+    "prefer":    "preference",
+    "favorite":  "preference",
+    "enjoy":     "preference",
+    "did":       "event",
+    "went":      "event",
+    "met":       "event",
+    "happened":  "event",
+    "attended":  "event",
+    "finished":  "event",
+    "started":   "event",
+    "bought":    "event",
+    "got":       "event",
+}
+_CATEGORY_DEFAULT = "fact"
+
+
+def _infer_category(predicate: str) -> str:
+    """Return the TAU_BY_CATEGORY key that best matches *predicate*.
+
+    Performs a case-insensitive substring search against
+    ``_PREDICATE_CATEGORY_MAP`` in insertion order.  Returns
+    ``_CATEGORY_DEFAULT`` ("fact") when nothing matches.
+    """
+    lowered = predicate.lower()
+    for keyword, category in _PREDICATE_CATEGORY_MAP.items():
+        if keyword in lowered:
+            return category
+    return _CATEGORY_DEFAULT
+
 
 def _is_buried_lore(text: str) -> bool:
     """Return True if the text matches any buried-lore pattern."""

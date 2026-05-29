@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from storage import db
+from storage.retrieval import _infer_category
 from tools import embeddings
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
@@ -55,6 +56,7 @@ async def remember(args: dict[str, Any]) -> dict[str, Any]:
         source="user",
         source_message_id=_source_message_id,
         source_span_hash=db.span_hash(f"{subject} {predicate} {object_}"),
+        fact_category=_infer_category(predicate),
     )
 
     try:

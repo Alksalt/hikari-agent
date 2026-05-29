@@ -402,6 +402,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
                          int(cfg.get("retention.media_outbox_terminal_days", 14)), "media_outbox_terminal")
         n7 = _safe_prune(db.prune_proactive_events,
                          int(cfg.get("retention.proactive_events_days", 90)), "proactive_events")
+        _safe_prune(db.oauth_clients_prune_stale, int(cfg.get("retention.oauth_clients_stale_days", 30)), "oauth_clients")
         logger.info(
             "monthly_prune: messages=%d oauth_audit=%d calendar=%d tool_calls=%d "
             "graph_outbox_sent=%d media_outbox_terminal=%d proactive_events=%d",

@@ -9,9 +9,11 @@ schema that declare it:
   2. facts → fact_entities             (ON DELETE CASCADE on fact_id)
   3. entities → entity_aliases         (ON DELETE CASCADE on entity_id)
 
-They also confirm the gap: without the PRAGMA the deletes do NOT cascade, which
-documents that production code is responsible for enabling the PRAGMA (or for
-cleaning up child rows manually).
+Sprint 3A fix: ``_get_pooled_conn`` now sets ``PRAGMA foreign_keys=ON`` on every
+connection, so FK enforcement is always active for all ``db.*`` operations.
+The ``test_no_cascade_without_fk_pragma`` tests now document that the cascade
+fires even without an explicit PRAGMA call — because the pooled connection
+already has FK enforcement on.
 """
 from __future__ import annotations
 
@@ -126,13 +128,14 @@ class TestWorkPacketsCascade:
         assert remaining == 0, "steps should have cascade-deleted"
 
     def test_no_cascade_without_fk_pragma(self):
-        """Without PRAGMA foreign_keys = ON, child rows are orphaned after parent delete."""
+        """Sprint 3A: _get_pooled_conn sets PRAGMA foreign_keys=ON globally.
+        Cascade fires even without an explicit _enable_fk call — no orphans."""
         pid = _make_work_packet()
         _add_step(pid, 0)
         _add_step(pid, 1)
 
         with db._conn() as c:
-            # FK enforcement is OFF by default — no _enable_fk call.
+            # No explicit _enable_fk — but _get_pooled_conn already set FK=ON.
             c.execute("DELETE FROM work_packets WHERE id = ?", (pid,))
 
         with db._conn() as c:
@@ -140,8 +143,8 @@ class TestWorkPacketsCascade:
                 "SELECT COUNT(*) AS n FROM work_packet_steps WHERE packet_id = ?",
                 (pid,),
             ).fetchone()["n"]
-        # Gap: orphan rows remain because the PRAGMA was not set.
-        assert orphans == 2, "without PRAGMA fk=ON, orphan steps survive"
+        # FK=ON is always active; cascade fires, no orphans.
+        assert orphans == 0, "PRAGMA fk=ON set globally — cascade fires, no orphan steps"
 
     def test_cascade_does_not_affect_other_packets(self):
         """Cascade is scoped — deleting one packet only removes its own steps."""
@@ -202,12 +205,13 @@ class TestFactEntitiesCascade:
         assert entity_still_there == 1
 
     def test_no_cascade_without_fk_pragma(self):
-        """Without PRAGMA foreign_keys = ON, fact_entities rows are orphaned."""
+        """Sprint 3A: FK=ON set globally — cascade fires without explicit PRAGMA call."""
         fid = _make_fact()
         eid = _make_entity()
         _link_fact_entity(fid, eid)
 
         with db._conn() as c:
+            # No explicit _enable_fk — _get_pooled_conn already set FK=ON.
             c.execute("DELETE FROM facts WHERE id = ?", (fid,))
 
         with db._conn() as c:
@@ -215,7 +219,7 @@ class TestFactEntitiesCascade:
                 "SELECT COUNT(*) AS n FROM fact_entities WHERE fact_id = ?",
                 (fid,),
             ).fetchone()["n"]
-        assert orphans == 1, "without PRAGMA fk=ON, fact_entities orphan row survives"
+        assert orphans == 0, "PRAGMA fk=ON set globally — cascade fires, no orphan fact_entities"
 
 
 # ---------------------------------------------------------------------------
@@ -241,11 +245,12 @@ class TestEntityAliasesCascade:
         assert remaining == 0
 
     def test_no_cascade_without_fk_pragma(self):
-        """Without PRAGMA foreign_keys = ON, aliases are orphaned after entity delete."""
+        """Sprint 3A: FK=ON set globally — cascade fires without explicit PRAGMA call."""
         eid = _make_entity()
         _add_alias(eid, "alias-orphan")
 
         with db._conn() as c:
+            # No explicit _enable_fk — _get_pooled_conn already set FK=ON.
             c.execute("DELETE FROM entities WHERE id = ?", (eid,))
 
         with db._conn() as c:
@@ -253,7 +258,7 @@ class TestEntityAliasesCascade:
                 "SELECT COUNT(*) AS n FROM entity_aliases WHERE entity_id = ?",
                 (eid,),
             ).fetchone()["n"]
-        assert orphans == 1
+        assert orphans == 0, "PRAGMA fk=ON set globally — cascade fires, no orphan aliases"
 
     def test_cascade_scoped_to_deleted_entity(self):
         """Cascade only removes aliases of the deleted entity, not others."""

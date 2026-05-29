@@ -17,6 +17,7 @@ Schema covers everything memory- and runtime-related:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 import sqlite3
@@ -382,7 +383,9 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     expires_at TEXT NOT NULL,
     revoked_at TEXT,
     last_used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    token_hash TEXT,
+    parent_token_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS oauth_tokens_active
     ON oauth_tokens(token) WHERE revoked_at IS NULL;
@@ -523,6 +526,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_messages_fts",
     "migrate_graph_outbox",
     "migrate_oauth_tokens_to_hash",
+    "migrate_oauth_tokens_add_hash_columns",
     "migrate_background_tasks_cancel",
     "migrate_media_events",
     "migrate_drop_persona_drift_probes",
@@ -610,6 +614,7 @@ def _get_pooled_conn() -> sqlite3.Connection:
     busy_ms = int(_cfg_get("sqlite.busy_timeout_ms", 5000))
     c.execute(f"PRAGMA busy_timeout={busy_ms}")
     c.execute("PRAGMA synchronous=NORMAL")
+    c.execute("PRAGMA foreign_keys=ON")
     _ensure_schema(c)
     _LOCAL.conn = c
     _LOCAL.path = _DB_PATH
@@ -669,6 +674,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_messages_fts", _migrate_messages_fts)
     run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
     run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
+    run_once(conn, "migrate_oauth_tokens_add_hash_columns", _migrate_oauth_tokens_add_hash_columns)
     run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel)
     run_once(conn, "migrate_media_events", _migrate_media_events)
     run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes)
@@ -4444,6 +4450,11 @@ def photo_location_delete(location_id: int) -> bool:
 
 # ---------- Phase 14: OAuth 2.1 + PKCE + DCR (external MCP) ----------
 
+def _oauth_hash(tok: str | None) -> str | None:
+    """SHA-256 hex digest of a token string, or None if tok is None."""
+    return hashlib.sha256(tok.encode()).hexdigest() if tok else None
+
+
 def _oauth_random_token(byte_len: int = 32) -> str:
     """URL-safe random token. 32 bytes = 256 bits of entropy."""
     import secrets
@@ -4456,12 +4467,17 @@ def oauth_client_register(client_name: str | None,
     no client_secret issued. Returns the standard DCR response dict.
 
     Caller is responsible for redirect_uris validation (non-empty, well-formed).
-    """
+    Raises ValueError if the registered-client ceiling (oauth.max_registered_clients,
+    default 50) is reached."""
     import json
     if not redirect_uris:
         raise ValueError("oauth_client_register: redirect_uris is required")
     client_id = _oauth_random_token(16)
     with _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
+        maxc = int(_cfg_get("oauth.max_registered_clients", 50))
+        if n >= maxc:
+            raise ValueError(f"oauth_client_register: client ceiling {maxc} reached")
         c.execute(
             "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) "
             "VALUES (?, ?, ?)",
@@ -4504,6 +4520,31 @@ def oauth_client_touch(client_id: str) -> None:
             "UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?",
             (_now(), client_id),
         )
+
+
+def oauth_clients_prune_stale(stale_days: int = 30) -> int:
+    """Delete genuinely token-less oauth_clients older than stale_days.
+
+    A client is prunable only when NO row in either ``oauth_tokens`` or
+    ``oauth_codes`` still references it (not merely 'no *live* tokens') and its
+    last activity (``COALESCE(last_used_at, created_at)``) predates the cutoff.
+    The all-rows check is required because, with ``PRAGMA foreign_keys=ON``,
+    both child tables reference ``oauth_clients`` with no ``ON DELETE`` clause
+    (RESTRICT) — deleting a client that still has any expired/revoked token or
+    an un-swept code row would raise ``FOREIGN KEY constraint failed``. Stale
+    tokens/codes are cleared first by ``oauth_cleanup_expired``; this prune then
+    removes the now-orphan client on a later cycle. Returns rows deleted."""
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(days=int(stale_days))).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM oauth_clients "
+            "WHERE client_id NOT IN (SELECT client_id FROM oauth_tokens) "
+            "AND client_id NOT IN (SELECT client_id FROM oauth_codes) "
+            "AND COALESCE(last_used_at, created_at) < ?",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
 
 
 def oauth_code_mint(client_id: str, redirect_uri: str,
@@ -4565,17 +4606,23 @@ def oauth_token_mint(client_id: str, token_type: str,
                      parent_token: str | None = None,
                      scope: str | None = None,
                      ttl_seconds: int = 3600) -> str:
-    """Issue an opaque access or refresh token. Returns the token string."""
+    """Issue an opaque access or refresh token. Returns the plaintext token.
+
+    Stores both the plaintext token (for backward compat during migration) and
+    the sha256 hash columns so all lookups can use the hashed path."""
     from datetime import timedelta
     if token_type not in ("access", "refresh"):
         raise ValueError(f"invalid token_type: {token_type!r}")
     tok = _oauth_random_token(32)
+    th = _oauth_hash(tok)
+    pth = _oauth_hash(parent_token)
     expires_at = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
     with _conn() as c:
         c.execute(
             "INSERT INTO oauth_tokens (token, client_id, token_type, "
-            "parent_token, scope, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (tok, client_id, token_type, parent_token, scope, expires_at),
+            "parent_token, scope, expires_at, token_hash, parent_token_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tok, client_id, token_type, parent_token, scope, expires_at, th, pth),
         )
     return tok
 
@@ -4614,20 +4661,29 @@ def oauth_token_validate(token: str) -> dict[str, Any] | None:
 def _oauth2_token_validate(token: str) -> dict[str, Any] | None:
     """Validate a full OAuth 2.1 access token from the oauth_tokens table.
     Returns the row if active (unexpired AND unrevoked), else None.
-    Bumps ``last_used_at`` on the validated row."""
+    Bumps ``last_used_at`` on the validated row.
+
+    Lookup is by token_hash (sha256); hmac.compare_digest confirms the stored
+    hash matches to prevent timing side-channels."""
+    th = _oauth_hash(token)
     with _conn() as c:
         row = c.execute(
             "SELECT token, client_id, token_type, parent_token, scope, "
-            "expires_at, revoked_at FROM oauth_tokens WHERE token = ?",
-            (token,),
+            "expires_at, revoked_at, token_hash FROM oauth_tokens "
+            "WHERE token_hash = ?",
+            (th,),
         ).fetchone()
         if not row or row["revoked_at"] or row["expires_at"] < _now():
             return None
+        if not hmac.compare_digest(row["token_hash"], th):
+            return None
         c.execute(
-            "UPDATE oauth_tokens SET last_used_at = ? WHERE token = ?",
-            (_now(), token),
+            "UPDATE oauth_tokens SET last_used_at = ? WHERE token_hash = ?",
+            (_now(), th),
         )
-    return dict(row)
+    return {k: row[k] for k in ("token", "client_id", "token_type",
+                                 "parent_token", "scope", "expires_at",
+                                 "revoked_at")}
 
 
 def oauth_token_create(
@@ -4679,12 +4735,15 @@ def oauth_token_consume_refresh(token: str, client_id: str) -> dict[str, Any] | 
     is expired, was already revoked, doesn't belong to ``client_id``, OR if
     a concurrent request beat us to the revoke. The single-transaction
     consume-then-revoke prevents two parallel rotation requests from each
-    minting their own live token chain off the same parent."""
+    minting their own live token chain off the same parent.
+
+    Lookup is by token_hash; cascade-revoke uses parent_token_hash."""
+    th = _oauth_hash(token)
     with _conn() as c:
         row = c.execute(
             "SELECT token, client_id, token_type, parent_token, scope, "
-            "expires_at, revoked_at FROM oauth_tokens WHERE token = ?",
-            (token,),
+            "expires_at, revoked_at FROM oauth_tokens WHERE token_hash = ?",
+            (th,),
         ).fetchone()
         if (
             not row
@@ -4696,15 +4755,15 @@ def oauth_token_consume_refresh(token: str, client_id: str) -> dict[str, Any] | 
             return None
         cur = c.execute(
             "UPDATE oauth_tokens SET revoked_at = ? "
-            "WHERE token = ? AND revoked_at IS NULL",
-            (_now(), token),
+            "WHERE token_hash = ? AND revoked_at IS NULL",
+            (_now(), th),
         )
         if cur.rowcount == 0:
             return None
         c.execute(
             "UPDATE oauth_tokens SET revoked_at = ? "
-            "WHERE parent_token = ? AND revoked_at IS NULL",
-            (_now(), token),
+            "WHERE parent_token_hash = ? AND revoked_at IS NULL",
+            (_now(), th),
         )
     return dict(row)
 
@@ -4714,13 +4773,16 @@ def oauth_token_revoke_family(parent_token: str) -> int:
 
     Called during refresh rotation: when the client exchanges refresh R1 for
     a new pair (A2, R2), every token whose ``parent_token == R1`` plus R1
-    itself is revoked. Returns rows updated."""
+    itself is revoked. Returns rows updated.
+
+    Lookup uses token_hash and parent_token_hash columns."""
+    ph = _oauth_hash(parent_token)
     with _conn() as c:
         cur = c.execute(
             "UPDATE oauth_tokens SET revoked_at = ? "
-            "WHERE (token = ? OR parent_token = ?) "
+            "WHERE (token_hash = ? OR parent_token_hash = ?) "
             "AND revoked_at IS NULL",
-            (_now(), parent_token, parent_token),
+            (_now(), ph, ph),
         )
         return int(cur.rowcount or 0)
 
@@ -5132,6 +5194,37 @@ def _migrate_oauth_tokens_to_hash(conn: sqlite3.Connection) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             (token_hash, owner, created_at, expires_at, scopes),
         )
+
+
+def _migrate_oauth_tokens_add_hash_columns(conn: sqlite3.Connection) -> None:
+    """Add token_hash / parent_token_hash to oauth_tokens and backfill from
+    existing plaintext so currently-issued tokens still validate by hash.
+    New migration (not an edit of the run-once'd seeding migration) so it
+    executes on the live DB. Idempotent: PRAGMA-guarded ALTER + backfill of
+    NULL hashes only.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(oauth_tokens)").fetchall()}
+    if not cols:
+        return
+    if "token_hash" not in cols:
+        conn.execute("ALTER TABLE oauth_tokens ADD COLUMN token_hash TEXT")
+    if "parent_token_hash" not in cols:
+        conn.execute("ALTER TABLE oauth_tokens ADD COLUMN parent_token_hash TEXT")
+    for r in conn.execute(
+        "SELECT token, parent_token FROM oauth_tokens WHERE token_hash IS NULL"
+    ).fetchall():
+        conn.execute(
+            "UPDATE oauth_tokens SET token_hash=?, parent_token_hash=? WHERE token=?",
+            (_oauth_hash(r[0]), _oauth_hash(r[1]), r[0]),
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS oauth_tokens_token_hash "
+        "ON oauth_tokens(token_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS oauth_tokens_parent_hash "
+        "ON oauth_tokens(parent_token_hash) WHERE parent_token_hash IS NOT NULL"
+    )
 
 
 def _migrate_media_events(conn: sqlite3.Connection) -> None:

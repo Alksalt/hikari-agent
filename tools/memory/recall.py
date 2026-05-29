@@ -90,6 +90,7 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
     if not edges:
         # graph returned nothing — degrade to legacy SQLite
         logger.debug("recall: graph returned empty for %r; falling back to legacy_retrieve", query)
+        _db.runtime_increment("recall_graph_fallback")
         return await _legacy_fallback(query, limit, threshold)
 
     # Filter out graph hits whose SQLite fact row is no longer active.
@@ -138,12 +139,14 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
     primary_edges = active_edges if active_edges else []
     if not primary_edges and not expansion_edges:
         logger.debug("recall: all graph hits filtered; falling back to legacy_retrieve")
+        _db.runtime_increment("recall_graph_fallback")
         return await _legacy_fallback(query, limit, threshold)
 
     if not primary_edges:
         # Only expansion-only (no-fact_id) edges — degrade to legacy as primary,
         # caller will get SQLite answer with graph breadth unavailable.
         logger.debug("recall: only back-compat (no fact_id) graph hits; falling back to legacy")
+        _db.runtime_increment("recall_graph_fallback")
         return await _legacy_fallback(query, limit, threshold)
 
     scored_edges = primary_edges + expansion_edges
@@ -152,6 +155,7 @@ async def recall(args: dict[str, Any]) -> dict[str, Any]:
     bucket_label, confidence_prefix = _score_to_bucket(top_score)
     below = top_score < threshold
 
+    _db.runtime_increment("recall_graph_hit")
     header = (
         f"{confidence_prefix}: {top_score:.2f} ({bucket_label}"
         f"{'; BELOW THRESHOLD' if below else ''}). "
