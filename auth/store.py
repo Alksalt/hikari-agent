@@ -75,7 +75,8 @@ class KeychainStore(TokenStore):
         self._keyring.set_password(self._service(provider), key, value)
 
     def clear(self, provider: str) -> None:
-        for key in ("client_id", "client_secret", "refresh_token", "access_token"):
+        # 'grant' is the keychain item written by write_grant_to_keychain() via _GRANT_KEY.
+        for key in ("client_id", "client_secret", "refresh_token", "access_token", "grant"):
             try:
                 self._keyring.delete_password(self._service(provider), key)
             except Exception:

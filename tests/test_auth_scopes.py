@@ -284,6 +284,198 @@ class TestGoogleProviderCurrentScopes:
 
 
 # ===========================================================================
+# KeychainStore.clear() includes 'grant'
+# ===========================================================================
+
+class TestKeychainStoreClearIncludesGrant:
+    def _make_store(self):
+        """Return a KeychainStore wired to an in-process dict backend."""
+        data: dict[tuple[str, str], str] = {}
+
+        fake = MagicMock()
+
+        def get_password(service, username):
+            return data.get((service, username))
+
+        def set_password(service, username, password):
+            data[(service, username)] = password
+
+        def delete_password(service, username):
+            data.pop((service, username), None)
+
+        fake.get_password = get_password
+        fake.set_password = set_password
+        fake.delete_password = delete_password
+
+        from auth.store import KeychainStore
+        s = KeychainStore.__new__(KeychainStore)
+        s._keyring = fake
+        return s, data
+
+    def test_clear_deletes_grant_key(self):
+        """KeychainStore.clear('google') must remove the 'grant' keychain item."""
+        s, data = self._make_store()
+        s.set("google", "grant", '{"access_token": "tok"}')
+        s.set("google", "client_id", "cid")
+        s.clear("google")
+        assert s.get("google", "grant") is None
+        assert s.get("google", "client_id") is None
+
+    def test_clear_does_not_raise_when_grant_absent(self):
+        """clear() with no 'grant' item present must not raise."""
+        s, _ = self._make_store()
+        s.set("google", "refresh_token", "rtok")
+        s.clear("google")  # no 'grant' stored — should complete silently
+        assert s.get("google", "refresh_token") is None
+
+
+# ===========================================================================
+# Scope cache flush on revoke() and write_grant_to_keychain()
+# ===========================================================================
+
+class TestScopeCacheFlush:
+    def _make_provider(self):
+        from auth.google import GoogleProvider
+        from auth.store import MemoryStore
+        store = MemoryStore()
+        store.set("google", "client_id", "cid")
+        store.set("google", "client_secret", "csec")
+        store.set("google", "refresh_token", "rtok")
+        return GoogleProvider(store)
+
+    def test_revoke_flushes_scope_cache(self, monkeypatch):
+        """revoke() must clear auth.google.scopes and auth.google.scopes_checked_at
+        from runtime_state so stale broad scopes cannot survive a narrower re-grant."""
+        from datetime import UTC, datetime
+
+        from storage import db
+        import auth.google as google_mod
+
+        # Seed the cache as if a broad scope grant was active.
+        db.runtime_set("auth.google.scopes", "https://mail.google.com/")
+        db.runtime_set("auth.google.scopes_checked_at", datetime.now(UTC).isoformat())
+
+        provider = self._make_provider()
+
+        # Stub the revoke HTTP call so we don't hit the network.
+        class _FakeHttpx:
+            @staticmethod
+            def post(*a, **kw):
+                pass
+
+        monkeypatch.setattr(google_mod, "httpx", _FakeHttpx)
+        # Stub _httpx import inside revoke() — it re-imports httpx as _httpx.
+        import sys
+        monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+        provider.revoke()
+
+        assert db.runtime_get("auth.google.scopes") is None
+        assert db.runtime_get("auth.google.scopes_checked_at") is None
+
+    def test_write_grant_to_keychain_flushes_scope_cache(self):
+        """write_grant_to_keychain() must clear the scope runtime cache so a
+        re-grant with different scopes is visible immediately."""
+        from datetime import UTC, datetime
+
+        from storage import db
+        from auth.google import write_grant_to_keychain
+        from auth import store as store_mod
+
+        # Seed stale cache.
+        db.runtime_set("auth.google.scopes", "https://mail.google.com/")
+        db.runtime_set("auth.google.scopes_checked_at", datetime.now(UTC).isoformat())
+
+        # Use MemoryStore so no keyring calls needed.
+        store_mod._reset_store()
+        mem = store_mod.MemoryStore()
+        store_mod._store = mem
+
+        write_grant_to_keychain({
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": "rtok",
+            "access_token": "atok",
+            "scope": "https://www.googleapis.com/auth/calendar",
+            "expires_at": datetime.now(UTC).isoformat(),
+            "granted_at": datetime.now(UTC).isoformat(),
+        })
+
+        assert db.runtime_get("auth.google.scopes") is None
+        assert db.runtime_get("auth.google.scopes_checked_at") is None
+
+
+# ===========================================================================
+# scripts/auth.py — _google_status granted_at and scope note
+# ===========================================================================
+
+class TestGoogleStatusOutput:
+    def test_status_uses_granted_at_not_expires_at(self, capsys):
+        """_google_status() must display granted_at (distinct from expires_at)
+        and must not report expires_at as the grant timestamp."""
+        import json as _json
+        from scripts.auth import _google_status
+        from auth import store as store_mod
+        from auth.google import write_grant_to_keychain
+        from datetime import UTC, datetime
+
+        store_mod._reset_store()
+        store_mod._store = store_mod.MemoryStore()
+
+        grant_ts = "2026-01-15T10:00:00+00:00"
+        exp_ts = "2026-01-15T11:00:00+00:00"
+        write_grant_to_keychain({
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": "rtok",
+            "access_token": "atok",
+            "scope": "https://www.googleapis.com/auth/calendar",
+            "expires_at": exp_ts,
+            "granted_at": grant_ts,
+        })
+
+        rc = _google_status()
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = _json.loads(out)
+        assert data["granted_at"] == grant_ts
+        assert data["expires_at"] == exp_ts
+        # granted_at and expires_at must be distinct fields
+        assert "scopes_requested_at_grant" in data
+
+    def test_status_without_granted_at_shows_unknown(self, capsys):
+        """Old grant blobs lacking 'granted_at' must display 'unknown', not
+        the expires_at value (previous control-plane lie)."""
+        import json as _json
+        from scripts.auth import _google_status
+        from auth import store as store_mod
+        from auth.google import write_grant_to_keychain, _GRANT_KEY
+        from datetime import UTC, datetime
+
+        store_mod._reset_store()
+        mem = store_mod.MemoryStore()
+        store_mod._store = mem
+
+        import json as _j
+        # Manually write a legacy grant blob without 'granted_at'.
+        legacy = {
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": "rtok",
+            "access_token": "atok",
+            "scope": "https://www.googleapis.com/auth/calendar",
+            "expires_at": "2026-01-15T11:00:00+00:00",
+        }
+        mem.set("google", _GRANT_KEY, _j.dumps(legacy))
+
+        rc = _google_status()
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = _json.loads(out)
+        assert data["granted_at"] == "unknown"
+
+
+# ===========================================================================
 # Hook _precheck_scopes
 # ===========================================================================
 

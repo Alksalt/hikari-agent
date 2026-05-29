@@ -52,9 +52,14 @@ def _google_grant(extra_scopes: list[str]) -> int:
         _err("  -> uv add --dev google-auth-oauthlib")
         return 1
 
+    # https://mail.google.com/ is the broadest Gmail scope — it covers
+    # gmail.modify, gmail.readonly, gmail.send, etc. (see auth/scope_match.py).
+    # gmail.modify is therefore redundant here and has been removed to avoid
+    # requesting duplicate permissions.  If you do NOT need full Gmail access,
+    # remove https://mail.google.com/ from --add and use the narrower
+    # gmail.readonly / gmail.send scopes instead.
     BASE_SCOPES = [
         "https://mail.google.com/",
-        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/documents",
@@ -92,10 +97,11 @@ def _google_grant(extra_scopes: list[str]) -> int:
     )
 
     from datetime import UTC, datetime
+    now = datetime.now(UTC)
     expires_at = (
         creds.expiry.replace(tzinfo=UTC).isoformat()
         if creds.expiry
-        else datetime.now(UTC).isoformat()
+        else now.isoformat()
     )
 
     payload = {
@@ -105,6 +111,8 @@ def _google_grant(extra_scopes: list[str]) -> int:
         "refresh_token": creds.refresh_token or "",
         "scope": " ".join(scopes),
         "expires_at": expires_at,
+        # Timestamp of this grant, distinct from the access-token expiry.
+        "granted_at": now.isoformat(),
     }
 
     from auth.google import write_grant_to_keychain
@@ -124,10 +132,14 @@ def _google_status() -> int:
         _err("no google grant in keychain. run: uv run python -m scripts.auth google grant")
         return 1
     print(json.dumps({
-        "granted_at": grant.get("expires_at", "unknown"),
-        "scopes": grant.get("scope", ""),
+        # granted_at records when the OAuth flow completed (not the token expiry).
+        "granted_at": grant.get("granted_at", "unknown"),
         "expires_at": grant.get("expires_at", "unknown"),
         "refresh_token_present": bool(grant.get("refresh_token")),
+        # Note: 'scopes' reflects what was requested at grant time; actual
+        # live token scopes may differ — run `google status` after a new grant
+        # or call current_scopes() for a live tokeninfo probe.
+        "scopes_requested_at_grant": grant.get("scope", ""),
     }, indent=2))
     return 0
 

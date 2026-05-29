@@ -49,6 +49,9 @@ def write_grant_to_keychain(token_payload: dict) -> None:
 
     Expected keys: access_token, refresh_token, scope, expires_at (ISO string).
     Any extra keys in the payload are preserved round-trip.
+
+    Also flushes the runtime scope cache so current_scopes() re-probes on the
+    next call rather than serving stale scopes from a previous narrower grant.
     """
     store = default_store()
     store.set("google", _GRANT_KEY, json.dumps(token_payload))
@@ -59,6 +62,10 @@ def write_grant_to_keychain(token_payload: dict) -> None:
         store.set("google", "client_secret", str(token_payload["client_secret"]))
     if "refresh_token" in token_payload:
         store.set("google", "refresh_token", str(token_payload["refresh_token"]))
+    # Flush scope cache so re-grants take effect immediately.
+    from storage import db
+    db.runtime_set(_SCOPES_CACHE_KEY, None)
+    db.runtime_set(_SCOPES_CHECKED_AT_KEY, None)
 
 
 def read_grant_from_keychain() -> dict | None:
@@ -230,7 +237,11 @@ class GoogleProvider(Provider):
             return ""
 
     def revoke(self) -> None:
-        """Hit Google's revoke endpoint and clear stored credentials."""
+        """Hit Google's revoke endpoint and clear stored credentials.
+
+        Also flushes the runtime scope cache so stale broad scopes cannot
+        survive a subsequent narrower re-grant within the 24-hour TTL window.
+        """
         creds = self._creds()
         if creds:
             _, _, refresh_token = creds
@@ -247,3 +258,11 @@ class GoogleProvider(Provider):
             self._store.clear("google")
         except Exception as exc:
             logger.debug("GoogleProvider.revoke: store clear failed: %r", exc)
+        # Flush scope cache so the next current_scopes() call re-probes rather
+        # than serving stale scopes for up to 24 h after revocation.
+        try:
+            from storage import db
+            db.runtime_set(_SCOPES_CACHE_KEY, None)
+            db.runtime_set(_SCOPES_CHECKED_AT_KEY, None)
+        except Exception as exc:
+            logger.debug("GoogleProvider.revoke: scope cache flush failed: %r", exc)
