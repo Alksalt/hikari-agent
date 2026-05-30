@@ -142,6 +142,121 @@ async def test_gcal_sync_pending_clears_after_mock_subagent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gcal_sync_failure_stays_pending_below_retry_cap(monkeypatch):
+    """A transient gcal-sync failure must NOT abandon the mirror or notify —
+    the row stays pending so the next tick retries it."""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake")
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    rid = db.reminder_insert(
+        fire_at=fire, text="lesson", lead_minutes=0, repeat=None,
+        gcal_sync_pending=True,
+    )
+    from agents import proactive
+    proactive._GCAL_SYNC_FAILS.clear()
+
+    notified: list[int] = []
+
+    async def fake_notify(row, exc):
+        notified.append(row["id"])
+
+    async def always_fail(*_a, **_k):
+        raise RuntimeError("transient")
+
+    monkeypatch.setattr(proactive, "_notify_gcal_sync_failed", fake_notify)
+    with patch("tools.reminders.sync_gcal._sync_gcal_reminder", side_effect=always_fail):
+        # Two ticks = two failures, still under the cap of 3.
+        await proactive.sync_pending_gcal_reminders()
+        n = await proactive.sync_pending_gcal_reminders()
+
+    assert n == 0
+    assert notified == [], "must not notify before the retry cap"
+    row = db.reminder_get(rid)
+    assert row["gcal_sync_pending"] == 1, "row must stay pending for retry"
+    assert proactive._GCAL_SYNC_FAILS.get(rid) == 2
+    proactive._GCAL_SYNC_FAILS.clear()
+
+
+@pytest.mark.asyncio
+async def test_gcal_sync_abandons_and_notifies_after_retry_cap(monkeypatch):
+    """After _GCAL_SYNC_MAX_RETRIES consecutive failures, the mirror is
+    abandoned (gcal_sync_pending cleared so the job stops hammering) and the
+    owner is notified once — instead of retrying silently forever."""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_ID", "fake")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLIENT_SECRET", "fake")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_REFRESH_TOKEN", "fake")
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    rid = db.reminder_insert(
+        fire_at=fire, text="english lesson", lead_minutes=0, repeat=None,
+        gcal_sync_pending=True,
+    )
+    from agents import proactive
+    proactive._GCAL_SYNC_FAILS.clear()
+
+    notified: list[tuple[int, str]] = []
+
+    async def fake_notify(row, exc):
+        notified.append((row["id"], type(exc).__name__))
+
+    async def always_fail(*_a, **_k):
+        raise RuntimeError("credentials")
+
+    monkeypatch.setattr(proactive, "_notify_gcal_sync_failed", fake_notify)
+    with patch("tools.reminders.sync_gcal._sync_gcal_reminder", side_effect=always_fail):
+        for _ in range(proactive._GCAL_SYNC_MAX_RETRIES):
+            await proactive.sync_pending_gcal_reminders()
+
+    assert notified == [(rid, "RuntimeError")], "owner notified exactly once"
+    row = db.reminder_get(rid)
+    assert row["gcal_sync_pending"] == 0, "mirror abandoned — row no longer pending"
+    assert row["gcal_event_id"] is None
+    # Counter popped so a future re-queue starts clean.
+    assert rid not in proactive._GCAL_SYNC_FAILS
+    proactive._GCAL_SYNC_FAILS.clear()
+
+
+@pytest.mark.asyncio
+async def test_gcal_sync_notify_sends_to_owner(monkeypatch):
+    """_notify_gcal_sync_failed must actually push a Telegram message to the
+    owner via send_and_persist (not just log)."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    sent: list[dict] = []
+
+    class _Result:
+        ok = True
+
+    async def fake_send_and_persist(**kwargs):
+        sent.append(kwargs)
+        return _Result()
+
+    import agents.messaging as _msg
+    monkeypatch.setattr(_msg, "send_and_persist", fake_send_and_persist)
+
+    import agents.runtime as _rt
+    monkeypatch.setattr(_rt, "owner_id", lambda: 999)
+
+    # Avoid constructing a real telegram.Bot network client.
+    import telegram
+    monkeypatch.setattr(telegram, "Bot", lambda token=None: object())
+
+    from agents import proactive
+    row = {"id": 7, "text": "english lesson"}
+    await proactive._notify_gcal_sync_failed(row, RuntimeError("creds"))
+
+    assert len(sent) == 1, "expected exactly one owner notification"
+    call = sent[0]
+    assert call["chat_id"] == 999
+    assert call["source"] == "proactive"
+    assert "english lesson" in call["text"]
+    assert "google calendar" in call["text"].lower()
+
+
+@pytest.mark.asyncio
 async def test_apple_sync_pending_clears_after_mock_subagent(monkeypatch):
     from unittest.mock import patch
 

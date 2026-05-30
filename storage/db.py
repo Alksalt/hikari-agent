@@ -4244,6 +4244,20 @@ def reminder_update_gcal_event(reminder_id: int, event_id: str) -> None:
         )
 
 
+def reminder_clear_gcal_pending(reminder_id: int) -> None:
+    """Clear gcal_sync_pending without recording an event_id.
+
+    Used when the Calendar mirror is abandoned after repeated failures so the
+    sync job stops re-selecting the row every tick. The reminder itself still
+    fires via Telegram — only the optional calendar mirror is given up.
+    """
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE reminders SET gcal_sync_pending = 0 WHERE id = ?",
+            (reminder_id,),
+        )
+
+
 def reminder_update_fire_at(reminder_id: int, new_fire_at: str) -> None:
     with _conn() as conn:
         conn.execute(

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from storage import db
@@ -511,11 +512,72 @@ async def sync_pending_apple_reminders() -> int:
     return synced
 
 
+# Per-reminder consecutive gcal-sync failure counter. In-process (reset on
+# restart) on purpose: transient blips self-heal within a few ticks, and a
+# restart legitimately re-surfaces a still-broken mirror. Bounded — entries
+# are popped on success or when the mirror is abandoned.
+_GCAL_SYNC_FAILS: dict[int, int] = {}
+_GCAL_SYNC_MAX_RETRIES = 3
+
+
+async def _notify_gcal_sync_failed(row: dict[str, Any], exc: Exception) -> None:
+    """Tell the owner, once, that a reminder's Calendar mirror was abandoned.
+
+    The reminder itself still fires via Telegram — only the optional Google
+    Calendar event failed to save. Surfacing this is the whole point: a silent
+    mirror failure is what let Hikari claim a calendar write that never landed.
+    """
+    rid = row["id"]
+    title = (row.get("text") or "reminder").strip()
+    msg = (
+        f'couldn\'t save "{title}" to google calendar after '
+        f"{_GCAL_SYNC_MAX_RETRIES} tries — reminder #{rid}. the reminder still "
+        f"fires, the calendar event didn't. last error: {type(exc).__name__}."
+    )
+    try:
+        import os
+
+        from telegram import Bot
+
+        from agents.messaging import send_and_persist
+        from agents.runtime import owner_id
+
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        if not token:
+            logger.error(
+                "gcal sync: TELEGRAM_BOT_TOKEN missing — cannot notify owner "
+                "that reminder #%s failed to mirror to calendar",
+                rid,
+            )
+            return
+        # Same direct-Bot path the media_outbox drain job uses: this runs from a
+        # scheduler job with no send_text_fn in scope.
+        result = await send_and_persist(
+            bot=Bot(token=token),
+            chat_id=owner_id(),
+            text=msg,
+            source="proactive",
+            skip_choreography=True,
+        )
+        if not result.ok:
+            logger.error(
+                "gcal sync: could not deliver mirror-failure notice for reminder #%s",
+                rid,
+            )
+    except Exception:
+        logger.exception(
+            "gcal sync: error while notifying owner about reminder #%s", rid
+        )
+
+
 async def sync_pending_gcal_reminders() -> int:
     """Drain reminders.gcal_sync_pending via the typed GCal sync adapter.
 
     Calls ``tools.reminders.sync_gcal._sync_gcal_reminder`` directly —
-    no LLM / prompt plumbing. Best-effort: failures stay pending for retry.
+    no LLM / prompt plumbing. Best-effort, but NOT silent: after
+    ``_GCAL_SYNC_MAX_RETRIES`` consecutive failures for a reminder the mirror
+    is abandoned (``gcal_sync_pending`` cleared so the job stops hammering) and
+    the owner is told via Telegram — instead of retrying forever in silence.
     """
     import os
     if not all(os.environ.get(k) for k in (
@@ -533,18 +595,28 @@ async def sync_pending_gcal_reminders() -> int:
 
     synced = 0
     for row in pending:
+        rid = row["id"]
         try:
             await _sync_gcal_reminder(
-                reminder_id=row["id"],
+                reminder_id=rid,
                 title=row["text"],
                 start_iso=row["fire_at"],
             )
-        except McpCallError as exc:
-            logger.warning("gcal sync: MCP error for reminder #%s: %s", row["id"], exc)
+        except Exception as exc:
+            fails = _GCAL_SYNC_FAILS.get(rid, 0) + 1
+            _GCAL_SYNC_FAILS[rid] = fails
+            log = logger.warning if isinstance(exc, McpCallError) else logger.exception
+            log(
+                "gcal sync: attempt %d/%d failed for reminder #%s: %s",
+                fails, _GCAL_SYNC_MAX_RETRIES, rid, exc,
+            )
+            if fails >= _GCAL_SYNC_MAX_RETRIES:
+                # Stop the silent retry loop and surface the failure to the owner.
+                db.reminder_clear_gcal_pending(rid)
+                _GCAL_SYNC_FAILS.pop(rid, None)
+                await _notify_gcal_sync_failed(row, exc)
             continue
-        except Exception:
-            logger.exception("gcal sync: failed for reminder #%s", row["id"])
-            continue
+        _GCAL_SYNC_FAILS.pop(rid, None)
         synced += 1
     return synced
 

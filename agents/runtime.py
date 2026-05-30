@@ -540,16 +540,30 @@ def _inject_keychain_tokens_to_env() -> None:
                 )
             else:
                 os.environ["NOTION_TOKEN"] = str(kc_notion)
-        else:
+        elif not os.environ.get("NOTION_TOKEN"):
+            # Only an actual problem when neither keychain nor .env has a token.
+            # _inject_keychain_tokens_to_env() runs at import — before
+            # load_dotenv() in main() — so on .env-only deployments NOTION_TOKEN
+            # is legitimately keychain-absent here; warning then is a false alarm.
             logger.warning(
                 "notion token not loaded from keychain — re-grant via "
                 "`uv run python -m scripts.auth notion grant`"
             )
+        else:
+            logger.debug(
+                "notion token present in env (not keychain) — fine on .env-only deploys"
+            )
     except Exception:
-        logger.warning(
-            "notion token not loaded from keychain — re-grant via "
-            "`uv run python -m scripts.auth notion grant`"
-        )
+        if not os.environ.get("NOTION_TOKEN"):
+            logger.warning(
+                "notion token not loaded from keychain — re-grant via "
+                "`uv run python -m scripts.auth notion grant`"
+            )
+        else:
+            logger.debug(
+                "_inject_keychain_tokens_to_env: notion keychain read failed "
+                "(non-fatal — env token present)"
+            )
 
     try:
         from auth.github import _load_pat
