@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-STALE_THRESHOLD_SECONDS = 60  # rows reserved longer than this on boot = crash victim
+STALE_THRESHOLD_SECONDS = 10  # rows reserved longer than this on boot = crash victim
 
 
 async def reap_stale_reservations() -> int:

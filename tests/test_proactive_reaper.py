@@ -54,9 +54,9 @@ def _get_status(row_id: int) -> str:
 
 @pytest.mark.asyncio
 async def test_stale_reserved_row_flips_to_aborted():
-    """A row reserved 120s ago (> 60s threshold) must be flipped to aborted."""
+    """A row reserved 30s ago (> 10s threshold) must be flipped to aborted."""
     from agents.proactive_reaper import reap_stale_reservations
-    row_id = _insert_proactive_event(status="reserved", age_seconds=120)
+    row_id = _insert_proactive_event(status="reserved", age_seconds=30)
     count = await reap_stale_reservations()
     assert count == 1
     assert _get_status(row_id) == "aborted"
@@ -64,9 +64,9 @@ async def test_stale_reserved_row_flips_to_aborted():
 
 @pytest.mark.asyncio
 async def test_fresh_reserved_row_untouched():
-    """A row reserved 10s ago (< 60s threshold) must NOT be flipped."""
+    """A row reserved 2s ago (< 10s threshold) must NOT be flipped."""
     from agents.proactive_reaper import reap_stale_reservations
-    row_id = _insert_proactive_event(status="reserved", age_seconds=10)
+    row_id = _insert_proactive_event(status="reserved", age_seconds=2)
     count = await reap_stale_reservations()
     assert count == 0
     assert _get_status(row_id) == "reserved"

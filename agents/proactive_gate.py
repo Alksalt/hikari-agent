@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _PROACTIVE_LOCK = asyncio.Lock()
 
 ReservationStatus = Literal["sent", "aborted"]
-AbortReason = Literal["silence_window", "quiet_hours", "silent_day", "dedup", "send_failed", "empty_text", "proactive_disabled"]
+AbortReason = Literal["silence_window", "quiet_hours", "silent_day", "dedup", "send_failed", "empty_text", "proactive_disabled", "snooze"]
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,46 @@ def _silence_active(db) -> bool:
     if until.tzinfo is None:
         until = until.replace(tzinfo=UTC)
     return datetime.now(UTC) < until
+
+
+def _snooze_active(db, producer_id: str) -> bool:
+    """Return True when a snooze is active for *producer_id* or for all sources.
+
+    Reads ``proactive_snooze_until`` from runtime_state — a JSON map of
+    {source_id: iso_timestamp}.  Two keys are checked:
+
+    - ``"all"`` — global "snooze all" written by /proactive snooze all <dur>
+    - ``producer_id`` — per-source snooze written by /proactive snooze <src> <dur>
+
+    An entry is only considered active when its timestamp is strictly in the
+    future.  Unparseable / absent entries are treated as inactive (fails open so
+    a bad snooze entry never permanently mutes a source).
+    """
+    try:
+        raw = db.runtime_get("proactive_snooze_until")
+        if not raw:
+            return False
+        snooze_map: dict[str, str] = json.loads(raw)
+        now = datetime.now(UTC)
+        for key in ("all", producer_id):
+            iso = snooze_map.get(key)
+            if iso:
+                try:
+                    until = datetime.fromisoformat(iso)
+                    if until.tzinfo is None:
+                        until = until.replace(tzinfo=UTC)
+                    if now < until:
+                        return True
+                except (ValueError, TypeError):
+                    continue
+        return False
+    except Exception:
+        logger.exception(
+            "proactive_gate: error reading snooze map for producer %r — "
+            "treating as inactive (fails open)",
+            producer_id,
+        )
+        return False
 
 
 def _proactive_globally_disabled(db) -> bool:
@@ -268,6 +308,8 @@ async def reserve_and_send(
             abort_reason = "silence_window"
         elif _is_quiet_now(db):
             abort_reason = "quiet_hours"
+        elif _snooze_active(db, producer_id):
+            abort_reason = "snooze"
         elif dedup_key and db.proactive_event_dedup_hit(
             producer_id, dedup_key, dedup_window_minutes
         ):

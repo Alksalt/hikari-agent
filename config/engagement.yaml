@@ -42,6 +42,11 @@ proactive:
     - wiki_new_file
     - decision_resolve_due
     - reengage_silence
+    - book_just_finished
+    - just_got_home
+    - late_night_dissolution
+    - irritation_event
+    - weather_mood_shift
 
 # --- Gap awareness ---
 # Inject `# gap_since_last:` block into inject_memory when the user
@@ -249,7 +254,7 @@ refusal_filter:
   # short-replace fires. Guards against discarding a legit short reply that
   # happens to contain a banned token.
   short_replace_match_fraction: 0.35
-  # Phase 8: rewrite path is now real — a bounded Haiku turn that re-writes
+  # Phase 8: rewrite path is now real — a bounded claude-sonnet-4-6 turn that re-writes
   # the drifting reply in voice, with deterministic fallback if the rewrite
   # also drifts. See post_filter.bounded_rewrite + rewrite_or_fallback.
   enable_llm_rewrite: true
@@ -309,12 +314,12 @@ sycophancy_guard:
 
 post_filter:
   # Phase 8: bounded LLM rewrite for outbound replies that the post_filter
-  # flagged with needs_llm_rewrite=True. One Haiku turn, no tools, no session
+  # flagged with needs_llm_rewrite=True. One claude-sonnet-4-6 turn, no tools, no session
   # resume, no memory write. If the rewrite still drifts, fall back to a
   # deterministic short in-voice phrase from refusal_filter.short_replacements.
   rewrite_strategy: "bounded_retry"   # alt: "detection_only" (ship original, log)
   rewrite_model: "claude-sonnet-4-6"
-  rewrite_max_budget_usd: 0.01
+  rewrite_max_budget_usd: 0.04
   rewrite_prompt_template: |
     [the previous outbound reply broke Hikari's voice. {instruction}
 
@@ -550,12 +555,16 @@ cadence_governor:
     agent_spontaneous:
       max_per_7d: 8
       allowed_sources:
-        - open_loop
-        - pattern_observation
-        - noticed_change
-        - calendar_event
-        - reengage_silence
+        - anniversary_callback
+        - belief_resurface
+        - book_just_finished
         - callback_episode
+        - irritation_event
+        - just_got_home
+        - late_night_dissolution
+        - reengage_silence
+        - research_callback
+        - weather_mood_shift
         - weirdly_good_mood_leak
     scheduled_ceremony:
       max_per_7d: 14
@@ -1085,6 +1094,10 @@ retention:
   messages_days: 365
   oauth_audit_log_days: 365
   calendar_notifications_days: 90
+  tool_calls_days: 30
+  graph_outbox_sent_days: 30
+  media_outbox_terminal_days: 7
+  proactive_events_days: 30
 
 # SQLite connection-pool busy timeout. Raised from default 0 to avoid
 # "database is locked" under concurrent writes (scheduler + bridge threads).
@@ -1220,6 +1233,7 @@ engagement:
     interruption_right: low
   reengage_silence:
     enabled: true
+    min_stage: 6
     priority_tier: 2
     min_interval_minutes: 120
     send_mode: proactive
@@ -1247,6 +1261,43 @@ engagement:
     min_stage: 3
     priority_tier: 3
     min_interval_minutes: 4320  # at most every 3 days
+    send_mode: observation
+    min_value_score: 0.3
+    interruption_right: low
+  # World-delta producers — fire on hikari_world state transitions.
+  book_just_finished:
+    enabled: true
+    priority_tier: 2
+    min_interval_minutes: 1440  # at most once per day per transition
+    send_mode: observation
+    min_value_score: 0.4
+    interruption_right: low
+  just_got_home:
+    enabled: true
+    priority_tier: 2
+    min_interval_minutes: 360
+    send_mode: proactive
+    min_value_score: 0.4
+    interruption_right: low
+  late_night_dissolution:
+    enabled: true
+    min_stage: 6
+    priority_tier: 2
+    min_interval_minutes: 360
+    send_mode: proactive
+    min_value_score: 0.4
+    interruption_right: low
+  irritation_event:
+    enabled: true
+    priority_tier: 2
+    min_interval_minutes: 720  # at most twice per day
+    send_mode: proactive
+    min_value_score: 0.4
+    interruption_right: low
+  weather_mood_shift:
+    enabled: true
+    priority_tier: 2
+    min_interval_minutes: 360
     send_mode: observation
     min_value_score: 0.3
     interruption_right: low

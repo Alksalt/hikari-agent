@@ -34,6 +34,13 @@ def collect() -> list[TriggerCandidate]:
     if not bool(cfg.get("engagement.late_night_dissolution.enabled", True)):
         return []
 
+    # Stage gate: don't fire before the relationship has matured enough.
+    stage = db.runtime_get_int("relationship_stage", 1)
+    min_stage = int(cfg.get("engagement.late_night_dissolution.min_stage", 6))
+    if stage < min_stage:
+        logger.debug("late_night_dissolution: stage %d < min_stage %d — skipping", stage, min_stage)
+        return []
+
     texture = (db.runtime_get("time_texture") or "").strip().lower()
     if texture != "deep_night":
         return []

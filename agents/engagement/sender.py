@@ -161,7 +161,23 @@ async def send(text, candidate, send_text_fn) -> int | None:
         return None
     from agents import cadence
     try:
-        cadence.record_user_anchored_sent(candidate.source)
+        pool = cadence._resolve_pool(candidate.source)
+        if pool is cadence.Pool.AGENT_SPONTANEOUS:
+            cadence.record_spontaneous_sent(candidate.source)
+        elif pool is cadence.Pool.SCHEDULED_CEREMONY:
+            cadence.record_ceremony_sent(candidate.source)
+        else:
+            cadence.record_user_anchored_sent(candidate.source)
     except Exception:
-        logger.exception("sender: record_user_anchored_sent failed (non-fatal)")
+        logger.exception("sender: cadence record failed (non-fatal)")
+    # cofire commit — D5 exposes selector.commit_cofire(source); call it after
+    # a confirmed send so cofire state is only persisted when a row id exists.
+    try:
+        from agents.engagement import selector as _selector
+        _selector.commit_cofire(candidate.source)
+    except AttributeError:
+        # D5 not yet landed — commit_cofire not present; harmless until it ships
+        pass
+    except Exception:
+        logger.exception("sender: commit_cofire failed (non-fatal)")
     return result.event_id

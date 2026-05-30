@@ -3,6 +3,7 @@ Also exposes should_wake() for the scheduler to short-circuit engagement ticks."
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from agents.engagement.triggers import TriggerCandidate
@@ -14,16 +15,23 @@ def should_wake(source_id: str | None = None) -> bool:
     """Return True if the engagement tick should proceed.
 
     Checks:
-    - scheduler_gate_enabled config flag (default True)
+    - HIKARI_DISABLE_NOISE_FLOOR env var (explicit dev-only total bypass)
+    - scheduler_gate_enabled config flag — bypasses only the scheduler-specific
+      gate logic, NOT the noise floor (silent_day / quiet-hours / silence).
+      The noise floor always runs regardless of this flag.
     - quiet hours (canonical _is_quiet_now from agents.proactive)
     - global silence window from runtime_state
 
     Optional per-source min_interval check lives in selector._hard_interval_blocked;
     this gate is the tick-level fast-path that skips the whole producer scan.
     """
-    from agents import config as _cfg
-    if not bool(_cfg.get("proactive.scheduler_gate_enabled", True)):
-        return True  # gate disabled — always wake
+    # Explicit dev-only env var that truly bypasses everything (including noise floor).
+    # This is intentionally NOT the scheduler_gate_enabled config flag.
+    if os.environ.get("HIKARI_DISABLE_NOISE_FLOOR", "").lower() in ("1", "true", "yes"):
+        logger.debug("should_wake: HIKARI_DISABLE_NOISE_FLOOR set — full bypass")
+        return True
+
+    # --- Noise floor: always runs regardless of scheduler_gate_enabled ---
 
     try:
         from agents.proactive_gate import _is_silent_day_today
@@ -57,8 +65,17 @@ def should_wake(source_id: str | None = None) -> bool:
                 logger.debug("should_wake: global silence active — skip")
                 return False
     except Exception as exc:
-        logger.warning("quiet_hours check failed (fail-closed): %s", exc)
+        logger.warning("global silence check failed (fail-closed): %s", exc)
         return False  # fail-closed: when in doubt, don't wake the user
+
+    # --- Scheduler-specific gate (dev-bypassable via config flag) ---
+    # NOTE: when scheduler_gate_enabled=False the noise floor above still ran.
+    # This is just a hook for future scheduler-specific checks; currently a no-op
+    # when disabled (the noise floor is the real protection).
+    from agents import config as _cfg
+    if not bool(_cfg.get("proactive.scheduler_gate_enabled", True)):
+        logger.debug("should_wake: scheduler_gate_enabled=False — bypassing scheduler gate (noise floor already ran)")
+        return True
 
     return True
 

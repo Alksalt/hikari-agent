@@ -384,3 +384,91 @@ async def test_run_future_letter_composer_no_letter_skips_send(
     assert ok is False
     assert db.future_letter_get(month_iso) is None
     send_fake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_future_letter_partial_send_retries(monkeypatch, tmp_path: Path):
+    """If chunks fail mid-send, the row stays unsent and a retry re-delivers
+    the full letter instead of permanently refusing (D10 bug fix)."""
+    from agents import future_letter
+    from storage import db
+    from tools.day_receipt._db import add_entry
+
+    today = _date.today()
+    for i in range(6):
+        add_entry("made", f"shipped thing {i}", today - timedelta(days=i))
+
+    # Two LLM calls → theme + composition.
+    call_count = {"n": 0}
+
+    async def fake_run_internal_control(prompt, *, max_turns, max_budget_usd,
+                                        extra_allowed_tools=None):  # noqa: ARG001
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "the decision to commit"
+        # Body large enough to produce 2 chunks at a small chunk_chars.
+        return "hey. it's 2031.\n\n" + ("x" * 200 + "\n\n") * 3
+
+    monkeypatch.setattr(future_letter, "run_internal_control",
+                        fake_run_internal_control)
+    # Override chunk size so we get 2+ chunks.
+    import agents.config as _cfg_mod
+    monkeypatch.setattr(_cfg_mod, "get", lambda key, default=None: (
+        "200" if key == "future_letter.telegram_chunk_chars" else default
+    ))
+
+    month_iso = today.strftime("%Y-%m")
+
+    # --- First run: preamble OK, chunk 0 OK, chunk 1 fails. ---
+    send_calls: list[str] = []
+    call_idx = {"n": 0}
+
+    async def send_partial(text):
+        call_idx["n"] += 1
+        send_calls.append(text)
+        # preamble=1st call → ok; chunk 0=2nd call → ok; chunk 1=3rd call → fail.
+        if call_idx["n"] <= 2:
+            return text, call_idx["n"], True
+        return text, None, False
+
+    ok_first = await future_letter.run_future_letter(
+        send_partial, today=month_iso, root=tmp_path,
+    )
+    # Function returns True because it did real work (composed+persisted) even
+    # though delivery was incomplete.
+    assert ok_first is True
+    # Row persisted but NOT stamped sent.
+    row = db.future_letter_get(month_iso)
+    assert row is not None
+    assert row["sent_at"] is None
+
+    # runtime_state NOT set (so gate 1 won't block the retry).
+    assert db.runtime_get("future_letter_last_month") != month_iso
+
+    # --- Second run: all sends succeed. ---
+    # LLM must NOT be called again (body already persisted).
+    llm_calls_before = call_count["n"]
+
+    async def send_ok(text):
+        return text, 99, True
+
+    ok_retry = await future_letter.run_future_letter(
+        send_ok, today=month_iso, root=tmp_path,
+    )
+    assert ok_retry is True
+    # LLM was NOT called again.
+    assert call_count["n"] == llm_calls_before
+
+    # Row is now stamped sent.
+    row = db.future_letter_get(month_iso)
+    assert row is not None
+    assert row["sent_at"] is not None
+
+    # runtime_state marker set.
+    assert db.runtime_get("future_letter_last_month") == month_iso
+
+    # --- Third run: fully deduped. ---
+    ok_third = await future_letter.run_future_letter(
+        send_ok, today=month_iso, root=tmp_path,
+    )
+    assert ok_third is False

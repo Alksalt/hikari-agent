@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 
 from agents import cadence
 from agents import config as cfg
@@ -109,10 +110,29 @@ async def run_decision_resolver(send_text) -> int:
     if n_total >= 8:
         surface = _format_calibration_surface(curve)
         if surface:
-            try:
-                await send_text(surface)
+            iso_week = date.today().strftime("%G-W%V")
+            result = await reserve_and_send(
+                send_text_fn=send_text,
+                producer_id="decision_log",
+                pattern="ceremony",
+                text=surface,
+                payload_json="{}",
+                dedup_key=f"decision_log:calibration:{iso_week}",
+                candidate={
+                    "anchor": f"calibration_{iso_week}",
+                    "why_now": "weekly calibration curve surface",
+                    "suggested_action": "reflect",
+                    "confidence": 0.9,
+                    "controls": {},
+                    "data_checked": ["decisions"],
+                },
+            )
+            if result.status == "sent":
                 logger.info("decision_resolver: calibration surface sent")
-            except Exception:
-                logger.exception("decision_resolver: calibration surface send failed")
+            else:
+                logger.info(
+                    "decision_resolver: calibration surface suppressed (%s)",
+                    result.reason,
+                )
 
     return asked

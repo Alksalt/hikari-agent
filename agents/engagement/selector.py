@@ -10,13 +10,17 @@ Scoring per architect spec §9.5:
 Extended with a value_score (rubric §engagement.value_rubric) that must meet
 per-source min_value_score to pass.  send_mode=="silent" sources are filtered
 before scoring.  Bundle co-firing guard: two candidates in the same 60s tick
-are merged or the second is held for 2h.
+are detected; the second is silently dropped (not held — see below).
+
+NOTE: cofire state is NOT written during select().  After a successful send,
+the caller (sender.send) must call commit_cofire(source) to record the sent
+source so future ticks can detect co-fires.  This keeps select() side-effect-free.
 """
 from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from agents.engagement.triggers import TriggerCandidate
@@ -233,9 +237,7 @@ def _value_score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
 # Written to runtime_state so it survives across ticks.
 _COFIRE_KEY = "proactive_last_selected_at"
 _COFIRE_SOURCE_KEY = "proactive_last_selected_source"
-_COFIRE_HOLD_KEY = "proactive_held_candidate"
 _COFIRE_WINDOW_SEC = 60        # same-tick window
-_COFIRE_HOLD_SEC = 7200        # 2h hold for #2
 
 
 def _get_cofire_state() -> tuple[str | None, str | None]:
@@ -256,36 +258,34 @@ def _set_cofire_state(iso: str, source: str) -> None:
         logger.exception("_set_cofire_state: failed to write runtime state")
 
 
-def _hold_candidate(candidate: TriggerCandidate) -> None:
-    """Persist the co-fired candidate for 2h deferred delivery."""
-    try:
-        from storage import db as _db
-        hold_until = (datetime.now(UTC) + timedelta(seconds=_COFIRE_HOLD_SEC)).isoformat()
-        payload = json.dumps({
-            "source": candidate.source,
-            "pattern": candidate.pattern,
-            "text": None,
-            "payload": getattr(candidate, "payload", {}),
-            "hold_until": hold_until,
-        }, default=str)
-        _db.runtime_set(_COFIRE_HOLD_KEY, payload)
-        logger.info("selector: co-fire hold — %s held until %s", candidate.source, hold_until)
-    except Exception:
-        logger.exception("_hold_candidate: failed to persist held candidate")
+def commit_cofire(source: str) -> None:
+    """Record that *source* was successfully sent, for use by the cofire guard.
+
+    Must be called by sender.send() AFTER a successful send (row id exists).
+    select() is intentionally side-effect-free w.r.t. cofire state; only a
+    confirmed delivery updates the window so dropped/failed candidates do not
+    consume the cofire slot.
+    """
+    _set_cofire_state(datetime.now(UTC).isoformat(), source)
 
 
 def _cofire_guard(
     best: TriggerCandidate,
     second: TriggerCandidate | None,
 ) -> TriggerCandidate:
-    """Apply the 60s co-firing guard.
+    """Apply the 60s co-firing guard (read-only — no state mutations).
 
-    If best fires within 60s of the last selected candidate:
-      - merge texts if second is provided (concatenate with \\n\\n---\\n)
-      - otherwise hold second for 2h
-    Always updates co-fire state after selection.
+    If best fires within 60s of the last committed candidate (per commit_cofire),
+    and a second candidate exists, log the co-fire event.  The second candidate is
+    silently dropped at this tick.
+
+    NOTE: cofire hold was write-only/never drained — removed; revisit if a real
+    2-slot cofire is needed (e.g. drain at tick start, deliver held candidate before
+    scoring new ones).
+
+    Cofire state is NOT written here.  Call commit_cofire(source) from sender.send
+    AFTER a successful send so only actually-delivered messages affect the window.
     """
-    now_iso = datetime.now(UTC).isoformat()
     last_iso, last_source = _get_cofire_state()
 
     if last_iso:
@@ -295,16 +295,13 @@ def _cofire_guard(
                 last_dt = last_dt.replace(tzinfo=UTC)
             age_sec = (datetime.now(UTC) - last_dt).total_seconds()
             if age_sec < _COFIRE_WINDOW_SEC and second is not None:
-                # Two candidates co-fired: hold the second
-                _hold_candidate(second)
                 logger.info(
-                    "selector: co-fire detected (gap=%.1fs) — holding %s",
-                    age_sec, second.source,
+                    "selector: co-fire detected (gap=%.1fs, last=%s) — dropping %s",
+                    age_sec, last_source, second.source,
                 )
         except (ValueError, TypeError):
             pass
 
-    _set_cofire_state(now_iso, best.source)
     return best
 
 

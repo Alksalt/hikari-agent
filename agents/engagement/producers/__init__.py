@@ -77,6 +77,7 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "calendar_event_prep",
     "wiki_new_file",
     "decision_resolve_due",
+    "reengage_silence",
     "book_just_finished",
     "just_got_home",
     "late_night_dissolution",

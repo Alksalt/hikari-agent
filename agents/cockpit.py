@@ -138,6 +138,13 @@ def _write_proactive_enabled(value: str) -> None:
     else:
         # treat as JSON list
         sources = json.loads(v)
+        try:
+            from agents.engagement.producers import ALL_PRODUCER_IDS
+        except Exception:
+            ALL_PRODUCER_IDS = frozenset()
+        unknown = [s for s in sources if s not in ALL_PRODUCER_IDS]
+        if unknown:
+            raise ValueError(f"unknown proactive source ids: {unknown}")
         _db.runtime_set("proactive_enabled_sources_override", json.dumps(sorted(sources)))
 
 
@@ -1126,6 +1133,15 @@ def format_proactive_snooze(source: str, duration_str: str) -> str:
     secs = _parse_duration(duration_str)
     if secs is None:
         return f"can't parse duration {duration_str!r}. use e.g. 30m / 2h / 1d"
+
+    # Validate source against known producer ids (skip for the global "all" sentinel)
+    if source != "all":
+        try:
+            from agents.engagement.producers import ALL_PRODUCER_IDS
+        except Exception:
+            ALL_PRODUCER_IDS = frozenset()
+        if source not in ALL_PRODUCER_IDS:
+            return f"unknown source: {source} — see /proactive for valid ids"
 
     # Read existing snooze map
     raw = _db.runtime_get("proactive_snooze_until")

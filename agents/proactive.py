@@ -257,6 +257,7 @@ def _reschedule_action_row(row: dict) -> None:
             current_due = current_due.replace(tzinfo=UTC)
         new_due = _recurrence_next(recurrence_rule, current_due)
         db.reminder_update_fire_at(row["id"], new_due.isoformat())
+        db.reminder_requeue_sync(row["id"])
     except Exception:
         logger.exception(
             "action reminder #%s: failed to reschedule (rule=%r)",
@@ -446,6 +447,7 @@ async def fire_due_reminders(send_text) -> int:
                     current_due = current_due.replace(tzinfo=UTC)
                 next_due = _recurrence_next(recurrence_rule, current_due)
                 db.reminder_update_fire_at(row["id"], next_due.isoformat())
+                db.reminder_requeue_sync(row["id"])
                 logger.debug(
                     "fire_due_reminders: rescheduled #%s via recurrence_rule=%r → %s",
                     row["id"], recurrence_rule, next_due.isoformat(),

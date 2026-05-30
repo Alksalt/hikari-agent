@@ -634,8 +634,17 @@ class TestProactiveCommand:
 # ============================================================================
 
 class TestConfig:
-    def test_default_enabled_is_4(self):
+    def test_default_enabled_sources(self):
         from agents import config as cfg
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
-        assert len(list(sources)) == 5
+        source_list = list(sources)
+        # 4 core + reengage_silence + 5 world-delta producers (book_just_finished,
+        # just_got_home, late_night_dissolution, irritation_event, weather_mood_shift)
+        assert len(source_list) == 10
+        assert "reengage_silence" in source_list
+        assert "book_just_finished" in source_list
+        assert "just_got_home" in source_list
+        assert "late_night_dissolution" in source_list
+        assert "irritation_event" in source_list
+        assert "weather_mood_shift" in source_list

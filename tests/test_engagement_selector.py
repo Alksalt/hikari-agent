@@ -258,19 +258,41 @@ class TestValueScoreRubric:
 # ---------------------------------------------------------------------------
 
 class TestCofireGuard:
-    def test_second_candidate_held_within_60s(self):
-        """When two candidates land within 60s, the second is held."""
+    def test_select_does_not_mutate_cofire_state(self):
+        """select() must not call _set_cofire_state — cofire state is committed
+        post-send via commit_cofire(), not during selection."""
         from agents.engagement import selector
-        from storage import db
 
         c1 = _candidate(source="wiki_new_file")
         c2 = _candidate(source="gmail_unread_threshold", pool="user_anchored")
         ctx = _make_ctx(enabled={"wiki_new_file", "gmail_unread_threshold"})
 
-        # Simulate: last fire was 30s ago
         last_iso = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+        set_calls = []
 
-        held_calls = []
+        with (
+            patch("agents.engagement.selector._source_send_mode", return_value="proactive"),
+            patch("agents.engagement.selector._source_min_value_score", return_value=0.0),
+            patch("agents.engagement.selector._value_score", return_value=0.5),
+            patch("agents.engagement.selector._hard_interval_blocked", return_value=False),
+            patch("agents.engagement.selector._get_cofire_state", return_value=(last_iso, "some_source")),
+            patch("agents.engagement.selector._set_cofire_state", side_effect=set_calls.append),
+        ):
+            result = selector.select([c1, c2], ctx)
+
+        assert result is not None
+        assert len(set_calls) == 0, "select() must not write cofire state"
+
+    def test_cofire_detected_within_60s_logs_but_does_not_hold(self):
+        """Within 60s, co-fire is detected (logged); second candidate is silently
+        dropped — no hold write occurs (hold was removed as write-only dead code)."""
+        from agents.engagement import selector
+
+        c1 = _candidate(source="wiki_new_file")
+        c2 = _candidate(source="gmail_unread_threshold", pool="user_anchored")
+        ctx = _make_ctx(enabled={"wiki_new_file", "gmail_unread_threshold"})
+
+        last_iso = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
 
         with (
             patch("agents.engagement.selector._source_send_mode", return_value="proactive"),
@@ -279,17 +301,15 @@ class TestCofireGuard:
             patch("agents.engagement.selector._hard_interval_blocked", return_value=False),
             patch("agents.engagement.selector._get_cofire_state", return_value=(last_iso, "some_source")),
             patch("agents.engagement.selector._set_cofire_state"),
-            patch("agents.engagement.selector._hold_candidate", side_effect=held_calls.append),
         ):
             result = selector.select([c1, c2], ctx)
 
+        # Best candidate is still returned; no exception raised
         assert result is not None
-        assert len(held_calls) == 1
-        # gmail scores higher (morning preferred) → best; wiki is second → held
-        assert held_calls[0].source in {"wiki_new_file", "gmail_unread_threshold"}
+        assert result.source in {"wiki_new_file", "gmail_unread_threshold"}
 
-    def test_no_hold_when_gap_exceeds_60s(self):
-        """When the last fire was >60s ago, no hold fires."""
+    def test_no_cofire_when_gap_exceeds_60s(self):
+        """When the last send was >60s ago, no co-fire is detected."""
         from agents.engagement import selector
 
         c1 = _candidate(source="wiki_new_file")
@@ -298,8 +318,6 @@ class TestCofireGuard:
 
         last_iso = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
 
-        held_calls = []
-
         with (
             patch("agents.engagement.selector._source_send_mode", return_value="proactive"),
             patch("agents.engagement.selector._source_min_value_score", return_value=0.0),
@@ -307,11 +325,28 @@ class TestCofireGuard:
             patch("agents.engagement.selector._hard_interval_blocked", return_value=False),
             patch("agents.engagement.selector._get_cofire_state", return_value=(last_iso, "some_source")),
             patch("agents.engagement.selector._set_cofire_state"),
-            patch("agents.engagement.selector._hold_candidate", side_effect=held_calls.append),
         ):
-            selector.select([c1, c2], ctx)
+            result = selector.select([c1, c2], ctx)
 
-        assert len(held_calls) == 0
+        assert result is not None
+
+    def test_commit_cofire_writes_state(self):
+        """commit_cofire(source) writes cofire state to runtime_state."""
+        from agents.engagement import selector
+        from storage import db
+
+        selector.commit_cofire("wiki_new_file")
+
+        iso = db.runtime_get(selector._COFIRE_KEY)
+        src = db.runtime_get(selector._COFIRE_SOURCE_KEY)
+        assert iso is not None
+        assert src == "wiki_new_file"
+
+    def test_commit_cofire_is_public(self):
+        """commit_cofire must be a public attribute of the selector module."""
+        import agents.engagement.selector as sel
+        assert hasattr(sel, "commit_cofire")
+        assert callable(sel.commit_cofire)
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,3 +172,132 @@ async def test_reason_contract_none_candidate_ok(isolated_db, monkeypatch):
     assert row["anchor"] is None
     assert row["why_now"] is None
     assert row["suggested_action"] is None
+
+
+# ---------------------------------------------------------------------------
+# Snooze gate tests
+# ---------------------------------------------------------------------------
+
+def test_snooze_active_per_source(isolated_db):
+    """_snooze_active returns True when producer_id is snoozed in the map."""
+    from datetime import timedelta
+    from agents.proactive_gate import _snooze_active
+
+    future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    isolated_db.runtime_set("proactive_snooze_until", json.dumps({"wiki_new_file": future}))
+
+    assert _snooze_active(isolated_db, "wiki_new_file") is True
+    assert _snooze_active(isolated_db, "gmail_unread_threshold") is False
+
+
+def test_snooze_active_global_all(isolated_db):
+    """_snooze_active returns True for any producer when 'all' key is snoozed."""
+    from datetime import timedelta
+    from agents.proactive_gate import _snooze_active
+
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    isolated_db.runtime_set("proactive_snooze_until", json.dumps({"all": future}))
+
+    assert _snooze_active(isolated_db, "wiki_new_file") is True
+    assert _snooze_active(isolated_db, "reminder") is True
+    assert _snooze_active(isolated_db, "calendar_event_prep") is True
+
+
+def test_snooze_active_expired(isolated_db):
+    """_snooze_active returns False when snooze timestamp is in the past."""
+    from datetime import timedelta
+    from agents.proactive_gate import _snooze_active
+
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    isolated_db.runtime_set("proactive_snooze_until", json.dumps({"wiki_new_file": past}))
+
+    assert _snooze_active(isolated_db, "wiki_new_file") is False
+
+
+def test_snooze_active_no_entry(isolated_db):
+    """_snooze_active returns False when runtime key is absent."""
+    from agents.proactive_gate import _snooze_active
+    assert _snooze_active(isolated_db, "wiki_new_file") is False
+
+
+@pytest.mark.asyncio
+async def test_reserve_and_send_aborts_on_per_source_snooze(isolated_db, monkeypatch):
+    """reserve_and_send aborts with reason='snooze' when the producer is snoozed."""
+    from datetime import timedelta
+    from agents import proactive_gate
+    importlib.reload(proactive_gate)
+    monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
+
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    isolated_db.runtime_set(
+        "proactive_snooze_until",
+        json.dumps({"wiki_new_file": future}),
+    )
+
+    async def ok_send(text):
+        return (text, 1, True)
+
+    result = await proactive_gate.reserve_and_send(
+        send_text_fn=ok_send,
+        producer_id="wiki_new_file",
+        pattern="notify",
+        text="new file added",
+        db=isolated_db,
+    )
+    assert result.status == "aborted"
+    assert result.reason == "snooze"
+
+
+@pytest.mark.asyncio
+async def test_reserve_and_send_aborts_on_snooze_all(isolated_db, monkeypatch):
+    """reserve_and_send aborts for any producer when 'all' is snoozed."""
+    from datetime import timedelta
+    from agents import proactive_gate
+    importlib.reload(proactive_gate)
+    monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
+
+    future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    isolated_db.runtime_set(
+        "proactive_snooze_until",
+        json.dumps({"all": future}),
+    )
+
+    async def ok_send(text):
+        return (text, 2, True)
+
+    result = await proactive_gate.reserve_and_send(
+        send_text_fn=ok_send,
+        producer_id="reminder",
+        pattern="notify",
+        text="reminder fires",
+        db=isolated_db,
+    )
+    assert result.status == "aborted"
+    assert result.reason == "snooze"
+
+
+@pytest.mark.asyncio
+async def test_reserve_and_send_passes_when_snooze_expired(isolated_db, monkeypatch):
+    """reserve_and_send sends normally when snooze entry is expired."""
+    from datetime import timedelta
+    from agents import proactive_gate
+    importlib.reload(proactive_gate)
+    monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
+
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    isolated_db.runtime_set(
+        "proactive_snooze_until",
+        json.dumps({"wiki_new_file": past}),
+    )
+
+    async def ok_send(text):
+        return (text, 3, True)
+
+    result = await proactive_gate.reserve_and_send(
+        send_text_fn=ok_send,
+        producer_id="wiki_new_file",
+        pattern="notify",
+        text="new file",
+        db=isolated_db,
+    )
+    assert result.status == "sent"

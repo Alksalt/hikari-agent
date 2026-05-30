@@ -636,9 +636,10 @@ async def test_links_overflow_splits():
 async def test_receipt_today_empty():
     from agents.telegram_bridge import cmd_receipt
     update, context = _make_update(_owner_id(), args=["today"])
+    context.bot.send_message = AsyncMock()
     await cmd_receipt(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
+    context.bot.send_message.assert_awaited_once()
+    text = context.bot.send_message.call_args.kwargs.get("text") or context.bot.send_message.call_args[1].get("text", "")
     assert len(text) <= 4000
 
 
@@ -650,9 +651,10 @@ async def test_receipt_today_empty():
 async def test_receipt_week_empty():
     from agents.telegram_bridge import cmd_receipt
     update, context = _make_update(_owner_id(), args=["week"])
+    context.bot.send_message = AsyncMock()
     await cmd_receipt(update, context)
-    update.message.reply_text.assert_awaited_once()
-    text = update.message.reply_text.call_args[0][0]
+    context.bot.send_message.assert_awaited_once()
+    text = context.bot.send_message.call_args.kwargs.get("text") or context.bot.send_message.call_args[1].get("text", "")
     assert len(text) <= 4000
 
 

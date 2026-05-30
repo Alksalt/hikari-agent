@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS media_outbox (
     kind TEXT NOT NULL CHECK(kind IN ('text','photo','sticker','document')),
     idempotency_key TEXT NOT NULL UNIQUE,
     payload_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed','aborted')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed','aborted')),
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     created_at TEXT NOT NULL,
@@ -543,6 +543,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_messages_source_index",
     "migrate_drop_facts_legacy_superseded_by",
     "migrate_drift_sycophancy_column",
+    "migrate_media_outbox_status_sending",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -692,6 +693,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index)
     run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by)
     run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column)
+    run_once(conn, "migrate_media_outbox_status_sending", _migrate_media_outbox_status_sending)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1059,6 +1061,62 @@ def _migrate_drift_sycophancy_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE persona_drift_scores ADD COLUMN sycophancy_score REAL"
         )
+
+
+def _migrate_media_outbox_status_sending(conn: sqlite3.Connection) -> None:
+    """Add 'sending' to media_outbox.status CHECK constraint.
+
+    SQLite cannot ALTER a CHECK constraint in place, so this uses the safe
+    table-rebuild pattern inside a SAVEPOINT.  Early-return if 'sending' is
+    already in the table DDL (idempotent).  No other table has a FK referencing
+    media_outbox, so DROP TABLE is safe.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_outbox'"
+    ).fetchone()
+    if row is not None and "'sending'" in (row[0] or ""):
+        return  # already widened; nothing to do
+    conn.execute("SAVEPOINT sp_media_outbox_sending")
+    try:
+        conn.execute("""
+            CREATE TABLE media_outbox_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('text', 'photo', 'sticker', 'document', 'voice')),
+                idempotency_key TEXT NOT NULL UNIQUE,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'sending', 'sent', 'failed', 'aborted')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                processed_at TEXT,
+                telegram_message_id INTEGER
+            )
+        """)
+        conn.execute(
+            "INSERT INTO media_outbox_new "
+            "(id, kind, idempotency_key, payload_json, status, attempts, "
+            " last_error, created_at, processed_at, telegram_message_id) "
+            "SELECT id, kind, idempotency_key, payload_json, status, attempts, "
+            "       last_error, created_at, processed_at, telegram_message_id "
+            "FROM media_outbox"
+        )
+        conn.execute("DROP TABLE media_outbox")
+        conn.execute("ALTER TABLE media_outbox_new RENAME TO media_outbox")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_outbox_status "
+            "ON media_outbox(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_outbox_kind_status "
+            "ON media_outbox(kind, status)"
+        )
+        conn.execute("RELEASE sp_media_outbox_sending")
+    except Exception:
+        conn.execute("ROLLBACK TO sp_media_outbox_sending")
+        conn.execute("RELEASE sp_media_outbox_sending")
+        raise
 
 
 def _migrate_messages_source_index(conn: sqlite3.Connection) -> None:
@@ -5508,6 +5566,23 @@ def media_outbox_pending(kind: str | None = None, limit: int = 50) -> list[dict]
     return [dict(r) for r in rows]
 
 
+def media_outbox_claim(kind: str, limit: int = 50) -> list[dict]:
+    """Atomically claim pending rows of a kind: flip pending->sending and RETURN
+    them (single UPDATE...RETURNING; SQLite serializes writes so no double-claim).
+
+    processed_at is stamped here (claim time) so the reaper can distinguish
+    freshly-claimed rows from crash-stuck rows without touching created_at.
+    """
+    with _conn() as c:
+        rows = c.execute(
+            "UPDATE media_outbox SET status='sending', processed_at=? "
+            "WHERE id IN (SELECT id FROM media_outbox WHERE status='pending' AND kind=? "
+            "ORDER BY created_at ASC, id ASC LIMIT ?) RETURNING *",
+            (_now(), kind, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def media_outbox_mark_sent(row_id: int, telegram_message_id: int | None = None) -> None:
     now = _now()
     with _conn() as c:
@@ -5573,9 +5648,26 @@ def media_outbox_mark_aborted(row_id: int, reason: str) -> None:
         )
 
 
+def media_outbox_reap_stale_sending(grace_seconds: int = 300) -> int:
+    """Flip rows stuck in 'sending' past grace back to 'pending' (crash mid-send). Returns count.
+
+    Reaps on processed_at (claim timestamp) rather than created_at so a row
+    that spent minutes in 'pending' before being claimed is not double-sent.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(UTC) - timedelta(seconds=int(grace_seconds))).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE media_outbox SET status='pending' "
+            "WHERE status='sending' AND processed_at IS NOT NULL AND processed_at < ?",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
 def media_outbox_stats() -> dict:
     """Return {status: count} dict. Zero-fills all known statuses."""
-    stats = {"pending": 0, "sent": 0, "failed": 0, "aborted": 0}
+    stats = {"pending": 0, "sending": 0, "sent": 0, "failed": 0, "aborted": 0}
     with _conn() as c:
         for row in c.execute(
             "SELECT status, COUNT(*) AS n FROM media_outbox GROUP BY status"

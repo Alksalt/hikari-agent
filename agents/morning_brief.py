@@ -21,6 +21,7 @@ import httpx
 import yaml
 
 from agents import config as cfg
+from agents.injection_guard import wrap_untrusted
 from agents.runtime import run_visible_proactive
 from storage import db
 from tools.weather import fetch_forecast
@@ -221,7 +222,8 @@ def _build_prompt(
     papers_section = ""
     if papers:
         lines = "\n".join(
-            f"  - {p['title']}" + (f" — {p['url']}" if p.get("url") else "")
+            f"  - {wrap_untrusted('morning_brief:hf_paper_title', p['title'])}"
+            + (f" — {p['url']}" if p.get("url") else "")
             for p in papers
         )
         papers_section = (

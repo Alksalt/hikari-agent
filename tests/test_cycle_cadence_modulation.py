@@ -151,7 +151,7 @@ def test_can_send_respects_scaled_cap():
     log = [(now - timedelta(hours=i)).isoformat() for i in range(scaled_cap)]
     db.runtime_set("proactive_log_v1", json.dumps(log))
 
-    allowed, reason = can_send("open_loop", Pool.AGENT_SPONTANEOUS)
+    allowed, reason = can_send("reengage_silence", Pool.AGENT_SPONTANEOUS)
     assert allowed is False
     assert "cap_reached" in reason
 

@@ -108,14 +108,20 @@ def _ctx(enabled: set[str] | None = None) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 
 class TestBundleCoFiring:
-    """The 60-second co-firing guard should hold or merge the second candidate."""
+    """The 60-second co-firing guard detects co-fires and drops the second candidate.
 
-    def test_second_candidate_held_when_cofire_within_60s(self, _isolated_db):
-        """When two candidates fire within the 60s window, the second is held for ~2h."""
+    NOTE: The original hold-for-2h behaviour was write-only/never drained and has
+    been removed.  _cofire_guard is now read-only — state is committed post-send
+    via commit_cofire(source).
+    """
+
+    def test_second_candidate_dropped_when_cofire_within_60s(self, _isolated_db):
+        """When two candidates fire within the 60s window, the best is still returned
+        and no hold key is written (hold was removed as dead code)."""
         from agents.engagement import selector
         from storage import db
 
-        # Simulate that a previous tick selected *just now* (within the window)
+        # Simulate that a previous tick committed a send *just now* (within the window)
         just_now = datetime.now(UTC).isoformat()
         db.runtime_set(selector._COFIRE_KEY, just_now)
         db.runtime_set(selector._COFIRE_SOURCE_KEY, "calendar_event_prep")
@@ -123,27 +129,20 @@ class TestBundleCoFiring:
         first = _make_trigger("calendar_event_prep")
         second = _make_trigger("gmail_unread_threshold")
 
-        with (
-            patch("agents.engagement.selector._source_send_mode", return_value="proactive"),
-            patch("agents.engagement.selector._source_min_value_score", return_value=0.0),
-            patch("agents.engagement.selector._value_score", return_value=0.5),
-            patch("agents.engagement.selector._hard_interval_blocked", return_value=False),
-            patch("agents.engagement.selector._priority_tier_multiplier", return_value=1.5),
-        ):
-            # Call _cofire_guard directly with best=first, second=second
-            result = selector._cofire_guard(first, second)
+        # Call _cofire_guard directly — it must return best and write nothing
+        result = selector._cofire_guard(first, second)
 
         # The best (first) must be returned
         assert result.source == "calendar_event_prep"
 
-        # The second must have been written to the hold key
-        raw = db.runtime_get(selector._COFIRE_HOLD_KEY)
-        assert raw is not None, "_COFIRE_HOLD_KEY should be set for the held candidate"
-        held = json.loads(raw)
-        assert held["source"] == "gmail_unread_threshold"
+        # No hold key must be written — cofire hold was removed as write-only dead code
+        # (cofire state is committed by commit_cofire post-send, not here)
+        assert not hasattr(selector, "_COFIRE_HOLD_KEY"), (
+            "_COFIRE_HOLD_KEY was removed; hold path is dead code"
+        )
 
-    def test_second_candidate_hold_has_future_expiry(self, _isolated_db):
-        """Held candidate hold_until timestamp must be ~2h in the future."""
+    def test_cofire_guard_does_not_write_state(self, _isolated_db):
+        """_cofire_guard must not write any cofire state — that belongs to commit_cofire."""
         from agents.engagement import selector
         from storage import db
 
@@ -154,25 +153,15 @@ class TestBundleCoFiring:
         first = _make_trigger("calendar_event_prep")
         second = _make_trigger("gmail_unread_threshold")
 
+        before_iso = db.runtime_get(selector._COFIRE_KEY)
         selector._cofire_guard(first, second)
+        after_iso = db.runtime_get(selector._COFIRE_KEY)
 
-        raw = db.runtime_get(selector._COFIRE_HOLD_KEY)
-        held = json.loads(raw)
-        hold_until = datetime.fromisoformat(held["hold_until"])
-        if hold_until.tzinfo is None:
-            hold_until = hold_until.replace(tzinfo=UTC)
-
-        now = datetime.now(UTC)
-        # Must be at least 1h 55m in the future (within tolerance) and at most 2h 5m
-        assert hold_until > now + timedelta(hours=1, minutes=55), (
-            f"hold_until={hold_until} should be ~2h from now"
-        )
-        assert hold_until < now + timedelta(hours=2, minutes=5), (
-            f"hold_until={hold_until} should not exceed 2h 5m from now"
-        )
+        # The key must be unchanged — _cofire_guard is read-only
+        assert before_iso == after_iso, "_cofire_guard must not update cofire state"
 
     def test_no_cofire_when_previous_tick_was_old(self, _isolated_db):
-        """When the previous tick was >60s ago, no hold is placed on the second."""
+        """When the previous committed send was >60s ago, no co-fire is detected."""
         from agents.engagement import selector
         from storage import db
 
@@ -183,12 +172,9 @@ class TestBundleCoFiring:
         first = _make_trigger("calendar_event_prep")
         second = _make_trigger("gmail_unread_threshold")
 
-        selector._cofire_guard(first, second)
-
-        # No hold should have been written (or it should be from a different path)
-        raw = db.runtime_get(selector._COFIRE_HOLD_KEY)
-        # If nothing was previously in the hold key, it stays None
-        assert raw is None, "No hold expected when co-fire window expired"
+        # Should return best without raising
+        result = selector._cofire_guard(first, second)
+        assert result.source == "calendar_event_prep"
 
     def test_select_with_two_candidates_cofire_path(self, _isolated_db):
         """select() with two candidates in a tick: best returned, second held via guard."""
@@ -295,3 +281,117 @@ class TestQuietHoursFailClosed:
             result = should_wake()
 
         assert result is False, "should_wake should return False during quiet hours"
+
+
+# ---------------------------------------------------------------------------
+# D11 — scheduler_gate_enabled=False must not bypass the noise floor
+# ---------------------------------------------------------------------------
+
+class TestSchedulerGateVsNoiseFloor:
+    """scheduler_gate_enabled=False bypasses only the scheduler-specific gate,
+    NOT the noise floor (quiet-hours / silent_day / silence_until).
+    HIKARI_DISABLE_NOISE_FLOOR is the explicit total dev bypass."""
+
+    def test_scheduler_gate_disabled_still_respects_quiet_hours(self, _isolated_db, monkeypatch):
+        """should_wake() returns False during quiet hours even when scheduler_gate_enabled=False."""
+        from agents.engagement.guard import should_wake
+        from agents import config as _cfg
+
+        monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
+            False if key == "proactive.scheduler_gate_enabled" else default
+        ))
+
+        with patch("agents.proactive._is_quiet_now", return_value=True):
+            result = should_wake()
+
+        assert result is False, (
+            "scheduler_gate_enabled=False must not bypass quiet hours (noise floor)"
+        )
+
+    def test_scheduler_gate_disabled_still_respects_silence_until(self, _isolated_db, monkeypatch):
+        """should_wake() returns False during active silence_until even when gate disabled."""
+        from datetime import UTC, datetime, timedelta
+        from agents.engagement.guard import should_wake
+        from agents import config as _cfg
+        from storage import db
+
+        monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
+            False if key == "proactive.scheduler_gate_enabled" else default
+        ))
+
+        # Set silence_until to 1 hour from now
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        db.runtime_set("silence_until", future)
+
+        with patch("agents.proactive._is_quiet_now", return_value=False):
+            result = should_wake()
+
+        assert result is False, (
+            "scheduler_gate_enabled=False must not bypass global silence_until (noise floor)"
+        )
+
+    def test_scheduler_gate_disabled_still_respects_silent_day(self, _isolated_db, monkeypatch):
+        """should_wake() returns False on a silent_day even when gate disabled."""
+        from agents.engagement.guard import should_wake
+        from agents import config as _cfg
+
+        monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
+            False if key == "proactive.scheduler_gate_enabled" else default
+        ))
+
+        with (
+            patch("agents.proactive_gate._is_silent_day_today", return_value=True),
+            patch("agents.proactive._is_quiet_now", return_value=False),
+        ):
+            result = should_wake()
+
+        assert result is False, (
+            "scheduler_gate_enabled=False must not bypass silent_day (noise floor)"
+        )
+
+    def test_scheduler_gate_disabled_returns_true_when_noise_floor_clear(self, _isolated_db, monkeypatch):
+        """should_wake() returns True when gate disabled AND noise floor is clear."""
+        from agents.engagement.guard import should_wake
+        from agents import config as _cfg
+
+        monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
+            False if key == "proactive.scheduler_gate_enabled" else default
+        ))
+
+        with (
+            patch("agents.proactive_gate._is_silent_day_today", return_value=False),
+            patch("agents.proactive._is_quiet_now", return_value=False),
+        ):
+            result = should_wake()
+
+        assert result is True, (
+            "should_wake must return True when gate disabled and noise floor clear"
+        )
+
+    def test_disable_noise_floor_env_bypasses_everything(self, _isolated_db, monkeypatch):
+        """HIKARI_DISABLE_NOISE_FLOOR=1 bypasses the noise floor entirely (dev-only)."""
+        from agents.engagement.guard import should_wake
+
+        monkeypatch.setenv("HIKARI_DISABLE_NOISE_FLOOR", "1")
+
+        with (
+            patch("agents.proactive._is_quiet_now", return_value=True),
+        ):
+            result = should_wake()
+
+        assert result is True, (
+            "HIKARI_DISABLE_NOISE_FLOOR=1 must bypass everything including quiet hours"
+        )
+
+    def test_disable_noise_floor_env_not_set_does_not_bypass(self, _isolated_db, monkeypatch):
+        """Without HIKARI_DISABLE_NOISE_FLOOR set, quiet hours are still respected."""
+        from agents.engagement.guard import should_wake
+
+        monkeypatch.delenv("HIKARI_DISABLE_NOISE_FLOOR", raising=False)
+
+        with patch("agents.proactive._is_quiet_now", return_value=True):
+            result = should_wake()
+
+        assert result is False, (
+            "Without HIKARI_DISABLE_NOISE_FLOOR, quiet hours must still block"
+        )

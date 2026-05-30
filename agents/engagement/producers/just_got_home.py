@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agents import config as cfg
 from agents.engagement.triggers import TriggerCandidate
+from agents.hooks import _resolve_local_tz_name
 from storage import db
 
 logger = logging.getLogger(__name__)
@@ -60,10 +62,12 @@ def collect() -> list[TriggerCandidate]:
         # Already at home or first observation — not a transition.
         return []
 
-    # Time gate: only during evening hours (UTC approximation; good enough
-    # given Hikari's persona; caller can offset via tz config if needed).
+    # Time gate: only during evening hours in the user's local timezone.
     now = datetime.now(UTC)
-    local_hour = now.hour  # best approximation without tz config
+    try:
+        local_hour = now.astimezone(ZoneInfo(_resolve_local_tz_name())).hour
+    except ZoneInfoNotFoundError:
+        local_hour = now.hour  # fall back to UTC if tz is misconfigured
     if not (_EVENING_HOUR_START <= local_hour <= _EVENING_HOUR_END):
         return []
 

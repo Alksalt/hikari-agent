@@ -411,7 +411,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
 
     scheduler.add_job(
         _monthly_prune_job,
-        CronTrigger(day=1, hour=4, minute=0),
+        CronTrigger(day=1, hour=4, minute=2),
         id="monthly_prune",
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
@@ -631,6 +631,45 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         IntervalTrigger(minutes=2),
         id="media_outbox_drain",
         coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+
+    # D13: Periodic proactive reservation reaper — flips reserved rows that
+    # survived a crash back to aborted. Runs every 10 min so stale rows are
+    # cleaned up well before the next dedup window. Boot-time reap already
+    # handles startup; this catches long-running processes that crash mid-turn.
+    async def _proactive_reaper_job():
+        from agents.proactive_reaper import reap_stale_reservations  # noqa: PLC0415
+        try:
+            n = await reap_stale_reservations()
+            if n:
+                logger.info("proactive_reaper (periodic): flipped %d stale reservations", n)
+        except Exception:
+            logger.exception("proactive_reaper (periodic): unexpected failure")
+
+    scheduler.add_job(
+        _proactive_reaper_job,
+        IntervalTrigger(minutes=10),
+        id="proactive_reservation_reaper",
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+
+    # D13: Periodic media_outbox stale-sending reaper — flips rows stuck in
+    # 'sending' back to 'pending' so they are retried by the drain job.
+    # Grace period of 300s matches the parallel implementer's db fn default.
+    async def _media_outbox_reaper_job():
+        from storage import db as _db  # noqa: PLC0415
+        try:
+            n = _db.media_outbox_reap_stale_sending(300)
+            if n:
+                logger.info("media_outbox_reaper (periodic): reset %d stale sending rows", n)
+        except Exception:
+            logger.exception("media_outbox_reaper (periodic): unexpected failure")
+
+    scheduler.add_job(
+        _media_outbox_reaper_job,
+        IntervalTrigger(minutes=10),
+        id="media_outbox_stale_reaper",
+        coalesce=True, max_instances=1, misfire_grace_time=120,
     )
 
     return scheduler

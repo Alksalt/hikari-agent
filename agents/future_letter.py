@@ -516,56 +516,91 @@ async def run_future_letter(
 
     # Dedup gate 2: existing row. Catches the case where last_sent wasn't
     # written (early failure) but we already composed and persisted.
-    if db.future_letter_get(month_iso):
+    _existing = db.future_letter_get(month_iso)
+    if _existing:
+        if _existing.get("sent_at"):
+            logger.info(
+                "future_letter: row exists and sent for %s; skipping",
+                month_iso,
+            )
+            # Backfill the runtime_state marker so the cheap gate catches it next time.
+            db.runtime_set("future_letter_last_month", month_iso)
+            return False
+        # Row exists but was never fully delivered (partial send). Fall through
+        # to re-attempt delivery using the already-persisted body.
         logger.info(
-            "future_letter: row exists for %s; skipping recompose",
+            "future_letter: row exists unsent for %s; re-attempting delivery",
             month_iso,
         )
-        # Backfill the runtime_state marker so the cheap gate catches it next time.
-        db.runtime_set("future_letter_last_month", month_iso)
-        return False
+        body = _existing["body"]
+        theme = _existing["theme"]
+        # Skip LLM composition + re-persist steps below — jump straight to send.
+        _skip_compose = True
+    else:
+        _skip_compose = False
 
-    min_receipts = int(cfg.get("future_letter.min_receipts_for_letter", 5))
+    if not _skip_compose:
+        min_receipts = int(cfg.get("future_letter.min_receipts_for_letter", 5))
 
-    data = await gather_month_data(month_iso)
-    if not _has_enough_data(data, min_receipts):
-        logger.info(
-            "future_letter: sparse data for %s "
-            "(receipts<%d, no episodes); skipping",
-            month_iso, min_receipts,
-        )
-        return False
+        data = await gather_month_data(month_iso)
+        if not _has_enough_data(data, min_receipts):
+            logger.info(
+                "future_letter: sparse data for %s "
+                "(receipts<%d, no episodes); skipping",
+                month_iso, min_receipts,
+            )
+            return False
 
-    theme = await pick_decision_theme(data)
-    if not theme:
-        logger.info("future_letter: theme picker declined for %s", month_iso)
-        return False
+        theme = await pick_decision_theme(data)
+        if not theme:
+            logger.info("future_letter: theme picker declined for %s", month_iso)
+            return False
 
-    body = await compose_letter(data, theme)
-    if not body:
-        logger.info("future_letter: composer declined for %s", month_iso)
-        return False
+        body = await compose_letter(data, theme)
+        if not body:
+            logger.info("future_letter: composer declined for %s", month_iso)
+            return False
 
-    # Persist BEFORE attempting send — if Telegram fails, the letter is
-    # still recoverable. file write is idempotent; DB row is unique-per-month
-    # so a re-fire on the same month after a partial run lands here cleanly.
-    try:
-        write_letter_file(month_iso, body, theme, root=root)
-    except Exception:
-        logger.exception("future_letter: write_letter_file failed (non-fatal)")
-    try:
-        db.future_letter_insert(month_iso, theme, body)
-    except sqlite3.IntegrityError:
-        # Another process beat us to the insert (UNIQUE constraint). Treat
-        # as already-handled — don't double-send.
-        logger.info(
-            "future_letter: UNIQUE conflict on %s; another run beat us",
-            month_iso,
-        )
-        return False
-    except Exception:
-        logger.exception("future_letter: future_letter_insert failed")
-        return False
+        # Persist BEFORE attempting send — if Telegram fails, the letter is
+        # still recoverable. file write is idempotent; DB row is unique-per-month
+        # so a re-fire on the same month after a partial run lands here cleanly.
+        try:
+            write_letter_file(month_iso, body, theme, root=root)
+        except Exception:
+            logger.exception("future_letter: write_letter_file failed (non-fatal)")
+        try:
+            db.future_letter_insert(month_iso, theme, body)
+        except sqlite3.IntegrityError:
+            # Race: another concurrent process inserted the row between our
+            # get (gate 2) and this insert. Check whether it has been fully
+            # sent; if so, treat as already-handled.
+            _race_row = db.future_letter_get(month_iso)
+            if _race_row and _race_row.get("sent_at"):
+                logger.info(
+                    "future_letter: race-insert on %s; other run already sent",
+                    month_iso,
+                )
+                return False
+            # Other run inserted but didn't finish sending — our body is
+            # the same composition, so load it and proceed with delivery.
+            if _race_row:
+                body = _race_row["body"]
+                theme = _race_row["theme"]
+                logger.info(
+                    "future_letter: race-insert on %s (unsent); "
+                    "re-using persisted body",
+                    month_iso,
+                )
+            else:
+                logger.exception(
+                    "future_letter: UNIQUE conflict on %s but no row found; "
+                    "aborting",
+                    month_iso,
+                )
+                return False
+        except Exception:
+            logger.exception("future_letter: future_letter_insert failed")
+            return False
 
     # Deliver. Preamble is a single Hikari-voice line so the user knows what's
     # arriving without breaking the letter's first-person frame.
@@ -616,9 +651,17 @@ async def run_future_letter(
         )
         results.append(r)
         if r.status != "sent":
-            logger.warning("future_letter chunk %d skipped (%s)", i, r.reason)
+            # Abort immediately — do NOT mark the row sent. The row stays
+            # with sent_at=NULL so the next scheduled run will re-attempt
+            # delivery of the full letter from the already-persisted body.
+            logger.warning(
+                "future_letter chunk %d failed (%s); aborting send — "
+                "row left unsent for retry",
+                i, r.reason,
+            )
+            break
 
-    send_ok = all(r.status == "sent" for r in results) and r_preamble.status == "sent"
+    send_ok = bool(results) and all(r.status == "sent" for r in results) and len(results) == len(chunks)
 
     # Emit one ceremony audit row so reaction joins work (source='future_letter_send').
     last_tg_id = results[-1].telegram_message_id if results else r_preamble.telegram_message_id

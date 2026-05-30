@@ -190,6 +190,115 @@ def test_mark_failed_terminal_for_non_retried_kinds():
     assert photo_row["attempts"] == 5
 
 
+# ---------------------------------------------------------------------------
+# claim + reap tests (Phase 3D / D14)
+# ---------------------------------------------------------------------------
+
+def test_claim_flips_pending_to_sending_and_returns():
+    """claim returns the rows AND flips them to 'sending'; a second claim gets 0."""
+    _insert(kind="text", key="c1")
+    _insert(kind="text", key="c2")
+
+    claimed = db.media_outbox_claim("text")
+    assert len(claimed) == 2
+    assert all(r["status"] == "sending" for r in claimed)
+
+    # DB state matches
+    rows = _all_rows()
+    assert all(r["status"] == "sending" for r in rows)
+
+    # No double-claim
+    claimed2 = db.media_outbox_claim("text")
+    assert claimed2 == []
+
+
+def test_claim_respects_kind_filter():
+    """Claiming 'text' leaves 'photo' rows untouched."""
+    _insert(kind="text", key="txt1")
+    _insert(kind="photo", key="img1")
+
+    claimed = db.media_outbox_claim("text")
+    assert len(claimed) == 1
+    assert claimed[0]["kind"] == "text"
+
+    rows = _all_rows()
+    photo_row = next(r for r in rows if r["kind"] == "photo")
+    assert photo_row["status"] == "pending"
+
+
+def test_claim_respects_limit():
+    """With 3 pending and limit=2, only 2 are claimed; 1 stays pending."""
+    _insert(kind="text", key="l1")
+    _insert(kind="text", key="l2")
+    _insert(kind="text", key="l3")
+
+    claimed = db.media_outbox_claim("text", limit=2)
+    assert len(claimed) == 2
+
+    pending_after = db.media_outbox_pending(kind="text")
+    assert len(pending_after) == 1
+
+
+def test_reap_stale_sending_resets_old_rows():
+    """A row in 'sending' whose processed_at (claim time) predates the cutoff is reset to 'pending'."""
+    row_id = _insert(kind="text", key="stale1")
+    db.media_outbox_claim("text")  # now 'sending', processed_at = now
+
+    # Back-date processed_at so it looks like the claim happened 1 hour ago
+    with db._conn() as c:
+        c.execute(
+            "UPDATE media_outbox SET processed_at = datetime('now', '-3600 seconds') WHERE id=?",
+            (row_id,),
+        )
+
+    count = db.media_outbox_reap_stale_sending(grace_seconds=300)
+    assert count == 1
+
+    rows = _all_rows()
+    assert rows[0]["status"] == "pending"
+
+
+def test_reap_leaves_fresh_sending_alone():
+    """A freshly-claimed row (just now) is NOT reaped under the default 300 s grace."""
+    _insert(kind="text", key="fresh1")
+    db.media_outbox_claim("text")  # 'sending', processed_at = now
+
+    count = db.media_outbox_reap_stale_sending(grace_seconds=300)
+    assert count == 0
+
+    rows = _all_rows()
+    assert rows[0]["status"] == "sending"
+
+
+def test_reap_leaves_aged_pending_just_claimed_alone():
+    """Double-send regression: a row created long ago but freshly claimed must NOT be reaped.
+
+    Scenario: row sits 'pending' for >300s (e.g. 1 hour) before the drain fires and
+    claims it. The reaper must NOT reset it to 'pending' mid-send just because
+    created_at is old — it should only look at processed_at (claim time).
+    """
+    row_id = _insert(kind="text", key="aged_pending")
+
+    # Simulate the row having been inserted 1 hour ago (long pending wait).
+    with db._conn() as c:
+        c.execute(
+            "UPDATE media_outbox SET created_at = datetime('now', '-3600 seconds') WHERE id=?",
+            (row_id,),
+        )
+
+    # Now claim it — processed_at is stamped as NOW.
+    claimed = db.media_outbox_claim("text")
+    assert len(claimed) == 1
+    assert claimed[0]["status"] == "sending"
+
+    # Reaper runs with 300s grace — processed_at is fresh (just now), so row must survive.
+    count = db.media_outbox_reap_stale_sending(grace_seconds=300)
+    assert count == 0
+
+    rows = _all_rows()
+    assert rows[0]["status"] == "sending"
+
+
 def test_reconciler_refuses_symlinks(tmp_path, monkeypatch):
     """_reconcile_photo_outbox_orphans unlinks symlinks and inserts no DB row."""
     import importlib

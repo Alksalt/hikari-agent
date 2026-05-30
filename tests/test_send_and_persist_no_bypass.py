@@ -188,10 +188,14 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "_cb_proactive",
         "_cb_memory",
         "_cb_rem",
+        "_cb_diary",
+        "_cb_receipt",
         "cmd_approvals",
         "cmd_checkin",
         "cmd_reminders",
         "cmd_memorydump",
+        "cmd_diary",
+        "cmd_receipt",
     }
     violations: list[str] = []
 

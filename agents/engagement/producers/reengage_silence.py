@@ -36,6 +36,13 @@ def collect() -> list[TriggerCandidate]:
     if _is_quiet_now():
         return []
 
+    # Stage gate: don't fire before the relationship has matured enough.
+    stage = db.runtime_get_int("relationship_stage", 1)
+    min_stage = int(cfg.get("engagement.reengage_silence.min_stage", 6))
+    if stage < min_stage:
+        logger.debug("reengage_silence: stage %d < min_stage %d — skipping", stage, min_stage)
+        return []
+
     # Hard interval gate — same check used by the selector for all other sources.
     # Prevents reengage_silence from bypassing the min_interval_minutes config.
     from agents.engagement.selector import _hard_interval_blocked

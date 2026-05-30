@@ -453,16 +453,38 @@ _OUTBOX_DISPATCHERS = {
 async def _drain_media_outbox(
     bot, chat_id: int, *, kinds: tuple[str, ...] = _DRAIN_KINDS_DEFAULT,
 ) -> dict[str, int]:
-    """Drain pending media_outbox rows for each kind. Returns {kind: sent_count}."""
+    """Drain pending media_outbox rows for each kind. Returns {kind: sent_count}.
+
+    Rows are claimed atomically (pending→sending) via db.media_outbox_claim so
+    concurrent drains (e.g. boot drain + mid-turn drain) cannot double-send.
+    Per-row chat_id from payload overrides the caller-supplied fallback.
+    """
+    import json as _json  # noqa: PLC0415
     counts: dict[str, int] = {k: 0 for k in kinds}
     for kind in kinds:
         dispatcher = _OUTBOX_DISPATCHERS.get(kind)
         if dispatcher is None:
             logger.warning("_drain_media_outbox: no dispatcher for kind %r", kind)
             continue
-        rows = db.media_outbox_pending(kind=kind)
+        rows = db.media_outbox_claim(kind=kind)
         for row in rows:
-            tg_msg_id = await dispatcher(bot, chat_id, row)
+            # Honour per-row chat_id if present in the payload; fall back to
+            # the caller-supplied owner chat_id.
+            try:
+                payload = _json.loads(row.get("payload_json") or "{}")
+                row_chat_id = payload.get("chat_id") or chat_id
+            except Exception:
+                row_chat_id = chat_id
+            try:
+                resolved_chat_id = int(row_chat_id)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "_drain_media_outbox: row %s has non-numeric chat_id %r — aborting",
+                    row["id"], row_chat_id,
+                )
+                db.media_outbox_mark_aborted(row["id"], "bad_chat_id")
+                continue
+            tg_msg_id = await dispatcher(bot, resolved_chat_id, row)
             if tg_msg_id is not None:
                 counts[kind] += 1
     return counts
@@ -893,6 +915,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Inbound user photo — save to disk, prompt agent with path so it can Read,
     then record an episode tagged with the reply summary so future callbacks work
     ('how's the plant?')."""
+    if not cfg.get("photo_in.enabled", True):
+        return
     user = update.effective_user
     chat = update.effective_chat
     message = update.message
@@ -1053,6 +1077,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "voice note rejected: duration %.1fs > max %.1fs",
                 duration_sec, max_duration,
             )
+            abs_path.unlink(missing_ok=True)
             await send_ephemeral_ack(
                 context.bot, chat.id, graceful_reply,
                 reason="voice_error", reply_to=message,
@@ -1063,6 +1088,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             transcript = await voice_tool.transcribe_voice(abs_path)
         except voice_tool.VoiceTranscribeError as e:
             logger.info("voice transcription failed: %s", e)
+            abs_path.unlink(missing_ok=True)
             try:
                 db.append_message("user", "[voice note — transcription failed]", source="chat")
             except Exception:
@@ -1074,6 +1100,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         except Exception:
             logger.exception("voice transcription crashed unexpectedly")
+            abs_path.unlink(missing_ok=True)
             try:
                 db.append_message("user", "[voice note — transcription failed]", source="chat")
             except Exception:
@@ -1083,6 +1110,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reason="voice_transcription_fail", reply_to=message,
             )
             return
+
+        # Transcription succeeded — delete the temp file now that we have the text.
+        abs_path.unlink(missing_ok=True)
 
         rude, matched = is_rude(transcript)
 
@@ -1401,6 +1431,8 @@ async def _try_ingest_document_photo(message) -> str | None:
     """If ``message`` carries a document whose mime type is image/*, download
     it, attempt EXIF GPS extraction, and on success persist + reverse-geocode.
     Returns a human-readable place label or ``None``. Never raises."""
+    if not cfg.get("photo_in.enabled", True):
+        return None
     doc = getattr(message, "document", None)
     if doc is None:
         return None
@@ -1667,7 +1699,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         block, kind_note = _build_ingest_block(abs_path, mime, fname)
 
-        location_hint = f" exif location: {label!r}." if label else ""
+        location_hint = (
+            f" exif location: {injection_guard.wrap_untrusted('nominatim', label)!r}."
+            if label else ""
+        )
         prompt_blocks: list[dict] = []
         if block is not None:
             prompt_blocks.append(block)
@@ -1776,7 +1811,7 @@ async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception("proactive_event_record_silence_window failed (non-fatal)")
     await send_ephemeral_ack(
         context.bot, message.chat_id,
-        f"ok. quiet for {minutes} minutes. don't make me regret it.",
+        cockpit.format_silence_ack(minutes),
         reason="silence_ack", reply_to=message,
     )
 
@@ -2621,9 +2656,16 @@ async def _cb_proactive(bot, chat_id: int, action: str, parts: list[str]) -> Non
 
 
 async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
-    """Handles mem:forget:<fact_id>, mem:context:<fact_id>, mem:pin:<fact_id>,
-    mem:page:<n>."""
-    if action in ("forget", "context", "pin"):
+    """Handles mem:forget:<fid>, mem:forget_confirm:<fid>, mem:context:<fid>,
+    mem:pin:<fid>, mem:pin_confirm:<fid>, mem:page:<n>.
+
+    Destructive actions (forget, pin) require a confirm step before mutating:
+      Forget button  → mem:forget:<fid>         → asks for confirmation
+      Confirm button → mem:forget_confirm:<fid> → marks fact invalid
+      Pin button     → mem:pin:<fid>            → asks for confirmation
+      Confirm button → mem:pin_confirm:<fid>    → sets status=pinned
+    """
+    if action in ("forget", "forget_confirm", "context", "pin", "pin_confirm"):
         fact_id_str = parts[2] if len(parts) > 2 else "0"
         try:
             fact_id = int(fact_id_str)
@@ -2632,6 +2674,21 @@ async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
             return
 
         if action == "forget":
+            # First tap: ask for confirmation before mutating.
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    f"Yes, forget #{fact_id}",
+                    callback_data=f"mem:forget_confirm:{fact_id}",
+                ),
+                InlineKeyboardButton("Cancel", callback_data="mem:page:0"),
+            ]])
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"forget fact #{fact_id}? this marks it invalid and cannot be undone.",
+                reply_markup=markup,
+            )
+
+        elif action == "forget_confirm":
             try:
                 db.mark_fact_invalid(fact_id)
                 await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: marked invalid.")
@@ -2653,6 +2710,21 @@ async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
                 await bot.send_message(chat_id=chat_id, text=f"context lookup failed: {exc}")
 
         elif action == "pin":
+            # First tap: ask for confirmation before mutating.
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    f"Yes, pin #{fact_id}",
+                    callback_data=f"mem:pin_confirm:{fact_id}",
+                ),
+                InlineKeyboardButton("Cancel", callback_data="mem:page:0"),
+            ]])
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"pin fact #{fact_id}? pinned facts are excluded from decay/pruning.",
+                reply_markup=markup,
+            )
+
+        elif action == "pin_confirm":
             try:
                 with db._conn() as c:
                     c.execute(
@@ -2664,28 +2736,24 @@ async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
                 await bot.send_message(chat_id=chat_id, text=f"pin failed: {exc}")
 
     elif action == "page":
-        page_str = parts[2] if len(parts) > 2 else "1"
+        # 0-based page index to match cockpit.format_memorydump; the callback
+        # data already carries 0-based values (set by cockpit's nav_row builder).
+        page_str = parts[2] if len(parts) > 2 else "0"
         try:
-            page = max(1, int(page_str))
+            page = max(0, int(page_str))
         except ValueError:
-            page = 1
-        per_page = 10
-        offset = (page - 1) * per_page
+            page = 0
         try:
-            with db._conn() as c:
-                rows = c.execute(
-                    "SELECT id, subject, predicate, object FROM facts "
-                    "WHERE valid_to IS NULL AND status = 'active' "
-                    "ORDER BY id DESC LIMIT ? OFFSET ?",
-                    (per_page, offset),
-                ).fetchall()
-            if not rows:
-                await bot.send_message(chat_id=chat_id, text=f"no facts on page {page}.")
-                return
-            lines = [f"facts page {page}:"]
-            for r in rows:
-                lines.append(f"  #{r['id']} {r['subject']} {r['predicate']} {str(r['object'])[:60]}")
-            await bot.send_message(chat_id=chat_id, text="\n".join(lines)[:3000])
+            text, keyboard_rows = cockpit.format_memorydump(page=page)
+            if keyboard_rows:
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+                     for btn in row]
+                    for row in keyboard_rows
+                ])
+                await bot.send_message(chat_id=chat_id, text=text[:4000], reply_markup=markup)
+            else:
+                await bot.send_message(chat_id=chat_id, text=text[:4000])
         except Exception as exc:
             await bot.send_message(chat_id=chat_id, text=f"mem:page failed: {exc}")
 
@@ -2749,6 +2817,38 @@ async def _cb_rem(bot, chat_id: int, action: str, parts: list[str]) -> None:
         await bot.send_message(chat_id=chat_id, text=f"unknown rem action: {action!r}")
 
 
+async def _cb_diary(bot, chat_id: int, parts: list[str]) -> None:
+    """Handles diary:page:<n> callbacks."""
+    page_str = parts[2] if len(parts) > 2 else "0"
+    try:
+        page = max(0, int(page_str))
+    except ValueError:
+        page = 0
+    text, nav_row = cockpit.format_diary(page=page)
+    if nav_row:
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+            for btn in nav_row
+        ]])
+        await bot.send_message(chat_id=chat_id, text=(text or "no entries.")[:4000], reply_markup=markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=(text or "no entries.")[:4000])
+
+
+async def _cb_receipt(bot, chat_id: int, parts: list[str]) -> None:
+    """Handles receipt:<view> callbacks (today/week/made/moved/learned/avoided)."""
+    view = parts[1] if len(parts) > 1 else "today"
+    text, keyboard_row = cockpit.format_receipt(view=view)
+    if keyboard_row:
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+            for btn in keyboard_row
+        ]])
+        await bot.send_message(chat_id=chat_id, text=(text or "nothing logged.")[:4000], reply_markup=markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=(text or "nothing logged.")[:4000])
+
+
 async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route all inline-keyboard callbacks. Owner-gated."""
     query = update.callback_query
@@ -2785,6 +2885,10 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif namespace == "rem":
             action = parts[1] if len(parts) > 1 else ""
             await _cb_rem(bot, chat_id, action, parts)
+        elif namespace == "diary":
+            await _cb_diary(bot, chat_id, parts)
+        elif namespace == "receipt":
+            await _cb_receipt(bot, chat_id, parts)
         else:
             logger.warning("_handle_callback: unknown namespace %r in data %r", namespace, data)
     except Exception:
@@ -2812,8 +2916,19 @@ async def cmd_diary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     args = (context.args or [])
     page = int(args[0]) if args and args[0].isdigit() else 0
-    text, _ = cockpit.format_diary(page=page)
-    await _send_cockpit_text(message, text)
+    text, nav_row = cockpit.format_diary(page=page)
+    if nav_row:
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+            for btn in nav_row
+        ]])
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=(text or "no diary entries.")[:4000],
+            reply_markup=markup,
+        )
+    else:
+        await _send_cockpit_text(message, text)
 
 
 async def cmd_memorydump(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2861,8 +2976,19 @@ async def cmd_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     args = (context.args or [])
     view = args[0] if args else "today"
-    text, _ = cockpit.format_receipt(view=view)
-    await _send_cockpit_text(message, text)
+    text, keyboard_row = cockpit.format_receipt(view=view)
+    if keyboard_row:
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+            for btn in keyboard_row
+        ]])
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=(text or "nothing logged.")[:4000],
+            reply_markup=markup,
+        )
+    else:
+        await _send_cockpit_text(message, text)
 
 
 async def cmd_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3426,11 +3552,11 @@ def main() -> None:
             logger.exception("proactive_reaper failed (non-fatal)")
 
         scheduler = build_scheduler(send_text)
-        scheduler.start()
         global _SCHEDULER_REF
         _SCHEDULER_REF = scheduler
-        logger.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
         application.bot_data["scheduler"] = scheduler  # Phase 6A: /status can read jobs
+        # scheduler.start() is deferred until after sdk_pool.startup() below so
+        # scheduled jobs that call run_scheduled_action don't race against pool init.
 
         # Wire owner chat into dispatch tool so it can resolve where to send results.
         dispatch_tools.set_owner_chat_id(owner_id())
@@ -3525,6 +3651,10 @@ def main() -> None:
         # Phase B: start persistent SDK client pool (live + haiku judge).
         await _sdk_pool.startup()
         logger.info("sdk_pool started")
+        # Start scheduler only after sdk_pool is ready — scheduled jobs call
+        # run_scheduled_action which requires a live pool connection.
+        scheduler.start()
+        logger.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
 
         try:
             from storage.graph import get_graph  # noqa: PLC0415
