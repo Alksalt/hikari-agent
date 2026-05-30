@@ -19,7 +19,7 @@
 
 **Forbidden**: Anthropic models on OpenRouter (priced like the direct API), OpenAI chat completions (use OpenRouter+DeepSeek instead), any LLM costing >$1/1M tokens without flagging the cost first.
 
-**STT**: default is local `faster-whisper` via `voice.transcription_provider: local_faster_whisper` (`tools/voice.py`). Config-switchable to `openai_whisper_api` as a fallback if the local model misbehaves.
+**STT**: OpenAI Whisper API (`voice.transcription_provider: openai_whisper_api`, `OPENAI_API_KEY`). Local faster-whisper removed 2026-05-30 — it didn't work reliably. Missing key raises loudly at call time.
 
 ## Ship profile
 
