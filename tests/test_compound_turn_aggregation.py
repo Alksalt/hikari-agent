@@ -37,22 +37,6 @@ def _isolated_db(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_read_node(task: str):
-    from agents.work_packet import CompoundTaskNode
-    return CompoundTaskNode(
-        intent_type="read",
-        utterance_span=(0, len(task)),
-        risk_class="safe",
-        approval_policy="auto",
-        confidence=0.9,
-        task=task,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Test 1 — child tool call reaches parent after run_compound_turn_typed
 # ---------------------------------------------------------------------------
 
@@ -74,7 +58,18 @@ async def test_child_tool_call_reaches_parent_last_turn_tool_names(
         return "5 unread — all newsletters"
 
     async def _fake_extract(message):
-        return [_make_read_node("fetch inbox")]
+        from agents.work_packet import CompoundTaskNode
+        # Two nodes so the turn stays on the compound machinery — a single auto
+        # node now short-circuits to the stateful run_user_turn path. The child
+        # sink aggregation under test only runs for genuine multi-task packets.
+        return [
+            CompoundTaskNode(intent_type="read", utterance_span=(0, 5),
+                             risk_class="safe", approval_policy="auto",
+                             confidence=0.9, task="fetch inbox"),
+            CompoundTaskNode(intent_type="read", utterance_span=(6, 11),
+                             risk_class="safe", approval_policy="auto",
+                             confidence=0.9, task="check labels"),
+        ]
 
     monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
     monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
@@ -83,7 +78,7 @@ async def test_child_tool_call_reaches_parent_last_turn_tool_names(
     token = LAST_TURN_TOOL_NAMES.set(set())
     try:
         await run_compound_turn_typed(
-            "fetch inbox", user_turn_id="agg-t1", step_timeout=5.0,
+            "fetch inbox and labels", user_turn_id="agg-t1", step_timeout=5.0,
         )
         tool_names = LAST_TURN_TOOL_NAMES.get()
         assert CHILD_TOOL in tool_names, (
@@ -114,7 +109,19 @@ async def test_real_inbox_fetch_survives_filter_outgoing(monkeypatch, _isolated_
         return REPLY_TEXT
 
     async def _fake_extract(message):
-        return [_make_read_node("check gmail")]
+        from agents.work_packet import CompoundTaskNode
+        # Two nodes so the turn stays on the compound machinery — a single auto
+        # node now short-circuits to the stateful run_user_turn path (which in
+        # production populates LAST_TURN_TOOL_NAMES itself). The compound child
+        # sink aggregation under test only runs for genuine multi-task packets.
+        return [
+            CompoundTaskNode(intent_type="read", utterance_span=(0, 5),
+                             risk_class="safe", approval_policy="auto",
+                             confidence=0.9, task="check gmail"),
+            CompoundTaskNode(intent_type="read", utterance_span=(6, 11),
+                             risk_class="safe", approval_policy="auto",
+                             confidence=0.9, task="check labels"),
+        ]
 
     monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
     monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
@@ -122,7 +129,7 @@ async def test_real_inbox_fetch_survives_filter_outgoing(monkeypatch, _isolated_
     token = LAST_TURN_TOOL_NAMES.set(set())
     try:
         await run_compound_turn_typed(
-            "check gmail", user_turn_id="agg-t2", step_timeout=5.0,
+            "check gmail and labels", user_turn_id="agg-t2", step_timeout=5.0,
         )
 
         # Now call filter_outgoing in the SAME context — backstop should pass.

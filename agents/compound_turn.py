@@ -252,11 +252,24 @@ def _compose_receipt(packet: WorkPacket) -> str:
     return "\n".join(parts).strip()
 
 
-async def _fallback_single_llm(user_text: str) -> str:
-    """Escalate to a single LLM turn when validation fails or extractor errors."""
-    from agents.runtime import run_internal_control
-    logger.info("compound_turn_typed: falling back to single-LLM turn")
-    return await run_internal_control(user_text)
+async def _fallback_single_llm(user_text: str, *, prefix: str | None = None) -> str:
+    """Route a one-task / failed-extraction message to a single STATEFUL turn.
+
+    Uses ``run_user_turn`` (NOT ``run_internal_control``) so the reply keeps the
+    live SDK session resume + injected memory — exactly what the normal chat
+    path (``respond`` → ``run_user_turn``) gets. ``run_internal_control`` is
+    stateless (``resume=None``, ``inject_memory_enabled=False``); routing chat
+    through it was the dominant reason Hikari "felt dumb" / forgot context.
+
+    The bridge already appended the user message before invoking the compound
+    turn, and ``run_user_turn`` does NOT append, so there is no double-write.
+    ``prefix`` carries the reply-quote + belief-frame context the bridge folded
+    into ``internal_belief_context``, mirroring how ``respond`` prepends it.
+    """
+    from agents.runtime import run_user_turn
+    logger.info("compound_turn_typed: routing to single stateful turn (session + memory)")
+    prompt = f"{prefix}\n\n{user_text}" if prefix else user_text
+    return await run_user_turn(prompt)
 
 
 async def run_compound_turn_typed(
@@ -332,26 +345,30 @@ async def run_compound_turn_typed(
     try:
         nodes = await extract_typed_nodes(user_text)
     except (ValueError, json.JSONDecodeError) as exc:
-        logger.warning("compound_turn_typed: extractor failed (%s) — single-LLM fallback", exc)
-        return await _fallback_single_llm(user_text)
+        logger.warning("compound_turn_typed: extractor failed (%s) — stateful fallback", exc)
+        return await _fallback_single_llm(user_text, prefix=internal_belief_context)
     except Exception as exc:  # noqa: BLE001 — transport/runtime issues
-        logger.warning("compound_turn_typed: extractor exception (%s) — single-LLM fallback", exc)
-        return await _fallback_single_llm(user_text)
+        logger.warning("compound_turn_typed: extractor exception (%s) — stateful fallback", exc)
+        return await _fallback_single_llm(user_text, prefix=internal_belief_context)
 
     # 2. Validate deterministically
     errors = validate_nodes(nodes, full_text=user_text)
     if errors:
-        logger.warning("compound_turn_typed: validation errors %s — single-LLM fallback", errors)
-        return await _fallback_single_llm(user_text)
+        logger.warning("compound_turn_typed: validation errors %s — stateful fallback", errors)
+        return await _fallback_single_llm(user_text, prefix=internal_belief_context)
 
-    # Single-step packets skip all progress beats — mark state and continue.
-    if len(nodes) <= 1:
-        state = _PROGRESS_STATE.get()
-        state["single_step"] = True
-        _PROGRESS_STATE.set(state)
-    else:
-        # Multi-step: emit first beat so the user sees activity immediately.
-        await _progress.handler({"message": "...looking that up.", "mode": "auto"})
+    # A single node that needs no approval is just a normal conversational turn
+    # that merely tripped the connective heuristic. Route it to the stateful
+    # path (session + memory) so it gets a context-aware, in-character reply
+    # instead of a cold _compose_receipt — this was the dominant 'feels dumb'
+    # misroute. Single nodes that need approval (approve_required / blocked
+    # writes) stay on the compound machinery below so the CONFIRM-SEND / skip
+    # conversion still applies.
+    if len(nodes) <= 1 and (not nodes or nodes[0].approval_policy == "auto"):
+        return await _fallback_single_llm(user_text, prefix=internal_belief_context)
+
+    # Multi-step: emit first beat so the user sees activity immediately.
+    await _progress.handler({"message": "...looking that up.", "mode": "auto"})
 
     # If voice note flag came from the bridge but no node carries it, lift it.
     if is_voice:

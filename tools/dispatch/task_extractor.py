@@ -26,12 +26,21 @@ from agents.work_packet import CompoundTaskNode
 
 logger = logging.getLogger(__name__)
 
-# Connective keywords that hint at multiple tasks (EN/UK/RU).
+# Connective keywords that hint at MULTIPLE tasks (EN/UK/RU).
+#
+# Only multi-word enumerators belong here. Bare conjunctions — Ukrainian "та"
+# / "і" ("and"), "також" ("also"), "потім" ("then"), English "also"/"then"/
+# "plus" — appear in ordinary single-clause sentences. The user converses in
+# Ukrainian, so a bare "та" matched almost every message ≥8 words and misrouted
+# normal chat onto the stateless, memory-less compound path → Hikari replied
+# without conversation context and "felt dumb". Under-triggering is cheap (the
+# message just takes the normal stateful turn, which already does multi-tool
+# work in one turn); over-triggering is what hurt. So require an explicit
+# "and X" / "а також" / "і ще"-style enumerator, never a lone "and"/"та".
 _COMPOUND_RE = re.compile(
-    r"\b(and also|and then|and check|and look|and find|"
-    r"also|then|plus|"
-    r"потім|та|після|і ще|також|"
-    r"и ещё|и потом|плюс|а также)\b",
+    r"\b(and also|and then|and check|and look|and find|and send|and schedule|"
+    r"а також|а потім|і ще|і також|і потім|"
+    r"и также|и потом|и ещё|а потом)\b",
     re.IGNORECASE,
 )
 _MIN_WORDS = 8

@@ -49,6 +49,78 @@ def test_should_extract_returns_false_below_word_threshold():
 
 
 # ---------------------------------------------------------------------------
+# stateful routing — a single extracted node and any extractor/validation
+# fallback must run on run_user_turn (live session + injected memory), NEVER on
+# the stateless run_internal_control. Regression for the dominant "feels dumb"
+# misroute where Ukrainian chat tripped the connective gate and got a cold,
+# context-free reply.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_single_node_routes_to_stateful_turn(monkeypatch):
+    from agents import compound_turn
+    from agents.work_packet import CompoundTaskNode
+
+    async def fake_extract(text):
+        return [CompoundTaskNode.from_raw_dict(
+            {"task": text, "intent_type": "read", "utterance_span": [0, len(text)]},
+            full_text=text,
+        )]
+
+    calls: dict = {}
+
+    async def fake_run_user_turn(prompt):
+        calls["stateful_prompt"] = prompt
+        return "stateful in-character reply"
+
+    async def fake_run_internal_control(*a, **k):
+        calls["stateless"] = True
+        return "cold reply"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", fake_extract)
+    monkeypatch.setattr("agents.runtime.run_user_turn", fake_run_user_turn)
+    monkeypatch.setattr("agents.runtime.run_internal_control", fake_run_internal_control)
+
+    reply = await compound_turn.run_compound_turn_typed(
+        "tell me one thing and also do nothing else at all here ok",
+        user_turn_id="turn_test",
+        internal_belief_context="REPLY-QUOTE-CTX",
+    )
+    assert reply == "stateful in-character reply"
+    assert "stateless" not in calls, "single node must NOT use the stateless path"
+    assert "REPLY-QUOTE-CTX" in calls["stateful_prompt"], "belief/reply prefix must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_extractor_failure_falls_back_to_stateful(monkeypatch):
+    from agents import compound_turn
+
+    async def fake_extract(text):
+        raise ValueError("extractor boom")
+
+    calls: dict = {}
+
+    async def fake_run_user_turn(prompt):
+        calls["stateful_prompt"] = prompt
+        return "stateful reply"
+
+    async def fake_run_internal_control(*a, **k):
+        calls["stateless"] = True
+        return "cold"
+
+    monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", fake_extract)
+    monkeypatch.setattr("agents.runtime.run_user_turn", fake_run_user_turn)
+    monkeypatch.setattr("agents.runtime.run_internal_control", fake_run_internal_control)
+
+    reply = await compound_turn.run_compound_turn_typed(
+        "do this thing and also that other thing for me now please",
+        user_turn_id="turn_test2",
+    )
+    assert reply == "stateful reply"
+    assert "stateless" not in calls, "fallback must NOT use the stateless path"
+
+
+# ---------------------------------------------------------------------------
 # extract_tasks tests
 # ---------------------------------------------------------------------------
 
@@ -341,12 +413,14 @@ async def test_run_compound_turn_typed_falls_back_on_validation_error(monkeypatc
 
     fallback_called = {"hit": False}
 
-    async def _fake_ric(prompt, **_kwargs):
+    # Fallback is now STATEFUL (run_user_turn → session + memory), not the
+    # stateless run_internal_control.
+    async def _fake_run_user_turn(prompt):
         fallback_called["hit"] = True
         return f"FALLBACK[{prompt}]"
 
     monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
-    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+    monkeypatch.setattr("agents.runtime.run_user_turn", _fake_run_user_turn)
 
     result = await run_compound_turn_typed(
         "x" * 30, user_turn_id="t4", step_timeout=5.0,
@@ -365,12 +439,13 @@ async def test_run_compound_turn_typed_falls_back_on_extractor_error(monkeypatch
 
     fallback_called = {"hit": False}
 
-    async def _fake_ric(prompt, **_kwargs):
+    # Fallback is now STATEFUL (run_user_turn → session + memory).
+    async def _fake_run_user_turn(prompt):
         fallback_called["hit"] = True
         return "FALLBACK"
 
     monkeypatch.setattr("tools.dispatch.task_extractor.extract_typed_nodes", _fake_extract)
-    monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
+    monkeypatch.setattr("agents.runtime.run_user_turn", _fake_run_user_turn)
 
     result = await run_compound_turn_typed(
         "anything", user_turn_id="t5",
@@ -424,15 +499,26 @@ async def test_run_compound_turn_typed_voice_lifts_flag(monkeypatch, _isolated_d
 
     captured_nodes: list[CompoundTaskNode] = []
 
+    # Two nodes so this stays on the compound machinery (a single auto node now
+    # short-circuits to the stateful path). is_voice must lift voice_uncertainty
+    # on every node the compound planner processes.
     async def _fake_extract(message):
-        node = CompoundTaskNode(
-            intent_type="read", utterance_span=(0, 7),
-            risk_class="safe", approval_policy="auto",
-            confidence=0.9, task="weather",
-            voice_uncertainty=False,  # extractor didn't flag it
-        )
-        captured_nodes.append(node)
-        return [node]
+        nodes = [
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(0, 7),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="weather",
+                voice_uncertainty=False,  # extractor didn't flag it
+            ),
+            CompoundTaskNode(
+                intent_type="read", utterance_span=(8, 12),
+                risk_class="safe", approval_policy="auto",
+                confidence=0.9, task="news",
+                voice_uncertainty=False,
+            ),
+        ]
+        captured_nodes.extend(nodes)
+        return nodes
 
     async def _fake_ric(prompt, **_kwargs):
         return f"[{prompt}]"
@@ -441,9 +527,9 @@ async def test_run_compound_turn_typed_voice_lifts_flag(monkeypatch, _isolated_d
     monkeypatch.setattr("agents.runtime.run_internal_control", _fake_ric)
 
     await run_compound_turn_typed(
-        "weather", user_turn_id="tV", is_voice=True, step_timeout=5.0,
+        "weather news", user_turn_id="tV", is_voice=True, step_timeout=5.0,
     )
-    assert captured_nodes[0].voice_uncertainty is True
+    assert all(n.voice_uncertainty is True for n in captured_nodes)
 
 
 # ---------------------------------------------------------------------------

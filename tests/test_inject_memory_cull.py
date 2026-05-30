@@ -200,7 +200,10 @@ def test_culled_observations_clears_pending_surfaced_ids(patched_config):
     db.upsert_core_block("mood_today", "focused")
     db.observation_record("habit", "test-sig-obs", "you always do X", confidence=0.9)
 
-    patched_config({"memory": {"additional_context_max_chars": 500}})
+    # Tiny optional-budget so the priority-2/3 observations block is culled.
+    # (priority-1 core no longer eats this budget — it is per-tier now — so the
+    # cap has to be below the block's own size to force the cull this test asserts.)
+    patched_config({"memory": {"additional_context_max_chars": 1}})
 
     _call_inject()
 
@@ -217,7 +220,10 @@ def test_culled_noticings_clears_pending_surfaced_ids(patched_config):
     db.upsert_core_block("mood_today", "focused")
     db.noticing_record("sentiment_ma", "you seem quieter lately")
 
-    patched_config({"memory": {"additional_context_max_chars": 500}})
+    # Tiny optional-budget so the priority-2/3 noticings block is culled.
+    # (priority-1 core no longer eats this budget — it is per-tier now — so the
+    # cap has to be below the block's own size to force the cull this test asserts.)
+    patched_config({"memory": {"additional_context_max_chars": 1}})
 
     _call_inject()
 

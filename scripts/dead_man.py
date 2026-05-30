@@ -191,6 +191,33 @@ def _telegram_probe_ok() -> bool:
     return False
 
 
+def restart_agent() -> bool:
+    """Kickstart the launchd agent service. Returns True if the command ran.
+
+    The dead-man's whole reason to exist is recovery, not just alerting. When
+    the agent process is gone we relaunch it ourselves before nudging the owner,
+    so a wedged/stopped bot self-heals within one 5-minute tick even if launchd's
+    own KeepAlive somehow didn't fire (e.g. the job was bootout'd, disabled, or
+    the host woke from sleep mid-relaunch).
+    """
+    uid = os.getuid()
+    try:
+        res = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/com.hikari.agent"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if res.returncode != 0:
+            print(
+                f"deadman: kickstart failed (rc={res.returncode}): "
+                f"{res.stderr.strip()}",
+                file=sys.stderr,
+            )
+        return res.returncode == 0
+    except Exception as e:
+        print(f"deadman: kickstart raised: {e}", file=sys.stderr)
+        return False
+
+
 def post_alert(failed_checks: list[str]) -> None:
     if not DEADMAN_TOKEN or not OWNER_ID:
         print(

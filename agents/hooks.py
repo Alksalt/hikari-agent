@@ -1101,6 +1101,43 @@ def _format_deferred_observations() -> str | None:
     return f"# deferred observation\n{escape_remembered_tags(text)}"
 
 
+def _select_blocks(
+    candidates: list[_Block], *, max_chars: int, sep: str = "\n\n"
+) -> tuple[list[_Block], int]:
+    """Pick which memory blocks to inject, budgeting OPTIONAL texture separately.
+
+    Priority-1 blocks are the always-on core (now / working_memory / core_blocks
+    / peer_representation / open_tasks / tools_available / self_model / …) and
+    are ALWAYS included. ``max_chars`` budgets ONLY the optional priority-2/3
+    relational-texture blocks (peer_insights, emotional_register,
+    voice_corrections, noticings, callbacks, …).
+
+    The previous accounting folded the priority-1 footprint into the same
+    counter the budget gate read. The always-on core is ~8.5k chars — already
+    double the 4096 cap — so by the time any priority-2/3 block was considered
+    the budget was already blown and EVERY texture block was dropped on EVERY
+    turn. That silent starvation was a standing 'feels dumb' driver. Budgeting
+    p2/3 on their own allowance restores the intended behaviour: core always in,
+    plus up to ``max_chars`` of texture.
+
+    Returns ``(selected, total_chars)`` — ``total_chars`` includes the
+    priority-1 footprint, for the log line only.
+    """
+    selected: list[_Block] = []
+    total = 0           # every selected block — for logging
+    optional_used = 0   # priority-2/3 only — the budgeted pool
+    for prio in (1, 2, 3):
+        for b in [x for x in candidates if x.priority == prio]:
+            sep_cost = len(sep) if selected else 0
+            if b.priority > 1 and optional_used + sep_cost + len(b.text) > max_chars:
+                continue
+            selected.append(b)
+            total += sep_cost + len(b.text)
+            if b.priority > 1:
+                optional_used += sep_cost + len(b.text)
+    return selected, total
+
+
 async def inject_memory(
     input_data: dict[str, Any] | Any,
     tool_use_id: str | None,
@@ -1183,15 +1220,7 @@ async def inject_memory(
 
         max_chars = int(cfg.get("memory.additional_context_max_chars", 4096))
         sep = "\n\n"
-        selected: list[_Block] = []
-        running = 0
-        for prio in (1, 2, 3):
-            for b in [x for x in candidates if x.priority == prio]:
-                sep_cost = len(sep) if selected else 0
-                if b.priority > 1 and running + sep_cost + len(b.text) > max_chars:
-                    continue
-                selected.append(b)
-                running += sep_cost + len(b.text)
+        selected, running = _select_blocks(candidates, max_chars=max_chars, sep=sep)
 
         selected.sort(key=lambda b: b.order)
 

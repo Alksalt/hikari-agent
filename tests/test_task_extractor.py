@@ -159,6 +159,48 @@ def test_validate_nodes_time_ref_clean():
 
 
 # ---------------------------------------------------------------------------
+# should_extract — the compound-routing gate
+#
+# Regression guard for the dominant "feels dumb" bug: the bare Ukrainian
+# conjunction "та" ("and") used to match _COMPOUND_RE, so ordinary Ukrainian
+# chat (the user's language) ≥8 words misrouted onto the stateless, memory-less
+# compound path. should_extract must fire ONLY on genuine multi-task
+# enumerators, never on a lone conjunction.
+# ---------------------------------------------------------------------------
+
+def test_should_extract_bare_ukrainian_and_does_not_trigger():
+    from tools.dispatch.task_extractor import should_extract
+    # 8+ words, contains "та" as a plain conjunction — must NOT route to compound.
+    assert should_extract("розкажи мені будь ласка про погоду та новини сьогодні") is False
+
+
+def test_should_extract_bare_also_then_plus_do_not_trigger():
+    from tools.dispatch.task_extractor import should_extract
+    assert should_extract("i was thinking about this also could you help me here") is False
+    assert should_extract("so what happened then with the whole thing you mentioned") is False
+    assert should_extract("також хотіла спитати як справи у тебе сьогодні взагалі") is False
+
+
+def test_should_extract_plain_ukrainian_chat_does_not_trigger():
+    from tools.dispatch.task_extractor import should_extract
+    assert should_extract("привіт як ти себе почуваєш сьогодні цього чудового ранку") is False
+
+
+def test_should_extract_real_multitask_connectives_trigger():
+    from tools.dispatch.task_extractor import should_extract
+    assert should_extract("check the weather and also send an email to alex now") is True
+    assert should_extract("додай подію в календар а також постав ремайндер перед нею") is True
+    assert should_extract("перевір пошту і ще подивись що там по календарю на завтра") is True
+    assert should_extract("look at the calendar and then schedule the meeting for friday") is True
+
+
+def test_should_extract_respects_min_words():
+    from tools.dispatch.task_extractor import should_extract
+    # Real connective but under the 8-word floor → not worth the extraction call.
+    assert should_extract("check weather and also email") is False
+
+
+# ---------------------------------------------------------------------------
 # extract_typed_nodes
 # ---------------------------------------------------------------------------
 

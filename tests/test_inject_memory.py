@@ -104,3 +104,38 @@ def test_time_texture_in_now_block():
     db.runtime_set("time_texture", "late_night")
     ctx = _call()
     assert "time_texture: late_night" in ctx
+
+
+# ---------------------------------------------------------------------------
+# _select_blocks budget — priority-1 (always-on core) must not starve the
+# optional priority-2/3 relational-texture blocks. Regression: the old loop
+# folded the ~8.5k-char core into the same counter as the 4096 cap, so every
+# texture block was silently dropped on every turn ("feels dumb").
+# ---------------------------------------------------------------------------
+
+def test_select_blocks_priority1_does_not_starve_optional():
+    from agents.hooks import _Block, _select_blocks
+    candidates = [
+        _Block(key="core_big", priority=1, order=0, text="X" * 9000),  # huge always-on core
+        _Block(key="texture_a", priority=2, order=1, text="A" * 100),
+        _Block(key="texture_b", priority=3, order=2, text="B" * 100),
+    ]
+    selected, _ = _select_blocks(candidates, max_chars=4096, sep="\n\n")
+    keys = {b.key for b in selected}
+    assert "core_big" in keys, "priority-1 core is always included"
+    assert "texture_a" in keys, "priority-2 texture must not be starved by the core footprint"
+    assert "texture_b" in keys, "priority-3 texture must not be starved by the core footprint"
+
+
+def test_select_blocks_optional_budget_still_enforced():
+    from agents.hooks import _Block, _select_blocks
+    candidates = [
+        _Block(key="core", priority=1, order=0, text="C" * 50),
+        _Block(key="t1", priority=2, order=1, text="A" * 3000),
+        _Block(key="t2", priority=2, order=2, text="B" * 3000),  # together exceed 4096
+    ]
+    selected, _ = _select_blocks(candidates, max_chars=4096, sep="\n\n")
+    keys = {b.key for b in selected}
+    assert "core" in keys
+    assert "t1" in keys
+    assert "t2" not in keys, "priority-2/3 are still capped by max_chars among themselves"

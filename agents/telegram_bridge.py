@@ -7,10 +7,12 @@ UX choreography (typing delay, false-start) lives in bridge_ux.py.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
 import logging.handlers
 import os
 import random
+import sys
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
@@ -3506,7 +3508,41 @@ def build_application() -> Application:
     return app
 
 
+# Held for the whole process lifetime so the OS releases the flock only when
+# the interpreter exits. Module-global so the fd is never garbage-collected.
+_SINGLETON_LOCK_FD = None
+
+
+def _acquire_singleton_lock() -> None:
+    """Fail-fast guard against two bridge instances sharing one bot token.
+
+    Telegram allows exactly one ``getUpdates`` long-poll per token; a second
+    poller gets HTTP 409 and both degrade. With KeepAlive now relaunching on
+    any exit, a launchd relaunch could race a leftover/manual process — this
+    flock makes the duplicate exit cleanly instead of starting a 409 war.
+    """
+    global _SINGLETON_LOCK_FD
+    lock_dir = REPO_ROOT / "data" / "run"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "hikari.lock"
+    fd = open(lock_path, "w")  # noqa: SIM115 — held for process lifetime on purpose
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fd.close()
+        logging.getLogger(__name__).error(
+            "another hikari-agent instance already holds %s — exiting to avoid "
+            "a Telegram getUpdates 409 conflict. (kill the other process first.)",
+            lock_path,
+        )
+        sys.exit(0)
+    fd.write(str(os.getpid()))
+    fd.flush()
+    _SINGLETON_LOCK_FD = fd
+
+
 def main() -> None:
+    _acquire_singleton_lock()
     load_dotenv()
     _log_dir = REPO_ROOT / "data" / "logs"
     _log_dir.mkdir(parents=True, exist_ok=True)

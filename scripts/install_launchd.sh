@@ -1,5 +1,6 @@
 #!/bin/bash
-# Install hikari-agent as a launchd LaunchAgent — restarts on crash, on reboot.
+# Install hikari-agent as a launchd LaunchAgent — restarts on ANY exit (crash,
+# clean SIGTERM, sleep/logout) and on reboot. See the KeepAlive note below.
 #
 # Usage:
 #   ./scripts/install_launchd.sh         # install + bootstrap
@@ -54,13 +55,14 @@ cat > "$PLIST_PATH" <<EOF
     <key>RunAtLoad</key>
     <true/>
 
+    <!-- Unconditional KeepAlive: relaunch on ANY exit, including a graceful
+         exit-0. python-telegram-bot's run_polling() returns 0 on SIGTERM
+         (sleep / logout / launchctl stop / kickstart), and the old
+         {SuccessfulExit:false} told launchd to relaunch ONLY on failure — so a
+         clean SIGTERM left the bot silently dead until a human rebooted her.
+         ThrottleInterval below caps any crash-loop rate. -->
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-        <key>NetworkState</key>
-        <true/>
-    </dict>
+    <true/>
 
     <key>ProcessType</key>
     <string>Interactive</string>
