@@ -1253,19 +1253,25 @@ async def run_internal_control(
 
 
 async def respond(
-    user_text: str, *, internal_belief_context: str | None = None
+    user_text: str,
+    *,
+    internal_belief_context: str | None = None,
+    internal_reply_context: str | None = None,
 ) -> str:
     """Chat path entry point.
 
     Persists the RAW user text to messages, then builds the SDK prompt.
-    When internal_belief_context is provided (belief-frame adversarial suffix),
-    the prompt passed to the SDK is augmented but the persisted row stays clean.
+    When internal_belief_context (belief-frame adversarial suffix) and/or
+    internal_reply_context (Telegram reply-quote, built by the bridge) are
+    provided, they are prepended to the SDK prompt but the persisted row stays
+    clean. Reply context leads, then belief context, then the raw user text.
     """
     mid = db.append_message("user", user_text)
     db.runtime_set("last_user_message", db._now())
     db.runtime_set("last_user_message_id", str(mid))
-    if internal_belief_context:
-        sdk_prompt = internal_belief_context + "\n\n" + user_text
+    prefixes = [p for p in (internal_reply_context, internal_belief_context) if p]
+    if prefixes:
+        sdk_prompt = "\n\n".join([*prefixes, user_text])
     else:
         sdk_prompt = user_text
     return await run_user_turn(sdk_prompt)

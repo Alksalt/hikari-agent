@@ -266,6 +266,7 @@ async def run_compound_turn_typed(
     step_timeout: float = _DEFAULT_STEP_TIMEOUT,
     is_voice: bool = False,
     internal_belief_context: str | None = None,
+    internal_reply_context: str | None = None,
 ) -> str:
     """Sprint A Wave 3 typed planner.
 
@@ -286,6 +287,9 @@ async def run_compound_turn_typed(
     ``internal_belief_context``: when provided (belief-frame adversarial suffix
     computed by the bridge), prepended to each child step's task prompt so the
     belief-frame guard is active on compound turns as well as normal turns.
+    ``internal_reply_context``: Telegram reply-quote context (built by the
+    bridge); folded into the same prefix channel so a quoted message frames
+    every child step too.
 
     Returns the final user-facing reply text.
     """
@@ -294,6 +298,17 @@ async def run_compound_turn_typed(
     from tools.runtime.progress import _PROGRESS_STATE
     from tools.runtime.progress import progress as _progress
     from agents.runtime import current_turn_id as _ctv
+
+    # Fold the Telegram reply-quote context (if any) into the same prompt-prefix
+    # channel the belief-frame guard uses, so both ride along on every child
+    # step without threading a second param through reads/writes. Reply context
+    # leads so the quoted message frames the belief suffix that follows.
+    if internal_reply_context:
+        internal_belief_context = (
+            internal_reply_context
+            if not internal_belief_context
+            else internal_reply_context + "\n\n" + internal_belief_context
+        )
 
     # Initialize rate-limit state for this turn so _progress can gate correctly.
     _PROGRESS_STATE.set({
