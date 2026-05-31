@@ -138,6 +138,11 @@ async def send_and_persist(
                 "text": final_text,
                 "photo_path": str(photo_path) if photo_path is not None else None,
             },
+            # Pre-claim: this row is sent IN-LINE just below, so the periodic
+            # media_outbox drain must never grab it (was double-sending every
+            # top-of-hour reminder). On crash before mark_sent the stale-sending
+            # reaper re-queues it. Covers kind='text' AND kind='photo'.
+            claim_inline=True,
         )
     except Exception:
         logger.exception("send_and_persist: media_outbox pre-insert failed (non-fatal)")

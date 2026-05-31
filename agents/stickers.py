@@ -228,6 +228,7 @@ async def force_send_sticker(bot: Bot, chat_id: int) -> str | None:
             "sticker",
             ikey,
             {"file_id": file_id, "chat_id": chat_id, "context": "force_send"},
+            claim_inline=True,  # sent in-line below; drain must not re-send it
         )
     except Exception:
         logger.debug("force_send_sticker: media_outbox pre-insert failed (non-fatal)")
@@ -276,6 +277,7 @@ async def maybe_send_sticker(
             "sticker",
             ikey,
             {"file_id": file_id, "chat_id": chat_id, "context": "maybe_send"},
+            claim_inline=True,  # sent in-line below; drain must not re-send it
         )
     except Exception:
         logger.debug("maybe_send_sticker: media_outbox pre-insert failed (non-fatal)")

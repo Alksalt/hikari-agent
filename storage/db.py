@@ -5549,15 +5549,43 @@ def media_outbox_insert(
     payload: dict,
     *,
     conn=None,
+    claim_inline: bool = False,
 ) -> int | None:
-    """INSERT OR IGNORE into media_outbox. Returns row id if inserted, None on dedup."""
+    """INSERT OR IGNORE into media_outbox. Returns row id if inserted, None on dedup.
+
+    claim_inline=True inserts the row already in status='sending' (with
+    processed_at=now), i.e. pre-claimed by a caller that is about to send it
+    IN-LINE in the same call (send_and_persist, the sticker senders). The
+    periodic / per-turn / boot drains only claim status='pending' rows
+    (media_outbox_claim), so a pre-claimed row can never be double-sent by a
+    drain that fires mid-send. If the in-line sender crashes before
+    media_outbox_mark_sent, the stale-sending reaper
+    (media_outbox_reap_stale_sending, 300s grace) flips it back to 'pending'
+    for drain recovery — identical recovery to a normally-claimed row.
+
+    Leave claim_inline=False (default) for enqueue-only producers
+    (voice_outbound, photos/generate, photos/scene, the photo orphan
+    reconciler) whose ONLY deliverer is the drain — those must stay 'pending'.
+    The flag is per-call-site, NOT per-kind: kind='photo' spans both modes
+    (messaging.py sends in-line and passes True; generate/scene/reconciler
+    enqueue and leave False).
+    """
     import json as _json
-    sql = (
-        "INSERT OR IGNORE INTO media_outbox "
-        "(kind, idempotency_key, payload_json, created_at) "
-        "VALUES (?, ?, ?, ?)"
-    )
-    args = (kind, idempotency_key, _json.dumps(payload, ensure_ascii=False), _now())
+    now = _now()
+    if claim_inline:
+        sql = (
+            "INSERT OR IGNORE INTO media_outbox "
+            "(kind, idempotency_key, payload_json, status, created_at, processed_at) "
+            "VALUES (?, ?, ?, 'sending', ?, ?)"
+        )
+        args = (kind, idempotency_key, _json.dumps(payload, ensure_ascii=False), now, now)
+    else:
+        sql = (
+            "INSERT OR IGNORE INTO media_outbox "
+            "(kind, idempotency_key, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?)"
+        )
+        args = (kind, idempotency_key, _json.dumps(payload, ensure_ascii=False), now)
     if conn is not None:
         cur = conn.execute(sql, args)
         return cur.lastrowid if cur.rowcount else None
