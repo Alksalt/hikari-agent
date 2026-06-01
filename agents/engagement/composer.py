@@ -83,28 +83,6 @@ example shape: "new wiki page just landed — '{filename}'.
 want me to read it back at you in 3 sentences?"
 """,
 
-    "gmail_unread_threshold": """\
-[proactive nudge — pattern=notify, source=gmail_unread_threshold]
-the user has {unread_count} unread emails. surface this concisely in her voice.
-RULES:
-  - you MUST cite the exact number {unread_count} verbatim.
-  - 1-2 sentences, lowercase, no markdown, no chirpiness.
-  - denial layer ok. never start with a generic opener.
-  - if you can't write it true to voice with the count cited, output NO_MESSAGE.
-payload: unread_count={unread_count}
-""",
-
-    "gmail_important_thread": """\
-[proactive nudge — pattern=notify, source=gmail_important_thread]
-there's an urgent or important email thread in the user's inbox.
-RULES:
-  - you MUST include the subject verbatim: "{subject}"
-  - 1-2 sentences, lowercase, no markdown, no chirpiness, denial layer ok.
-  - never start with a generic opener.
-  - if you can't write it true to voice with the subject cited, output NO_MESSAGE.
-payload: subject={subject}, from={sender}
-""",
-
     "calendar_event_prep": """\
 [proactive nudge — pattern=notify, source=calendar_event_prep]
 the user has a calendar event coming up in {minutes_until} minutes.

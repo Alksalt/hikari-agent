@@ -1,4 +1,4 @@
-"""Defensive subagent fetches: garbage in (401, malformed YAML) → empty out."""
+"""Typed Gmail fetch: adapter result passes through; any error → empty out."""
 from __future__ import annotations
 
 import importlib
@@ -22,19 +22,25 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_email_buckets_happy_path(monkeypatch):
+    """fetch_email_buckets passes the typed adapter's buckets straight through."""
     from agents import daily_checkin
-    yaml_body = (
-        "unread_personal:\n"
-        "  - {id: '1', from: 'mom@x.com', subject: 'call me', snippet: '...'}\n"
-        "calendar_invites:\n"
-        "  - {id: '2', from: 'cal@noreply', subject: 'standup'}\n"
-        "deletable:\n"
-        "  count: 28\n"
-        "  top_senders: ['linkedin.com', 'spotify.com', 'uber.com']\n"
-        "  sample_ids: ['p1', 'p2', 'p3']\n"
-    )
-    monkeypatch.setattr(daily_checkin, "run_internal_control",
-                        AsyncMock(return_value=yaml_body))
+    from tools.gmail import inbox
+
+    buckets = {
+        "unread_personal": [
+            {"id": "1", "from": "mom@x.com", "subject": "call me",
+             "snippet": "...", "internal_date": 1780154549},
+        ],
+        "calendar_invites": [
+            {"id": "2", "from": "cal@noreply", "subject": "standup",
+             "snippet": "", "internal_date": None},
+        ],
+        "deletable": {"count": 28,
+                      "top_senders": ["linkedin.com", "spotify.com", "uber.com"],
+                      "sample_ids": ["p1", "p2", "p3"]},
+    }
+    monkeypatch.setattr(inbox, "_fetch_inbox_buckets",
+                        AsyncMock(return_value=buckets))
     result = await daily_checkin.fetch_email_buckets()
     assert len(result["unread_personal"]) == 1
     assert result["unread_personal"][0]["from"] == "mom@x.com"
@@ -43,10 +49,13 @@ async def test_fetch_email_buckets_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_email_buckets_401_returns_empty(monkeypatch):
+async def test_fetch_email_buckets_mcp_error_returns_empty(monkeypatch):
     from agents import daily_checkin
-    monkeypatch.setattr(daily_checkin, "run_internal_control", AsyncMock(
-        return_value="Failed to authenticate. API Error: 401 ...",
+    from agents.mcp_manager import McpCallError
+    from tools.gmail import inbox
+
+    monkeypatch.setattr(inbox, "_fetch_inbox_buckets", AsyncMock(
+        side_effect=McpCallError("google_workspace", "query_gmail_emails", "401"),
     ))
     result = await daily_checkin.fetch_email_buckets()
     assert result == {"unread_personal": [], "calendar_invites": [],
@@ -54,41 +63,14 @@ async def test_fetch_email_buckets_401_returns_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_email_buckets_malformed_yaml(monkeypatch):
+async def test_fetch_email_buckets_exception_returns_empty(monkeypatch):
     from agents import daily_checkin
-    monkeypatch.setattr(daily_checkin, "run_internal_control", AsyncMock(
-        return_value="not: valid: [yaml",
-    ))
-    result = await daily_checkin.fetch_email_buckets()
-    assert result["deletable"]["count"] == 0
+    from tools.gmail import inbox
 
-
-@pytest.mark.asyncio
-async def test_fetch_email_buckets_exception(monkeypatch):
-    from agents import daily_checkin
-    monkeypatch.setattr(daily_checkin, "run_internal_control",
+    monkeypatch.setattr(inbox, "_fetch_inbox_buckets",
                         AsyncMock(side_effect=RuntimeError("boom")))
     result = await daily_checkin.fetch_email_buckets()
     assert result["deletable"]["count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_fetch_email_caps_sample_ids(monkeypatch):
-    """The cap (config: daily_checkin.max_delete_ids) is enforced."""
-    from agents import daily_checkin
-    ids = [f"id{i}" for i in range(500)]
-    yaml_body = (
-        "unread_personal: []\n"
-        "calendar_invites: []\n"
-        "deletable:\n"
-        "  count: 500\n"
-        "  top_senders: []\n"
-        f"  sample_ids: {ids!r}\n"
-    )
-    monkeypatch.setattr(daily_checkin, "run_internal_control",
-                        AsyncMock(return_value=yaml_body))
-    result = await daily_checkin.fetch_email_buckets()
-    assert len(result["deletable"]["sample_ids"]) == 200  # default cap
 
 
 @pytest.mark.asyncio

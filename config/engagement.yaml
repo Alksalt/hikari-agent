@@ -37,7 +37,6 @@ proactive:
   # silence before running any producers. Set false to disable (useful in dev).
   scheduler_gate_enabled: true
   default_enabled_sources:
-    - gmail_unread_threshold
     - calendar_event_prep
     - wiki_new_file
     - decision_resolve_due
@@ -336,6 +335,19 @@ post_filter:
   # agents.runtime._invoke_sdk, and ships a redirect line if no relevant
   # fetch tool was invoked this turn. Toggle off if false-positive flood.
   fabrication_backstop_enabled: true
+  # Sources whose user-facing text is built from TYPED adapters in pure Python
+  # (no LLM in the data path) — provenance is guaranteed at the data layer, so
+  # the per-turn tool-name backstop must not second-guess them. Without this,
+  # the daily_checkin digest (built via tools/gmail/query_inbox + the calendar
+  # adapter, then voiced by a composer turn that calls no tool) would
+  # false-positive: LAST_TURN_TOOL_NAMES is empty at send time.
+  fabrication_backstop_exempt_sources:
+    - "daily_checkin"
+  # When false (default), inbox-shape text shipped under subagent delegation
+  # only (Agent/Task, no observable gmail tool) is logged but passes. Flip to
+  # true once inbox reads reliably route through the in-process query_inbox
+  # tool (whose call IS observable) so delegated-only inbox claims are blocked.
+  fabrication_delegation_inbox_strict: false
   # Phase 3 — voice enforcement
   # Strip markdown formatting (bullets, headers, bold, code) from outbound
   # messages. Leaves bracketed action lines (e.g. [reads it twice]) intact.
@@ -581,8 +593,6 @@ cadence_governor:
         - recent_episode_callback
         - reaction_followup
         - wiki_new_file
-        - gmail_unread_threshold
-        - gmail_important_thread
         - calendar_event_prep
         - calendar_new_invite
         - reminder_fire
@@ -1143,21 +1153,6 @@ engagement:
     send_mode: observation
     min_value_score: 0.3
     interruption_right: low
-  gmail_unread_threshold:
-    enabled: true
-    min_unread: 5
-    priority_tier: 1
-    min_interval_minutes: 120
-    send_mode: proactive
-    min_value_score: 0.5
-    interruption_right: low
-  gmail_important_thread:
-    enabled: false
-    priority_tier: 1
-    min_interval_minutes: 60
-    send_mode: proactive
-    min_value_score: 0.7
-    interruption_right: medium
   calendar_event_prep:
     enabled: true
     priority_tier: 1

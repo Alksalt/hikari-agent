@@ -111,6 +111,8 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     # sync_apple_reminder and sync_gcal_reminder are removed: they are
     # scheduler-internal callers only (not LLM-reachable @tools).
     "calendar_get_events": ANN_READ_EXTERNAL,
+    # --- gmail (external read; typed adapter, replaces drive_gmail delegation) ---
+    "query_inbox": ANN_READ_EXTERNAL,
     # --- external read APIs ---
     "arxiv_search": ANN_READ_EXTERNAL,
     "currency_convert": ANN_READ_EXTERNAL,

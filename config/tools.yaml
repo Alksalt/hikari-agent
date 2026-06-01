@@ -541,6 +541,22 @@ tools:
     example: "weather_fetch(lat=59.9, lon=10.7)"
     presentation_hint: weather_three_window
 
+  # Typed Gmail inbox adapter. Email sender/subject/snippet are
+  # attacker-controllable, so its output MUST be wrapped untrusted — same as the
+  # MCP query_gmail_emails it replaces on the main-turn read path.
+  - id: "mcp__hikari_utility__query_inbox"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__query_inbox$"]
+    domain: gmail
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    example: "query_inbox(query='is:unread from:boss@x.com')"
+    presentation_hint: list_of_records
+
   - id: "mcp__hikari_utility__arxiv_search"
     bucket: 1
     server: hikari_utility

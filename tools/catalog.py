@@ -84,6 +84,8 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "delete remove cancel google calendar event appointment",
     "mcp__hikari_utility__calendar_get_events":
         "fetch list google calendar events schedule appointments meetings today typed adapter",
+    "mcp__hikari_utility__query_inbox":
+        "read fetch gmail inbox unread emails messages personal mail invites deletable typed adapter",
     "mcp__apple_events__create_calendar_event":
         "create add apple calendar event appointment schedule",
     "mcp__apple_events__delete_calendar_event":

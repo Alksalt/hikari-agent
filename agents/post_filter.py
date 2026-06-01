@@ -548,13 +548,28 @@ def _strip_click_allow(text: str) -> tuple[str, bool]:
 # event listings) and only fire when NO relevant fetch tool ran this turn —
 # the contextvar is set in ``agents.runtime._invoke_sdk``.
 
+# Ukrainian/Russian cardinal number-words. The incident digest said
+# "п'ять листів" — a spelled-out number, so digit-anchoring alone would miss
+# it. Used as the left anchor for the Cyrillic fabrication branches so a
+# casual mention ("лист від мами") without a count does NOT trip.
+_CYR_NUM = (
+    r"(?:\d+|один|одне|одно|два|дві|две|три|чотири|четыре|п['’]?ять|пять|"
+    r"шість|шесть|сім|семь|вісім|восемь|дев['’]?ять|девять|десять|"
+    r"кілька|декілька|несколько|багато|много)"
+)
+
 _FABRICATED_INBOX_RE = re.compile(
     r"\b\d+\s+(new\s+|unread\s+)?(emails?|messages?)\b"
     r"|\b\d+\s+unread\b"
     r"|\byour\s+inbox\s+(has|shows|contains|holds)\s+\d+\b"
     r"|\bin\s+your\s+inbox\b"
     r"|\bnothing\s+(new\s+)?in\s+(your\s+)?inbox\b"
-    r"|\binbox\s+is\s+(empty|clear|clean)\b",
+    r"|\binbox\s+is\s+(empty|clear|clean)\b"
+    # --- Cyrillic (uk/ru): number-word + letters/emails, or inbox-location ---
+    r"|" + _CYR_NUM + r"\s+(нов\w+\s+|непрочитан\w+\s+)?(лист\w*|писем|письма|повідомлен\w*)\b"
+    r"|\b(у|в|во)\s+(тво\w+\s+)?(скриньц\w+|інбокс\w+|вхідн\w+|входящ\w+)\b"
+    r"|\b(скриньк\w+|інбокс\w+|ящик\w*)\s+(порожн\w+|пуст\w+|чист\w+)\b"
+    r"|\bнічого\s+(нового\s+)?(в|у)\s+(скриньц\w+|інбокс\w+|пошт\w+)\b",
     re.IGNORECASE,
 )
 
@@ -563,21 +578,25 @@ _FABRICATED_CALENDAR_RE = re.compile(
     r"|\b(today|tomorrow)('|’)?s\s+(calendar|schedule|agenda)\b"
     r"|\bnext\s+up\s+(at|is)\s+\d"
     r"|\bnothing\s+on\s+(your\s+)?calendar\b"
-    r"|\b(calendar|schedule)\s+is\s+(empty|clear|clean|empty\s+today)\b",
+    r"|\b(calendar|schedule)\s+is\s+(empty|clear|clean|empty\s+today)\b"
+    # --- Cyrillic (uk/ru): number-word + events, or empty-calendar ---
+    r"|" + _CYR_NUM + r"\s+(зустріч\w*|поді\w+|нарад\w*|встреч\w*|событи\w*|мітинг\w*)\b"
+    r"|\b(сьогодні|завтра)\w*\s+\w{0,12}\s*(календар\w*|розклад\w*|графік\w*|расписани\w*)"
+    r"|\b(календар\w*|розклад\w*)\s+(порожн\w+|пуст\w+|чист\w+|вільн\w+)\b"
+    r"|\bнічого\s+(в|у|на)\s+календар\w+",
     re.IGNORECASE,
 )
 
 # Tools that count as a legitimate fetch of external data. If ANY of these
-# fired on the turn, the reply gets a pass — Hikari might be summarizing real
-# data and naturally describing it with inbox/calendar shape. Includes:
-#   - Specific Gmail/Calendar/Drive tools on the google_workspace MCP server
-#   - The generic Agent/Task dispatch (subagent fetches happen out-of-stream
-#     and don't surface individual tool names to the parent's message loop)
-#   - The drive_gmail subagent specifically by qualified name
-#   - The background dispatch path (long-running fetches)
+# fired on the PARENT turn, the inbox-shape reply gets a pass. Includes:
+#   - Specific Gmail tools on the google_workspace MCP server
+#   - query_inbox: the in-process typed Gmail adapter (the preferred read path;
+#     a direct call here is visible in LAST_TURN_TOOL_NAMES, unlike a delegated
+#     drive_gmail read whose internal tool calls never reach the parent stream)
 _INBOX_FETCH_PREFIXES = (
     "mcp__google_workspace__gmail_",
     "mcp__google_workspace__query_gmail",
+    "mcp__hikari_utility__query_inbox",
 )
 _CALENDAR_FETCH_PREFIXES = (
     "mcp__google_workspace__calendar_",
@@ -592,21 +611,36 @@ _FABRICATION_REPLACEMENT = (
 )
 
 
-def _strip_fabricated_external_data(text: str) -> tuple[str, bool, str]:
+def _strip_fabricated_external_data(
+    text: str, *, source: str | None = None,
+) -> tuple[str, bool, str]:
     """Catch the failure mode where the model claims fresh email/calendar
     contents without calling the corresponding tool. Returns
     ``(text, fired, reason)``.
 
-    Reads ``agents.runtime.LAST_TURN_TOOL_NAMES`` — set per ``_invoke_sdk``
-    call. Same asyncio task throughout the chat turn so the ContextVar
-    propagates naturally; non-chat paths (proactive, internal-control)
-    are unaffected because they don't run ``filter_outgoing``.
+    Reads ``agents._turn_state.LAST_TURN_TOOL_NAMES`` — set per ``_invoke_sdk``
+    call. Proactive and ceremony sends (e.g. daily_checkin) DO run
+    ``filter_outgoing`` (via ``messaging.send_and_persist`` and
+    ``telegram_bridge._send_text_with_choreography``), so this backstop runs on
+    them too. What it cannot see is a fetch from an EARLIER turn: ``_invoke_sdk``
+    resets the ContextVar each call, so when a separate composer turn sends, the
+    set is empty. Sources whose data is provenance-verified at the data layer
+    (typed adapters, not LLM free-text) are therefore listed in
+    ``post_filter.fabrication_backstop_exempt_sources`` to avoid false positives.
 
     Disabled if ``post_filter.fabrication_backstop_enabled`` is false.
     """
     if not cfg.get("post_filter.fabrication_backstop_enabled", True):
         return text, False, ""
     if not text:
+        return text, False, ""
+
+    # Provenance-verified sources are exempt. daily_checkin builds its digest
+    # from the typed Gmail/Calendar adapters in pure Python (no LLM in the data
+    # path), so the per-turn tool-name check below would false-positive — the
+    # composer turn that actually sends calls no fetch tool.
+    exempt = set(cfg.get("post_filter.fabrication_backstop_exempt_sources") or [])
+    if source is not None and source in exempt:
         return text, False, ""
 
     inbox_hit = bool(_FABRICATED_INBOX_RE.search(text))
@@ -625,28 +659,45 @@ def _strip_fabricated_external_data(text: str) -> tuple[str, bool, str]:
         # If we can't read the contextvar, conservatively ship the original.
         return text, False, ""
 
-    # Generic delegation gets a free pass — subagent tool calls don't appear
-    # in the parent's message stream, so we can't tell if they fetched email
-    # or not. Trust the dispatch.
-    if tool_names & _GENERIC_DELEGATION_NAMES:
-        return text, False, ""
+    # A subagent's own tool calls (e.g. drive_gmail's query_gmail_emails) are
+    # invisible here: agents.runtime records only the PARENT turn's
+    # ToolUseBlock.name and never ingests the subagent's TaskNotification, so a
+    # delegated fetch surfaces only as "Agent"/"Task". That ingestion gap — not
+    # a wire-protocol limit — is why delegation has historically been trusted.
+    # Inbox reads now route through the in-process ``query_inbox`` tool (visible
+    # above), so the delegation pass for inbox-shape text is being phased out:
+    # telemetry-only by default, enforced when
+    # ``fabrication_delegation_inbox_strict`` is set.
+    delegated = bool(tool_names & _GENERIC_DELEGATION_NAMES)
 
     if inbox_hit:
         called_inbox_tool = any(
             n.startswith(_INBOX_FETCH_PREFIXES) for n in tool_names
         )
         if not called_inbox_tool:
-            logger.warning(
-                "fabrication_backstop_fired (inbox): tool_names=%s text=%r",
-                sorted(tool_names)[:6], text[:200],
+            inbox_strict = bool(
+                cfg.get("post_filter.fabrication_delegation_inbox_strict", False)
             )
-            return _FABRICATION_REPLACEMENT, True, "inbox_no_fetch"
+            if delegated and not inbox_strict:
+                logger.warning(
+                    "fabrication_backstop_delegation_pass (inbox): "
+                    "tool_names=%s text=%r",
+                    sorted(tool_names)[:6], text[:200],
+                )
+            else:
+                logger.warning(
+                    "fabrication_backstop_fired (inbox): tool_names=%s text=%r",
+                    sorted(tool_names)[:6], text[:200],
+                )
+                return _FABRICATION_REPLACEMENT, True, "inbox_no_fetch"
 
     if cal_hit:
         called_cal_tool = any(
             n.startswith(_CALENDAR_FETCH_PREFIXES) for n in tool_names
         )
-        if not called_cal_tool:
+        # Calendar reads are not yet rerouted to a direct in-process tool, so a
+        # delegated calendar fetch still gets a pass.
+        if not called_cal_tool and not delegated:
             logger.warning(
                 "fabrication_backstop_fired (calendar): tool_names=%s text=%r",
                 sorted(tool_names)[:6], text[:200],
@@ -1034,7 +1085,7 @@ def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
     # Fabricated external-data backstop — catch inbox/calendar claims when no
     # corresponding fetch tool ran this turn. Ships a redirect line instead of
     # the made-up summary so the next user turn forces a real call.
-    text, fab_fired, fab_reason = _strip_fabricated_external_data(text)
+    text, fab_fired, fab_reason = _strip_fabricated_external_data(text, source=source)
     if fab_fired:
         return FilterResult(
             text=text,

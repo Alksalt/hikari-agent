@@ -16,7 +16,9 @@ from agents.post_filter import (
 )
 from agents.runtime import LAST_TURN_TOOL_NAMES
 
-# The live failure mode + variants.
+# The live failure mode + variants. Cyrillic cases cover the 2026-06-01
+# incident: a Ukrainian digest ("п'ять листів" — a SPELLED-OUT number) sailed
+# past the English-only regex.
 INBOX_FABRICATIONS = [
     "5 unread, all from Google",
     "you have 3 new emails",
@@ -25,6 +27,12 @@ INBOX_FABRICATIONS = [
     "nothing new in your inbox",
     "inbox is empty",
     "in your inbox: a few drafts and noise",
+    # uk/ru
+    "п'ять листів від гугла",
+    "3 непрочитаних листи",
+    "у скриньці 7 нових",
+    "в інбоксі порожньо",
+    "5 новых писем",
 ]
 
 CALENDAR_FABRICATIONS = [
@@ -35,6 +43,11 @@ CALENDAR_FABRICATIONS = [
     "next up at 14:00 — your dentist",
     "nothing on your calendar",
     "calendar is empty today",
+    # uk/ru
+    "2 зустрічі сьогодні",
+    "три події завтра",
+    "календар порожній",
+    "нічого в календарі",
 ]
 
 # Things that LOOK adjacent but should NOT trip the backstop.
@@ -45,6 +58,10 @@ LEGITIMATE = [
     "calendar app is bad design.",
     "you said tomorrow would be quieter.",
     "no idea what's on your schedule, ask me to check.",
+    # uk/ru — casual mentions without a count must NOT trip
+    "лист від мами пам'ятаєш?",
+    "надішли мені листівку колись",
+    "я люблю тебе, на добраніч",
 ]
 
 
@@ -186,5 +203,71 @@ def test_filter_outgoing_passes_normal_reply():
         assert not any(
             h.startswith("fabrication_backstop:") for h in result.refusal_hits
         )
+    finally:
+        LAST_TURN_TOOL_NAMES.reset(token)
+
+
+def test_fabrication_backstop_fires_on_cyrillic_digest():
+    """The 2026-06-01 incident: a Ukrainian digest with an empty tool set must
+    now fire (it sailed past the English-only regex before)."""
+    token = LAST_TURN_TOOL_NAMES.set(set())
+    try:
+        text, fired, reason = _strip_fabricated_external_data("п'ять листів від гугла")
+        assert fired is True
+        assert reason == "inbox_no_fetch"
+        assert text == _FABRICATION_REPLACEMENT
+    finally:
+        LAST_TURN_TOOL_NAMES.reset(token)
+
+
+def test_fabrication_backstop_exempt_source_skips():
+    """daily_checkin builds its digest from the typed adapter (provenance at
+    the data layer), so it is exempt even with an empty tool set — otherwise
+    the composer turn (no tool) would false-positive."""
+    token = LAST_TURN_TOOL_NAMES.set(set())
+    try:
+        text, fired, _ = _strip_fabricated_external_data(
+            "п'ять листів. решта — коли будеш готовий.", source="daily_checkin",
+        )
+        assert fired is False
+        # A non-exempt source with the same text + empty tools DOES fire.
+        _, fired_chat, _ = _strip_fabricated_external_data(
+            "п'ять листів. решта — коли будеш готовий.", source="chat",
+        )
+        assert fired_chat is True
+    finally:
+        LAST_TURN_TOOL_NAMES.reset(token)
+
+
+def test_fabrication_backstop_passes_with_direct_query_inbox_tool():
+    """A direct query_inbox call IS visible in LAST_TURN_TOOL_NAMES, so an
+    inbox-shape reply ships unmodified — the main-turn provenance path."""
+    token = LAST_TURN_TOOL_NAMES.set({"mcp__hikari_utility__query_inbox"})
+    try:
+        text, fired, _ = _strip_fabricated_external_data("you have 3 new emails")
+        assert fired is False
+        assert text == "you have 3 new emails"
+    finally:
+        LAST_TURN_TOOL_NAMES.reset(token)
+
+
+def test_fabrication_backstop_strict_mode_blocks_delegation(monkeypatch):
+    """With fabrication_delegation_inbox_strict=true, inbox-shape under
+    delegation-only (Agent/Task, no observable gmail tool) fires."""
+    from agents import config as cfg
+
+    real_get = cfg.get
+    monkeypatch.setattr(
+        cfg, "get",
+        lambda key, default=None: (
+            True if key == "post_filter.fabrication_delegation_inbox_strict"
+            else real_get(key, default)
+        ),
+    )
+    token = LAST_TURN_TOOL_NAMES.set({"Agent"})
+    try:
+        _, fired, reason = _strip_fabricated_external_data("you have 3 new emails")
+        assert fired is True
+        assert reason == "inbox_no_fetch"
     finally:
         LAST_TURN_TOOL_NAMES.reset(token)

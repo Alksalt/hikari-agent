@@ -61,8 +61,6 @@ def _snoozed_sources() -> set[str]:
 # Sources that should be dampened after quiet hours vs preferred in the
 # morning when the user is fresh.
 _MORNING_PREFERRED = frozenset({
-    "gmail_unread_threshold",
-    "gmail_important_thread",
     "calendar_event_prep",
     "calendar_new_invite",
     "reminder_fire",

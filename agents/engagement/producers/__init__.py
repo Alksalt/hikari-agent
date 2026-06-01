@@ -5,20 +5,19 @@ function. The unified _engagement_tick in scheduler.py calls all enabled
 producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
-All 22 producers:
-  Default-on (4):
-    gmail_unread_threshold, calendar_event_prep,
-    wiki_new_file, decision_resolve_due
+All 20 producers:
+  Default-on (3):
+    calendar_event_prep, wiki_new_file, decision_resolve_due
 
   Default-on world-delta producers (5):
     book_just_finished, just_got_home, late_night_dissolution,
     irritation_event, weather_mood_shift
 
-  Opt-in (13):
+  Opt-in (12):
     anniversary_callback, belief_resurface, calendar_new_invite, callback_episode,
     drive_starred_new, notion_recent_edit, weather_alert,
     weirdly_good_mood_leak, reengage_silence, location_arrived_recurring,
-    gmail_important_thread, research_callback
+    research_callback
 """
 from agents.engagement.producers import (  # noqa: F401
     anniversary_callback,
@@ -29,8 +28,6 @@ from agents.engagement.producers import (  # noqa: F401
     callback_episode,
     decision_resolve_due,
     drive_starred_new,
-    gmail_important_thread,
-    gmail_unread_threshold,
     irritation_event,
     just_got_home,
     late_night_dissolution,
@@ -56,8 +53,6 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
     "calendar_new_invite",
     "decision_resolve_due",
     "drive_starred_new",
-    "gmail_important_thread",
-    "gmail_unread_threshold",
     "irritation_event",
     "just_got_home",
     "late_night_dissolution",
@@ -73,7 +68,6 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
 })
 
 DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
-    "gmail_unread_threshold",
     "calendar_event_prep",
     "wiki_new_file",
     "decision_resolve_due",
@@ -95,8 +89,6 @@ _PRODUCER_MODULES = {
     "calendar_new_invite": calendar_new_invite,
     "decision_resolve_due": decision_resolve_due,
     "drive_starred_new": drive_starred_new,
-    "gmail_important_thread": gmail_important_thread,
-    "gmail_unread_threshold": gmail_unread_threshold,
     "irritation_event": irritation_event,
     "just_got_home": just_got_home,
     "late_night_dissolution": late_night_dissolution,

@@ -83,31 +83,10 @@ class TestProducerWikiNewFile:
         assert all(c.source == "wiki_new_file" for c in results)
 
 
-class TestProducerGmailUnreadThreshold:
-    def test_collect_returns_empty_when_mcp_cold(self):
-        from agents.engagement.producers import gmail_unread_threshold
-        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
-            assert gmail_unread_threshold.collect() == []
-
-    def test_collect_returns_candidate_when_above_threshold(self):
-        from agents.engagement.producers import gmail_unread_threshold
-        with (
-            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
-            patch("storage.db.runtime_get", side_effect=lambda k: "10" if k == "gmail_unread_count" else None),
-        ):
-            results = gmail_unread_threshold.collect()
-        assert len(results) == 1
-        assert results[0].source == "gmail_unread_threshold"
-        assert results[0].payload["unread_count"] == 10
-
-    def test_collect_returns_empty_below_threshold(self):
-        from agents.engagement.producers import gmail_unread_threshold
-        with (
-            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
-            patch("storage.db.runtime_get", side_effect=lambda k: "2" if k == "gmail_unread_count" else None),
-        ):
-            results = gmail_unread_threshold.collect()
-        assert results == []
+# NOTE: TestProducerGmailUnreadThreshold removed 2026-06-01 — the
+# gmail_unread_threshold producer was deleted (it read a runtime_state key no
+# code ever wrote, so it was permanently dead). See tools/gmail/inbox.py for
+# the typed read path that replaced the LLM-delegated inbox fetch.
 
 
 class TestProducerCalendarEventPrep:
@@ -360,24 +339,9 @@ class TestProducerLocationArrivedRecurring:
         assert results[0].payload["place_name"] == "Office"
 
 
-class TestProducerGmailImportantThread:
-    def test_collect_empty_when_mcp_cold(self):
-        from agents.engagement.producers import gmail_important_thread
-        with patch("agents.mcp_manager.MANAGER.is_warm", return_value=False):
-            assert gmail_important_thread.collect() == []
-
-    def test_collect_returns_candidate_for_important_thread(self):
-        from agents.engagement.producers import gmail_important_thread
-        threads = json.dumps([{"id": "th1", "subject": "URGENT: server down", "sender": "boss@company.com"}])
-        with (
-            patch("agents.mcp_manager.MANAGER.is_warm", return_value=True),
-            patch("agents.config.get", return_value=True),
-            patch("storage.db.runtime_get", side_effect=lambda k: threads if k == "gmail_important_threads" else None),
-        ):
-            results = gmail_important_thread.collect()
-        assert len(results) == 1
-        assert results[0].source == "gmail_important_thread"
-        assert results[0].payload["subject"] == "URGENT: server down"
+# NOTE: TestProducerGmailImportantThread removed 2026-06-01 — the
+# gmail_important_thread producer was deleted (dead: it read a runtime_state
+# key no code ever wrote). Replaced by the typed read path in tools/gmail/inbox.py.
 
 
 # ============================================================================
@@ -409,12 +373,12 @@ class TestSelector:
 
     def test_excludes_disabled_sources(self):
         from agents.engagement.selector import select
-        high = _make_candidate("gmail_unread_threshold", novelty=0.99, actionability=0.99, confidence=0.99)
+        high = _make_candidate("calendar_new_invite", novelty=0.99, actionability=0.99, confidence=0.99)
         # Sprint A added per-source min_value_score (wiki_new_file=0.3); bump
         # the only enabled candidate above threshold so we test the enabled
         # filter, not the new value-score gate.
         low = _make_candidate("wiki_new_file", novelty=0.6, actionability=0.6, confidence=0.6)
-        # gmail_unread_threshold is NOT in enabled set
+        # calendar_new_invite is NOT in enabled set
         ctx = _make_ctx(enabled={"wiki_new_file"})
         winner = select([high, low], ctx)
         assert winner is not None
@@ -422,7 +386,7 @@ class TestSelector:
 
     def test_excludes_source_not_in_enabled(self):
         from agents.engagement.selector import select
-        c = _make_candidate("gmail_unread_threshold", novelty=0.9, actionability=0.9, confidence=0.9)
+        c = _make_candidate("calendar_new_invite", novelty=0.9, actionability=0.9, confidence=0.9)
         ctx = _make_ctx(enabled=set())  # nothing enabled
         assert select([c], ctx) is None
 
@@ -461,18 +425,18 @@ class TestGuard:
         assert not ok
         assert reason == "generic_opener"
 
-    def test_rejects_missing_anchor_gmail_unread(self):
+    def test_rejects_missing_anchor_calendar(self):
         from agents.engagement.guard import passes
-        c = _make_candidate("gmail_unread_threshold", payload={"unread_count": 7})
-        # Text doesn't contain "7" verbatim
-        ok, reason = passes("you have some emails.", c)
+        c = _make_candidate("calendar_event_prep", payload={"title": "standup sync"})
+        # Text doesn't contain the title verbatim
+        ok, reason = passes("you have something later today.", c)
         assert not ok
         assert reason.startswith("missing_anchor")
 
-    def test_accepts_anchor_present_gmail_unread(self):
+    def test_accepts_anchor_present_calendar(self):
         from agents.engagement.guard import passes
-        c = _make_candidate("gmail_unread_threshold", payload={"unread_count": 7})
-        ok, reason = passes("you have 7 unread emails.", c)
+        c = _make_candidate("calendar_event_prep", payload={"title": "standup sync"})
+        ok, reason = passes("standup sync at 14:00. want me to prep?", c)
         assert ok
         assert reason == "ok"
 
@@ -639,9 +603,11 @@ class TestConfig:
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
-        # 4 core + reengage_silence + 5 world-delta producers (book_just_finished,
-        # just_got_home, late_night_dissolution, irritation_event, weather_mood_shift)
-        assert len(source_list) == 10
+        # 3 core (calendar_event_prep, wiki_new_file, decision_resolve_due) +
+        # reengage_silence + 5 world-delta producers (book_just_finished,
+        # just_got_home, late_night_dissolution, irritation_event, weather_mood_shift).
+        # gmail_unread_threshold removed 2026-06-01 (dead producer).
+        assert len(source_list) == 9
         assert "reengage_silence" in source_list
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list

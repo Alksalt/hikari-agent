@@ -38,6 +38,10 @@ async def test_compose_email_returns_voice_text(monkeypatch):
     prompt = mock.call_args[0][0]
     assert "deletable: 28" in prompt
     assert "in promos/updates" in prompt
+    # Message id carried through so "from which email?" is answerable.
+    assert "[#1]" in prompt
+    # Sender/subject are attacker-controllable — wrapped as untrusted DATA.
+    assert "HIKARI_UNTRUSTED_BEGIN" in prompt
 
 
 @pytest.mark.asyncio

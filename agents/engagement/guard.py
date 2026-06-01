@@ -88,7 +88,6 @@ _GENERIC_OPENER = re.compile(
 # the guard checks that at least one matching value appears verbatim in the
 # composed text. Sources with an empty tuple skip the anchor check.
 ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
-    "gmail_unread_threshold":      ("unread_count",),
     "calendar_event_prep":         ("title", "summary"),
     "calendar_new_invite":         ("title", "summary"),
     "wiki_new_file":               ("filename",),
@@ -101,7 +100,6 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "weirdly_good_mood_leak":      (),
     "reengage_silence":            (),
     "location_arrived_recurring":  ("place_name",),
-    "gmail_important_thread":      ("subject",),
     # Sprint B Wave 1 — 5 new producers
     "book_just_finished":          ("finished_book",),
     "just_got_home":               (),                        # payload has no stable text anchor; skip check
