@@ -73,3 +73,56 @@ async def probe_google_token(timeout_sec: float = 10.0) -> tuple[bool, str]:
     except Exception:  # noqa: BLE001
         err = f"http_{resp.status_code}"
     return False, err
+
+
+async def probe_google_scopes() -> tuple[str, list[str]]:
+    """Check the granted scopes cover the union of every Google tool's required
+    scopes. Returns ``(status, missing)`` where status ∈ {ok, under_scoped,
+    unknown}. ``unknown`` when the probe is indeterminate (empty/failed granted
+    set) — callers must NOT alarm on unknown.
+    """
+    try:
+        from auth.providers import get_provider, load_scope_config
+        from auth.scope_match import scope_satisfies
+
+        scope_cfg = load_scope_config()
+        required: set[str] = set()
+        for spec in scope_cfg.tool_specs.values():
+            if spec.provider == "google":
+                required.update(spec.required_scopes)
+        if not required:
+            return "unknown", []
+        granted = await get_provider("google").current_scopes()
+        if not granted:
+            # Empty = probe failed or no creds — indistinguishable. Don't alarm.
+            return "unknown", []
+        granted_set = set(granted)
+        missing = sorted(s for s in required if not scope_satisfies(s, granted_set))
+        return ("ok", []) if not missing else ("under_scoped", missing)
+    except Exception:
+        logger.exception("google_health: scope-coverage probe failed")
+        return "unknown", []
+
+
+async def probe_google_account() -> tuple[str, str]:
+    """Check the refresh-token's bound account matches the expected email
+    (``GOOGLE_WORKSPACE_USER_EMAIL`` / ``USER_GOOGLE_EMAIL``). Returns
+    ``(status, detail)`` where status ∈ {ok, mismatch, unknown}.
+    """
+    expected = (
+        os.environ.get("GOOGLE_WORKSPACE_USER_EMAIL")
+        or os.environ.get("USER_GOOGLE_EMAIL")
+        or ""
+    ).strip().lower()
+    try:
+        from auth.providers import get_provider
+
+        bound = (await get_provider("google").current_account()).strip().lower()
+    except Exception:
+        logger.exception("google_health: account probe failed")
+        return "unknown", ""
+    if not bound:
+        return "unknown", ""
+    if expected and bound != expected:
+        return "mismatch", f"bound={bound} expected={expected}"
+    return "ok", bound

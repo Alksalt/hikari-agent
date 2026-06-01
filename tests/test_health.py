@@ -266,6 +266,8 @@ async def test_collect_startup_report_returns_all_keys():
         "scheduler_jobs",
         "mcp_warm_pool",
         "oauth_google",
+        "google_scopes",
+        "google_account",
         "graphiti_reachable",
         "graph_outbox_pending",
         "media_outbox_pending",

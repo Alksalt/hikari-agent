@@ -34,10 +34,13 @@ logger = logging.getLogger(__name__)
 
 _SCOPES_CACHE_KEY = "auth.google.scopes"
 _SCOPES_CHECKED_AT_KEY = "auth.google.scopes_checked_at"
+_ACCOUNT_CACHE_KEY = "auth.google.account"
+_ACCOUNT_CHECKED_AT_KEY = "auth.google.account_checked_at"
 _SCOPES_CACHE_TTL_HOURS = 24
 
 _TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _TOKENINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v1/tokeninfo"
+_GMAIL_PROFILE_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 _REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
 # Keychain key name for the full grant blob.
@@ -62,10 +65,12 @@ def write_grant_to_keychain(token_payload: dict) -> None:
         store.set("google", "client_secret", str(token_payload["client_secret"]))
     if "refresh_token" in token_payload:
         store.set("google", "refresh_token", str(token_payload["refresh_token"]))
-    # Flush scope cache so re-grants take effect immediately.
+    # Flush scope + account caches so re-grants take effect immediately.
     from storage import db
     db.runtime_set(_SCOPES_CACHE_KEY, None)
     db.runtime_set(_SCOPES_CHECKED_AT_KEY, None)
+    db.runtime_set(_ACCOUNT_CACHE_KEY, None)
+    db.runtime_set(_ACCOUNT_CHECKED_AT_KEY, None)
 
 
 def read_grant_from_keychain() -> dict | None:
@@ -208,6 +213,67 @@ class GoogleProvider(Provider):
         db.runtime_set(_SCOPES_CHECKED_AT_KEY, datetime.now(UTC).isoformat())
         logger.debug("GoogleProvider.current_scopes: cached %d scopes", len(scopes))
         return scopes
+
+    # ------------------------------------------------------------------
+    # current_account
+    # ------------------------------------------------------------------
+
+    async def current_account(self) -> str:
+        """Return the email address the refresh token is bound to.
+
+        Uses the Gmail profile endpoint, which works with the already-granted
+        gmail scope (no extra scope needed). 24h-cached in runtime_state.
+        Returns "" on probe failure / missing creds so callers don't false-alarm.
+        """
+        from storage import db
+
+        cached = db.runtime_get(_ACCOUNT_CACHE_KEY)
+        checked_raw = db.runtime_get(_ACCOUNT_CHECKED_AT_KEY)
+        if cached and checked_raw:
+            try:
+                checked = datetime.fromisoformat(checked_raw)
+                if checked.tzinfo is None:
+                    checked = checked.replace(tzinfo=UTC)
+                if datetime.now(UTC) - checked < timedelta(hours=_SCOPES_CACHE_TTL_HOURS):
+                    return cached
+            except (ValueError, TypeError):
+                pass  # corrupt cache — re-probe
+
+        creds = self._creds()
+        if not creds:
+            return ""
+        client_id, client_secret, refresh_token = creds
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as cli:
+                tok_resp = await cli.post(
+                    _TOKEN_ENDPOINT,
+                    data={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                )
+                tok_resp.raise_for_status()
+                access_token = tok_resp.json().get("access_token") or ""
+                if not access_token:
+                    return ""
+                prof_resp = await cli.get(
+                    _GMAIL_PROFILE_ENDPOINT,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                prof_resp.raise_for_status()
+                email = str(prof_resp.json().get("emailAddress") or "").strip()
+        except Exception:
+            logger.exception(
+                "GoogleProvider.current_account: probe failed; returning '' (no cache)"
+            )
+            return ""
+
+        if email:
+            db.runtime_set(_ACCOUNT_CACHE_KEY, email)
+            db.runtime_set(_ACCOUNT_CHECKED_AT_KEY, datetime.now(UTC).isoformat())
+        return email
 
     # ------------------------------------------------------------------
     # refresh / revoke

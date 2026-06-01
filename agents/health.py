@@ -124,6 +124,39 @@ async def _check_oauth_google(prefetched: tuple[bool, str] | None = None) -> Che
         return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
 
 
+async def _check_google_scopes() -> CheckResult:
+    """Granted Google scopes cover every Google tool's required scopes? A gap
+    here is why a delete/bulk op 403s mid-conversation — surface it at boot."""
+    try:
+        from agents.google_health import probe_google_scopes  # noqa: PLC0415
+        status, missing = await probe_google_scopes()
+        if status == "under_scoped":
+            scopes = " ".join(missing)
+            return CheckResult(
+                ok=False,
+                value="under_scoped",
+                reason=(f"missing {scopes} — run: "
+                        f"uv run python -m scripts.auth google grant --add {scopes}"),
+            )
+        # ok / unknown → not degraded (unknown = indeterminate probe, no alarm).
+        return CheckResult(ok=True, value=status)
+    except Exception as e:
+        return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
+
+
+async def _check_google_account() -> CheckResult:
+    """Refresh-token account matches the expected email? Catches the silent
+    wrong-account class (olealt25 vs altukaleksandr2020)."""
+    try:
+        from agents.google_health import probe_google_account  # noqa: PLC0415
+        status, detail = await probe_google_account()
+        if status == "mismatch":
+            return CheckResult(ok=False, value="mismatch", reason=detail)
+        return CheckResult(ok=True, value=status)
+    except Exception as e:
+        return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
+
+
 async def _check_graphiti_reachable() -> CheckResult:
     """Lightweight canary: initialise the graph singleton and run a 1-result search."""
     try:
@@ -302,6 +335,8 @@ async def collect_startup_report(
         "scheduler_jobs": _check_scheduler(scheduler).to_dict(),
         "mcp_warm_pool": _check_mcp_warm_pool().to_dict(),
         "oauth_google": (await _check_oauth_google(oauth_google_prefetched)).to_dict(),
+        "google_scopes": (await _check_google_scopes()).to_dict(),
+        "google_account": (await _check_google_account()).to_dict(),
         "graphiti_reachable": (await _check_graphiti_reachable()).to_dict(),
         "graph_outbox_pending": _check_graph_outbox().to_dict(),
         "media_outbox_pending": _check_media_outbox().to_dict(),

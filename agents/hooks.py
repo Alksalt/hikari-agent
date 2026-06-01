@@ -1309,6 +1309,19 @@ async def _precheck_scopes(
         provider = get_provider(spec.provider)
         have = await provider.current_scopes()
         have_set = set(have)
+        # Fail OPEN on an indeterminate google probe. GoogleProvider.current_scopes()
+        # returns an EMPTY set on network failure (auth/google.py:203), which is
+        # indistinguishable from "no scopes granted". With enforce live, denying
+        # every gated Google tool on a transient blip is worse than letting the
+        # real API 403 — so allow and let the call proceed. (notion/github do a
+        # synchronous env check where empty means the token is genuinely absent,
+        # so their clean 'token isn't set' deny stays.)
+        if not have_set and spec.provider == "google":
+            logger.warning(
+                "scope_precheck: google scope probe empty for tool=%s "
+                "(likely transient) — allowing (fail-open)", tool_name,
+            )
+            return None
         missing = [s for s in spec.required_scopes if not scope_satisfies(s, have_set)]
         if not missing:
             return None
