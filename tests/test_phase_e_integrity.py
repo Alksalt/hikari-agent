@@ -13,10 +13,9 @@ from __future__ import annotations
 import importlib
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture: isolated DB
@@ -33,9 +32,8 @@ def _db_env(tmp_path: Path, monkeypatch):
 
     import storage.db as _db_mod
     importlib.reload(_db_mod)
-    from storage import db as _db
-
     import tools.photos._shared as _shared_mod
+    from storage import db as _db
     importlib.reload(_shared_mod)
 
     from agents import config as _cfg
@@ -58,7 +56,6 @@ class TestFluxSSRF:
         # Override allowlist to just openrouter.ai so attacker.com fails.
         monkeypatch.setattr(_shared, "_FLUX_URL_HOST_ALLOWLIST", ("openrouter.ai",))
 
-        import httpx
 
         # Stub the POST so OpenRouter returns a url pointing to attacker.com
         async def _mock_post(*args, **kwargs):

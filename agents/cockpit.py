@@ -152,7 +152,9 @@ def _patch_yaml_key(dotted_key: str, value: object) -> None:
     """Write a value at a dotted key path in engagement.yaml and reload config."""
     import os
     import tempfile
+
     import yaml
+
     from agents.config import _config_path
     path = _config_path()
     with open(path) as _f:
@@ -460,7 +462,6 @@ async def format_status(app) -> str:
         with _db._conn() as c:
             n_msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             n_eps = c.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
-            tasks_counts = counts.get("work_packets", {})
             n_tasks_raw = c.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status='open'"
             ).fetchone()[0]
@@ -505,8 +506,8 @@ async def format_status(app) -> str:
 
     # main-chat cost rollup (llm_costs table — Phase C)
     try:
-        from storage import db as _db_mod
         from agents import config as _cfg
+        from storage import db as _db_mod
         rollup_24h = _db_mod.llm_costs_rollup(window_hours=24)
         rollup_30d = _db_mod.llm_costs_rollup(window_hours=30 * 24)
         monthly_credit = float(
@@ -923,7 +924,7 @@ async def format_capabilities() -> str:
         )
         for server, status in probes:
             lines.append(f"  {server}: {status}")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         lines.append("  [probe timed out]")
     except Exception as exc:
         lines.append(f"  [probe failed: {exc}]")
@@ -1040,9 +1041,8 @@ def format_proactive_status() -> str:
 
     # next ping window from scheduler (best-effort)
     try:
-        from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
+        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
     except Exception:
-        ALL_PRODUCER_IDS = []
         DEFAULT_ENABLED_SOURCES = []
 
     # enabled sources
@@ -1350,7 +1350,6 @@ def format_receipt(view: str = "today") -> tuple[str, list[dict]]:
 
     text = ""
     try:
-        import asyncio as _asyncio
         from datetime import date as _date
 
         if view in ("today", "made", "moved", "learned", "avoided"):
@@ -1371,6 +1370,7 @@ def format_receipt(view: str = "today") -> tuple[str, list[dict]]:
                 text = f"nothing logged under '{view}' today."
         elif view == "week":
             from datetime import timedelta
+
             from tools.day_receipt import _db as _receipt_db
             from tools.day_receipt._render import RenderOptions, render_week
             end = _date.today()

@@ -164,7 +164,7 @@ async def _check_graphiti_reachable() -> CheckResult:
         g = await asyncio.wait_for(_graph.get_graph(), timeout=10)
         await asyncio.wait_for(g.search("test", num_results=1), timeout=10)
         return CheckResult(ok=True, value="ok")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return CheckResult(ok=False, value="unreachable", reason="timeout")
     except Exception as e:
         return CheckResult(ok=False, value="unreachable", reason=f"exception:{type(e).__name__}")
@@ -268,7 +268,7 @@ def _check_recent_log_errors(log_path: Path = _LOG_PATH, window_sec: int = 3600)
                 # We attach UTC here so .timestamp() math is host-TZ-independent.
                 ts = _dt.datetime.fromisoformat(
                     m.group(1).replace("T", " ")
-                ).replace(tzinfo=_dt.timezone.utc)
+                ).replace(tzinfo=_dt.UTC)
                 if ts.timestamp() >= cutoff:
                     count += 1
             except ValueError:

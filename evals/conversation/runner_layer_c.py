@@ -17,12 +17,11 @@ from __future__ import annotations
 import importlib
 import os
 import pathlib
+import re as _re
 import tempfile
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
-
-import re as _re
 
 import yaml
 

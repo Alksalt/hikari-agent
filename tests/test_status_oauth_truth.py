@@ -1,10 +1,7 @@
 """9B: /status OAuth truthfulness — probe_google_token is called, TTL cached."""
 from __future__ import annotations
 
-import asyncio
-import importlib
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest

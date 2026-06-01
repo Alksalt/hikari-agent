@@ -41,8 +41,8 @@ def _insert_due_decision() -> int:
 async def test_decision_marked_asked_after_successful_send():
     """After reserve_and_send with ok=True and decision_resolve_due dedup_key,
     the decision row has asked_at set."""
-    from storage import db
     from agents.proactive_gate import reserve_and_send
+    from storage import db
 
     did = _insert_due_decision()
 
@@ -59,7 +59,7 @@ async def test_decision_marked_asked_after_successful_send():
     )
 
     assert result.status == "sent"
-    row = db.decisions_unresolved_due(limit=10, cooldown_days=0)
+    db.decisions_unresolved_due(limit=10, cooldown_days=0)
     # With cooldown_days=0 the row still appears; check asked_at directly.
     with db._conn() as c:
         decision = c.execute("SELECT asked_at FROM decisions WHERE id = ?", (did,)).fetchone()
@@ -69,8 +69,8 @@ async def test_decision_marked_asked_after_successful_send():
 @pytest.mark.asyncio
 async def test_decision_not_marked_asked_on_failed_send():
     """When send fails (ok=False), asked_at must remain None."""
-    from storage import db
     from agents.proactive_gate import reserve_and_send
+    from storage import db
 
     did = _insert_due_decision()
 

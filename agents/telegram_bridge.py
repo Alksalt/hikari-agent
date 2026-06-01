@@ -15,7 +15,7 @@ import random
 import sys
 import time
 from collections import deque
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -675,7 +675,8 @@ def _character_silence_topic_changed(text: str) -> bool:
     try:
         _sil_set_at = db.runtime_get("silenced_set_at")
         if _sil_set_at:
-            from datetime import UTC as _UTC, datetime as _dt
+            from datetime import UTC as _UTC
+            from datetime import datetime as _dt
             try:
                 _age_h = (_dt.now(_UTC) - _dt.fromisoformat(str(_sil_set_at))).total_seconds() / 3600
                 if _age_h >= 4.0:
@@ -819,7 +820,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.warning("activate_anger_mode failed (non-fatal)", exc_info=True)
         if len(_rude_flags) == 4 and all(_rude_flags):
             db.runtime_set("silenced_until_msg_id", str(message.message_id))
-            db.runtime_set("silenced_set_at", datetime.now(timezone.utc).isoformat())
+            db.runtime_set("silenced_set_at", datetime.now(UTC).isoformat())
             db.runtime_set(
                 "silenced_context",
                 " ".join((message.text or "").split()[:30]),
@@ -919,9 +920,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # already in hand.
     async with TypingHeartbeat(context.bot, chat.id) as hb:
         try:
-            from tools.dispatch.task_extractor import should_extract
             from agents.compound_turn import run_compound_turn_typed
             from agents.runtime import _CURRENT_TURN_ID as _ctv
+            from tools.dispatch.task_extractor import should_extract
             if should_extract(user_text):
                 _mid = db.append_message("user", user_text)
                 db.runtime_set("last_user_message", db._now())
@@ -1182,7 +1183,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             _rude_flags_v.append(rude)
             if len(_rude_flags_v) == 4 and all(_rude_flags_v):
                 db.runtime_set("silenced_until_msg_id", str(message.message_id))
-                db.runtime_set("silenced_set_at", datetime.now(timezone.utc).isoformat())
+                db.runtime_set("silenced_set_at", datetime.now(UTC).isoformat())
                 db.runtime_set(
                     "silenced_context",
                     " ".join(transcript.split()[:30]),
@@ -1235,9 +1236,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
         try:
-            from tools.dispatch.task_extractor import should_extract
             from agents.compound_turn import run_compound_turn_typed
             from agents.runtime import _CURRENT_TURN_ID as _ctv
+            from tools.dispatch.task_extractor import should_extract
             if should_extract(transcript) and _voice_mid is not None:
                 user_turn_id = f"turn_{_voice_mid}"
                 _ctv.set(user_turn_id)
@@ -2647,7 +2648,6 @@ async def _cb_checkin(bot, chat_id: int, action: str) -> None:
 
 
 async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> None:
-    from datetime import timedelta
 
     if action == "dismiss":
         db.reminder_cancel(rid)
@@ -2661,7 +2661,9 @@ async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> 
         secs = _parse_duration(extra or "10m")
         if secs is None:
             secs = 600
-        from datetime import UTC, timedelta as _td, datetime as _dt
+        from datetime import UTC
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
         fire_at = _dt.now(UTC) + _td(seconds=secs)
         try:
             db.reminder_update_fire_at(rid, fire_at.isoformat())
@@ -2863,7 +2865,9 @@ async def _cb_rem(bot, chat_id: int, action: str, parts: list[str]) -> None:
         except ValueError:
             await bot.send_message(chat_id=chat_id, text="invalid rem:snooze params.")
             return
-        from datetime import UTC as _UTC, timedelta as _td, datetime as _dt  # noqa: PLC0415
+        from datetime import UTC as _UTC  # noqa: PLC0415
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
         fire_at = (_dt.now(_UTC) + _td(hours=hours)).isoformat()
         try:
             db.reminder_update_fire_at(rid, fire_at)

@@ -375,11 +375,10 @@ async def test_graphiti_reachable_ok():
 
 @pytest.mark.asyncio
 async def test_graphiti_reachable_timeout():
-    import asyncio as _asyncio
 
     # Raise TimeoutError synchronously to avoid unawaited-coroutine warnings.
     def _raise_timeout(*a, **kw):
-        raise _asyncio.TimeoutError
+        raise TimeoutError
 
     with patch("asyncio.wait_for", side_effect=_raise_timeout):
         result = await _check_graphiti_reachable()

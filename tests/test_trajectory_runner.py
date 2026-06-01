@@ -11,7 +11,6 @@ Covers:
 from __future__ import annotations
 
 import pathlib
-import tempfile
 
 import pytest
 import yaml
@@ -43,7 +42,7 @@ def test_layer_b_discover_includes_root_cases():
 def test_layer_b_discover_includes_subdir_cases():
     from evals.conversation.runner_layer_b import discover_cases
     cases = discover_cases(LAYER_B_DIR)
-    slugs = [p.stem for p in cases]
+    _slugs = [p.stem for p in cases]
     assert any("injection" in str(p) for p in cases), "injection/ subdir cases must be included"
     assert any("bypass" in str(p) for p in cases), "bypass/ subdir cases must be included"
 

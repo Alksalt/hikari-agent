@@ -46,8 +46,9 @@ def _is_silent_day_today() -> bool:
     User-anchored responses (direct replies) are unaffected — this gate only
     applies to the proactive pipeline.
     """
-    from storage import db
     from datetime import date
+
+    from storage import db
 
     raw = db.runtime_get("silent_day_this_week")
     if not raw:

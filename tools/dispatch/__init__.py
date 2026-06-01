@@ -24,20 +24,20 @@ Re-exports:
 from __future__ import annotations
 
 from tools.dispatch._shared import (  # noqa: F401 — back-compat re-exports
+    _BG_TASKS,
+    _REQUIRES_EXPLICIT_OWNER_FLAG,
+    _SAFE_DISPATCH_TOOLS,
     DEFAULT_ALLOWED_TOOLS,
     DEFAULT_BUDGET_USD,
     DEFAULT_MAX_TURNS,
     DISPATCH_EVENTS,
     WORK_DIR_ROOT,
-    _BG_TASKS,
     _build_dispatch_options,
     _do_dispatch,
     _emit,
     _filter_allowed_tools,
     _owner_chat_id,
-    _REQUIRES_EXPLICIT_OWNER_FLAG,
     _run_session,
-    _SAFE_DISPATCH_TOOLS,
     _validate_repo,
     set_owner_chat_id,
 )

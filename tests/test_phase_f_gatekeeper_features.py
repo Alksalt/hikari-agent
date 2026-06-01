@@ -55,6 +55,7 @@ def test_always_approve_expires_after_ttl():
     """When the TTL has elapsed, _check_always_approve returns False and
     evicts the stale entry."""
     import time
+
     from tools.approvals import _ALWAYS_APPROVE, _check_always_approve
 
     _ALWAYS_APPROVE.clear()

@@ -74,7 +74,6 @@ async def test_resolver_reject_with_id():
 @pytest.mark.asyncio
 async def test_resolver_id_mismatch_consumed_and_notifies():
     """Explicit id that belongs to a different chat sends error and returns True."""
-    from storage import db
     row_id = _make_approval(chat_id=99999, tool_use_id="tuid-3")  # different chat
 
     safe_send_mock = AsyncMock()

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -294,8 +293,8 @@ class TestSchedulerGateVsNoiseFloor:
 
     def test_scheduler_gate_disabled_still_respects_quiet_hours(self, _isolated_db, monkeypatch):
         """should_wake() returns False during quiet hours even when scheduler_gate_enabled=False."""
-        from agents.engagement.guard import should_wake
         from agents import config as _cfg
+        from agents.engagement.guard import should_wake
 
         monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
             False if key == "proactive.scheduler_gate_enabled" else default
@@ -311,8 +310,9 @@ class TestSchedulerGateVsNoiseFloor:
     def test_scheduler_gate_disabled_still_respects_silence_until(self, _isolated_db, monkeypatch):
         """should_wake() returns False during active silence_until even when gate disabled."""
         from datetime import UTC, datetime, timedelta
-        from agents.engagement.guard import should_wake
+
         from agents import config as _cfg
+        from agents.engagement.guard import should_wake
         from storage import db
 
         monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
@@ -332,8 +332,8 @@ class TestSchedulerGateVsNoiseFloor:
 
     def test_scheduler_gate_disabled_still_respects_silent_day(self, _isolated_db, monkeypatch):
         """should_wake() returns False on a silent_day even when gate disabled."""
-        from agents.engagement.guard import should_wake
         from agents import config as _cfg
+        from agents.engagement.guard import should_wake
 
         monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
             False if key == "proactive.scheduler_gate_enabled" else default
@@ -351,8 +351,8 @@ class TestSchedulerGateVsNoiseFloor:
 
     def test_scheduler_gate_disabled_returns_true_when_noise_floor_clear(self, _isolated_db, monkeypatch):
         """should_wake() returns True when gate disabled AND noise floor is clear."""
-        from agents.engagement.guard import should_wake
         from agents import config as _cfg
+        from agents.engagement.guard import should_wake
 
         monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
             False if key == "proactive.scheduler_gate_enabled" else default

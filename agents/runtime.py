@@ -21,12 +21,11 @@ from functools import cache
 from pathlib import Path
 
 import httpx
-
 from claude_agent_sdk import (
     AssistantMessage,
-    CLIConnectionError,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    CLIConnectionError,
     HookMatcher,
     ProcessError,
     ResultMessage,

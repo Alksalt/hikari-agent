@@ -18,7 +18,6 @@ import pytest
 
 from storage import db
 
-
 # ---------------------------------------------------------------------------
 # DB isolation (mirrors test_belief_frame_does_not_persist)
 # ---------------------------------------------------------------------------

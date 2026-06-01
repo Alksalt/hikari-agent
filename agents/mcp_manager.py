@@ -273,7 +273,7 @@ class McpManager:
                 session.call_tool(tool_name, arguments=arguments),
                 timeout=timeout,
             )
-        except (Exception, asyncio.TimeoutError) as exc:
+        except (TimeoutError, Exception) as exc:
             # Tear down the dead / timed-out session under its own lock so the
             # next call respawns a fresh subprocess rather than retrying a
             # wedged one.

@@ -15,12 +15,11 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from agents.engagement.triggers import TriggerCandidate
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,8 +178,9 @@ class TestValueScoreFilter:
 class TestValueScoreRubric:
     def test_value_score_in_range(self):
         """value_score must be in [0, 1]."""
-        from agents.engagement import selector
         from zoneinfo import ZoneInfo
+
+        from agents.engagement import selector
 
         c = _candidate(source="wiki_new_file", payload={"filename": "foo.md"})
         ctx = SimpleNamespace(
@@ -198,8 +198,9 @@ class TestValueScoreRubric:
 
     def test_value_score_higher_with_anchor(self):
         """Candidate with anchor payload key should score higher than one without."""
-        from agents.engagement import selector
         from zoneinfo import ZoneInfo
+
+        from agents.engagement import selector
 
         ctx = SimpleNamespace(
             now_local=datetime.now(ZoneInfo("UTC")).replace(hour=10),
@@ -231,8 +232,9 @@ class TestValueScoreRubric:
 
     def test_value_score_lower_during_quiet_hours(self):
         """value_score timing component drops when quiet hours are active."""
-        from agents.engagement import selector
         from zoneinfo import ZoneInfo
+
+        from agents.engagement import selector
 
         ctx = SimpleNamespace(
             now_local=datetime.now(ZoneInfo("UTC")),
@@ -411,7 +413,6 @@ class TestDeferToNextTurn:
             payload = {"filename": "foo.md"}
 
         # Patch session_scratch insert to avoid schema dependency
-        import asyncio
         with patch("agents.engagement.sender._write_defer_scratch", wraps=sender._write_defer_scratch):
             # Call _write_defer_scratch directly with kind="next_turn"
             sender._write_defer_scratch("next_turn", "foo.md just dropped.", _FakeCandidate())

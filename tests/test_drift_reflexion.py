@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agents import config
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture — isolated SQLite DB per test (matches existing test pattern)
@@ -239,7 +237,7 @@ def test_inject_block_format():
 
     assert "# voice-corrections" in result
     lines = result.splitlines()
-    bullet_lines = [l for l in lines if l.startswith("- ")]
+    bullet_lines = [ln for ln in lines if ln.startswith("- ")]
     assert len(bullet_lines) == 3
     # Newest first (id-DESC from DB, so newest is first bullet)
     assert "newest correction" in bullet_lines[0]

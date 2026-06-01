@@ -208,6 +208,7 @@ def _format_core_blocks() -> str:
     relationship stage hint, and emotional register from recent sessions.
     """
     import json as _json
+
     from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
 
     blocks = db.all_core_blocks()
@@ -386,7 +387,7 @@ def _format_voice_corrections() -> str:
         return ""
     if not rows:
         return ""
-    from agents.reflection_sanitize import escape_remembered_tags, sanitize, MemoryInstructionShape
+    from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
     lines = [
         "# voice-corrections (your own notes on recent drifts — re-anchor, don't quote)",
     ]
@@ -894,6 +895,7 @@ def _format_deferred_proactives() -> str | None:
     """
     try:
         import json as _json
+
         from agents.reflection_sanitize import (
             MemoryInstructionShape,
             escape_remembered_tags,
@@ -1050,6 +1052,7 @@ def _format_deferred_observations() -> str | None:
     item; expired items are dropped. After injection the slot is cleared.
     """
     import json as _json
+
     from agents.reflection_sanitize import MemoryInstructionShape, escape_remembered_tags, sanitize
 
     raw = db.runtime_get("deferred_observations")

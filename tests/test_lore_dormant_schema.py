@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-
 _LORE_DORMANT_PATH = (
     Path(__file__).parent.parent
     / ".claude" / "skills" / "character-voice" / "LORE_DORMANT.md"

@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import importlib
 import json
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import time
 
 import pytest
 
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -126,7 +125,7 @@ def test_diary_pagination(monkeypatch):
     import agents.cockpit as ck
     text, nav = ck.format_diary(page=0)
     # Should have Next > if more than 5
-    next_btns = [b for b in nav if "Next" in b.get("text", "")]
+    _next_btns = [b for b in nav if "Next" in b.get("text", "")]
     # nav is a flat list of dicts here
     assert isinstance(nav, list)
 
@@ -175,12 +174,12 @@ def test_links_search_empty(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_receipt_today(monkeypatch):
-    from tools.day_receipt._db import Receipt
     from datetime import date
+
+    from tools.day_receipt._db import Receipt
     fake_receipt = Receipt(receipt_date=date.today(), entries=(), note=None)
     import tools.day_receipt._db as _rdb
     monkeypatch.setattr(_rdb, "get_receipt", lambda d, **kw: fake_receipt)
-    from tools.day_receipt._render import RenderOptions, render_receipt
     import agents.cockpit as ck
     text, kb_row = ck.format_receipt("today")
     # keyboard should have Today / Week / Made / Moved / Learned / Avoided
@@ -202,10 +201,9 @@ def test_receipt_category_buttons():
 
 
 def test_receipt_week(monkeypatch):
-    from tools.day_receipt._render import RenderOptions, render_week
+
     import tools.day_receipt._db as _rdb
     from tools.day_receipt._db import Receipt
-    from datetime import date
     monkeypatch.setattr(_rdb, "get_receipt", lambda d, **kw: Receipt(receipt_date=d, entries=(), note=None))
     import agents.cockpit as ck
     text, kb_row = ck.format_receipt("week")
@@ -327,9 +325,10 @@ def test_reminders_page_with_data():
 
 
 def test_reminders_page_pagination():
-    from datetime import timedelta, timezone, datetime as _dt
+    from datetime import datetime as _dt
+    from datetime import timedelta
     for i in range(12):
-        fire_at = (_dt.now(timezone.utc) + timedelta(hours=i + 1)).isoformat()
+        fire_at = (_dt.now(UTC) + timedelta(hours=i + 1)).isoformat()
         db.reminder_insert(fire_at=fire_at, text=f"Reminder {i}")
     import agents.cockpit as ck
     text, kb_rows = ck.format_reminders_page(page=0)
@@ -423,6 +422,7 @@ def test_silence_ack_with_local_tz(monkeypatch):
 
 def test_tools_summary():
     import agents.cockpit as ck
+
     # Patch catalog to avoid heavy IO
     from tools.catalog import ToolEntry
     fake_entry = ToolEntry(

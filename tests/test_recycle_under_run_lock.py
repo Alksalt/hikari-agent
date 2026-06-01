@@ -6,15 +6,13 @@ Prevents deadlock when called from inside _RUN_LOCK (e.g. ProcessError handler).
 """
 from __future__ import annotations
 
-import asyncio
 import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # DB isolation

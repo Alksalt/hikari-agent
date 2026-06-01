@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -230,7 +229,7 @@ async def test_process_outbox_add_episode_false_marks_row_via_permanent_path(mon
     monkeypatch.setenv("GRAPHITI_ENABLED", "true")
 
     # Insert a fact so there's a pending outbox row.
-    fid = db.insert_fact("user", "prefers", "dark mode")
+    db.insert_fact("user", "prefers", "dark mode")
     rows = db.graph_outbox_pending()
     assert rows, "expected at least one pending row after insert_fact"
     row_id = rows[0]["id"]

@@ -3,11 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -41,7 +37,7 @@ def _seed_task(db, subject="look into X", description="context", status="pending
 # ---------------------------------------------------------------------------
 
 def test_skips_when_disabled(monkeypatch, tmp_path):
-    db = _setup(monkeypatch, tmp_path)
+    _setup(monkeypatch, tmp_path)
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
 
     with patch("agents.config.get", return_value=False):

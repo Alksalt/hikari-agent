@@ -17,7 +17,6 @@ import pytest
 
 from storage import db
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ def test_memorydump_few_facts_all_shown():
     import agents.cockpit as ck
 
     for i in range(5):
-        db.insert_fact(subject=f"user", predicate=f"likes", object_=f"thing_{i}")
+        db.insert_fact(subject="user", predicate="likes", object_=f"thing_{i}")
 
     text, kb_rows = ck.format_memorydump(page=0)
     assert "memory dump" in text
@@ -84,7 +83,7 @@ def test_memorydump_pagination_first_page():
 
     ids = []
     for i in range(15):
-        fid = db.insert_fact(subject=f"u", predicate=f"has", object_=f"fact_{i}")
+        fid = db.insert_fact(subject="u", predicate="has", object_=f"fact_{i}")
         ids.append(fid)
 
     text0, kb0 = ck.format_memorydump(page=0)
@@ -97,7 +96,7 @@ def test_memorydump_pagination_second_page():
     import agents.cockpit as ck
 
     for i in range(15):
-        db.insert_fact(subject=f"u", predicate=f"has", object_=f"fact_{i}")
+        db.insert_fact(subject="u", predicate="has", object_=f"fact_{i}")
 
     text1, kb1 = ck.format_memorydump(page=1)
     per_fact_rows = [row for row in kb1 if any(b.get("text") == "Forget" for b in row)]

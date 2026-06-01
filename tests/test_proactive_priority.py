@@ -26,7 +26,6 @@ import pytest
 
 from agents.engagement.triggers import TriggerCandidate
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures (pattern identical to test_engagement_selector.py)
 # ---------------------------------------------------------------------------

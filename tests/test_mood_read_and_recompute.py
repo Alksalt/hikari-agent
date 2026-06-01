@@ -106,8 +106,9 @@ def test_research_callback_mood_gate_reads_core_block(tmp_path, monkeypatch):
 
 def test_compute_cycle_state_idempotent_same_day(monkeypatch):
     """Two calls on the same day produce the same mood_today."""
-    from agents.reflection import compute_cycle_state
     import datetime as _dt
+
+    from agents.reflection import compute_cycle_state
 
     today = date(2026, 1, 9)  # Friday
     cycle_start = _cycle_start_for_day(14, today)  # peak-social + lift → weirdly good
@@ -142,9 +143,10 @@ def test_compute_cycle_state_idempotent_same_day(monkeypatch):
 
 def test_compute_cycle_state_updates_daily_phase(monkeypatch):
     """After compute_cycle_state, daily_phase inside cycle_state matches current hour."""
-    import json
-    from agents.reflection import compute_cycle_state
     import datetime as _dt
+    import json
+
+    from agents.reflection import compute_cycle_state
 
     today = date(2026, 1, 9)  # Friday
     cycle_start = _cycle_start_for_day(14, today)

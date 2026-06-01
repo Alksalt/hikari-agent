@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,9 +29,10 @@ def isolated_db(tmp_path, monkeypatch):
 # --- _extract_reason_contract unit tests ---
 
 def test_extract_reason_contract_from_trigger_candidate():
-    from agents.proactive_gate import _extract_reason_contract
+    from datetime import UTC, datetime
+
     from agents.engagement.triggers import TriggerCandidate
-    from datetime import datetime, UTC
+    from agents.proactive_gate import _extract_reason_contract
 
     cand = TriggerCandidate(
         source="gmail_unread_threshold",
@@ -181,6 +182,7 @@ async def test_reason_contract_none_candidate_ok(isolated_db, monkeypatch):
 def test_snooze_active_per_source(isolated_db):
     """_snooze_active returns True when producer_id is snoozed in the map."""
     from datetime import timedelta
+
     from agents.proactive_gate import _snooze_active
 
     future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
@@ -193,6 +195,7 @@ def test_snooze_active_per_source(isolated_db):
 def test_snooze_active_global_all(isolated_db):
     """_snooze_active returns True for any producer when 'all' key is snoozed."""
     from datetime import timedelta
+
     from agents.proactive_gate import _snooze_active
 
     future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
@@ -206,6 +209,7 @@ def test_snooze_active_global_all(isolated_db):
 def test_snooze_active_expired(isolated_db):
     """_snooze_active returns False when snooze timestamp is in the past."""
     from datetime import timedelta
+
     from agents.proactive_gate import _snooze_active
 
     past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -224,6 +228,7 @@ def test_snooze_active_no_entry(isolated_db):
 async def test_reserve_and_send_aborts_on_per_source_snooze(isolated_db, monkeypatch):
     """reserve_and_send aborts with reason='snooze' when the producer is snoozed."""
     from datetime import timedelta
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
@@ -252,6 +257,7 @@ async def test_reserve_and_send_aborts_on_per_source_snooze(isolated_db, monkeyp
 async def test_reserve_and_send_aborts_on_snooze_all(isolated_db, monkeypatch):
     """reserve_and_send aborts for any producer when 'all' is snoozed."""
     from datetime import timedelta
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
@@ -280,6 +286,7 @@ async def test_reserve_and_send_aborts_on_snooze_all(isolated_db, monkeypatch):
 async def test_reserve_and_send_passes_when_snooze_expired(isolated_db, monkeypatch):
     """reserve_and_send sends normally when snooze entry is expired."""
     from datetime import timedelta
+
     from agents import proactive_gate
     importlib.reload(proactive_gate)
     monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)

@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib
-import logging
 import time
 from pathlib import Path
 
@@ -24,7 +23,6 @@ import pytest
 
 from agents import config
 from storage import db
-
 
 # ---------- shared fixtures ----------
 
@@ -60,6 +58,7 @@ def _pkce_pair(verifier: str = "test-verifier-1234567890abcdefghijklmnop") -> tu
 def _client():
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
+
     from mcp_external.oauth import oauth_routes
     app = Starlette(routes=oauth_routes)
     return TestClient(app)
@@ -111,9 +110,8 @@ def test_build_server_no_env_no_config_uses_defaults(monkeypatch):
 
 def _make_request(headers: dict[str, str], client_host: str = "127.0.0.1"):
     """Build a minimal Starlette Request with the given headers and client."""
-    from starlette.datastructures import Headers
+
     from starlette.requests import Request
-    from unittest.mock import MagicMock
     scope = {
         "type": "http",
         "method": "GET",
@@ -200,7 +198,7 @@ def test_register_rate_limit_blocks_after_max_attempts(monkeypatch):
     """/register is rate-limited per IP; exceeding the limit returns 429."""
     from mcp_external.oauth import register_limiter
     # Override max to a small value for the test.
-    original_max = register_limiter.max_attempts
+    _original_max = register_limiter.max_attempts
     monkeypatch.setattr(
         config, "get",
         lambda key, default=None, _orig=config.get: (
@@ -475,7 +473,6 @@ def test_main_sets_utc_formatter():
     # We import launch and call main partially — just check the side-effect
     # of the Formatter.converter assignment without actually starting uvicorn.
     # We monkeypatch uvicorn.run to a no-op.
-    import importlib
     import sys
 
     # Temporarily inject a no-op uvicorn.
@@ -485,9 +482,10 @@ def test_main_sets_utc_formatter():
     sys.modules.setdefault("uvicorn", fake_uvicorn)
 
     try:
-        from mcp_external import launch
         # Patch the parts that would try to start an actual server.
         import unittest.mock as mock
+
+        from mcp_external import launch
         with mock.patch("mcp_external.launch._enabled", return_value=True), \
              mock.patch("mcp_external.launch.build_server") as mock_build, \
              mock.patch("uvicorn.run"):

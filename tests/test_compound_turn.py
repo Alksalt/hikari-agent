@@ -10,8 +10,8 @@ Verifies:
 from __future__ import annotations
 
 import json
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # should_extract tests
@@ -457,9 +457,10 @@ async def test_run_compound_turn_typed_falls_back_on_extractor_error(monkeypatch
 @pytest.mark.asyncio
 async def test_run_compound_turn_typed_read_step_timeout(monkeypatch, _isolated_db):
     """A read step that exceeds step_timeout is marked failed; receipt reports it."""
+    import asyncio
+
     from agents.compound_turn import run_compound_turn_typed
     from agents.work_packet import CompoundTaskNode
-    import asyncio
 
     async def _fake_extract(message):
         return [

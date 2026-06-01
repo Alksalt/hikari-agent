@@ -4,10 +4,8 @@ from __future__ import annotations
 import importlib
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -24,10 +22,9 @@ def _scene_env(tmp_path: Path, monkeypatch):
 
     import storage.db as _db_mod
     importlib.reload(_db_mod)
-    from storage import db as _db
-
     import tools.photos._shared as _shared_mod
     import tools.photos.scene as _scene_mod
+    from storage import db as _db
     importlib.reload(_shared_mod)
     importlib.reload(_scene_mod)
 

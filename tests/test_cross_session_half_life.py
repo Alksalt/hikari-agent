@@ -43,7 +43,7 @@ def test_arm_writes_prior_session_heavy_on_silence():
 
 def test_arm_writes_prior_session_heavy_on_anger():
     """Activating anger mode arms prior_session_heavy with l3_refusal."""
-    from agents import mode_dispatch, cross_session
+    from agents import cross_session, mode_dispatch
     mode_dispatch.activate_anger_mode("rude test trigger")
     cross_session.arm_if_heavy()
     raw = db.runtime_get("prior_session_heavy")
@@ -94,12 +94,11 @@ def test_format_block_when_armed_and_within_decay():
 
 def test_hooks_format_prior_session_heavy_returns_string():
     """_format_prior_session_heavy returns a non-empty string when armed within decay."""
-    from agents import cross_session
     db.runtime_set(
         "prior_session_heavy",
         json.dumps({"trigger": "l3_refusal", "ts": datetime.now(UTC).isoformat()}),
     )
-    decay_turns = int(config.get("emotional_half_life.cross_session.decay_turns", 5))
+    _decay_turns = int(config.get("emotional_half_life.cross_session.decay_turns", 5))
     db.runtime_set("session_turn_count", 1)
 
     softness_factor = float(config.get("emotional_half_life.cross_session.softness_factor", 0.18))

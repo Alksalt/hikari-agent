@@ -14,8 +14,8 @@ Four cases:
 from __future__ import annotations
 
 import os
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Shared DB fixture (mirrors tests/test_compound_turn.py)
@@ -98,7 +98,6 @@ async def test_real_inbox_fetch_survives_filter_outgoing(monkeypatch, _isolated_
     filter_outgoing must NOT replace the inbox-shaped receipt text."""
     from agents._turn_state import LAST_TURN_TOOL_NAMES
     from agents.compound_turn import run_compound_turn_typed
-    from agents.post_filter import _FABRICATION_REPLACEMENT
 
     CHILD_TOOL = "mcp__google_workspace__query_gmail_emails"
     REPLY_TEXT = "5 unread, all from Google"
@@ -154,7 +153,7 @@ def test_fabrication_without_child_tool_call_is_stripped():
     """If the child did NOT touch the sink, the backstop still fires on
     inbox-shaped text. Guards against over-suppression."""
     from agents._turn_state import LAST_TURN_TOOL_NAMES
-    from agents.post_filter import _strip_fabricated_external_data, _FABRICATION_REPLACEMENT
+    from agents.post_filter import _FABRICATION_REPLACEMENT, _strip_fabricated_external_data
 
     # Empty tool names — no fetch happened.
     token = LAST_TURN_TOOL_NAMES.set(set())

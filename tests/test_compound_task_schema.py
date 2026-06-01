@@ -21,9 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from agents.work_packet import CompoundTaskNode, WorkPacket, WorkStep, validate_nodes
 from agents.compound_turn import _partition_steps
-
+from agents.work_packet import CompoundTaskNode, WorkStep, validate_nodes
 
 # ---------------------------------------------------------------------------
 # Helpers

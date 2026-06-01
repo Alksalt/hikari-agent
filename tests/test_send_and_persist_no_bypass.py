@@ -14,7 +14,6 @@ import pytest
 
 from storage import db
 
-
 # ---------------------------------------------------------------------------
 # DB isolation
 # ---------------------------------------------------------------------------
@@ -264,6 +263,6 @@ def test_proactive_messages_no_keyboard():
 
     EditMarkupVisitor().visit(tree)
     assert not calls_to_edit_markup, (
-        f"edit_message_reply_markup still called in telegram_bridge.py: "
+        "edit_message_reply_markup still called in telegram_bridge.py: "
         + ", ".join(calls_to_edit_markup)
     )

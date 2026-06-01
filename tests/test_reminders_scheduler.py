@@ -306,9 +306,9 @@ def _insert_action_row(*, max_fires=3, minutes_ago=5, recurrence="every_n_minute
 @pytest.mark.asyncio
 async def test_action_reminder_success_advances_fires_done(monkeypatch):
     rid = _insert_action_row(max_fires=3)
+    import agents.engagement.guard as _guard
     from agents import proactive
     from agents import runtime as _rt
-    import agents.engagement.guard as _guard
     monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
 
     async def fake_run(seed_prompt, **_kwargs):
@@ -330,9 +330,9 @@ async def test_action_reminder_success_advances_fires_done(monkeypatch):
 @pytest.mark.asyncio
 async def test_action_reminder_failure_increments_counter_not_cancelled(monkeypatch):
     rid = _insert_action_row(max_fires=3)
+    import agents.engagement.guard as _guard
     from agents import proactive
     from agents import runtime as _rt
-    import agents.engagement.guard as _guard
     monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
 
     async def fake_run(seed_prompt, **_kwargs):
@@ -355,9 +355,9 @@ async def test_action_reminder_three_strikes_cancels_and_surfaces(monkeypatch):
     db.reminder_increment_failures(rid)
     db.reminder_increment_failures(rid)   # pre-load to 2 failures
 
+    import agents.engagement.guard as _guard
     from agents import proactive
     from agents import runtime as _rt
-    import agents.engagement.guard as _guard
     monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
 
     async def fake_run(seed_prompt, **_kwargs):
@@ -369,7 +369,9 @@ async def test_action_reminder_three_strikes_cancels_and_surfaces(monkeypatch):
     surfaced = []
     async def fake_reserve(*, send_text_fn, text, **_):
         surfaced.append(text)
-        class _R: status = "sent"; reason = None
+        class _R:
+            status = "sent"
+            reason = None
         return _R()
 
     monkeypatch.setattr(proactive, "reserve_and_send", fake_reserve)
@@ -396,9 +398,9 @@ async def test_action_reminder_last_fire_marks_fired_and_runs_summary(monkeypatc
     # Pre-advance to 1/2 so this fire is the FINAL one.
     db.reminder_increment_fires_done(rid)
 
+    import agents.engagement.guard as _guard
     from agents import proactive
     from agents import runtime as _rt
-    import agents.engagement.guard as _guard
     monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
 
     calls = []
@@ -412,7 +414,9 @@ async def test_action_reminder_last_fire_marks_fired_and_runs_summary(monkeypatc
     surfaced = []
     async def fake_reserve(*, text, **_):
         surfaced.append(text)
-        class _R: status = "sent"; reason = None
+        class _R:
+            status = "sent"
+            reason = None
         return _R()
 
     monkeypatch.setattr(proactive, "reserve_and_send", fake_reserve)
@@ -433,9 +437,9 @@ async def test_action_reminder_last_fire_marks_fired_and_runs_summary(monkeypatc
 async def test_action_reminder_user_turn_in_progress_defers(monkeypatch):
     rid = _insert_action_row(max_fires=3, minutes_ago=5)
     original_due = db.reminder_get(rid)["fire_at"]
+    import agents.engagement.guard as _guard
     from agents import proactive
     from agents import runtime as _rt
-    import agents.engagement.guard as _guard
     monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
 
     # Hold the run-lock to simulate an active user turn.

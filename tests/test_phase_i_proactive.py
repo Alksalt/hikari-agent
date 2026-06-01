@@ -158,8 +158,8 @@ class TestProducerReminderFire:
 
     def test_collect_returns_candidate_when_enabled_override(self):
         # Verify the producer still works when explicitly enabled (e.g. for testing).
-        from agents.engagement.producers import reminder_fire
         from agents import config as _cfg
+        from agents.engagement.producers import reminder_fire
         due = [{"id": 1, "text": "call dentist", "fire_at": datetime.now(UTC).isoformat()}]
         with (
             patch("storage.db.reminder_due", return_value=due),

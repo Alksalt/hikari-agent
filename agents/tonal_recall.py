@@ -7,7 +7,7 @@ a single tonal token. Writes the result to session.emotional_register.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from agents.runtime import run_aux_composition
 from storage import db

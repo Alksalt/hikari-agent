@@ -168,8 +168,8 @@ def _build_review_prompt(data: dict) -> str:
 
 async def compose_annual_review(year: int) -> str | None:
     """Compose the review text via aux LLM. Returns None on failure."""
-    from agents.runtime import _call_aux_llm
     from agents import config as cfg
+    from agents.runtime import _call_aux_llm
 
     data = _gather_year_data(year)
     prompt = _build_review_prompt(data)

@@ -33,8 +33,8 @@ def _gate_open(monkeypatch):
 @pytest.mark.asyncio
 async def test_fire_due_reminders_marks_fired_in_same_transaction():
     """After fire_due_reminders sends, db.reminder_get(id).fired_at is set."""
-    from storage import db
     from agents import proactive
+    from storage import db
 
     past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     rid = db.reminder_insert(fire_at=past, text="test reminder", lead_minutes=0, repeat=None)

@@ -57,6 +57,10 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# E501 (line-too-long) is not enforced: most violations are long prompt/
+# docstring/instruction strings that read worse when wrapped. Real-signal
+# rules (F unused/undefined, I import-order, UP upgrades, other E) stay on.
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Data ingest script: long string literals are prose/URLs in data tuples — wrapping breaks readability

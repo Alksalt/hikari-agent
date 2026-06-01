@@ -108,7 +108,7 @@ def test_auto_policy_blocks_match_registry():
     must be followed by `uv run python scripts/regen_subagent_policy.py`.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from scripts.regen_subagent_policy import _build_policy_block, _inject_markers
+    from scripts.regen_subagent_policy import _build_policy_block
 
     registry = load_registry()
     failures: list[str] = []

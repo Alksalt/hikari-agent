@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import importlib
 import json
-from pathlib import Path
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # skill_list
@@ -175,6 +173,7 @@ async def test_run_skill_missing_returns_error():
 
 def test_skill_promoter_cooldown_gate(monkeypatch):
     from datetime import UTC, datetime, timedelta
+
     from agents import skill_promoter
 
     three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
@@ -186,6 +185,7 @@ def test_skill_promoter_cooldown_gate(monkeypatch):
 
 def test_skill_promoter_cooldown_expired(monkeypatch):
     from datetime import UTC, datetime, timedelta
+
     from agents import skill_promoter
 
     ten_days_ago = (datetime.now(UTC) - timedelta(days=10)).isoformat()

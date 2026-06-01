@@ -133,7 +133,7 @@ def test_per_tool_summarizer_used_for_gmail_send():
 # or omission.
 # ---------------------------------------------------------------------------
 
-from tools.gatekeeper import summarize as _gs
+from tools.gatekeeper import summarize as _gs  # noqa: E402
 
 
 def test_gmail_send_body_exposed():

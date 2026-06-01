@@ -47,7 +47,7 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_latent_belief_probes_registered():
-    from agents.drift_canary import LATENT_BELIEF_PROBES, _LATENT_PROBE_ORDER
+    from agents.drift_canary import _LATENT_PROBE_ORDER, LATENT_BELIEF_PROBES
 
     assert len(LATENT_BELIEF_PROBES) >= 4, (
         "Expected at least 4 latent-belief probe variants"
@@ -92,8 +92,8 @@ def test_should_fire_latent_probe_default_cadence():
 
 def test_should_fire_latent_probe_custom_cadence(monkeypatch):
     """latent_belief_cadence=2 fires on even weeks only."""
-    from agents import config as _cfg
     import agents.drift_canary as dc
+    from agents import config as _cfg
 
     orig = _cfg.get("drift_canary", {}).copy()
     monkeypatch.setattr(
@@ -113,8 +113,8 @@ def test_should_fire_latent_probe_custom_cadence(monkeypatch):
 
 def test_should_fire_latent_probe_zero_cadence(monkeypatch):
     """latent_belief_cadence=0 disables the probe entirely."""
-    from agents import config as _cfg
     import agents.drift_canary as dc
+    from agents import config as _cfg
 
     orig = _cfg.get("drift_canary", {}).copy()
     monkeypatch.setattr(
@@ -365,7 +365,7 @@ async def test_run_drift_canary_latent_skipped_when_cadence_misses(monkeypatch):
     monkeypatch.setattr(drift_canary, "ask_hikari_latent", fake_ask_latent)
 
     # Week 1 does not hit cadence=4 (fires on 0, 4, 8, ...).
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
     # ISO week 1 of 2026 = epoch week (2026-1970)*53 + 1 = 2969 — not divisible by 4.
     week_1_ts = datetime(2026, 1, 5, 20, 0, tzinfo=UTC)  # Monday of ISO week 2
 

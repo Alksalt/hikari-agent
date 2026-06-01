@@ -285,8 +285,8 @@ def test_time_texture_job_writes_runtime_state(monkeypatch):
     import datetime as _dt
     import zoneinfo
 
-    from agents.scheduler import _time_texture_job
     from agents import config as _cfg
+    from agents.scheduler import _time_texture_job
 
     # Freeze at 23:00 Oslo time (late_night).
     tz = zoneinfo.ZoneInfo("Europe/Oslo")

@@ -404,7 +404,6 @@ class TestDeterministicToolUseId:
 
     def test_gatekeeper_can_use_tool_uses_deterministic_fallback(self):
         """Verify the source code uses the sha256 form, not id(input)."""
-        import ast
         src_path = REPO_ROOT / "tools" / "gatekeeper_can_use_tool.py"
         src = src_path.read_text(encoding="utf-8")
         assert "id(input)" not in src, (
@@ -429,6 +428,7 @@ class TestMcpTypedExceptions:
         """An empty first line must raise McpInitializeTimeout."""
         import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from tools.mcp_introspect import McpInitializeTimeout, list_server_tools
 
         async def run():
@@ -455,6 +455,7 @@ class TestMcpTypedExceptions:
         import asyncio
         import json as _json
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from tools.mcp_introspect import McpProtocolError, list_server_tools
 
         init_response = _json.dumps({"jsonrpc": "2.0", "id": 0, "result": {}}).encode() + b"\n"
@@ -494,9 +495,8 @@ class TestMcpTypedExceptions:
         - McpInitializeTimeout IS an McpInitializeTimeout → soft skip branch
         """
         import asyncio
-        import sys
-        from io import StringIO
-        from tools.mcp_introspect import McpInitializeTimeout, McpProtocolError
+
+        from tools.mcp_introspect import McpProtocolError
 
         async def run():
             import scripts.validate_mcp_servers as vms

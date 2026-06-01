@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
 
 from agents import config as cfg
 from agents.work_packet import (
@@ -171,7 +170,7 @@ async def _run_read_step(
         coro = run_internal_control(task_prompt, tool_names_sink=tool_names_sink)
         out = await asyncio.wait_for(coro, timeout=step_timeout)
         return step, str(out), None
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         return step, None, exc
     except Exception as exc:  # noqa: BLE001 — surface up the chain
         return step, None, exc
@@ -306,11 +305,11 @@ async def run_compound_turn_typed(
 
     Returns the final user-facing reply text.
     """
+    from agents.runtime import current_turn_id as _ctv
     from storage import db
     from tools.dispatch.task_extractor import extract_typed_nodes
     from tools.runtime.progress import _PROGRESS_STATE
     from tools.runtime.progress import progress as _progress
-    from agents.runtime import current_turn_id as _ctv
 
     # Fold the Telegram reply-quote context (if any) into the same prompt-prefix
     # channel the belief-frame guard uses, so both ride along on every child
@@ -504,7 +503,7 @@ async def run_compound_turn_typed(
                     output_json=json.dumps({"text": s.output_json}, ensure_ascii=False),
                     finished=True,
                 )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             s.status = "failed"
             s.error = f"TimeoutError: write step timed out after {step_timeout * 2}s"
             db.work_packet_step_update(

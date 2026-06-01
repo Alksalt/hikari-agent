@@ -1,14 +1,10 @@
 """Phase T: belief_journal DB helpers, regex detectors, and belief_resurface producer."""
 from __future__ import annotations
 
-import os
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers: fresh in-memory DB wired to db.py helpers
@@ -22,6 +18,7 @@ def tmp_db(tmp_path, monkeypatch):
 
     # Force db module to re-initialise with the new path.
     import importlib
+
     import storage.db as db_mod
     importlib.reload(db_mod)
 
@@ -125,7 +122,7 @@ def test_resolve_marks_resolved(tmp_db):
 # ---------------------------------------------------------------------------
 
 def test_future_tense_regex_matches_i_will():
-    from agents.belief_frame import detect_future_belief, FUTURE_TENSE_RE
+    from agents.belief_frame import detect_future_belief
     hit, fragment = detect_future_belief("i will ship by friday")
     assert hit
     assert fragment is not None
@@ -220,6 +217,7 @@ def test_belief_resurface_producer_emits_matured(tmp_db, monkeypatch):
 
     # Force producer module to see the new DB path.
     import importlib
+
     import agents.engagement.producers.belief_resurface as br_mod
     importlib.reload(br_mod)
 

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from agents.research_intent import is_research_intent
 
+from agents.research_intent import is_research_intent
 
 # ---------------------------------------------------------------------------
 # Positive cases

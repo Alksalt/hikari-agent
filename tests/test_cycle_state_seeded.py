@@ -54,6 +54,7 @@ _TEST_DATE = date(2026, 5, 21)      # Thursday, May → spring, day-21 of cycle
 def _seed_and_compute():
     """Seed cycle_start_date and run compute_cycle_state frozen at 23:00 on 2026-05-21."""
     import datetime as _dt
+
     from agents.reflection import compute_cycle_state
 
     db.upsert_core_block("cycle_start_date", _CYCLE_START)
@@ -161,6 +162,7 @@ def test_day_boundary_day_17_is_inward_start():
     """Day 17 = first day of inward phase.  cycle_start = 2026-05-05 places
     2026-05-21 on day 17 of the cycle."""
     import datetime as _dt
+
     from agents.reflection import compute_cycle_state
 
     # cycle_start = 2026-05-05 → day = ((21-5).days % 28) + 1 = 17
@@ -185,6 +187,7 @@ def test_day_boundary_day_24_is_still_inward():
     """Day 24 = last day of inward phase.  cycle_start = 2026-04-28 places
     2026-05-21 on day 24 of the cycle."""
     import datetime as _dt
+
     from agents.reflection import compute_cycle_state
 
     # cycle_start = 2026-04-28 → day = ((23).days % 28) + 1 = 24
@@ -209,6 +212,7 @@ def test_day_boundary_day_25_is_low_tolerance():
     """Day 25 = first day of low-tolerance phase.  cycle_start = 2026-04-27 places
     2026-05-21 on day 25 of the cycle."""
     import datetime as _dt
+
     from agents.reflection import compute_cycle_state
 
     # cycle_start = 2026-04-27 → day = ((24).days % 28) + 1 = 25

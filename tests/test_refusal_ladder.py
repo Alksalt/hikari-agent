@@ -21,9 +21,6 @@ All tests are deterministic — no real LLM, no real network.
 
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
-
 import pytest
 
 from agents import config, politeness_gate, post_filter
@@ -103,7 +100,7 @@ def test_l2_bartleby_phrase_pattern_triggers(tmp_path, monkeypatch):
     # L2 is a character voice output; the gate itself is the same binary
     # is_rude() call. The distinction is which phrase from the pool is selected.
     # We verify the pool contains the bartleby phrase (or a near equivalent).
-    pool = config.get("politeness_gate.refusal_phrases") or []
+    _pool = config.get("politeness_gate.refusal_phrases") or []
     # If the project has a configured bartleby entry, assert its presence.
     # If not, we just verify the gate fires and a phrase is chosen.
     rude, _ = politeness_gate.is_rude("do this now")

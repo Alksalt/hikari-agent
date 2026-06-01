@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -114,7 +113,6 @@ def test_anti_callback_suppression_long_prompt_and_vulnerability(tmp_path):
 
 def test_anti_callback_not_suppressed_when_short_prompt():
     """Short prompt below 120 chars should not trigger suppression even with vulnerability."""
-    from agents.callback_surface import _peer_model_flags_vulnerability
     # Just verify the function is callable and returns bool
     with patch(
         "agents.callback_surface._peer_model_flags_vulnerability",
@@ -144,8 +142,8 @@ def test_spaced_surprise_multiplier():
 def test_spaced_surprise_boosts_older_candidate(tmp_path, monkeypatch):
     """A 42-day-old episode scores higher than a 7-day-old at equal token overlap."""
     from agents.callback_surface import (
-        _score,
         _pattern_language_bonus,
+        _score,
         _spaced_surprise_multiplier,
     )
 

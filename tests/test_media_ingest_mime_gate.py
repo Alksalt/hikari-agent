@@ -5,8 +5,6 @@ their declared MIME type, and accepts files that do match.
 """
 from __future__ import annotations
 
-import pytest
-
 
 def _check(raw: bytes, mime: str) -> bool:
     from agents.telegram_bridge import _check_magic_bytes

@@ -8,7 +8,7 @@ as Hikari (not the user). One entry per day max.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from agents.runtime import run_aux_composition
 from storage import db

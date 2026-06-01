@@ -20,13 +20,12 @@ from pathlib import Path
 import pytest
 
 from agents.log_scrub import (
+    _PATTERNS,
     CanaryAlertFilter,
     RedactingFilter,
-    _PATTERNS,
     install_record_factory,
     install_root_filter,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -475,6 +474,7 @@ class TestCanaryAlertFilterRedaction:
     def test_canary_redaction_marker_includes_sha8(self, _isolated_db):
         """The [CANARY-REDACTED:<sha8>] marker must contain the correct fingerprint."""
         import hashlib
+
         from storage import db as _db
         canary = "HIKCAN-TestCanaryPhase6Sha8XXXXXXX"
         _db.runtime_set("injection_canary_v1", canary)

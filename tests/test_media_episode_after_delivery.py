@@ -7,14 +7,12 @@ succeeds).
 from __future__ import annotations
 
 import importlib
-import types
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # DB isolation

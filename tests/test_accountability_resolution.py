@@ -45,7 +45,7 @@ async def test_resolve_did():
 async def test_resolve_didnt():
     from tools.reminders.accountability import accountability_resolve
     rid, follow_rid, item_id = _make_item()
-    out = await accountability_resolve.handler({"id": item_id, "outcome": 0})
+    await accountability_resolve.handler({"id": item_id, "outcome": 0})
     item = db.accountability_get(item_id)
     assert item["outcome"] == 0
     assert item["resolved_at"] is not None

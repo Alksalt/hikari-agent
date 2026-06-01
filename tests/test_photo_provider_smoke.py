@@ -24,6 +24,7 @@ SKIP_NETWORK = os.environ.get("SKIP_NETWORK_TESTS", "0") == "1"
 async def test_openrouter_images_endpoint_shape():
     """POST to images/generations with a fake key → 4xx + error body."""
     import httpx
+
     from tools.photos._shared import OPENROUTER_IMG_URL
 
     # Sanity: the constant must point to the OpenRouter images endpoint.

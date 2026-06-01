@@ -18,7 +18,6 @@ import pytest
 
 from agents.engagement.triggers import TriggerCandidate
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -99,8 +98,8 @@ def test_research_callback_mark_consumed_no_raise_missing_task_id(isolated_db, c
 
 def test_research_callback_scheduler_call_pattern(isolated_db):
     """Scheduler calls getattr(mod, 'mark_consumed')(candidate) — must not TypeError."""
-    import storage.db as db
     import agents.engagement.producers.research_callback as mod
+    import storage.db as db
     importlib.reload(mod)
 
     task_id = db.create_task(subject="Scheduler pattern test", research_intent=True)
@@ -184,8 +183,8 @@ def test_belief_resurface_mark_consumed_no_raise_missing_belief_id(isolated_db, 
 
 def test_belief_resurface_scheduler_call_pattern(isolated_db):
     """Scheduler calls getattr(mod, 'mark_consumed')(candidate) — must not TypeError."""
-    import storage.db as db
     import agents.engagement.producers.belief_resurface as mod
+    import storage.db as db
     importlib.reload(mod)
 
     belief_id = db.belief_journal_insert(
@@ -225,8 +224,8 @@ def test_anniversary_callback_mark_consumed_sets_session_marker(isolated_db):
 
 def test_anniversary_callback_mark_consumed_no_raise_no_session(isolated_db, monkeypatch, caplog):
     """No active session: no raise, marker not written, observable WARNING."""
-    import storage.db as db
     import agents.engagement.producers.anniversary_callback as mod
+    import storage.db as db
     importlib.reload(mod)
 
     monkeypatch.setattr(db, "get_session_id", lambda: "")
@@ -240,8 +239,8 @@ def test_anniversary_callback_mark_consumed_no_raise_no_session(isolated_db, mon
 
 def test_anniversary_callback_scheduler_call_pattern(isolated_db):
     """Scheduler calls getattr(mod, 'mark_consumed')(candidate) — must not TypeError."""
-    import storage.db as db
     import agents.engagement.producers.anniversary_callback as mod
+    import storage.db as db
     importlib.reload(mod)
 
     db.set_session_id("test-session-sched")

@@ -205,6 +205,7 @@ async def test_missing_session_row_logs_warning(monkeypatch, caplog):
     and must still return the classified register without raising.
     """
     import logging
+
     from agents import tonal_recall
 
     # Intentionally do NOT call _seed_session_row() — session table is empty.

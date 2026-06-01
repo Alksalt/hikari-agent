@@ -25,8 +25,6 @@ from pathlib import Path
 
 import pytest
 
-from storage import db
-
 # Import the skills module once at collection time, while the *real*
 # claude_agent_sdk is intact. Several tests below install a fake
 # ``claude_agent_sdk.types`` into sys.modules (via _patch_sdk_types); if
@@ -35,6 +33,7 @@ from storage import db
 # lazy ``from tools.skills.core import _staged_skill_preview`` in the
 # gatekeeper hook a no-op re-import.
 import tools.skills.core  # noqa: E402,F401
+from storage import db
 
 
 def _consent(content: str) -> str:
@@ -490,7 +489,6 @@ def test_validate_tool_registry_catches_ungated_skill_approve(tmp_path, monkeypa
     yaml_path = tmp_path / "tools_bad.yaml"
     yaml_path.write_text(yaml.dump(minimal_yaml), encoding="utf-8")
 
-    from tools._tools_yaml import load_registry
     # Load the minimal registry directly (bypass cache).
     from tools._tools_yaml import _load_yaml
     bad_registry = _load_yaml(yaml_path)
@@ -517,9 +515,9 @@ def test_validate_tool_registry_catches_ungated_skill_approve(tmp_path, monkeypa
 
 def test_staged_skill_preview_exception_safe(monkeypatch):
     """_staged_skill_preview must return (None, None) on any exception."""
-    import tools.skills.core as sc
     # Patch _conn to raise.
     import storage.db as _db
+    import tools.skills.core as sc
     monkeypatch.setattr(_db, "_conn", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
     result = sc._staged_skill_preview("anything")
     assert result == (None, None)
@@ -529,6 +527,7 @@ def test_staged_skill_preview_exception_safe(monkeypatch):
 async def test_staged_skill_preview_single_row():
     """_staged_skill_preview returns (content, 12-hex-prefix) for a single staged row."""
     import hashlib
+
     from tools.skills.core import _staged_skill_preview, skill_create
 
     content = "# My Preview\nHello world."

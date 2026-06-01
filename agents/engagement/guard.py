@@ -54,12 +54,12 @@ def should_wake(source_id: str | None = None) -> bool:
 
     try:
         from datetime import UTC, datetime
+
         from storage import db as _db
         iso = _db.runtime_get("silence_until")
         if iso:
             until = datetime.fromisoformat(iso)
             if until.tzinfo is None:
-                from datetime import timezone
                 until = until.replace(tzinfo=UTC)
             if datetime.now(UTC) < until:
                 logger.debug("should_wake: global silence active — skip")

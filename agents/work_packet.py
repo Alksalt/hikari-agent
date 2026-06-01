@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class CompoundTaskNode:
         return d
 
     @classmethod
-    def from_raw_dict(cls, raw: dict[str, Any], *, full_text: str | None = None) -> "CompoundTaskNode":
+    def from_raw_dict(cls, raw: dict[str, Any], *, full_text: str | None = None) -> CompoundTaskNode:
         """Construct from a tolerant dict (LLM output).
 
         Missing fields → defaults. Out-of-vocab enums → ``safe`` / ``auto``

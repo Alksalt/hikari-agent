@@ -6,7 +6,6 @@ Writes research_summary back to the tasks table. Daily cap.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -65,6 +64,7 @@ async def _research_one(task: dict) -> tuple[str, list[str]] | None:
         ResultMessage,
         TextBlock,
     )
+
     from agents import config as cfg
 
     subject = task.get("subject", "")[:200]

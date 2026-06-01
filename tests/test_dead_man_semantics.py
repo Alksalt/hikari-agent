@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 
 import scripts.dead_man as dm
 
-
 # ---------------------------------------------------------------------------
 # 1 — check_agent_running uses launchctl print PID parsing
 # ---------------------------------------------------------------------------
@@ -72,8 +71,8 @@ class TestDbMtimeFreshCookieRow:
         db_file = tmp_path / "hikari.db"
         db_file.write_bytes(b"x")
 
-        import sqlite3
         import datetime
+        import sqlite3
 
         conn = sqlite3.connect(str(db_file))
         conn.execute("CREATE TABLE deadman_cookie (key TEXT PRIMARY KEY, ts TEXT)")
@@ -89,8 +88,8 @@ class TestDbMtimeFreshCookieRow:
         db_file = tmp_path / "hikari.db"
         db_file.write_bytes(b"x")
 
-        import sqlite3
         import datetime
+        import sqlite3
 
         conn = sqlite3.connect(str(db_file))
         conn.execute("CREATE TABLE deadman_cookie (key TEXT PRIMARY KEY, ts TEXT)")

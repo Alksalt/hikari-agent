@@ -613,8 +613,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
     async def _media_outbox_drain_job():
         from agents.telegram_bridge import _drain_media_outbox  # noqa: PLC0415
         try:
-            from telegram import Bot  # noqa: PLC0415
             import os  # noqa: PLC0415
+
+            from telegram import Bot  # noqa: PLC0415
             token = os.environ.get("TELEGRAM_BOT_TOKEN")
             if not token:
                 return

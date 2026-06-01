@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 
-
 RESEARCH_CUE_RE = re.compile(
     r"(?i)\b(i'?ll (think about|look into|read up on|research|check)|"
     r"let me (look into|think about|read about)|"

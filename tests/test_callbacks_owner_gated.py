@@ -70,8 +70,8 @@ async def test_owner_approval_callback_routes():
     """Owner tapping reject must call GATEKEEPER.resolve with 'rejected'.
     Confirm is no longer an inline button — user must type CONFIRM-SEND <id>.
     """
-    from storage import db
     from agents.telegram_bridge import _handle_callback
+    from storage import db
 
     row_id = db.approval_create_gatekeeper(
         chat_id=99999,

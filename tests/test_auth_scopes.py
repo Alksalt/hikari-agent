@@ -348,8 +348,8 @@ class TestScopeCacheFlush:
         from runtime_state so stale broad scopes cannot survive a narrower re-grant."""
         from datetime import UTC, datetime
 
-        from storage import db
         import auth.google as google_mod
+        from storage import db
 
         # Seed the cache as if a broad scope grant was active.
         db.runtime_set("auth.google.scopes", "https://mail.google.com/")
@@ -378,9 +378,9 @@ class TestScopeCacheFlush:
         re-grant with different scopes is visible immediately."""
         from datetime import UTC, datetime
 
-        from storage import db
-        from auth.google import write_grant_to_keychain
         from auth import store as store_mod
+        from auth.google import write_grant_to_keychain
+        from storage import db
 
         # Seed stale cache.
         db.runtime_set("auth.google.scopes", "https://mail.google.com/")
@@ -414,10 +414,10 @@ class TestGoogleStatusOutput:
         """_google_status() must display granted_at (distinct from expires_at)
         and must not report expires_at as the grant timestamp."""
         import json as _json
-        from scripts.auth import _google_status
+
         from auth import store as store_mod
         from auth.google import write_grant_to_keychain
-        from datetime import UTC, datetime
+        from scripts.auth import _google_status
 
         store_mod._reset_store()
         store_mod._store = store_mod.MemoryStore()
@@ -447,10 +447,10 @@ class TestGoogleStatusOutput:
         """Old grant blobs lacking 'granted_at' must display 'unknown', not
         the expires_at value (previous control-plane lie)."""
         import json as _json
-        from scripts.auth import _google_status
+
         from auth import store as store_mod
-        from auth.google import write_grant_to_keychain, _GRANT_KEY
-        from datetime import UTC, datetime
+        from auth.google import _GRANT_KEY
+        from scripts.auth import _google_status
 
         store_mod._reset_store()
         mem = store_mod.MemoryStore()

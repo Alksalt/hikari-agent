@@ -5093,7 +5093,7 @@ def decision_calibration_curve(window_days: int = 90, buckets: int = 5) -> list[
     sorted by bucket ascending. Empty list if no resolved decisions in the
     window.
     """
-    from datetime import datetime, timedelta, UTC
+    from datetime import UTC, datetime, timedelta
     cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
     width = 1.0 / buckets
     out: list[dict] = []
@@ -5466,7 +5466,6 @@ def graph_outbox_mark_failed(row_id: int, error: str) -> None:
     permanently 'failed'. Permanent errors (bad payload JSON, etc.) still flip
     at the 5-attempt threshold.
     """
-    import os as _os
     _TRANSIENT_PREFIXES = (
         "OPENROUTER_API_KEY",
         "GRAPHITI_ENABLED",

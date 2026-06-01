@@ -1,7 +1,6 @@
 """9B: set_my_commands matches handler list and descriptions fit Telegram limit."""
 from __future__ import annotations
 
-import pytest
 from telegram.ext import CommandHandler
 
 

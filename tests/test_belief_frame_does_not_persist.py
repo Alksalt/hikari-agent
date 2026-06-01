@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # DB isolation

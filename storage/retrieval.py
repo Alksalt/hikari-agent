@@ -434,16 +434,6 @@ def legacy_retrieve(query: str, limit: int = 8) -> list[Hit]:
     if not query:
         return []
 
-    # Lazy config import — avoids a hard dependency at import time which would
-    # break test fixtures that reload storage.db before agents.config loads.
-    try:
-        from agents import config as cfg
-        tau_base = float(
-            cfg.get("memory.recall_decay_tau_seconds", 604800)
-        )
-    except Exception:
-        tau_base = 604800.0
-
     # Phase M: entity-match pre-fetch — one SQL round-trip before retrieval.
     query_entity_ids = _extract_query_entity_ids(query)
     boosted_fact_ids = _facts_for_entity_ids(query_entity_ids)

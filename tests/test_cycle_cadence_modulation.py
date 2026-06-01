@@ -62,7 +62,7 @@ def _base_skip_prob() -> float:
 def test_low_tolerance_scales_cap_down():
     """wm=0.45 → effective cap = max(0, round(base * low_tolerance_proactive_cap_scale))."""
     _set_cycle_state(0.45)
-    from agents.cadence import effective_max_per_7d, Pool
+    from agents.cadence import Pool, effective_max_per_7d
     base = _base_cap()
     expected = max(0, round(base * _low_scale()))
     assert effective_max_per_7d(Pool.AGENT_SPONTANEOUS) == expected
@@ -71,7 +71,7 @@ def test_low_tolerance_scales_cap_down():
 def test_open_scales_cap_up():
     """wm=1.3 → effective cap = max(0, round(base * open_proactive_cap_scale))."""
     _set_cycle_state(1.3)
-    from agents.cadence import effective_max_per_7d, Pool
+    from agents.cadence import Pool, effective_max_per_7d
     base = _base_cap()
     expected = max(0, round(base * _open_scale()))
     assert effective_max_per_7d(Pool.AGENT_SPONTANEOUS) == expected
@@ -80,7 +80,7 @@ def test_open_scales_cap_up():
 def test_baseline_wm_leaves_cap_unchanged():
     """wm=1.0 is in the baseline band → factor is 1.0."""
     _set_cycle_state(1.0)
-    from agents.cadence import effective_max_per_7d, Pool
+    from agents.cadence import Pool, effective_max_per_7d
     base = _base_cap()
     assert effective_max_per_7d(Pool.AGENT_SPONTANEOUS) == base
 
@@ -109,7 +109,7 @@ def test_modulation_disabled_leaves_cap_unchanged():
 
 def test_missing_cycle_state_factor_is_one():
     """No cycle_state set → factor 1.0, cap unchanged."""
-    from agents.cadence import effective_max_per_7d, Pool
+    from agents.cadence import Pool, effective_max_per_7d
     base = _base_cap()
     assert effective_max_per_7d(Pool.AGENT_SPONTANEOUS) == base
 
@@ -118,7 +118,7 @@ def test_invalid_cycle_state_no_crash():
     """Unparseable cycle_state JSON → factor 1.0, no exception."""
     from storage import db
     db.upsert_core_block("cycle_state", "not-valid-json{{{")
-    from agents.cadence import effective_max_per_7d, Pool
+    from agents.cadence import Pool, effective_max_per_7d
     base = _base_cap()
     assert effective_max_per_7d(Pool.AGENT_SPONTANEOUS) == base
 
@@ -126,8 +126,8 @@ def test_invalid_cycle_state_no_crash():
 def test_only_agent_spontaneous_pool_is_scaled():
     """Warmth band only scales agent_spontaneous, not user_anchored or scheduled_ceremony."""
     _set_cycle_state(0.45)
-    from agents.cadence import effective_max_per_7d, Pool
     from agents import config
+    from agents.cadence import Pool, effective_max_per_7d
     ua_base = int((config.get("cadence_governor.pools.user_anchored") or {}).get("max_per_7d", 30))
     sc_base = int((config.get("cadence_governor.pools.scheduled_ceremony") or {}).get("max_per_7d", 14))
     assert effective_max_per_7d(Pool.USER_ANCHORED) == ua_base
@@ -140,10 +140,11 @@ def test_can_send_respects_scaled_cap():
     """With wm=0.45 and pool already at scaled cap, can_send → blocked."""
     import json
     from datetime import UTC, datetime, timedelta
+
     from storage import db
 
     _set_cycle_state(0.45)
-    from agents.cadence import effective_max_per_7d, Pool, can_send
+    from agents.cadence import Pool, can_send, effective_max_per_7d
 
     scaled_cap = effective_max_per_7d(Pool.AGENT_SPONTANEOUS)
     # Fill the pool to the scaled cap.
@@ -194,7 +195,6 @@ def test_missing_cycle_state_skip_prob_unchanged():
 
 def test_skip_probability_clamped_at_one():
     """Even if base * scale > 1.0, the result is clamped to 1.0."""
-    from storage import db
     # Set a very high irritable_skip_probability base that when scaled would exceed 1.0.
     # We achieve this by patching the config value in cadence directly.
     import agents.cadence as cadence_mod

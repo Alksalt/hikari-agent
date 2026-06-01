@@ -178,8 +178,8 @@ async def test_run_annual_review_force_bypasses_window():
 @pytest.mark.asyncio
 async def test_run_annual_review_marks_idempotent():
     """After a successful run, runtime_state key is set to the review year."""
-    from storage import db
     from agents import annual_review
+    from storage import db
 
     canned = "things worth more of\n- things\n\nthings worth less of\n- other things\n\nok."
 

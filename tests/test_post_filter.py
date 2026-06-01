@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from agents import config
 from storage import db
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -68,7 +66,7 @@ def test_stage7_is_loosest():
 
 
 def test_stage_caps_returns_defaults_when_no_core_block():
-    from agents.post_filter import stage_caps, _DEFAULT_STAGE_CAPS
+    from agents.post_filter import _DEFAULT_STAGE_CAPS, stage_caps
     # No core_block written → default = stage 1 caps
     caps = stage_caps()
     assert caps == _DEFAULT_STAGE_CAPS
@@ -76,7 +74,7 @@ def test_stage_caps_returns_defaults_when_no_core_block():
 
 def test_stage_caps_reads_core_block(monkeypatch):
     db.upsert_core_block("relationship_stage", "5")
-    from agents.post_filter import stage_caps, _STAGE_CAP_MULTIPLIERS
+    from agents.post_filter import _STAGE_CAP_MULTIPLIERS, stage_caps
     caps = stage_caps()
     assert caps == _STAGE_CAP_MULTIPLIERS[5]
 
@@ -284,8 +282,8 @@ def test_aggregate_prevents_false_positive_fabrication_backstop():
     should not fire on an inbox-shaped reply."""
     from agents._turn_state import LAST_TURN_TOOL_NAMES
     from agents.post_filter import (
-        aggregate_compound_tool_calls,
         _strip_fabricated_external_data,
+        aggregate_compound_tool_calls,
     )
 
     # Parent context only has a compound dispatch tool
@@ -367,8 +365,8 @@ async def test_judge_attachment_escalation_returns_none_on_llm_failure(monkeypat
 
 @pytest.mark.asyncio
 async def test_judge_attachment_escalation_disabled_via_config(monkeypatch):
-    from agents import post_filter
     from agents import config as cfg
+    from agents import post_filter
 
     monkeypatch.setattr(
         cfg, "get",
@@ -441,8 +439,8 @@ async def test_judge_intimate_turn_returns_none_on_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_judge_intimate_turn_disabled_via_config(monkeypatch):
-    from agents import post_filter
     from agents import config as cfg
+    from agents import post_filter
 
     monkeypatch.setattr(
         cfg, "get",

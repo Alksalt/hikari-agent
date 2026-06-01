@@ -10,12 +10,10 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agents import skill_promoter
-
 
 # ---------------------------------------------------------------------------
 # Fixture: isolated DB so thought reads don't bleed across tests

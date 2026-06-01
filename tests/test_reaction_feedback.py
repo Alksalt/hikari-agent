@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixture — isolated DB per test
 # ---------------------------------------------------------------------------
@@ -165,7 +164,7 @@ class TestThumbsUpRaisesScore:
 class TestEMAFormula:
     def test_ema_formula_down_exact(self):
         """EMA after one thumbs-down from 0.5: 0.5 + 0.3*(0.0 - 0.5) = 0.35."""
-        from agents.engagement.sender import on_reaction, _EMA_ALPHA
+        from agents.engagement.sender import _EMA_ALPHA, on_reaction
 
         _seed_score("test_source_formula", 0.5)
         on_reaction("test_source_formula", "down")
@@ -177,7 +176,7 @@ class TestEMAFormula:
 
     def test_ema_formula_up_exact(self):
         """EMA after one thumbs-up from 0.5: 0.5 + 0.3*(1.0 - 0.5) = 0.65."""
-        from agents.engagement.sender import on_reaction, _EMA_ALPHA
+        from agents.engagement.sender import _EMA_ALPHA, on_reaction
 
         _seed_score("test_source_formula_up", 0.5)
         on_reaction("test_source_formula_up", "up")
