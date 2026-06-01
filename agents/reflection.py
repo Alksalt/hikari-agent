@@ -59,12 +59,62 @@ def _safe_fact_field(value: str, *, field: str) -> str | None:
 
 
 def _strip_fences(raw: str) -> str:
+    """Extract the YAML payload from an aux-LLM reply.
+
+    Cheap OpenRouter models don't reliably honour "YAML only". Three shapes
+    seen in production logs, all of which the naive start/end strip got wrong:
+      - clean ```yaml ... ``` fences,
+      - a fence preceded by prose ("Here's the reflection:\n```yaml..."), where
+        `startswith('```')` was False so the fence was left in and the parse
+        failed,
+      - an *unclosed* fence (output truncated at max_tokens before the closing
+        ```), where only the opening fence can be removed.
+    Falls back to the stripped raw text when no fence is present.
+    """
     raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.splitlines()[1:])
-    if raw.endswith("```"):
-        raw = "\n".join(raw.splitlines()[:-1])
-    return raw.strip()
+    fence = raw.find("```")
+    if fence == -1:
+        return raw
+    after = raw[fence + 3:]
+    # Drop an optional language tag on the opening-fence line (e.g. "yaml").
+    nl = after.find("\n")
+    if nl != -1:
+        first_line = after[:nl].strip()
+        if first_line == "" or first_line.isalpha():
+            after = after[nl + 1:]
+    close = after.find("```")
+    if close != -1:
+        after = after[:close]
+    return after.strip()
+
+
+def _parse_yaml_mapping(raw: str, *, context: str) -> dict | None:
+    """Parse an aux-LLM YAML reply into a mapping.
+
+    ``_strip_fences`` handles the wrapping; this handles the result:
+      - mapping          -> returned as-is
+      - empty / None      -> ``{}``  (genuine "nothing to record" — not an error)
+      - scalar (str/int) -> ``None`` (model answered in prose)
+      - YAMLError        -> ``None`` (unparseable / truncated mid-structure)
+
+    The raw reply is logged on the error paths so silent degradation is
+    diagnosable instead of vanishing into a bare type name. Callers treat
+    ``None`` as "skip this cycle".
+    """
+    try:
+        data = yaml.safe_load(_strip_fences(raw))
+    except yaml.YAMLError:
+        logger.warning("%s: unparseable YAML reply; raw=%r", context, raw[:300])
+        return None
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        logger.warning(
+            "%s: non-mapping YAML reply (%s) — model likely answered in prose; raw=%r",
+            context, type(data).__name__, raw[:300],
+        )
+        return None
+    return data
 
 
 def _entities_for_fact(subj: str, obj: str, entity_block) -> list[int]:
@@ -272,17 +322,8 @@ async def run_daily_reflection() -> bool:
         logger.exception("reflection LLM call failed")
         return False
 
-    try:
-        data = yaml.safe_load(_strip_fences(raw)) or {}
-    except yaml.YAMLError:
-        logger.warning("reflection produced invalid YAML; got %r", raw[:200])
-        return False
-
-    # `or {}` only rescues falsy (None/empty); a bare-string LLM reply is valid
-    # YAML scalar → truthy str, which would crash every data.get(...) below.
-    if not isinstance(data, dict):
-        logger.warning("reflection produced non-dict YAML (%s); skipping",
-                       type(data).__name__)
+    data = _parse_yaml_mapping(raw, context="reflection")
+    if data is None:
         return False
 
     entity_block = data.get("entities") or []
@@ -1042,10 +1083,8 @@ async def reflection_after_task(task_id: str) -> None:
         logger.exception("reflection_after_task: LLM call failed for %s", task_id)
         return
 
-    try:
-        data = yaml.safe_load(_strip_fences(raw)) or {}
-    except yaml.YAMLError:
-        logger.warning("reflection_after_task: invalid YAML; got %r", raw[:200])
+    data = _parse_yaml_mapping(raw, context="reflection_after_task")
+    if data is None:
         return
 
     written = 0

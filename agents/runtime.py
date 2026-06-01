@@ -483,6 +483,14 @@ async def _call_aux_llm(
                 f"choices[0].message missing or has no 'content'. "
                 f"choices[0]={choices[0]!r:.400}"
             )
+        if choices[0].get("finish_reason") == "length":
+            # Truncated mid-structure → downstream YAML/JSON parsers will fail.
+            # Surface it instead of returning a silently-clipped reply.
+            logger.warning(
+                "aux_llm: hit max_tokens=%d (finish_reason=length); reply likely "
+                "truncated — raise the caller's token cap if parsing fails",
+                max_tokens,
+            )
         return str(message["content"]).strip()
 
     # Should never reach here (loop always returns or raises), but keep the
@@ -1345,10 +1353,14 @@ async def run_reflection_call(prompt: str) -> str:
 
     No MCP servers, no hooks, no session resume. Any callers that were
     previously using Haiku or the Claude SDK for reflection must use this
-    function. Token cap is 2048 to accommodate longer YAML reflection outputs
-    (daily reflection prompt + entity blocks can produce 800-1200 tokens).
+    function. The token cap is config-driven (``reflection.max_output_tokens``,
+    default 4096): the full reflection schema (facts + supersede + observations
+    + peer_update + self_model + thought) overran the old 2048 cap on busy
+    days, and a truncated reply is unparseable YAML — the dominant cause of
+    silently skipped reflections in the logs.
     """
-    return await _call_aux_llm(prompt, max_tokens=2048)
+    max_tokens = int(cfg.get("reflection.max_output_tokens", 4096))
+    return await _call_aux_llm(prompt, max_tokens=max_tokens)
 
 
 async def run_aux_composition(

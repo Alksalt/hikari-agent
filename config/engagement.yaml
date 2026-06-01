@@ -1016,6 +1016,11 @@ runtime:
 reflection:
   near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity
   max_pairs: 500                     # co-occurrence graph cap per pass
+  max_output_tokens: 4096            # aux-LLM completion cap for run_reflection_call;
+                                     # full schema (facts+supersede+observations+peer
+                                     # +self_model+thought) overran the old 2048 → truncated
+                                     # YAML → silently skipped reflections. Raise if logs show
+                                     # "finish_reason=length".
   weekly_window_days: 7              # sleep-agent consolidation window
   weekly_summary_word_cap: 220       # weekly synthesis target length
   snippet_truncation_long: 300       # used for full message snippets
