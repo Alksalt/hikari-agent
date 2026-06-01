@@ -46,8 +46,10 @@ async def arxiv_search(args: dict[str, Any]) -> dict[str, Any]:
             sort_by=arxiv.SortCriterion.SubmittedDate,
             sort_order=arxiv.SortOrder.Descending,
         )
+        # arxiv 4.0.0 removed Search.results(); fetch via Client.results(search).
+        client = arxiv.Client()
         papers = []
-        for r in await asyncio.to_thread(lambda: list(search.results())):
+        for r in await asyncio.to_thread(lambda: list(client.results(search))):
             try:
                 pub = r.published if isinstance(r.published, datetime) \
                     else datetime.fromisoformat(str(r.published))

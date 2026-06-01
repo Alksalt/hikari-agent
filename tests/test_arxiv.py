@@ -25,6 +25,7 @@ def _isolated(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_arxiv_search_mocked(monkeypatch):
+    from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace
 
     import arxiv
@@ -36,14 +37,20 @@ async def test_arxiv_search_mocked(monkeypatch):
             summary="A follow-up exploring scaled attention.",
             authors=[SimpleNamespace(name="A"), SimpleNamespace(name="B")],
             entry_id="http://arxiv.org/abs/9999.99999v1",
-            published="2026-05-18",
+            # within the handler's 14-day recency window (a datetime, as the
+            # real arxiv lib returns).
+            published=datetime.now(UTC) - timedelta(days=1),
             categories=["cs.LG"],
         ),
     ]
-    class FakeSearch:
-        def __init__(self, **kwargs): self.kwargs = kwargs
-        def results(self): return iter(fake_papers)
-    monkeypatch.setattr(arxiv, "Search", FakeSearch)
+
+    # arxiv 4.0.0: the handler fetches via arxiv.Client().results(search), so
+    # patch the Client (the network boundary), not Search.
+    class FakeClient:
+        def results(self, search):
+            return iter(fake_papers)
+
+    monkeypatch.setattr(arxiv, "Client", FakeClient)
     out = await arxiv_search.handler({"query": "attention", "limit": 5})
     assert len(out["data"]["papers"]) == 1
     assert out["data"]["papers"][0]["title"].startswith("Attention")

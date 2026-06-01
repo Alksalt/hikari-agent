@@ -278,6 +278,13 @@ async def run_daily_reflection() -> bool:
         logger.warning("reflection produced invalid YAML; got %r", raw[:200])
         return False
 
+    # `or {}` only rescues falsy (None/empty); a bare-string LLM reply is valid
+    # YAML scalar → truthy str, which would crash every data.get(...) below.
+    if not isinstance(data, dict):
+        logger.warning("reflection produced non-dict YAML (%s); skipping",
+                       type(data).__name__)
+        return False
+
     entity_block = data.get("entities") or []
     applied = 0
     for f in data.get("new_facts") or []:

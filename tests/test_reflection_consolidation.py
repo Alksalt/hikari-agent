@@ -76,3 +76,18 @@ async def test_consolidation_failure_does_not_break_reflection(monkeypatch):
     active = db.active_facts_matching("user", "works_at")
     assert len(active) == 1
     assert active[0]["object"] == "lab"
+
+
+@pytest.mark.asyncio
+async def test_reflection_non_dict_yaml_returns_false(monkeypatch):
+    """A bare-string LLM reply is a valid YAML scalar (str), not a mapping.
+    The guard must return False instead of crashing on data.get(...)."""
+    db.insert_episode("2026-05-19", "stand-up")
+
+    async def fake_run_reflection_call(_prompt):
+        return "just a sentence — not a yaml mapping"
+
+    monkeypatch.setattr(reflection, "run_reflection_call", fake_run_reflection_call)
+    # Must not raise AttributeError; returns the False signal.
+    result = await reflection.run_daily_reflection()
+    assert result is False
