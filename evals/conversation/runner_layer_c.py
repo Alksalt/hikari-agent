@@ -49,20 +49,20 @@ class LayerCResult:
 async def run_layer_c_golden(case_path: pathlib.Path) -> LayerCResult:
     """Judge a golden transcript YAML against the voice_drift rubric."""
     case = yaml.safe_load(case_path.read_text(encoding="utf-8"))
-    # Judge needs OpenRouter; without the key, SKIP (don't hard-FAIL) — mirrors
-    # the rubric path so CI/nightly stays green when the secret is unset.
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        return LayerCResult(
-            case_name=case.get("name", case_path.stem),
-            kind="skipped",
-            passed=False,
-            reason="OPENROUTER_API_KEY not set",
-            usd_cost=0.0,
-        )
     transcript = case["transcript"]
     try:
         verdict = await _judge_module.judge_voice_drift(transcript, rubric_name=case.get("rubric", "voice_drift"))
     except RuntimeError as exc:
+        # Without OPENROUTER_API_KEY the live judge raises — SKIP (don't hard-FAIL)
+        # so CI/nightly stays green when the secret is unset. Checking the raised
+        # error (not the env up front) preserves tests that MOCK the judge: a
+        # mocked judge doesn't raise, so it runs normally. Other RuntimeErrors are
+        # real failures.
+        if "OPENROUTER_API_KEY" in str(exc):
+            return LayerCResult(
+                case.get("name", case_path.stem), "skipped", False,
+                "OPENROUTER_API_KEY not set", 0.0,
+            )
         return LayerCResult(case["name"], "golden", False, f"judge failed: {exc}", 0.0)
 
     if verdict.passed:

@@ -18,6 +18,12 @@ from pathlib import Path
 
 import pytest
 
+# backup.sh is invoked via /bin/zsh and uses macOS-only tooling — skip on Linux CI.
+pytestmark = pytest.mark.skipif(
+    not os.path.exists("/bin/zsh"),
+    reason="backup.sh tests require /bin/zsh (macOS); not present on Linux CI",
+)
+
 AGE_AVAILABLE = shutil.which("age") is not None
 BACKUP_SH = Path(__file__).parent.parent / "scripts" / "backup.sh"
 

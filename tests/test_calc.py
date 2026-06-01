@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 
 import pytest
 
 from agents import config
 from storage import db
+
+# python_run is sandboxed via macOS sandbox-exec; skip those tests on Linux CI.
+_needs_sandbox = pytest.mark.skipif(
+    not os.path.exists("/usr/bin/sandbox-exec"),
+    reason="python_run requires macOS sandbox-exec; not present on Linux CI",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -68,12 +75,14 @@ async def test_calc_date_arithmetic():
     })
     assert out["data"]["result"] == 138
 
+@_needs_sandbox
 @pytest.mark.asyncio
 async def test_python_run_returns_stdout():
     from tools import calc
     out = await calc.python_run.handler({"code": "print(2 + 2)"})
     assert "4" in out["data"]["stdout"]
 
+@_needs_sandbox
 @pytest.mark.asyncio
 async def test_python_run_blocks_network(monkeypatch):
     from tools import calc
@@ -101,6 +110,7 @@ async def test_calc_works_from_thread_pool():
     assert out["data"]["result"] == 4
 
 
+@_needs_sandbox
 @pytest.mark.asyncio
 async def test_python_run_blocks_subprocess_exec():
     """Fix 2: the sandbox profile must stop LLM code from spawning a child
@@ -124,6 +134,7 @@ async def test_python_run_blocks_subprocess_exec():
     )
 
 
+@_needs_sandbox
 @pytest.mark.asyncio
 async def test_python_run_blocks_curl_exfil():
     """Fix 2: the worst-case exfil path — spawning /usr/bin/curl which would
