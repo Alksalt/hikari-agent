@@ -1303,13 +1303,6 @@ async def respond(
     return await run_user_turn(sdk_prompt)
 
 
-# Phase 13 (Stream C): legacy alias kept so out-of-stream code that imports
-# ``run_proactive`` (e.g. morning_brief) keeps working with the new visible
-# proactive semantics. Streams that explicitly compose internal-only prompts
-# call ``run_internal_control`` directly.
-run_proactive = run_visible_proactive
-
-
 async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
                             max_budget_usd: float = 0.20) -> str:
     """Single in-character turn without session resume.

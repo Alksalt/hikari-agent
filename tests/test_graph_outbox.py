@@ -1,6 +1,6 @@
 """Sprint 5D — graph_outbox table + helpers.
 
-11 test cases:
+test cases:
   1. schema: graph_outbox table and indexes created on fresh DB
   2. graph_outbox_insert basic: inserts a pending row, returns id
   3. graph_outbox_insert dedup: second insert for same source returns None
@@ -9,9 +9,8 @@
   6. graph_outbox_mark_failed: increments attempts; flips to 'failed' at 5
   7. graph_outbox_stats: zero-fills all four statuses
   8. insert_fact writes outbox row in same transaction
-  9. bulk_insert_facts writes outbox rows for every inserted fact
- 10. backfill script: idempotent — running twice gives same row count
- 11. process_outbox: drains pending rows, marks sent/failed correctly
+  9. backfill script: idempotent — running twice gives same row count
+ 10. process_outbox: drains pending rows, marks sent/failed correctly
 
 Uses the fresh-DB fixture pattern from test_entities_and_provenance.py.
 """
@@ -215,22 +214,6 @@ def test_insert_fact_writes_outbox_row():
     assert payload["v"] == 1
     assert "coffee" in payload["episode_body"]
 
-
-# ---------------------------------------------------------------------------
-# 9. bulk_insert_facts writes outbox rows for every fact
-# ---------------------------------------------------------------------------
-
-def test_bulk_insert_facts_writes_outbox_rows():
-    """bulk_insert_facts must produce one pending outbox row per inserted fact."""
-    rows = [
-        {"subject": "user", "predicate": "likes", "object": f"thing_{i}"}
-        for i in range(5)
-    ]
-    n = db.bulk_insert_facts(rows)
-    assert n == 5
-    pending = db.graph_outbox_pending()
-    assert len(pending) == 5
-    assert all(r["source_table"] == "facts" for r in pending)
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,7 @@ into the agent's context window on every user turn. PostToolUseFailure logs fail
 so silent breakage stops.
 
 Retrieval is via `mcp__hikari_memory__recall` direct tool call — Hikari calls it
-on demand instead of paying a top-8 retrieval tax every turn. The age-framing
-helpers (_frame_fact / _frame_episode) are still exported because the recall
-tool's prompt formatter can reuse them.
+on demand instead of paying a top-8 retrieval tax every turn.
 """
 
 from __future__ import annotations
@@ -678,30 +676,6 @@ def _days_since(iso: str) -> int | None:
         return max(0, (datetime.now(UTC) - ts).days)
     except (ValueError, TypeError):
         return None
-
-
-def _frame_fact(text: str, iso: str) -> str:
-    days = _days_since(iso)
-    if days is None:
-        return f"vague impression that: {text}"
-    if days < 7:
-        return f"she said recently: {text}"
-    if days < 30:
-        return f"she mentioned a while ago: {text}"
-    return f"vague impression that: {text}"
-
-
-def _frame_episode(text: str, iso: str) -> str:
-    days = _days_since(iso)
-    if days is None:
-        return text
-    if days == 0:
-        suffix = "earlier today"
-    elif days == 1:
-        suffix = "yesterday"
-    else:
-        suffix = f"{days} days ago"
-    return f"{text} ({suffix})"
 
 
 def _format_gap_since_last(

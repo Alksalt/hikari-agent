@@ -2722,18 +2722,6 @@ def lexicon_decay_and_prune(
     return decayed, pruned
 
 
-def lexicon_prune_stale(min_weight: float = 0.05) -> int:
-    """Hard prune entries whose stored weight is already below the floor.
-    Most callers want :func:`lexicon_decay_and_prune` instead — this is for
-    cases where the weight has been explicitly demoted by other logic."""
-    with _conn() as c:
-        cur = c.execute(
-            "DELETE FROM lexicon WHERE weight < ?",
-            (float(min_weight),),
-        )
-        return cur.rowcount or 0
-
-
 def lexicon_get(phrase: str) -> dict[str, Any] | None:
     with _conn() as c:
         row = c.execute(
@@ -3950,17 +3938,6 @@ def audit_by_id(row_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def audit_by_tool(tool_pattern: str, limit: int = 20) -> list[dict]:
-    """Return audit_log rows whose tool column matches a LIKE pattern."""
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT id, ts, tool, args_json_redacted, result_summary, approved_by "
-            "FROM audit_log WHERE tool LIKE ? ORDER BY id DESC LIMIT ?",
-            (tool_pattern, int(limit)),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def audit_tool_counts_7d() -> list[dict]:
     """Return (tool, count, last_ts) grouped by tool for the last 7 days, ordered by count desc."""
     with _conn() as c:
@@ -4116,63 +4093,6 @@ def ids_without_embedding(table: str) -> list[int]:
     with _conn() as c:
         rows = c.execute(sql).fetchall()
     return [r["id"] for r in rows]
-
-
-# ---------- bulk helpers (for migration) ----------
-
-def bulk_insert_facts(rows: Iterable[dict[str, Any]]) -> int:
-    import json as _json
-    n = 0
-    with _conn() as c:
-        for r in rows:
-            cur = c.execute(
-                "INSERT INTO facts (subject, predicate, object, confidence, importance, "
-                "valid_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["subject"], r["predicate"], r["object"],
-                    r.get("confidence", 0.7),
-                    r.get("importance", 5),
-                    r.get("valid_from", _now()),
-                    r.get("created_at", _now()),
-                ),
-            )
-            fid = cur.lastrowid
-            c.execute(
-                "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'fact', ?)",
-                (f"{r['subject']} {r['predicate']} {r['object']}", fid),
-            )
-            # Write outbox row in the same transaction.
-            _payload = {
-                "v": 1,
-                "name": f"fact_{fid}",
-                "episode_body": f"{r['subject']} {r['predicate']} {r['object']}",
-                "source": "text",
-                "source_description": "fact (unknown)",
-                "group_id": "hikari_chat",
-                "reference_time": datetime.now(UTC).isoformat(),
-                "fact_id": fid,
-            }
-            graph_outbox_insert("facts", fid, _json.dumps(_payload), conn=c)
-            n += 1
-    return n
-
-
-def bulk_insert_episodes(rows: Iterable[dict[str, Any]]) -> int:
-    n = 0
-    with _conn() as c:
-        for r in rows:
-            cur = c.execute(
-                "INSERT INTO episodes (date, summary, importance, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (r["date"], r["summary"], r.get("importance", 5),
-                 r.get("created_at", _now())),
-            )
-            c.execute(
-                "INSERT INTO fts (content, kind, ref_id) VALUES (?, 'episode', ?)",
-                (r["summary"], cur.lastrowid),
-            )
-            n += 1
-    return n
 
 
 # ---------- Phase 10: reminders ----------

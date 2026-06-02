@@ -73,18 +73,25 @@ async def compute_session_register(session_id: str) -> str:
     prompt = _build_prompt(messages)
 
     try:
-        raw = await run_aux_composition(prompt, system=_SYSTEM_PROMPT, max_tokens=16)
+        raw = await run_aux_composition(prompt, system=_SYSTEM_PROMPT, max_tokens=32)
     except Exception:
         logger.exception("tonal_recall: aux LLM call failed for session %s", session_id)
         return "neutral"
 
     register = raw.strip().lower().rstrip(".")
     if register not in _ALLOWED_REGISTERS:
-        logger.warning(
-            "tonal_recall: unexpected register %r for session %s; falling back to 'neutral'",
-            register, session_id,
-        )
-        register = "neutral"
+        # Cheap model sometimes wraps the answer ("the register is tense") or
+        # returns a non-register word ("none"). Scan for any allowed token
+        # before giving up — the 5 registers aren't substrings of each other.
+        found = next((r for r in _ALLOWED_REGISTERS if r in register), None)
+        if found:
+            register = found
+        else:
+            logger.warning(
+                "tonal_recall: unexpected register %r for session %s; falling back to 'neutral'",
+                register, session_id,
+            )
+            register = "neutral"
 
     try:
         with db._conn() as conn:

@@ -20,10 +20,6 @@ from storage import db
 from . import config as cfg
 from .hooks import _resolve_local_tz_name
 from .proactive_gate import reserve_and_send
-from .runtime import run_visible_proactive
-
-# Legacy alias so tests that monkeypatch ``proactive.run_proactive`` keep working.
-run_proactive = run_visible_proactive  # noqa: F841
 
 logger = logging.getLogger(__name__)
 

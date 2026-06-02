@@ -69,6 +69,11 @@ async def extract_post_turn(message_window: list[dict]) -> int:
         raw = "\n".join(raw.splitlines()[:-1])
     raw = raw.strip()
 
+    # Cheap model sometimes returns a bare "None"/"null" instead of the "[]"
+    # the prompt asks for — treat as "no insights", not a noisy parse failure.
+    if raw.lower() in {"none", "null", "n/a", "(none)", ""}:
+        return 0
+
     try:
         insights = json.loads(raw)
     except json.JSONDecodeError:

@@ -367,37 +367,6 @@ def _fact_active(valid_to: Any) -> bool:
     return ts > datetime.now(UTC)
 
 
-def _ebbinghaus_multiplier(
-    last_seen_iso: str | None,
-    hit_count: int,
-    tau_base_seconds: float,
-) -> float:
-    """T3.2 — exponential forgetting curve.
-
-    # DEPRECATED — Phase M, kept for rollback
-    # Replaced by _act_r_activation. Remove after one release.
-
-    ``tau = tau_base * 1.5 ** hit_count`` — each successful recall stretches
-    the half-life so frequently-touched facts decay slower (rehearsal effect).
-    ``delta`` is seconds since ``last_seen_iso``; the result is
-    ``exp(-delta / tau)`` and lives in ``(0, 1]``.
-
-    A malformed or missing timestamp is treated as "infinitely old" — the
-    multiplier collapses toward zero and the fact loses ranking weight, which
-    is the conservative choice for unknown freshness.
-    """
-    if tau_base_seconds <= 0:
-        return 1.0
-    delta = _seconds_since(last_seen_iso)
-    tau = tau_base_seconds * (1.5 ** max(0, int(hit_count)))
-    if tau <= 0:
-        return 0.0
-    # Cap the exponent to avoid math.exp underflow on very stale rows; the
-    # value drops to ~1e-300 well before the cap, so this is just hygiene.
-    exponent = -min(700.0, delta / tau)
-    return math.exp(exponent)
-
-
 def _seconds_since(iso: str | None) -> float:
     if not iso:
         return float("inf")

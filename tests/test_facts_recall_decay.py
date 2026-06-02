@@ -91,25 +91,6 @@ def test_recall_bumps_hit_count_and_last_recalled_at():
     assert row_third["recall_hit_count"] == 2
 
 
-def test_ebbinghaus_multiplier_growth_with_hit_count():
-    """Internal sanity: bumping hit_count stretches tau, so the multiplier
-    rises for the same age. This is what makes a frequently-recalled fact
-    age slower than an untouched one of the same age."""
-    iso = (datetime.now(UTC) - timedelta(days=14)).isoformat()
-    tau_base = 604800.0  # 7d in seconds
-    cold = retrieval._ebbinghaus_multiplier(iso, hit_count=0, tau_base_seconds=tau_base)
-    rehearsed = retrieval._ebbinghaus_multiplier(
-        iso, hit_count=5, tau_base_seconds=tau_base
-    )
-    assert rehearsed > cold, (
-        f"rehearsed multiplier should exceed cold one; got cold={cold:.4f}, "
-        f"rehearsed={rehearsed:.4f}"
-    )
-    # Both stay in (0, 1].
-    assert 0.0 < cold <= 1.0
-    assert 0.0 < rehearsed <= 1.0
-
-
 def test_facts_mark_recalled_handles_empty_list():
     """No-op call must not raise and must not touch any rows."""
     assert db.facts_mark_recalled([]) == 0
