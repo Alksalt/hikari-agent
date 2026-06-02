@@ -192,7 +192,7 @@ def test_belief_resurface_producer_returns_empty_below_stage(tmp_db, monkeypatch
     """Stage < 3 → producer emits nothing."""
     monkeypatch.setenv("HIKARI_DB_PATH", str(Path(tmp_db._DB_PATH)))
     # Set stage to 2.
-    tmp_db.runtime_set("relationship_stage", "2")
+    tmp_db.upsert_core_block("relationship_stage", "2")
 
     from agents.engagement.producers import belief_resurface
     candidates = belief_resurface.collect()
@@ -202,7 +202,7 @@ def test_belief_resurface_producer_returns_empty_below_stage(tmp_db, monkeypatch
 def test_belief_resurface_producer_emits_matured(tmp_db, monkeypatch):
     """Seed a past-due belief at stage 3 → producer emits a TriggerCandidate."""
     monkeypatch.setenv("HIKARI_DB_PATH", str(Path(tmp_db._DB_PATH)))
-    tmp_db.runtime_set("relationship_stage", "3")
+    tmp_db.upsert_core_block("relationship_stage", "3")
     # Clear any existing session so per-session cap doesn't fire.
     tmp_db.runtime_set("belief_resurface_last_session_id", "")
 

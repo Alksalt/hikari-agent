@@ -324,7 +324,28 @@ async def run_daily_reflection() -> bool:
 
     data = _parse_yaml_mapping(raw, context="reflection")
     if data is None:
-        return False
+        # The cheap reflection model intermittently returns prose instead of a
+        # YAML mapping. Retry once with a strict reinforcement before giving up.
+        strict_prompt = (
+            prompt
+            + "\n\nIMPORTANT: Output ONLY a single valid YAML mapping. No prose, "
+            "no commentary, no code fences. Begin directly with a top-level key."
+        )
+        try:
+            raw = await run_reflection_call(strict_prompt)
+            data = _parse_yaml_mapping(raw, context="reflection-retry")
+        except Exception:
+            logger.exception("reflection retry LLM call failed (non-fatal)")
+        if data is None:
+            # Don't lose the whole cycle on a bad LLM reply: skip ONLY the
+            # LLM-derived extraction (an empty mapping makes that block a no-op)
+            # and still run the mechanical maintenance + stage/seeder below.
+            logger.warning(
+                "reflection: YAML parse failed twice — running maintenance only, "
+                "skipping LLM extraction this cycle"
+            )
+            db.runtime_set("last_reflection_skipped", datetime.now(UTC).isoformat())
+            data = {}
 
     entity_block = data.get("entities") or []
     applied = 0
@@ -571,7 +592,9 @@ async def run_daily_reflection() -> bool:
             logger.exception("self_representation merge/upsert failed (non-fatal)")
 
     # Phase L (quarterly): their_model_of_me — second-order beliefs.
-    if run_second_order:
+    # Guard on `data` so a failed-extraction cycle (data == {}) doesn't burn the
+    # 90-day quarterly marker by stamping last_second_order_extraction_at.
+    if run_second_order and data:
         tmom_raw = data.get("their_model_of_me")
         if isinstance(tmom_raw, dict) and tmom_raw:
             try:
@@ -1572,6 +1595,19 @@ def compute_relationship_stage() -> int:
             stage = s_num
             label = s_label
             break
+
+    # Owner pin: a fixed stage overrides the session-count heuristic. This is a
+    # single-user bot — the owner sets relationship depth directly via
+    # config persona.relationship_stage_pin (e.g. 6 = deep, final reveal in reserve).
+    pin = cfg.get("persona.relationship_stage_pin")
+    if pin is not None:
+        try:
+            stage = max(1, min(7, int(pin)))
+            label = "pinned"
+        except (ValueError, TypeError):
+            logger.warning(
+                "compute_relationship_stage: invalid relationship_stage_pin %r — ignoring", pin
+            )
 
     try:
         db.upsert_core_block("relationship_stage", str(stage))

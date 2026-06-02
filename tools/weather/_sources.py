@@ -40,7 +40,9 @@ async def _fetch_open_meteo(lat: float, lon: float) -> dict[str, Any] | None:
             "temperature_2m,apparent_temperature,"
             "precipitation_probability,weather_code,cloud_cover"
         )
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
+        ) as client:
             r = await client.get(
                 _OPEN_METEO_URL,
                 params={

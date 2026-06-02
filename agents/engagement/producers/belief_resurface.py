@@ -21,7 +21,7 @@ def collect() -> list[TriggerCandidate]:
         return []
 
     min_stage = int(cfg.get("engagement.belief_resurface.min_stage", 3))
-    stage = db.runtime_get_int("relationship_stage", 1)
+    stage = db.get_relationship_stage()
     if stage < min_stage:
         return []
 

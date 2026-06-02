@@ -12,7 +12,7 @@ def _setup(monkeypatch, tmp_path, *, stage: int = 3, mood: str = "focused"):
     from storage import db
     importlib.reload(db)
     db._reset_schema_sentinel()
-    db.runtime_set("relationship_stage", stage)
+    db.upsert_core_block("relationship_stage", str(stage))
     db.upsert_core_block("mood_today", mood)
 
     from agents.engagement.producers import research_callback

@@ -170,9 +170,8 @@ def test_scheduler_builds(monkeypatch):
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")
-    # silent_day_picker is config-gated and may be absent when config is
-    # patched by other tests in a full-suite run — check for subset instead
-    # of exact equality to avoid ordering-sensitive failures.
+    # Subset check (not exact equality) avoids ordering-sensitive failures when
+    # other tests patch config in a full-suite run.
     assert expected.issubset(ids), f"missing jobs: {expected - ids}"
 
 

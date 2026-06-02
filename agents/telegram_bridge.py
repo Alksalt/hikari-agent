@@ -3571,6 +3571,14 @@ def main() -> None:
     # Install secret-redacting + canary-leak filter on the root logger so
     # secrets never hit stdout/files.
     install_root_filter()
+    # Seed the injection canary at startup so the token exists before any
+    # outbound/log path reads it — otherwise outbound_contains_canary() always
+    # returns False (the detector self-seeds lazily but nothing triggers it).
+    try:
+        from agents.injection_guard import get_canary
+        get_canary()
+    except Exception:
+        logging.getLogger(__name__).exception("canary seed at startup failed (non-fatal)")
     # P3: double-bill guard — warn if both auth paths are set simultaneously.
     if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         logging.getLogger(__name__).warning(

@@ -35,7 +35,7 @@ def collect() -> list[TriggerCandidate]:
         return []
 
     # Stage gate: don't fire before the relationship has matured enough.
-    stage = db.runtime_get_int("relationship_stage", 1)
+    stage = db.get_relationship_stage()
     min_stage = int(cfg.get("engagement.late_night_dissolution.min_stage", 6))
     if stage < min_stage:
         logger.debug("late_night_dissolution: stage %d < min_stage %d — skipping", stage, min_stage)

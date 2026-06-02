@@ -79,15 +79,23 @@ async def test_consolidation_failure_does_not_break_reflection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reflection_non_dict_yaml_returns_false(monkeypatch):
+async def test_reflection_non_dict_yaml_skips_extraction(monkeypatch):
     """A bare-string LLM reply is a valid YAML scalar (str), not a mapping.
-    The guard must return False instead of crashing on data.get(...)."""
+    The guard must NOT crash on data.get(...): it retries the LLM once, then —
+    on a second non-mapping reply — skips the LLM-derived extraction while still
+    running mechanical maintenance (decoupled), and records a skip breadcrumb."""
     db.insert_episode("2026-05-19", "stand-up")
 
+    calls = []
+
     async def fake_run_reflection_call(_prompt):
+        calls.append(_prompt)
         return "just a sentence — not a yaml mapping"
 
     monkeypatch.setattr(reflection, "run_reflection_call", fake_run_reflection_call)
-    # Must not raise AttributeError; returns the False signal.
-    result = await reflection.run_daily_reflection()
-    assert result is False
+    # Must not raise AttributeError. Retries once, then records the skip.
+    await reflection.run_daily_reflection()
+    # >= 2: the main extraction call + one retry (the maintenance B-block may
+    # reuse run_reflection_call for consolidation, hence not an exact count).
+    assert len(calls) >= 2, "reflection should retry the LLM once on a non-mapping reply"
+    assert db.runtime_get("last_reflection_skipped") is not None

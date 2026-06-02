@@ -31,7 +31,7 @@ def collect() -> list[TriggerCandidate]:
 
     # Stage gate.
     min_stage = int(cfg.get("engagement.anniversary_callback.min_stage", 3))
-    stage = db.runtime_get_int("relationship_stage", 1)
+    stage = db.get_relationship_stage()
     if stage < min_stage:
         return []
 

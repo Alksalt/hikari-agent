@@ -101,7 +101,6 @@ async def test_morning_brief_aborted_when_globally_off(isolated_db, monkeypatch)
     import agents.proactive_gate as pg
     importlib.reload(pg)
     # Silence other gates so only proactive_disabled fires.
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     send_called = []
@@ -130,7 +129,6 @@ async def test_decision_log_aborted_when_globally_off(isolated_db, monkeypatch):
 
     import agents.proactive_gate as pg
     importlib.reload(pg)
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     send_called = []
@@ -159,7 +157,6 @@ async def test_generic_ceremony_aborted_when_globally_off(isolated_db, monkeypat
 
     import agents.proactive_gate as pg
     importlib.reload(pg)
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     send_called = []
@@ -188,7 +185,6 @@ async def test_reminder_still_sends_when_globally_off(isolated_db, monkeypatch):
 
     import agents.proactive_gate as pg
     importlib.reload(pg)
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     send_called = []
@@ -217,7 +213,6 @@ async def test_no_regression_when_proactive_on_null(isolated_db, monkeypatch):
 
     import agents.proactive_gate as pg
     importlib.reload(pg)
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     async def mock_send(text):
@@ -246,7 +241,6 @@ async def test_no_regression_when_proactive_on_populated_list(isolated_db, monke
 
     import agents.proactive_gate as pg
     importlib.reload(pg)
-    monkeypatch.setattr(pg, "_is_silent_day_today", lambda: False)
     monkeypatch.setattr(pg, "_is_quiet_now", lambda _db=None: False)
 
     async def mock_send(text):

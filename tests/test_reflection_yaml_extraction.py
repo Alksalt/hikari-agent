@@ -18,7 +18,6 @@ import pytest
 
 from agents import reflection
 
-
 # ---- pure: _strip_fences ----------------------------------------------------
 
 def test_strip_fences_clean_yaml_block():

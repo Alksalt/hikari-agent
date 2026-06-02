@@ -34,6 +34,16 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     db._reset_schema_sentinel()
     config.reload()
+    # These tests exercise the raw session-count heuristic; neutralize the owner
+    # stage pin (config persona.relationship_stage_pin) so it doesn't override
+    # the computed value. The pin itself is covered by test_pin_overrides_heuristic.
+    _real_get = config.get
+    monkeypatch.setattr(
+        config, "get",
+        lambda key, default=None: (
+            None if key == "persona.relationship_stage_pin" else _real_get(key, default)
+        ),
+    )
     yield
 
 
@@ -261,3 +271,23 @@ def test_return_value_matches_core_block():
     returned = compute_relationship_stage()
     persisted = int(db.get_core_block("relationship_stage"))
     assert returned == persisted
+
+
+# ---------------------------------------------------------------------------
+# Owner pin: persona.relationship_stage_pin overrides the heuristic
+# ---------------------------------------------------------------------------
+
+def test_pin_overrides_heuristic(monkeypatch):
+    """When persona.relationship_stage_pin is set, it overrides the session-count
+    heuristic and is what gets written to the core_block (label 'pinned')."""
+    import json
+    _seed_sessions(1)  # heuristic alone would be stage 1
+    monkeypatch.setattr(
+        config, "get",
+        lambda key, default=None: 6 if key == "persona.relationship_stage_pin" else default,
+    )
+    from agents.reflection import compute_relationship_stage
+    assert compute_relationship_stage() == 6
+    assert db.get_core_block("relationship_stage") == "6"
+    meta = json.loads(db.get_core_block("relationship_stage_meta"))
+    assert meta["label"] == "pinned"

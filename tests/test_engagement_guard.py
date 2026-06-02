@@ -288,7 +288,7 @@ class TestQuietHoursFailClosed:
 
 class TestSchedulerGateVsNoiseFloor:
     """scheduler_gate_enabled=False bypasses only the scheduler-specific gate,
-    NOT the noise floor (quiet-hours / silent_day / silence_until).
+    NOT the noise floor (quiet-hours / silence_until).
     HIKARI_DISABLE_NOISE_FLOOR is the explicit total dev bypass."""
 
     def test_scheduler_gate_disabled_still_respects_quiet_hours(self, _isolated_db, monkeypatch):
@@ -330,25 +330,6 @@ class TestSchedulerGateVsNoiseFloor:
             "scheduler_gate_enabled=False must not bypass global silence_until (noise floor)"
         )
 
-    def test_scheduler_gate_disabled_still_respects_silent_day(self, _isolated_db, monkeypatch):
-        """should_wake() returns False on a silent_day even when gate disabled."""
-        from agents import config as _cfg
-        from agents.engagement.guard import should_wake
-
-        monkeypatch.setattr(_cfg, "get", lambda key, default=None: (
-            False if key == "proactive.scheduler_gate_enabled" else default
-        ))
-
-        with (
-            patch("agents.proactive_gate._is_silent_day_today", return_value=True),
-            patch("agents.proactive._is_quiet_now", return_value=False),
-        ):
-            result = should_wake()
-
-        assert result is False, (
-            "scheduler_gate_enabled=False must not bypass silent_day (noise floor)"
-        )
-
     def test_scheduler_gate_disabled_returns_true_when_noise_floor_clear(self, _isolated_db, monkeypatch):
         """should_wake() returns True when gate disabled AND noise floor is clear."""
         from agents import config as _cfg
@@ -358,10 +339,7 @@ class TestSchedulerGateVsNoiseFloor:
             False if key == "proactive.scheduler_gate_enabled" else default
         ))
 
-        with (
-            patch("agents.proactive_gate._is_silent_day_today", return_value=False),
-            patch("agents.proactive._is_quiet_now", return_value=False),
-        ):
+        with patch("agents.proactive._is_quiet_now", return_value=False):
             result = should_wake()
 
         assert result is True, (

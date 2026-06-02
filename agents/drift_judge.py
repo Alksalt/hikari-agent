@@ -195,7 +195,13 @@ async def generate_correction(text: str, reason: str | None) -> str | None:
     if not raw:
         return None
     sent = raw.strip().strip("`").strip('"\'').splitlines()[0].strip()
-    return sent[:240] if sent else None
+    # Reject sentinel / non-answers — otherwise a literal "None" from the aux LLM
+    # gets stored and injected as a voice-correction note on every turn.
+    if not sent or sent.lower().lstrip("-•* ").strip() in {
+        "none", "n/a", "na", "null", "(none)", "no correction", "no drift",
+    }:
+        return None
+    return sent[:240]
 
 
 async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:

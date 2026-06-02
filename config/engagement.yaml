@@ -588,7 +588,9 @@ cadence_governor:
     user_anchored:
       max_per_7d: 30
       allowed_sources:
-        - callback_episode
+        # callback_episode intentionally NOT here — the producer hardcodes
+        # pool="agent_spontaneous"; dual-listing made _resolve_pool mis-credit
+        # its sends to this pool's larger cap. Listed only under agent_spontaneous.
         - lexicon_callback
         - recent_episode_callback
         - reaction_followup
@@ -1118,14 +1120,6 @@ sqlite:
   busy_timeout_ms: 5000
 
 engagement:
-  # Phase F: "The Daily Nothing" — one random weekday per week, all proactive
-  # sources gate silent. User-anchored responses still work normally.
-  # Scarcity drives perceived value (iOS notification fatigue research).
-  weekly_silent_day_enabled: true
-  # Eligible weekdays for the silent-day draw (sat/sun excluded by default:
-  # sat is "unstructured", sun is "low" and already persona-soft).
-  weekly_silent_day_pool: [mon, tue, wed, thu, fri]
-
   # priority_tier: 1=high (time-sensitive), 2=normal, 3=background
   # min_interval_minutes: hard gate — source is silenced until this window elapses
   # send_mode: proactive | observation | silent
@@ -1322,6 +1316,14 @@ graph:
   # CLAUDE.md cost-aware routing rule — cheap enough at Hikari volume.
   backfill_min_interval_s: 0.5           # throttle between episodes
   backfill_max_episodes: 500             # hard cap; raise + re-run for larger DBs
+
+# Owner-set relationship depth (single-user bot). Pin overrides the
+# session-count heuristic in compute_relationship_stage. The stage gates both
+# persona intimacy and the 5 stage-gated proactive producers.
+# 6 = deep; the final reveal (stage 7: "i love you" / core wound) is held in
+# reserve. Bump to 7 to unlock it.
+persona:
+  relationship_stage_pin: 6
 
 slow_burn_tells:
   enabled: true

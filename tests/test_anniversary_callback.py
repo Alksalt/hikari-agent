@@ -15,8 +15,8 @@ def _setup(monkeypatch, tmp_path, *, stage: int = 3, session_id: str = "sess-1")
     importlib.reload(db)
     db._reset_schema_sentinel()
 
-    # Set stage in runtime_state.
-    db.runtime_set("relationship_stage", stage)
+    # Set stage in core_blocks (the canonical store read by db.get_relationship_stage).
+    db.upsert_core_block("relationship_stage", str(stage))
 
     # Set session id.
     db.set_session_id(session_id)

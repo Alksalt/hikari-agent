@@ -203,6 +203,11 @@ _MODEL_RATES_USD_PER_1M: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6":               (3.00, 15.00),
     "claude-sonnet-4-5":               (3.00, 15.00),
     "claude-opus-4-7":                 (15.00, 75.00),
+    # Haiku 4.5 — allowed for simplest tasks (DECISIONS 2026-06-02). The SDK
+    # also picks it autonomously for internal context compaction; track its
+    # spend instead of storing $0. List tariff (verify if Anthropic changes it).
+    "claude-haiku-4-5":                (1.00, 5.00),
+    "claude-haiku-4-5-20251001":       (1.00, 5.00),
     # OpenRouter aux-LLM models — rates from MODELS.md (verified 2026-05-23).
     "deepseek/deepseek-v4-flash":      (0.14, 0.28),
     "mistralai/mistral-small-2603":    (0.15, 0.60),

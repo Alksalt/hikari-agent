@@ -285,6 +285,13 @@ async def maybe_send_morning_brief(send_text) -> bool:
         logger.info("morning_brief: all weather sources failed")
         return False
 
+    # Feed the weather_mood_shift producer: it reads this snapshot from
+    # runtime_state to detect day-over-day condition transitions (rain/hot/cold).
+    try:
+        db.runtime_set("weather_current_snapshot", json.dumps(forecast))
+    except Exception:
+        logger.exception("morning_brief: weather_current_snapshot write failed (non-fatal)")
+
     # HuggingFace daily papers — non-fatal; brief ships without them on failure.
     papers: list[dict] = []
     if bool(cfg.get("morning_brief.hf_papers_enabled", True)):

@@ -17,7 +17,7 @@ def should_wake(source_id: str | None = None) -> bool:
     Checks:
     - HIKARI_DISABLE_NOISE_FLOOR env var (explicit dev-only total bypass)
     - scheduler_gate_enabled config flag — bypasses only the scheduler-specific
-      gate logic, NOT the noise floor (silent_day / quiet-hours / silence).
+      gate logic, NOT the noise floor (quiet-hours / silence).
       The noise floor always runs regardless of this flag.
     - quiet hours (canonical _is_quiet_now from agents.proactive)
     - global silence window from runtime_state
@@ -32,16 +32,6 @@ def should_wake(source_id: str | None = None) -> bool:
         return True
 
     # --- Noise floor: always runs regardless of scheduler_gate_enabled ---
-
-    try:
-        from agents.proactive_gate import _is_silent_day_today
-        if _is_silent_day_today():
-            logger.debug("should_wake: silent_day active — skip")
-            return False
-    except Exception as exc:
-        logger.warning("silent_day check failed (fail-open for this gate): %s", exc)
-        # fail-open here: if the check itself errors we don't want to permanently
-        # suppress ticks — the reserve_and_send gate is still the final authority.
 
     try:
         from agents.proactive import _is_quiet_now

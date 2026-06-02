@@ -365,6 +365,9 @@ async def fetch_calendar_events() -> list[dict[str, Any]]:
     # paths return early above and DO NOT overwrite the prior set.
     new_ids = sorted({e["id"] for e in out if e["id"]})
     db.runtime_set("calendar_last_known_event_ids", json.dumps(new_ids))
+    # Feed the calendar_event_prep producer: it reads upcoming events from this
+    # runtime_state key (absolute start_iso timestamps stay valid for the day).
+    db.runtime_set("calendar_upcoming_events", json.dumps(out))
     return out
 
 

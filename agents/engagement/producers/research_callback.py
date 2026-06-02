@@ -20,7 +20,7 @@ def collect() -> list[TriggerCandidate]:
         return []
 
     # Mood + stage gate.
-    stage = db.runtime_get_int("relationship_stage", 1)
+    stage = db.get_relationship_stage()
     if stage < int(cfg.get("engagement.research_callback.min_stage", 3)):
         return []
 
