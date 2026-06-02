@@ -754,19 +754,15 @@ drift_telemetry:
     neither occurred, "unclear" when the message provides insufficient signal.
 
 calendar_heartbeat:
+  # Only these two are read (by the calendar_event_prep producer). The old
+  # calendar_heartbeat scheduler job + its tunables were removed; don't re-add
+  # lookahead_minutes/min_event_duration_minutes/exclude_calendar_ids/
+  # scheduler_interval_minutes/notified_ttl_hours unless a job reads them.
   enabled: true
-  lookahead_minutes: 120
   prep_message_lead_minutes: 30
   # Jitter band around the lead time matches the scheduler interval so a 5-min
   # cron tick that lands at minute 27 or 33 still fires for the 30-min mark.
   lead_window_jitter_minutes: 5
-  min_event_duration_minutes: 15
-  exclude_calendar_ids: []
-  # Scheduler interval — must match the band-jitter for clean overlap.
-  scheduler_interval_minutes: 5
-  # How long after an event's end to remember we've notified it (so the dedup
-  # key can be cleaned up later).
-  notified_ttl_hours: 4
 
 # ============================================================================
 # Stage 4: multimodal presence

@@ -2148,22 +2148,6 @@ def entity_get(entity_id: int) -> dict | None:
 
 
 # test-only: planned entity browser deferred — no production callers yet
-def entity_search(kind: str | None, query: str, limit: int = 10) -> list[dict]:
-    """Search entities by canonical_name or alias substring. Ordered by last_seen_at DESC."""
-    q = f"%{(query or '').strip().lower()}%"
-    sql = ("SELECT DISTINCT e.* FROM entities e "
-           "LEFT JOIN entity_aliases a ON a.entity_id=e.id "
-           "WHERE (lower(e.canonical_name) LIKE ? OR lower(a.alias) LIKE ?)")
-    params: list = [q, q]
-    if kind:
-        sql += " AND e.kind = ?"
-        params.append(kind)
-    sql += " ORDER BY e.last_seen_at DESC LIMIT ?"
-    params.append(int(limit))
-    with _conn() as c:
-        return [dict(r) for r in c.execute(sql, params).fetchall()]
-
-
 def fact_entities_link(fact_id: int, entity_ids: list[int]) -> None:
     """Link a list of entity ids to a fact. Idempotent (INSERT OR IGNORE)."""
     if not entity_ids:

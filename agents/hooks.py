@@ -668,16 +668,6 @@ def _format_noticings() -> str:
     return "\n".join(lines)
 
 
-def _days_since(iso: str) -> int | None:
-    try:
-        ts = datetime.fromisoformat(iso)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        return max(0, (datetime.now(UTC) - ts).days)
-    except (ValueError, TypeError):
-        return None
-
-
 def _format_gap_since_last(
     last_user_message_iso: str | None,
     *,
