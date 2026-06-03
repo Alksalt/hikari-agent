@@ -38,8 +38,9 @@ _COMMANDS: dict[str, str] = {
     "memory":       "query memory — /memory [search] | fact <id> | forget <id> | correct <id> <new>",
     # Tier 2 — weekly / when needed
     "reminders":    "list active reminders with snooze/dismiss buttons (paginated)",
-    "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth",
+    "status":       "system status: uptime, scheduler, MCP, DB, cost, OAuth, mood gate",
     "proactive":    "manage proactive sources, see recent sends, snooze a source",
+    "capabilities": "what she can do: tool families, skills, MCP servers, proactive producers, persona state",
     "tasks":        "list open background tasks",
     "cancel":       "cancel a running background task by id",
     "help":         "show this command list",
@@ -412,6 +413,46 @@ def format_help() -> str:
     return _truncate_3900("\n".join(lines))
 
 
+def _flirt_gate_state() -> str:
+    """One-line summary of whether flirt/intimacy is open right now and why — so
+    the owner can SEE why she's reserved instead of assuming the bot is broken."""
+    from agents import config as _cfg
+    from storage import db as _db
+    try:
+        from agents import mode_dispatch
+        if mode_dispatch.current_intimacy_mode():
+            return "flirt gate: OPEN — intimacy_mode active (/closer)"
+        if mode_dispatch.current_comfort_mode():
+            return "flirt gate: off — comfort mode"
+        if mode_dispatch.current_anger_mode():
+            return "flirt gate: off — anger mode"
+    except Exception:
+        pass
+    mood = (_db.get_core_block("mood_today") or "focused").strip().lower()
+    tt = (_db.runtime_get("time_texture") or "").strip().lower() or "n/a"
+    wm = None
+    raw = _db.get_core_block("cycle_state")
+    if raw:
+        try:
+            wm = json.loads(raw).get("warmth_multiplier")
+        except (ValueError, TypeError, AttributeError):
+            wm = None
+    open_at = float(_cfg.get("cycle_modulation.open_at_or_above", 1.2))
+    is_open = wm is not None and float(wm) >= open_at
+    late_night = tt == "late_night"
+    stage = _db.get_relationship_stage()
+    if mood == "weirdly good":
+        state = "OPEN (unprompted leaks allowed)"
+    elif mood == "focused" and (is_open or late_night):
+        state = f"receptive ({'warmth open' if is_open else 'late_night'})"
+    elif mood in ("irritable", "tired"):
+        state = f"reactive-only ({mood})"
+    else:
+        state = "reserved (flirt if you initiate, or /closer)"
+    wm_str = f"{wm}" if wm is not None else "?"
+    return f"flirt gate: {state} — stage {stage}, mood {mood}, warmth {wm_str}, {tt}"
+
+
 async def format_status(app) -> str:
     from storage import db as _db
 
@@ -580,6 +621,12 @@ async def format_status(app) -> str:
             lines.append(f"stickers: {valid} in pool")
     except Exception as exc:
         lines.append(f"stickers: error ({exc})")
+
+    # persona / flirt gate — surfaces WHY she's reserved (mood/stage/warmth).
+    try:
+        lines.append(_flirt_gate_state())
+    except Exception as exc:
+        lines.append(f"flirt gate: error ({exc})")
 
     return _truncate_3900("\n".join(lines))
 
@@ -930,6 +977,30 @@ async def format_capabilities() -> str:
     except Exception as exc:
         lines.append(f"  [probe failed: {exc}]")
 
+    # enabled proactive producers — the "what reaches out to you" surface.
+    try:
+        from agents import config as _cfg
+        from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
+        from storage import db as _db
+        raw_override = _db.runtime_get("proactive_enabled_sources_override")
+        if raw_override:
+            enabled = set(json.loads(raw_override))
+        else:
+            _yaml = _cfg.get("proactive.default_enabled_sources")
+            enabled = set(_yaml) if _yaml else set(DEFAULT_ENABLED_SOURCES)
+        on = sorted(enabled & set(ALL_PRODUCER_IDS))
+        lines.append(f"\nproactive producers ({len(on)} on / {len(ALL_PRODUCER_IDS)} total):")
+        lines.append("  " + ", ".join(on))
+    except Exception as exc:
+        lines.append(f"\nproactive producers: [error: {exc}]")
+
+    # persona state — stage + live flirt gate.
+    try:
+        lines.append("\npersona:")
+        lines.append(f"  {_flirt_gate_state()}")
+    except Exception as exc:
+        lines.append(f"\npersona: [error: {exc}]")
+
     return _truncate_3900("\n".join(lines))
 
 
@@ -1046,12 +1117,17 @@ def format_proactive_status() -> str:
     except Exception:
         DEFAULT_ENABLED_SOURCES = []
 
-    # enabled sources
+    # enabled sources — mirror the scheduler's resolution: override → yaml → code.
     raw_override = _db.runtime_get("proactive_enabled_sources_override")
-    try:
-        enabled: set[str] = set(json.loads(raw_override)) if raw_override else set(DEFAULT_ENABLED_SOURCES)
-    except (ValueError, TypeError):
-        enabled = set(DEFAULT_ENABLED_SOURCES)
+    if raw_override:
+        try:
+            enabled: set[str] = set(json.loads(raw_override))
+        except (ValueError, TypeError):
+            enabled = set(DEFAULT_ENABLED_SOURCES)
+    else:
+        from agents import config as _cfg_src
+        _yaml_sources = _cfg_src.get("proactive.default_enabled_sources")
+        enabled = set(_yaml_sources) if _yaml_sources else set(DEFAULT_ENABLED_SOURCES)
 
     # snooze map
     raw_snooze = _db.runtime_get("proactive_snooze_until")
@@ -1125,6 +1201,16 @@ def format_proactive_status() -> str:
                 lines.append(f"  {src}  (expires: {iso[:16]})")
     else:
         lines.append("\nsnoozed sources: none")
+
+    # disabled sources — so the owner can see what's available to turn on.
+    try:
+        from agents.engagement.producers import ALL_PRODUCER_IDS
+        disabled = sorted(s for s in ALL_PRODUCER_IDS if s not in enabled)
+    except Exception:
+        disabled = []
+    if disabled:
+        lines.append(f"\ndisabled ({len(disabled)}) — /proactive on <source>:")
+        lines.append("  " + ", ".join(disabled))
 
     return _truncate_3900("\n".join(lines))
 

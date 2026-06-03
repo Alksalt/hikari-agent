@@ -2446,22 +2446,8 @@ async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not args or args[0] == "status":
-        raw_override = db.runtime_get("proactive_enabled_sources_override")
-        if raw_override:
-            try:
-                enabled = set(_json.loads(raw_override))
-            except (ValueError, TypeError):
-                enabled = set(DEFAULT_ENABLED_SOURCES)
-        else:
-            cfg_sources = cfg.get("proactive.default_enabled_sources")
-            enabled = set(cfg_sources) if cfg_sources else set(DEFAULT_ENABLED_SOURCES)
-
-        lines = ["proactive sources:"]
-        for s in sorted(ALL_PRODUCER_IDS):
-            mark = "✓" if s in enabled else " "
-            count = db.proactive_send_count_7d(s)
-            lines.append(f"  [{mark}] {s}  (7d: {count})")
-        await _pro_ack("\n".join(lines))
+        # Richer renderer: next ping window + active + snoozed (TTLs) + disabled.
+        await _pro_ack(cockpit.format_proactive_status())
         return
 
     op = args[0]

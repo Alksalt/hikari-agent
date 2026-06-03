@@ -879,7 +879,10 @@ async def test_memory_non_owner_silent():
 
 def test_menu_trim_cuts_removed_commands():
     from agents.cockpit import _COMMANDS
-    removed = {"approvals", "settings", "capabilities", "tools", "audit", "decision", "voice"}
+    # `capabilities` is intentionally surfaced (2026-06-03) — it's the discovery
+    # entry point for "what she can do"; its omission was the actual gap. The
+    # operator-level commands below stay trimmed from the menu.
+    removed = {"approvals", "settings", "tools", "audit", "decision", "voice"}
     for key in removed:
         assert key not in _COMMANDS, f"expected {key!r} removed from _COMMANDS"
 
@@ -889,3 +892,10 @@ def test_menu_has_required_commands():
     required = {"silence", "memory", "reminders", "status", "proactive", "tasks", "diary", "links", "receipt"}
     for key in required:
         assert key in _COMMANDS, f"expected {key!r} in _COMMANDS"
+
+
+def test_menu_surfaces_capabilities_entry_point():
+    from agents.cockpit import _COMMANDS
+    # The discovery entry point + the new intimacy command must be visible.
+    assert "capabilities" in _COMMANDS
+    assert "closer" in _COMMANDS
