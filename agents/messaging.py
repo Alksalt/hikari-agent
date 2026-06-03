@@ -174,7 +174,13 @@ async def send_and_persist(
         logger.exception("send_and_persist: Telegram send failed")
         if _outbox_row_id is not None:
             try:
-                _db.media_outbox_mark_failed(_outbox_row_id, str(_exc))
+                # max_attempts=3 matches the drain dispatcher's contract
+                # (telegram_bridge._drain_media_outbox). Without it, a 'text' row
+                # terminalized to 'failed' on the FIRST transient network blip —
+                # one ConnectError permanently dropped the message. With a budget,
+                # the row stays 'sending' → the stale-sending reaper requeues it →
+                # the drain re-sends. Recovery in minutes instead of never.
+                _db.media_outbox_mark_failed(_outbox_row_id, str(_exc), max_attempts=3)
             except Exception:
                 logger.exception("send_and_persist: media_outbox_mark_failed failed (non-fatal)")
         return SendResult(final_text, None, False)
