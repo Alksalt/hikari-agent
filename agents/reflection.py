@@ -678,6 +678,15 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("noticings prune failed (non-fatal)")
 
+    # Sweep ephemeral per-turn runtime_state scratch keys (turn:<id>:*) — written
+    # every outbound, never cleaned up, so the table grew unbounded.
+    try:
+        n_scratch = db.prune_runtime_scratch(("turn:",))
+        if n_scratch:
+            logger.info("reflection: pruned %d turn:* scratch keys", n_scratch)
+    except Exception:
+        logger.exception("runtime scratch prune failed (non-fatal)")
+
     # Phase 7: persona-drift telemetry — read the rolling window + prune.
     drift_avg = None
     drift_below = 0

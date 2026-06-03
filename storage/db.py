@@ -3290,6 +3290,25 @@ def runtime_get_int(key: str, default: int = 0) -> int:
         return default
 
 
+def prune_runtime_scratch(prefixes: tuple[str, ...] = ("turn:",)) -> int:
+    """Delete ephemeral per-turn scratch keys from runtime_state and return the
+    count removed.
+
+    post_filter writes ``turn:<id>:action_lines`` / ``turn:<id>:romaji`` counters
+    every outbound message; they are read within the same turn and never cleaned
+    up, so the table grows unbounded (hundreds of rows). runtime_state has no
+    timestamp column, so we delete by key prefix during daily maintenance — by
+    then every prior turn's counters are consumed and stale.
+    """
+    if not prefixes:
+        return 0
+    clauses = " OR ".join("key LIKE ?" for _ in prefixes)
+    params = [f"{p}%" for p in prefixes]
+    with _conn() as c:
+        cur = c.execute(f"DELETE FROM runtime_state WHERE {clauses}", params)
+        return cur.rowcount if cur.rowcount is not None else 0
+
+
 def runtime_increment(key: str, by: int = 1) -> int:
     """Atomic +N on a runtime_state integer key. Treats a missing or
     non-integer value as 0. Returns the new total.
