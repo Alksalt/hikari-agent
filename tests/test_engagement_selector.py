@@ -443,3 +443,53 @@ class TestDeferToNextTurn:
         texts = [o["text"] for o in obs]
         assert "first observation" in texts
         assert "second observation" in texts
+
+
+class TestReengageSilenceValueGate:
+    """Regression for the reengage_silence value-score gate (2026-06-03 fix).
+
+    reengage_silence has no anchor token (ANCHOR_TOKEN_PATHS[...] == ()), so its
+    value_score is 0.3075 + 0.15*timing → 0.4575 (peak) / 0.3825 (off) / 0.3225
+    (quiet). The old min_value_score of 0.5 was unreachable; 0.35 lets it fire
+    peak+off while still blocking quiet hours. Exercises the REAL gate — no
+    patching of _value_score / _source_min_value_score (which masked the bug).
+    """
+
+    def _reengage_candidate(self) -> TriggerCandidate:
+        # Mirror agents/engagement/producers/reengage_silence.py field values.
+        return TriggerCandidate(
+            source="reengage_silence",
+            pool="agent_spontaneous",
+            pattern="notify",
+            payload={"elapsed_hours": 5.0, "last_message_ts": "2026-06-03T10:00:00+00:00"},
+            dedup_key="reengage_silence:test",
+            decay_at=datetime.now(UTC) + timedelta(hours=1),
+            novelty=0.5,
+            actionability=0.6,
+            confidence=0.8,
+        )
+
+    def test_fires_at_peak_hours(self):
+        from agents.engagement import selector
+
+        ctx = _make_ctx(
+            enabled={"reengage_silence"},
+            pool_caps={"agent_spontaneous": True},
+        )
+        ctx.now_local = datetime(2026, 6, 3, 20, 0, tzinfo=UTC)  # 20:00 = preferred
+        with patch("agents.proactive._is_quiet_now", return_value=False):
+            result = selector.select([self._reengage_candidate()], ctx)
+        assert result is not None
+        assert result.source == "reengage_silence"
+
+    def test_blocked_during_quiet_hours(self):
+        from agents.engagement import selector
+
+        ctx = _make_ctx(
+            enabled={"reengage_silence"},
+            pool_caps={"agent_spontaneous": True},
+        )
+        ctx.now_local = datetime(2026, 6, 3, 3, 0, tzinfo=UTC)  # quiet window
+        with patch("agents.proactive._is_quiet_now", return_value=True):
+            result = selector.select([self._reengage_candidate()], ctx)
+        assert result is None

@@ -43,14 +43,15 @@ def test_no_sessions_returns_none():
 
 
 def test_below_lowest_threshold_returns_none():
-    """Session count below the lowest min_session_count (80) returns None."""
-    _seed_sessions(50)
+    """Session count below the lowest min_session_count (8 as of 2026-06-03)
+    returns None."""
+    _seed_sessions(5)
     from agents.callback_surface import pick_slow_burn_tell
     assert pick_slow_burn_tell() is None
 
 
 def test_at_threshold_returns_tell():
-    """Session count at exactly 80 returns the first eligible tell."""
+    """Session count at exactly 80 returns an eligible tell."""
     _seed_sessions(80)
     from agents.callback_surface import pick_slow_burn_tell
     result = pick_slow_burn_tell()

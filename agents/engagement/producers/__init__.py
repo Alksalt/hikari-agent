@@ -77,6 +77,14 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "late_night_dissolution",
     "irritation_event",
     "weather_mood_shift",
+    # Warmth/intimacy producers enabled 2026-06-03 (kept in sync with
+    # config/engagement.yaml proactive.default_enabled_sources — the yaml list
+    # is the live source of truth; this set is the fallback + /proactive display).
+    "weirdly_good_mood_leak",
+    "anniversary_callback",
+    "belief_resurface",
+    "research_callback",
+    "callback_episode",
 })
 
 # Map source id → module for dynamic dispatch by the scheduler.

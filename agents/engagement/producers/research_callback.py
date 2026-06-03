@@ -58,7 +58,7 @@ def collect() -> list[TriggerCandidate]:
             "sources_json": row["research_sources_json"] or "[]",
         },
         dedup_key=f"research_callback:{row['id']}",
-        decay_at=(datetime.now(UTC) + timedelta(hours=18)).isoformat(),
+        decay_at=(datetime.now(UTC) + timedelta(hours=18)),
         novelty=0.9,
         actionability=0.6,
         confidence=0.85,

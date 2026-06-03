@@ -49,7 +49,7 @@ def collect() -> list[TriggerCandidate]:
             "stated_at": item["stated_at"],
         },
         dedup_key=f"belief_resurface:{item['id']}",
-        decay_at=(datetime.now(UTC) + timedelta(hours=24)).replace(microsecond=0).isoformat(),
+        decay_at=(datetime.now(UTC) + timedelta(hours=24)).replace(microsecond=0),
         novelty=0.8,
         actionability=0.3,
         confidence=0.9,

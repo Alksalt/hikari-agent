@@ -603,14 +603,18 @@ class TestConfig:
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
-        # 3 core (calendar_event_prep, wiki_new_file, decision_resolve_due) +
-        # reengage_silence + 5 world-delta producers (book_just_finished,
-        # just_got_home, late_night_dissolution, irritation_event, weather_mood_shift).
-        # gmail_unread_threshold removed 2026-06-01 (dead producer).
-        assert len(source_list) == 9
+        # 9 baseline (3 core + reengage_silence + 5 world-delta) PLUS 5 warmth/
+        # intimacy producers enabled 2026-06-03 (weirdly_good_mood_leak,
+        # anniversary_callback, belief_resurface, research_callback, callback_episode).
+        assert len(source_list) == 14
         assert "reengage_silence" in source_list
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list
         assert "late_night_dissolution" in source_list
         assert "irritation_event" in source_list
         assert "weather_mood_shift" in source_list
+        for warm in (
+            "weirdly_good_mood_leak", "anniversary_callback",
+            "belief_resurface", "research_callback", "callback_episode",
+        ):
+            assert warm in source_list

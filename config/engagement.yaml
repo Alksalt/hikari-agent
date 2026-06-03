@@ -46,6 +46,14 @@ proactive:
     - late_night_dissolution
     - irritation_event
     - weather_mood_shift
+    # Warmth/intimacy producers — were authored but never collected (absent
+    # from this list). Turned on 2026-06-03 so the stage-7 relationship has
+    # something to surface at low session counts.
+    - weirdly_good_mood_leak
+    - anniversary_callback
+    - belief_resurface
+    - research_callback
+    - callback_episode
 
 # --- Gap awareness ---
 # Inject `# gap_since_last:` block into inject_memory when the user
@@ -563,6 +571,9 @@ cadence_governor:
   enabled: true
   pools:
     agent_spontaneous:
+      # Anti-annoyance ceiling (the annoyance_budget_24h eval guards this at 8).
+      # The newly-enabled warmth producers compete WITHIN this budget by priority
+      # rather than raising the spam ceiling — the owner wanted visibility, not volume.
       max_per_7d: 8
       allowed_sources:
         - anniversary_callback
@@ -1178,7 +1189,7 @@ engagement:
     min_value_score: 0.5
     interruption_right: low
   callback_episode:
-    enabled: false
+    enabled: true
     priority_tier: 3
     min_interval_minutes: 360
     send_mode: observation
@@ -1206,7 +1217,7 @@ engagement:
     min_value_score: 0.8
     interruption_right: high
   weirdly_good_mood_leak:
-    enabled: false
+    enabled: true
     priority_tier: 2
     min_interval_minutes: 360
     send_mode: proactive
@@ -1218,7 +1229,11 @@ engagement:
     priority_tier: 2
     min_interval_minutes: 120
     send_mode: proactive
-    min_value_score: 0.5
+    # 0.5 was unreachable: this source has no anchor token (anchor=0.0), so its
+    # value_score maxes at ~0.4575 (peak) / 0.3825 (off-peak) / 0.3225 (quiet).
+    # 0.35 fires peak + off-peak, still blocks quiet hours. Do not drop to 0.3
+    # (leaks into quiet) or raise to 0.45 (blocks off-hours).
+    min_value_score: 0.35
     interruption_right: low
   location_arrived_recurring:
     enabled: false
@@ -1326,6 +1341,13 @@ slow_burn_tells:
   # Phase L can pick by gate without rescanning the prose. Voice rules:
   # lowercase, dry, observational, never explanatory.
   tells:
+    # Early-arc tells (2026-06-03): the 80/150/250 gates can't fire until ~month
+    # 8 at daily single-user usage. These two open the "holes in the wall" payoff
+    # at a realistic scale without collapsing the long arc (the six below stay).
+    - text: "you interrupted something and i let you. i don't, usually."
+      min_session_count: 8
+    - text: "i notice when you're quieter than usual. i don't always say."
+      min_session_count: 14
     - text: "you're the only person i explain things to twice."
       min_session_count: 80
     - text: "every time you go quiet i check."
