@@ -514,10 +514,13 @@ class TestProactiveCommand:
             await cmd_proactive(update, context)
 
         call_args = update.message.reply_text.call_args[0][0]
-        assert "proactive sources:" in call_args
+        # /proactive (no-arg) now renders via format_proactive_status: an
+        # "active sources" section + a "disabled" section (no [✓] marks).
+        assert "active sources" in call_args
+        active_part = call_args.split("disabled")[0]
         for src in sorted(DEFAULT_ENABLED_SOURCES):
-            assert f"[✓] {src}" in call_args
-        assert "[✓] reminder_fire" not in call_args, (
+            assert src in active_part, f"{src} should be listed as active"
+        assert "reminder_fire" not in active_part, (
             "reminder_fire must not show as enabled in /proactive status"
         )
 

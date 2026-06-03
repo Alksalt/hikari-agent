@@ -376,8 +376,14 @@ async def test_already_filtered_skips_internal_filter(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_crash_mid_send_leaves_failed_row(monkeypatch, tmp_path):
-    """When the Telegram send raises, a failed/pending media_outbox row is left."""
+async def test_crash_mid_send_leaves_recoverable_row(monkeypatch, tmp_path):
+    """When the Telegram send raises, a RECOVERABLE media_outbox row is left.
+
+    Since the 2026-06-03 fix the inline failure path passes max_attempts=3, so
+    the FIRST failure leaves the row in 'sending' (not terminalized to 'failed') —
+    the stale-sending reaper requeues it and the drain re-sends. The row must
+    never be silently lost.
+    """
     _patch_filter(monkeypatch)
     from agents.messaging import send_and_persist
 
@@ -388,10 +394,12 @@ async def test_crash_mid_send_leaves_failed_row(monkeypatch, tmp_path):
     )
 
     assert result.ok is False
-    # DB must have a row (the pre-send INSERT) in pending or failed state.
+    # DB must have a row (the pre-send INSERT) in a recoverable/terminal state.
     with db._conn() as c:
         rows = c.execute(
             "SELECT status FROM media_outbox"
         ).fetchall()
     assert len(rows) == 1
-    assert rows[0]["status"] in ("pending", "failed")
+    # 'sending' is the new first-failure state (retryable); not terminalized.
+    assert rows[0]["status"] in ("pending", "sending", "failed")
+    assert rows[0]["status"] != "failed", "must not terminalize on the first failure"
