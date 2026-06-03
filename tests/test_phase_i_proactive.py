@@ -604,9 +604,9 @@ class TestConfig:
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
         # 9 baseline (3 core + reengage_silence + 5 world-delta) PLUS 5 warmth/
-        # intimacy producers enabled 2026-06-03 (weirdly_good_mood_leak,
-        # anniversary_callback, belief_resurface, research_callback, callback_episode).
-        assert len(source_list) == 14
+        # intimacy producers + flirt_initiation, all enabled 2026-06-03.
+        assert len(source_list) == 15
+        assert "flirt_initiation" in source_list
         assert "reengage_silence" in source_list
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list

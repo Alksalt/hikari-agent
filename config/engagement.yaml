@@ -54,6 +54,10 @@ proactive:
     - belief_resurface
     - research_callback
     - callback_episode
+    # Net-new initiation path (2026-06-03): lets Hikari open flirtatiously,
+    # unprompted. Rare + earned (stage>=6, mood-receptive, late_night/Saturday,
+    # 72h dedup). The one thing the persona genuinely lacked.
+    - flirt_initiation
 
 # --- Gap awareness ---
 # Inject `# gap_since_last:` block into inject_memory when the user
@@ -580,6 +584,7 @@ cadence_governor:
         - belief_resurface
         - book_just_finished
         - callback_episode
+        - flirt_initiation
         - irritation_event
         - just_got_home
         - late_night_dissolution
@@ -1220,6 +1225,18 @@ engagement:
     enabled: true
     priority_tier: 2
     min_interval_minutes: 360
+    send_mode: proactive
+    min_value_score: 0.4
+    interruption_right: low
+  # Net-new (2026-06-03): Hikari opens flirtatiously, unprompted. Rare + earned.
+  # Gates live in agents/engagement/producers/flirt_initiation.py (stage>=min_stage,
+  # mood-receptive, late_night/Saturday, cooldown_hours dedup).
+  flirt_initiation:
+    enabled: true
+    min_stage: 6
+    cooldown_hours: 72
+    priority_tier: 3
+    min_interval_minutes: 4320   # ~3 days; pairs with the 72h producer dedup
     send_mode: proactive
     min_value_score: 0.4
     interruption_right: low

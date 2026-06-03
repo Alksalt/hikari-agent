@@ -89,6 +89,7 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "weather_alert":               ("alert_summary",),
     "weirdly_good_mood_leak":      (),
     "reengage_silence":            (),
+    "flirt_initiation":            (),                        # spontaneous; seed is trusted, no anchor
     "location_arrived_recurring":  ("place_name",),
     # Sprint B Wave 1 — 5 new producers
     "book_just_finished":          ("finished_book",),
