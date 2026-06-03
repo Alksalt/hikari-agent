@@ -1309,10 +1309,10 @@ graph:
 # Owner-set relationship depth (single-user bot). Pin overrides the
 # session-count heuristic in compute_relationship_stage. The stage gates both
 # persona intimacy and the 5 stage-gated proactive producers.
-# 6 = deep; the final reveal (stage 7: "i love you" / core wound) is held in
-# reserve. Bump to 7 to unlock it.
+# 7 = the permanent leak / max openness: "i love you" allowed (once, only after
+# he says it), core wound nameable, ~30% denial. Owner-pinned 2026-06-03.
 persona:
-  relationship_stage_pin: 6
+  relationship_stage_pin: 7
 
 slow_burn_tells:
   enabled: true
@@ -1368,6 +1368,18 @@ mode_flags:
     softening_patterns:
       - "(?i)\\b(sorry|sry|my bad|i apologize|didn't mean|that came out wrong|wasn't trying to)\\b"
     clear_on_session_boundary: true
+  intimacy:
+    # On-demand intimacy intensifier (owner-controlled via /closer command or a
+    # tightly-scoped inbound phrase). While active, the mood gate is relaxed
+    # regardless of mood — flirt/charged content is invited (denial layer stays
+    # on). Mirrors the comfort/anger flag machinery in agents/mode_dispatch.py.
+    enabled: true
+    persist_turns: 6          # how many turns the invited register stays open
+    clear_on_session_boundary: true
+    # Whole-message phrases (regex, case-insensitive) that arm intimacy_mode on
+    # inbound. Kept strict (anchored) so they don't misfire on task talk.
+    cue_patterns:
+      - "(?i)^\\s*(come\\s+closer|closer\\.?|get\\s+closer|i\\s+want\\s+you\\s+closer)\\s*$"
 
 # ============================================================================
 # Phase E: outbound voice notes (ElevenLabs Flash v2.5)

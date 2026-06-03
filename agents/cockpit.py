@@ -33,6 +33,7 @@ _COMMANDS: dict[str, str] = {
     # Tier 1 — daily
     "silence":      "mute proactives for N minutes (default 120)",
     "unsilence":    "cancel active silence window",
+    "closer":       "intimacy register: open the mood gate for a few turns (/closer off to clear)",
     "checkin":      "morning checkin: run now / skip tomorrow",
     "memory":       "query memory — /memory [search] | fact <id> | forget <id> | correct <id> <new>",
     # Tier 2 — weekly / when needed
