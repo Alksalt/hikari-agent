@@ -17,6 +17,7 @@ from tools.day_receipt.add import receipt_add
 from tools.day_receipt.delete import receipt_delete
 from tools.day_receipt.get import receipt_get
 from tools.day_receipt.print import receipt_print
+from tools.day_receipt.read import receipt_read
 from tools.day_receipt.search import receipt_search
 from tools.day_receipt.set_note import receipt_set_note
 from tools.day_receipt.today import receipt_today
@@ -24,6 +25,7 @@ from tools.day_receipt.week import receipt_week
 
 ALL_TOOLS = [
     receipt_add,
+    receipt_read,
     receipt_today,
     receipt_get,
     receipt_print,

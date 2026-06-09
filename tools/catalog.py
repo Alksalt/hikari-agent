@@ -285,6 +285,24 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "cancel delete reminder notification",
     "mcp__hikari_utility__reminder_snooze":
         "snooze delay reminder notification",
+    "mcp__hikari_utility__reminder_list":
+        "list active pending reminders what reminders do i have",
+    # --- links ---
+    "mcp__hikari_utility__link_list":
+        "list all bookmarks links saved shelf recent browse",
+    # --- receipt / day log ---
+    "mcp__hikari_utility__receipt_read":
+        "read day receipt what did i do today this week made moved learned avoided",
+    # --- diary ---
+    "mcp__hikari_utility__diary_read":
+        "read hikari diary entries recent journal thoughts",
+    # --- controls ---
+    "mcp__hikari_utility__set_silence":
+        "silence proactive messages mute stop pinging quiet",
+    "mcp__hikari_utility__set_proactive_source":
+        "enable disable snooze proactive source morning brief weather",
+    "mcp__hikari_utility__checkin_control":
+        "run skip morning checkin daily check-in",
     # --- playlist ---
     "mcp__hikari_utility__playlist_list":
         "list hikari curated playlist tracks songs music mood filter",

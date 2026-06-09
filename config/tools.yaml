@@ -877,6 +877,105 @@ tools:
     example: "reminder_snooze(id='x', minutes=30)"
     presentation_hint: null
 
+  # Phase 5a conversational tools — 7 new in-process tools
+  - id: "mcp__hikari_utility__reminder_list"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: scheduling
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "reminder_list()"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__link_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "link_search(query='llm papers')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_read"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "receipt_read(period='today')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__diary_read"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: personal
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "diary_read(days=7)"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__set_silence"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: controls
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "set_silence(minutes=120)"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__set_proactive_source"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: controls
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "set_proactive_source(source='weather_mood_shift', action='off')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__checkin_control"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: controls
+    operation: write
+    risk_tier: low
+    credentials: null
+    example: "checkin_control(action='skip_tomorrow')"
+    presentation_hint: null
+
   - id: "mcp__hikari_utility__accountability_create"
     bucket: 1
     server: hikari_utility

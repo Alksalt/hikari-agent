@@ -251,9 +251,14 @@ class TestPerTurnTokenBudget:
         )
 
     def test_bucket1_tool_count_reasonable(self, fresh_registry):
-        """Guard rails: bucket-1 roster should stay under 60 entries."""
+        """Guard rails: bucket-1 roster should stay under 70 entries.
+
+        Ceiling raised 60 → 70 on 2026-06-10 when Phase 5a added the seven
+        conversational read/control tools (reminder_list, link_search,
+        receipt_read, diary_read, set_silence, set_proactive_source,
+        checkin_control) — a deliberate bucket-1 expansion, not promotion."""
         b1 = [s for s in fresh_registry.specs() if s.bucket == 1]
-        assert len(b1) <= 60, (
+        assert len(b1) <= 70, (
             f"Bucket-1 has {len(b1)} entries — unexpectedly large. "
             "Check for accidental promotion of bucket-3 tools."
         )

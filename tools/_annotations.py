@@ -88,6 +88,7 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "receipt_get": ANN_READ_LOCAL,
     "receipt_today": ANN_READ_LOCAL,
     "receipt_week": ANN_READ_LOCAL,
+    "receipt_read": ANN_READ_LOCAL,
     "receipt_search": ANN_READ_LOCAL,
     "receipt_print": ANN_READ_LOCAL,
     "receipt_add": ANN_WRITE_LOCAL,
@@ -103,6 +104,17 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     # --- decision_log (DB) ---
     "decision_log_capture": ANN_WRITE_LOCAL,
     "decision_log_resolve": ANN_WRITE_LOCAL,
+    # --- diary (DB read) ---
+    "diary_read": ANN_READ_LOCAL,
+    # --- controls: runtime-state switches ---
+    # set_silence writes silence_until — local state, not destructive.
+    "set_silence": ANN_WRITE_LOCAL,
+    # set_proactive_source writes proactive_enabled_sources_override /
+    # proactive_snooze_until — local state, not destructive.
+    "set_proactive_source": ANN_WRITE_LOCAL,
+    # checkin_control writes runtime flags and schedule skip_dates —
+    # local state, not destructive.
+    "checkin_control": ANN_WRITE_LOCAL,
     # --- apple_notes (local osascript; iCloud sync is async/out-of-band) ---
     "note_read": ANN_READ_LOCAL,
     "note_search": ANN_READ_LOCAL,

@@ -63,12 +63,38 @@ async def test_reminder_create_with_repeat():
 
 @pytest.mark.asyncio
 async def test_reminder_list_returns_active():
+    """Default call (include_done=False) returns only active reminders."""
     from tools import reminders
     fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-    await reminders.reminder_create.handler({"when_iso": fire, "text": "A"})
-    await reminders.reminder_create.handler({"when_iso": fire, "text": "B"})
-    out = await reminders.reminder_list.handler({"active_only": True})
-    assert len(out["data"]["reminders"]) == 2
+    r1 = await reminders.reminder_create.handler({"when_iso": fire, "text": "A"})
+    r2 = await reminders.reminder_create.handler({"when_iso": fire, "text": "B"})
+    out = await reminders.reminder_list.handler({})
+    ids = [r["id"] for r in out["data"]["reminders"]]
+    assert r1["data"]["id"] in ids
+    assert r2["data"]["id"] in ids
+    assert len(ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_reminder_list_include_done_shows_fired():
+    """include_done=True also returns fired/cancelled reminders."""
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    r1 = await reminders.reminder_create.handler({"when_iso": fire, "text": "active one"})
+    r2 = await reminders.reminder_create.handler({"when_iso": fire, "text": "done one"})
+    rid2 = r2["data"]["id"]
+    # Mark the second reminder as cancelled via db layer to simulate fired state
+    db.reminder_cancel(rid2)
+    # Default: only active returned
+    out_default = await reminders.reminder_list.handler({})
+    default_ids = [r["id"] for r in out_default["data"]["reminders"]]
+    assert r1["data"]["id"] in default_ids
+    assert rid2 not in default_ids
+    # include_done=True: both returned
+    out_all = await reminders.reminder_list.handler({"include_done": True})
+    all_ids = [r["id"] for r in out_all["data"]["reminders"]]
+    assert r1["data"]["id"] in all_ids
+    assert rid2 in all_ids
 
 @pytest.mark.asyncio
 async def test_reminder_cancel_marks_cancelled():

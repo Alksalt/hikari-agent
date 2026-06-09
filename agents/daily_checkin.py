@@ -82,13 +82,30 @@ def _already_fired_today(now_local: datetime) -> bool:
     return last == now_local.date().isoformat()
 
 
+_FORCE_RUN_KEY = "daily_checkin_force_run"
+
+
 def should_fire_now(now_local: datetime) -> bool:
     """True iff the daily check-in should fire *now* given the configured
     schedule, override, skip-list, and dedup state.
 
-    ``now_local`` MUST be timezone-aware in the user's local zone."""
+    ``now_local`` MUST be timezone-aware in the user's local zone.
+
+    Also returns True when ``checkin_control(action='run_now')`` has set
+    the ``daily_checkin_force_run`` runtime flag.  The flag is PEEKED here
+    (not cleared) so it survives cadence/composer aborts and is retried on
+    the next tick.  The flag is cleared only after a successful send —
+    inside ``maybe_run_daily_checkin`` adjacent to ``mark_fired_today``.
+
+    The force path is checked BEFORE ``_is_skipped_today`` and
+    ``_already_fired_today`` so an explicit user request always wins.
+    """
     if not _is_enabled():
         return False
+    # Force-run path: peek (do NOT clear) the flag.  Clear happens only
+    # on successful send so aborted runs retry on the next tick.
+    if db.runtime_get(_FORCE_RUN_KEY) == "1":
+        return True
     if _is_skipped_today(now_local):
         return False
     if _already_fired_today(now_local):
@@ -587,7 +604,14 @@ async def _safe_send(send_text, text: str) -> tuple[bool, int | None]:
 
 
 async def maybe_run_daily_checkin(send_text) -> bool:
-    """Scheduler job entry. Returns True if the check-in question was sent."""
+    """Scheduler job entry. Returns True if the check-in question was sent.
+
+    Force-flag lifecycle: ``should_fire_now`` only peeks
+    ``daily_checkin_force_run`` — it does NOT clear it.  The flag is cleared
+    here, adjacent to ``mark_fired_today``, only after a successful send.
+    Abort paths (cadence veto, composer None, gate rejection) leave the flag
+    in place so the next tick retries automatically within ~1 minute.
+    """
     now_local = _now_local()
     if not should_fire_now(now_local):
         return False
@@ -623,6 +647,10 @@ async def maybe_run_daily_checkin(send_text) -> bool:
         return False
     cadence.record_ceremony_sent("daily_checkin")
     mark_fired_today(now_local)
+    # Clear force flag only on success — abort paths leave it set so the
+    # next tick retries.  Adjacent to mark_fired_today so the dedup date
+    # and the flag are always consistent.
+    db.runtime_set(_FORCE_RUN_KEY, None)
     clear_expired_overrides(now_local)
     db.runtime_set(PENDING_KEY, datetime.now(UTC).isoformat())
     logger.info("daily_checkin: question sent (pending reply window open)")
