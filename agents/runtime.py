@@ -261,6 +261,25 @@ def _compute_cost_usd(model: str, usage: dict) -> float:
     )
 
 
+_USAGE_KEY_ALIASES = {
+    "inputTokens": "input_tokens",
+    "outputTokens": "output_tokens",
+    "cacheReadInputTokens": "cache_read_input_tokens",
+    "cacheCreationInputTokens": "cache_creation_input_tokens",
+}
+
+
+def _normalize_usage(u: dict) -> dict:
+    """Map the CLI's camelCase modelUsage keys onto the snake_case names the
+    cost pipeline reads. The SDK forwards ResultMessage.model_usage verbatim
+    from the CLI JSON (camelCase); msg.usage is already snake_case."""
+    out = dict(u)
+    for camel, snake in _USAGE_KEY_ALIASES.items():
+        if snake not in out and camel in out:
+            out[snake] = out[camel]
+    return out
+
+
 def _record_llm_cost(
     model_usage: dict | None,
     *,
@@ -277,21 +296,36 @@ def _record_llm_cost(
     """
     try:
         if model_usage:
-            for model_id, u in model_usage.items():
-                if not isinstance(u, dict):
-                    continue
-                cost = _compute_cost_usd(model_id, u)
-                db.llm_costs_insert(
-                    turn_id=current_turn_id(),
-                    model=model_id,
-                    path=path,
-                    input_tokens=int(u.get("input_tokens") or 0),
-                    output_tokens=int(u.get("output_tokens") or 0),
-                    cache_read_input_tokens=int(u.get("cache_read_input_tokens") or 0),
-                    cache_creation_input_tokens=int(u.get("cache_creation_input_tokens") or 0),
-                    cost_usd=cost,
-                )
-            return
+            entries = [
+                (model_id, _normalize_usage(u))
+                for model_id, u in model_usage.items()
+                if isinstance(u, dict)
+            ]
+            total_tokens = sum(
+                int(u.get("input_tokens") or 0)
+                + int(u.get("output_tokens") or 0)
+                + int(u.get("cache_read_input_tokens") or 0)
+                + int(u.get("cache_creation_input_tokens") or 0)
+                for _, u in entries
+            )
+            if entries and total_tokens > 0:
+                for model_id, u in entries:
+                    cost = _compute_cost_usd(model_id, u)
+                    db.llm_costs_insert(
+                        turn_id=current_turn_id(),
+                        model=model_id,
+                        path=path,
+                        input_tokens=int(u.get("input_tokens") or 0),
+                        output_tokens=int(u.get("output_tokens") or 0),
+                        cache_read_input_tokens=int(u.get("cache_read_input_tokens") or 0),
+                        cache_creation_input_tokens=int(u.get("cache_creation_input_tokens") or 0),
+                        cost_usd=cost,
+                    )
+                return
+            logger.debug(
+                "model_usage carried no token counts (keys=%s); using fallback usage",
+                [sorted(u.keys()) for _, u in entries][:3],
+            )
         if not fallback_usage:
             return
         cost = _compute_cost_usd(fallback_model, fallback_usage)

@@ -128,3 +128,54 @@ def test_cache_creation_per_ttl_breakdown_preferred():
     )
     # 1M * $3 * 1.25 + 1M * $3 * 2.0 = $3.75 + $6.00 = $9.75
     assert cost == pytest.approx(9.75, rel=0.001)
+
+
+def test_model_usage_camelcase_cli_shape_records_tokens():
+    """Regression: the CLI emits camelCase modelUsage keys (inputTokens, ...).
+    The snake_case-only reader recorded 0 tokens / $0 for every persistent
+    turn (2,540 live rows of zeros). Real payload shape from hikari.log."""
+    runtime._record_llm_cost(
+        {
+            "claude-sonnet-4-6": {
+                "inputTokens": 4,
+                "outputTokens": 339,
+                "cacheReadInputTokens": 58_187,
+                "cacheCreationInputTokens": 58_579,
+                "costUSD": 0.05,
+                "contextWindow": 200_000,
+            },
+        },
+        path="persistent",
+        fallback_model="claude-sonnet-4-6",
+        fallback_usage={"input_tokens": 99_999, "output_tokens": 99_999},
+    )
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT model, input_tokens, output_tokens, cache_read_input_tokens,"
+            " cache_creation_input_tokens, cost_usd FROM llm_costs"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["model"] == "claude-sonnet-4-6"
+    assert rows[0]["input_tokens"] == 4
+    assert rows[0]["output_tokens"] == 339
+    assert rows[0]["cache_read_input_tokens"] == 58_187
+    assert rows[0]["cache_creation_input_tokens"] == 58_579
+    assert rows[0]["cost_usd"] > 0
+
+
+def test_model_usage_unrecognized_shape_falls_back_to_usage():
+    """Shape-drift guard: a model_usage breakdown with no recognizable token
+    keys must not write all-zero rows — it falls through to msg.usage."""
+    runtime._record_llm_cost(
+        {"claude-sonnet-4-6": {"someFutureKey": 123}},
+        path="persistent",
+        fallback_model="claude-sonnet-4-6",
+        fallback_usage={"input_tokens": 100, "output_tokens": 50},
+    )
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT model, input_tokens, output_tokens FROM llm_costs"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["input_tokens"] == 100
+    assert rows[0]["output_tokens"] == 50
