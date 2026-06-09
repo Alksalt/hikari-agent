@@ -7,12 +7,11 @@ import importlib
 # helpers
 # ---------------------------------------------------------------------------
 
-def _setup(monkeypatch, tmp_path, *, stage: int = 3, mood: str = "focused"):
+def _setup(monkeypatch, tmp_path, *, mood: str = "focused"):
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
     from storage import db
     importlib.reload(db)
     db._reset_schema_sentinel()
-    db.upsert_core_block("relationship_stage", str(stage))
     db.upsert_core_block("mood_today", mood)
 
     from agents.engagement.producers import research_callback
@@ -38,20 +37,14 @@ def _seed_research_task(db, *, subject="look into transformers", summary=None,
 # tests
 # ---------------------------------------------------------------------------
 
-def test_returns_empty_below_stage_3(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=2)
-    _seed_research_task(db, summary="some summary")
-    assert producer.collect() == []
-
-
 def test_returns_empty_when_no_research_complete(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     _seed_research_task(db, summary=None)
     assert producer.collect() == []
 
 
 def test_emits_when_summary_ready(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     task_id = _seed_research_task(db, subject="look into X", summary="Here is what I found.")
     candidates = producer.collect()
     assert len(candidates) == 1
@@ -63,14 +56,14 @@ def test_emits_when_summary_ready(tmp_path, monkeypatch):
 
 
 def test_skips_empty_summary_marker(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     _seed_research_task(db, summary="(no useful sources)")
     assert producer.collect() == []
 
 
 def test_skips_already_surfaced(tmp_path, monkeypatch):
     from datetime import UTC, datetime
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     _seed_research_task(
         db, summary="found something",
         surfaced_at=datetime.now(UTC).isoformat(),
@@ -79,7 +72,7 @@ def test_skips_already_surfaced(tmp_path, monkeypatch):
 
 
 def test_mark_consumed_sets_surfaced_at(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     task_id = _seed_research_task(db, summary="some result")
 
     # Before mark_consumed it should appear.
@@ -96,6 +89,6 @@ def test_mark_consumed_sets_surfaced_at(tmp_path, monkeypatch):
 
 
 def test_blocked_mood_returns_empty(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3, mood="irritable")
+    producer, db = _setup(monkeypatch, tmp_path, mood="irritable")
     _seed_research_task(db, summary="some summary")
     assert producer.collect() == []

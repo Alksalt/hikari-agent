@@ -1,41 +1,20 @@
-"""Photos feature — manifest.
+"""Photos feature — inbound-only after Phase 3-C.
 
-DEDICATED MCP SERVER. ``agents/runtime.py`` does
-``from tools import photos as photo_tools`` and registers
-``photo_tools.ALL_TOOLS`` against an in-process ``hikari_photo`` server.
-The shared registry skips ``photos`` on purpose (see
-``tools/_registry.py:_DEDICATED_SERVER_MODULES``) so this package is
-NOT auto-discovered into the utility server. Keep ``ALL_TOOLS``
-accessible at ``tools.photos.ALL_TOOLS``.
+Outbound photo GENERATION (selfies, scene photos via OpenRouter Flux) has
+been removed. What remains:
 
-Re-exports: the module-level constants and private helpers from
-``_shared.py`` so existing callers (``agents/telegram_bridge.py`` imports
-``OUTBOX``; tests reload the package and call ``photos.generate_photo``)
-keep working through the package namespace. ``httpx`` is also re-exported
-because integration tests may monkey-patch ``photos.httpx`` to stub the
-OpenRouter call.
+- ``tools.photos.classify`` — vision-classify inbound user photos so the
+  runtime LLM picks the right downstream tool (used by
+  ``agents/telegram_bridge.py:handle_photo``).
+- ``OUTBOX`` — the ``data/photo_outbox/`` path constant re-exported here
+  for the bridge's ``_drain_photo_outbox`` / ``_reconcile_photo_outbox_orphans``
+  functions. The outbox is now only populated externally (legacy files); the
+  agent no longer generates photos into it.
 """
 from __future__ import annotations
 
-import httpx  # noqa: F401 — re-exported for tests that patch ``photos.httpx``
+import os
+from pathlib import Path
 
-from tools.photos._shared import (  # noqa: F401 — back-compat re-exports
-    _FALLBACK_SCENES,
-    _SCENES_BY_MOOD,
-    APPEARANCE_MD,
-    DAILY_CAP,
-    DEFAULT_MODEL,
-    OPENROUTER_IMG_URL,
-    OUTBOX,
-    REPO_ROOT,
-    _call_flux,
-    _photos_sent_today,
-    _read_appearance_base,
-    _record_photo_sent,
-    _resolve_mood,
-    _scene_suffix,
-)
-from tools.photos.generate import generate_photo
-from tools.photos.scene import scene_photo_send
-
-ALL_TOOLS = [generate_photo, scene_photo_send]
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+OUTBOX = Path(os.environ.get("HIKARI_PHOTO_OUTBOX") or REPO_ROOT / "data" / "photo_outbox")

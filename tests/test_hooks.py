@@ -3,12 +3,11 @@
 Covers:
   1. _format_now includes time_texture when set.
   2. _format_core_blocks injects composite_label from cycle_state.
-  3. _format_core_blocks injects stage hint from relationship_stage.
-  4. _format_core_blocks injects world line from hikari_world + hikari_currently_into.
-  5. _format_peer_insights renders unsurfaced rows and marks them surfaced.
-  6. _format_emotional_register renders the session emotional_register column.
-  7. _format_deferred_observations clears the slot after injection.
-  8. inject_memory writes last_user_message before calling render functions.
+  3. _format_core_blocks injects world line from hikari_world + hikari_currently_into.
+  4. _format_peer_insights renders unsurfaced rows and marks them surfaced.
+  5. _format_emotional_register renders the session emotional_register column.
+  6. _format_deferred_observations clears the slot after injection.
+  7. inject_memory writes last_user_message before calling render functions.
 """
 from __future__ import annotations
 
@@ -88,39 +87,7 @@ def test_core_blocks_no_crash_with_invalid_cycle_state():
 
 
 # ---------------------------------------------------------------------------
-# 3. Stage gate hint
-# ---------------------------------------------------------------------------
-
-def test_core_blocks_injects_stage_hint_stage_3():
-    db = _db()
-    db.upsert_core_block("relationship_stage", "3")
-    db.upsert_core_block("mood_today", "tired")
-    hooks = _hooks()
-    block = hooks._format_core_blocks()
-    assert "stage 3" in block
-    assert "compliment 1/30" in block
-
-
-def test_core_blocks_injects_stage_hint_stage_7():
-    db = _db()
-    db.upsert_core_block("relationship_stage", "7")
-    db.upsert_core_block("mood_today", "tired")
-    hooks = _hooks()
-    block = hooks._format_core_blocks()
-    assert "stage 7" in block
-    assert "i love you" in block
-
-
-def test_core_blocks_no_stage_hint_when_absent():
-    db = _db()
-    db.upsert_core_block("mood_today", "focused")
-    hooks = _hooks()
-    block = hooks._format_core_blocks()
-    assert "stage " not in block
-
-
-# ---------------------------------------------------------------------------
-# 4. hikari_world / hikari_currently_into line
+# 3. hikari_world / hikari_currently_into line
 # ---------------------------------------------------------------------------
 
 def test_core_blocks_injects_world_line():

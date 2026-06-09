@@ -3,7 +3,7 @@
 Wires in:
   - System prompt = assets/PERSONA.md persona (single Sonnet, no router)
   - Project setting source so .claude/skills/ load on-demand
-  - Two in-process SDK MCP servers: memory + photos
+  - In-process SDK MCP servers (memory, wiki, utility, dispatch, router)
   - .mcp.json external servers (Google Workspace, when configured)
   - UserPromptSubmit + PostToolUseFailure hooks
   - Bounded turns + budget per call
@@ -39,7 +39,6 @@ from storage import db
 from tools import codex as codex_tools
 from tools import dispatch as dispatch_tools
 from tools import memory as memory_tools
-from tools import photos as photo_tools
 from tools import router as router_tools
 from tools import wiki as wiki_tools
 
@@ -686,11 +685,6 @@ def _persona() -> str:
 @cache
 def _memory_server():
     return create_sdk_mcp_server(name="hikari_memory", tools=memory_tools.ALL_TOOLS)
-
-
-@cache
-def _photo_server():
-    return create_sdk_mcp_server(name="hikari_photo", tools=photo_tools.ALL_TOOLS)
 
 
 @cache

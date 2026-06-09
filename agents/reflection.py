@@ -790,11 +790,6 @@ async def run_daily_reflection() -> bool:
     except Exception:
         logger.exception("compute_cycle_state failed (non-fatal)")
 
-    try:
-        compute_relationship_stage()
-    except Exception:
-        logger.exception("compute_relationship_stage failed (non-fatal)")
-
     # Sprint A: daily life seeder — aux LLM, one call per day.
     try:
         await daily_life_seeder()
@@ -1568,80 +1563,6 @@ def compute_cycle_state() -> dict:
         composite_label, mood, warmth_multiplier,
     )
     return state
-
-
-# Relationship stage thresholds: (min_sessions, stage_number, label).
-_STAGE_THRESHOLDS: list[tuple[int, int, str]] = [
-    (1200, 7, "inseparable"),
-    (700, 6, "deep"),
-    (350, 5, "close"),
-    (150, 4, "established"),
-    (60, 3, "familiar"),
-    (15, 2, "acquainted"),
-    (0, 1, "new"),
-]
-
-
-def compute_relationship_stage() -> int:
-    """Derive relationship_stage from distinct session count and write core_block.
-
-    Uses DISTINCT DATE(ts) on messages as a proxy for 'sessions' (each
-    calendar day with messages = one session). Also stamps episodes.stage_at_time
-    for episodes written today.
-
-    Returns the current stage number (1-7).
-    """
-    try:
-        session_count = db.session_count()
-    except Exception:
-        logger.exception("compute_relationship_stage: session count query failed")
-        return 1
-
-    stage = 1
-    label = "new"
-    for min_sess, s_num, s_label in _STAGE_THRESHOLDS:
-        if session_count >= min_sess:
-            stage = s_num
-            label = s_label
-            break
-
-    # Owner pin: a fixed stage overrides the session-count heuristic. This is a
-    # single-user bot — the owner sets relationship depth directly via
-    # config persona.relationship_stage_pin (e.g. 6 = deep, final reveal in reserve).
-    pin = cfg.get("persona.relationship_stage_pin")
-    if pin is not None:
-        try:
-            stage = max(1, min(7, int(pin)))
-            label = "pinned"
-        except (ValueError, TypeError):
-            logger.warning(
-                "compute_relationship_stage: invalid relationship_stage_pin %r — ignoring", pin
-            )
-
-    try:
-        db.upsert_core_block("relationship_stage", str(stage))
-        db.upsert_core_block(
-            "relationship_stage_meta",
-            json.dumps({"label": label, "session_count": session_count}),
-        )
-    except Exception:
-        logger.exception("compute_relationship_stage: upsert failed")
-
-    # Stamp today's episodes with the current stage.
-    try:
-        with db._conn() as c:
-            c.execute(
-                "UPDATE episodes SET stage_at_time = ? WHERE date = ?",
-                (stage, date.today().isoformat()),
-            )
-    except Exception:
-        logger.exception("compute_relationship_stage: episodes stamp failed")
-
-    logger.info(
-        "compute_relationship_stage: sessions=%d → stage=%d (%s)",
-        session_count, stage, label,
-    )
-    return stage
 
 
 async def daily_life_seeder() -> None:

@@ -33,68 +33,29 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _STAGE_CAP_MULTIPLIERS
+# _DEFAULT_CAPS / stage_caps()
 # ---------------------------------------------------------------------------
 
 
-def test_stage_cap_multipliers_keys_cover_all_stages():
-    from agents.post_filter import _STAGE_CAP_MULTIPLIERS
-    assert set(_STAGE_CAP_MULTIPLIERS.keys()) == {1, 2, 3, 4, 5, 6, 7}
+def test_default_caps_has_required_keys():
+    from agents.post_filter import _DEFAULT_CAPS
+    assert "warmth_rate" in _DEFAULT_CAPS
+    assert "compliment_rate" in _DEFAULT_CAPS
+    assert "action_line_max" in _DEFAULT_CAPS
 
 
-def test_stage1_is_tightest():
-    from agents.post_filter import _STAGE_CAP_MULTIPLIERS
-    s1 = _STAGE_CAP_MULTIPLIERS[1]
-    assert s1["compliment_rate"] == 0  # no compliment acceptance at stage 1
-    assert s1["warmth_rate"] >= 20     # at least 1 per 20 turns — tight
-    assert s1["action_line_max"] == 1
-
-
-def test_stage7_is_loosest():
-    from agents.post_filter import _STAGE_CAP_MULTIPLIERS
-    s7 = _STAGE_CAP_MULTIPLIERS[7]
-    s1 = _STAGE_CAP_MULTIPLIERS[1]
-    # Stage 7 warmth fires more frequently (lower denominator = more often)
-    assert s7["warmth_rate"] < s1["warmth_rate"]
-    # Stage 7 allows more action lines
-    assert s7["action_line_max"] >= s1["action_line_max"]
-
-
-# ---------------------------------------------------------------------------
-# stage_caps() / _current_stage()
-# ---------------------------------------------------------------------------
-
-
-def test_stage_caps_returns_defaults_when_no_core_block():
-    from agents.post_filter import _DEFAULT_STAGE_CAPS, stage_caps
-    # No core_block written → default = stage 1 caps
+def test_stage_caps_returns_fixed_caps():
+    from agents.post_filter import _DEFAULT_CAPS, stage_caps
+    # stage_caps() is now constant — no DB dependency
     caps = stage_caps()
-    assert caps == _DEFAULT_STAGE_CAPS
+    assert caps == _DEFAULT_CAPS
 
 
-def test_stage_caps_reads_core_block(monkeypatch):
-    db.upsert_core_block("relationship_stage", "5")
-    from agents.post_filter import _STAGE_CAP_MULTIPLIERS, stage_caps
+def test_stage_caps_action_line_max_allows_multiple():
+    from agents.post_filter import stage_caps
     caps = stage_caps()
-    assert caps == _STAGE_CAP_MULTIPLIERS[5]
-
-
-def test_current_stage_clamps_below_1(monkeypatch):
-    db.upsert_core_block("relationship_stage", "0")
-    from agents.post_filter import _current_stage
-    assert _current_stage() == 1
-
-
-def test_current_stage_clamps_above_7(monkeypatch):
-    db.upsert_core_block("relationship_stage", "99")
-    from agents.post_filter import _current_stage
-    assert _current_stage() == 7
-
-
-def test_current_stage_handles_garbage(monkeypatch):
-    db.upsert_core_block("relationship_stage", "banana")
-    from agents.post_filter import _current_stage
-    assert _current_stage() == 1
+    # Fixed caps are former stage-7 values: action_line_max=2
+    assert caps["action_line_max"] >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -145,36 +106,20 @@ def test_romaji_re_word_boundary():
 
 # ---------------------------------------------------------------------------
 # apply_regex_counters — action-line strip
+# (fixed caps: action_line_max=2)
 # ---------------------------------------------------------------------------
 
 
 def test_apply_regex_counters_first_action_line_kept():
-    """First action-line in a turn is within stage-1 cap (max=1) → kept."""
-    db.upsert_core_block("relationship_stage", "1")
+    """First action-line is within the fixed cap (max=2) → kept."""
     from agents.post_filter import apply_regex_counters
     text = "ugh. fine. [unimpressed] whatever."
     result = apply_regex_counters(text)
     assert "[unimpressed]" in result
 
 
-def test_apply_regex_counters_second_action_line_stripped_stage1():
-    """Stage 1 cap = 1 action-line; second is stripped."""
-    db.upsert_core_block("relationship_stage", "1")
-    from agents.post_filter import apply_regex_counters
-    # First call: 1 action line → ok
-    text = "ugh. [unimpressed] fine."
-    result = apply_regex_counters(text)
-    assert "[unimpressed]" in result
-
-    # Second call in same "turn" (same turn_id key) → second action-line stripped
-    text2 = "anyway. [looks away] whatever."
-    result2 = apply_regex_counters(text2)
-    assert "[looks away]" not in result2
-
-
-def test_apply_regex_counters_two_action_lines_allowed_stage7():
-    """Stage 7 cap = 2; both action-lines in a single call are kept."""
-    db.upsert_core_block("relationship_stage", "7")
+def test_apply_regex_counters_two_action_lines_kept():
+    """Fixed cap = 2; two action-lines in a single call are kept."""
     from agents.post_filter import apply_regex_counters
     text = "[pauses] hm. [reads it twice] ...okay."
     result = apply_regex_counters(text)
@@ -182,14 +127,27 @@ def test_apply_regex_counters_two_action_lines_allowed_stage7():
     assert "[reads it twice]" in result
 
 
-def test_apply_regex_counters_third_action_line_stripped_stage7():
-    """Stage 7 cap = 2; third action-line in a single message is stripped."""
-    db.upsert_core_block("relationship_stage", "7")
+def test_apply_regex_counters_third_action_line_stripped():
+    """Fixed cap = 2; third action-line in a single message is stripped."""
     from agents.post_filter import apply_regex_counters
     text = "[pauses] hm. [reads it twice] ...okay. [looks away]"
     result = apply_regex_counters(text)
     # First two kept, third stripped
     assert result.count("[") <= 2
+
+
+def test_apply_regex_counters_second_action_line_cross_call_stripped():
+    """Third action-line across two calls in the same turn is stripped."""
+    from agents.post_filter import apply_regex_counters
+    # First call: 2 action lines → both ok (cap=2)
+    text = "ugh. [unimpressed] fine. [sighs]"
+    result = apply_regex_counters(text)
+    assert "[unimpressed]" in result
+
+    # Second call in same "turn" → would be 3rd → stripped
+    text2 = "anyway. [looks away] whatever."
+    result2 = apply_regex_counters(text2)
+    assert "[looks away]" not in result2
 
 
 # ---------------------------------------------------------------------------
@@ -307,19 +265,19 @@ def test_aggregate_prevents_false_positive_fabrication_backstop():
 # ---------------------------------------------------------------------------
 
 
-def test_filter_outgoing_strips_excess_action_line_stage1():
-    """filter_outgoing calls apply_regex_counters; excess action-lines stripped."""
-    db.upsert_core_block("relationship_stage", "1")
+def test_filter_outgoing_strips_excess_action_line():
+    """filter_outgoing calls apply_regex_counters; excess action-lines stripped (cap=2)."""
     from agents._turn_state import LAST_TURN_TOOL_NAMES
     from agents.post_filter import filter_outgoing
 
     token = LAST_TURN_TOOL_NAMES.set(set())
     try:
-        # First call: 1 action-line → kept
-        r1 = filter_outgoing("ugh. [unimpressed] fine.")
+        # Two action-lines allowed per turn (fixed cap=2)
+        r1 = filter_outgoing("[unimpressed] ugh. [sighs] fine.")
         assert "[unimpressed]" in r1.text
+        assert "[sighs]" in r1.text
 
-        # Second call: would be 2nd action-line in same turn → stripped
+        # Third call in the same turn would be stripped
         r2 = filter_outgoing("whatever. [looks away] done.")
         assert "[looks away]" not in r2.text
     finally:

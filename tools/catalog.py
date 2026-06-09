@@ -37,7 +37,6 @@ _SERVER_DOMAIN: dict[str, str] = {
     "hikari_memory": "memory",
     "hikari_utility": "utility",
     "hikari_wiki": "wiki",
-    "hikari_photo": "photo",
     "hikari_dispatch": "dispatch",
     "hikari_codex": "codex",
     "hikari_router": "router",
@@ -286,9 +285,6 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "cancel delete reminder notification",
     "mcp__hikari_utility__reminder_snooze":
         "snooze delay reminder notification",
-    # --- photo ---
-    "mcp__hikari_photo__generate_photo":
-        "generate selfie photo image picture of hikari",
     # --- playlist ---
     "mcp__hikari_utility__playlist_list":
         "list hikari curated playlist tracks songs music mood filter",

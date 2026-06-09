@@ -43,7 +43,7 @@ from tools import approvals as approval_tools
 from tools import dispatch as dispatch_tools
 from tools import location as location_tool
 from tools import voice as voice_tool
-from tools.photos import OUTBOX as PHOTO_OUTBOX
+from tools.photos import OUTBOX as PHOTO_OUTBOX  # media_outbox drain path
 
 from . import affect as affect_mod
 from . import belief_frame as belief_mod
@@ -604,40 +604,6 @@ async def _send_with_choreography(
     except Exception:
         logger.exception("postsend.mark_pending_surfaced failed (non-fatal)")
 
-    # image_gen-down fallback: if generate_photo failed within the last 60s,
-    # force-send a sticker so the user gets visual content instead of an empty
-    # "tool failed" beat. Enforces a 60s window so a stale flag from an
-    # earlier turn can't surprise-fire on a later unrelated heartbeat /
-    # reaction-turn. Runs BEFORE the probabilistic sticker gate.
-    try:
-        img_gen_fail_ts = db.runtime_get("image_gen_last_failure_ts")
-        if img_gen_fail_ts:
-            import datetime as _dt
-            fresh = False
-            try:
-                ts = _dt.datetime.fromisoformat(str(img_gen_fail_ts))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=_dt.UTC)
-                age = (_dt.datetime.now(_dt.UTC) - ts).total_seconds()
-                fresh = 0 <= age <= 60
-            except (ValueError, TypeError):
-                logger.warning(
-                    "image_gen_down fallback: bad ts %r; clearing", img_gen_fail_ts,
-                )
-            # Always consume so a stale or malformed value can't poison future turns.
-            db.runtime_set("image_gen_last_failure_ts", None)
-            if fresh:
-                try:
-                    await stickers_mod.force_send_sticker(bot, chat_id)
-                except Exception:
-                    logger.exception(
-                        "stickers: force_send_sticker failed (non-fatal)",
-                    )
-    except Exception:
-        logger.exception(
-            "image_gen_down fallback: runtime_state read failed (non-fatal)",
-        )
-
     # Outbound-counter bump + sticker gate. Bump first so the value passed in
     # reflects this just-sent reply; the sticker module reads the same shared
     # counter via storage.db.OUTBOUND_MSG_COUNTER_KEY.
@@ -850,15 +816,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         affect_mod.scan_inbound(message.text)
     except Exception:
         logger.exception("affect scan failed (non-fatal)")
-
-    # On-demand intimacy intensifier — a whole-message "closer" cue arms
-    # intimacy_mode for the next few turns (relaxes the mood gate). Strict
-    # anchored patterns in config so task talk never trips it.
-    try:
-        from agents import mode_dispatch as _mode_dispatch_intimacy
-        _mode_dispatch_intimacy.scan_intimacy_cue(message.text)
-    except Exception:
-        logger.warning("mode_dispatch.scan_intimacy_cue failed (non-fatal)", exc_info=True)
 
     # Probabilistic reaction — fires occasionally as a non-verbal nod.
     try:
@@ -1894,28 +1851,6 @@ async def cmd_unsilence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await send_ephemeral_ack(
         context.bot, message.chat_id, "fine. you can hear me again.",
         reason="silence_ack", reply_to=message,
-    )
-
-
-async def cmd_closer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/closer [off] — owner-controlled intimacy intensifier. Relaxes the mood
-    gate for a few turns regardless of today's mood (denial layer stays on).
-    `/closer off` clears it."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    from agents import mode_dispatch
-    arg = (context.args[0].lower() if context.args else "")
-    if arg in ("off", "stop", "enough"):
-        mode_dispatch.deactivate_intimacy_mode()
-        ack = "...fine. back to normal."
-    else:
-        mode_dispatch.activate_intimacy_mode(trigger="/closer")
-        ack = "...come here, then."
-    await send_ephemeral_ack(
-        context.bot, message.chat_id, ack,
-        reason="intimacy_ack", reply_to=message,
     )
 
 
@@ -3484,7 +3419,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("silence", cmd_silence))
     app.add_handler(CommandHandler("unsilence", cmd_unsilence))
-    app.add_handler(CommandHandler("closer", cmd_closer))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))

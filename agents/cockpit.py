@@ -33,7 +33,6 @@ _COMMANDS: dict[str, str] = {
     # Tier 1 — daily
     "silence":      "mute proactives for N minutes (default 120)",
     "unsilence":    "cancel active silence window",
-    "closer":       "intimacy register: open the mood gate for a few turns (/closer off to clear)",
     "checkin":      "morning checkin: run now / skip tomorrow",
     "memory":       "query memory — /memory [search] | fact <id> | forget <id> | correct <id> <new>",
     # Tier 2 — weekly / when needed
@@ -413,46 +412,6 @@ def format_help() -> str:
     return _truncate_3900("\n".join(lines))
 
 
-def _flirt_gate_state() -> str:
-    """One-line summary of whether flirt/intimacy is open right now and why — so
-    the owner can SEE why she's reserved instead of assuming the bot is broken."""
-    from agents import config as _cfg
-    from storage import db as _db
-    try:
-        from agents import mode_dispatch
-        if mode_dispatch.current_intimacy_mode():
-            return "flirt gate: OPEN — intimacy_mode active (/closer)"
-        if mode_dispatch.current_comfort_mode():
-            return "flirt gate: off — comfort mode"
-        if mode_dispatch.current_anger_mode():
-            return "flirt gate: off — anger mode"
-    except Exception:
-        pass
-    mood = (_db.get_core_block("mood_today") or "focused").strip().lower()
-    tt = (_db.runtime_get("time_texture") or "").strip().lower() or "n/a"
-    wm = None
-    raw = _db.get_core_block("cycle_state")
-    if raw:
-        try:
-            wm = json.loads(raw).get("warmth_multiplier")
-        except (ValueError, TypeError, AttributeError):
-            wm = None
-    open_at = float(_cfg.get("cycle_modulation.open_at_or_above", 1.2))
-    is_open = wm is not None and float(wm) >= open_at
-    late_night = tt == "late_night"
-    stage = _db.get_relationship_stage()
-    if mood == "weirdly good":
-        state = "OPEN (unprompted leaks allowed)"
-    elif mood == "focused" and (is_open or late_night):
-        state = f"receptive ({'warmth open' if is_open else 'late_night'})"
-    elif mood in ("irritable", "tired"):
-        state = f"reactive-only ({mood})"
-    else:
-        state = "reserved (flirt if you initiate, or /closer)"
-    wm_str = f"{wm}" if wm is not None else "?"
-    return f"flirt gate: {state} — stage {stage}, mood {mood}, warmth {wm_str}, {tt}"
-
-
 async def format_status(app) -> str:
     from storage import db as _db
 
@@ -621,12 +580,6 @@ async def format_status(app) -> str:
             lines.append(f"stickers: {valid} in pool")
     except Exception as exc:
         lines.append(f"stickers: error ({exc})")
-
-    # persona / flirt gate — surfaces WHY she's reserved (mood/stage/warmth).
-    try:
-        lines.append(_flirt_gate_state())
-    except Exception as exc:
-        lines.append(f"flirt gate: error ({exc})")
 
     return _truncate_3900("\n".join(lines))
 
@@ -950,7 +903,7 @@ async def format_capabilities() -> str:
         )
     except Exception:
         server_names = ["hikari_memory", "hikari_utility", "hikari_wiki",
-                        "hikari_dispatch", "hikari_photo", "google_workspace",
+                        "hikari_dispatch", "google_workspace",
                         "notion", "youtube_transcript"]
 
     lines.append(f"\nmcp servers ({len(server_names)}):")
@@ -993,13 +946,6 @@ async def format_capabilities() -> str:
         lines.append("  " + ", ".join(on))
     except Exception as exc:
         lines.append(f"\nproactive producers: [error: {exc}]")
-
-    # persona state — stage + live flirt gate.
-    try:
-        lines.append("\npersona:")
-        lines.append(f"  {_flirt_gate_state()}")
-    except Exception as exc:
-        lines.append(f"\npersona: [error: {exc}]")
 
     return _truncate_3900("\n".join(lines))
 

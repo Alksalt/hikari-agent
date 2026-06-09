@@ -1,8 +1,6 @@
 """Phase-E integrity tests.
 
-Covers four fixes:
-  1. SSRF — flux rejects a non-allowlisted URL
-  2. Shared photo cap — scene + selfie combined count blocks a 3rd send
+Covers two surviving fixes after Phase 3-C (photo generation removed):
   3. Classifier cost logging — _log_aux_cost is called after a successful
      vision API response
   4. Snooze dedup — _sync_gcal_reminder and _sync_apple_reminder call delete
@@ -11,222 +9,28 @@ Covers four fixes:
 from __future__ import annotations
 
 import importlib
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 # ---------------------------------------------------------------------------
-# Shared fixture: isolated DB
+# Shared fixture: isolated DB (used by Fix 3)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def _db_env(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "hikari.db"
-    outbox = tmp_path / "photo_outbox"
-    outbox.mkdir()
     monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
-    monkeypatch.setenv("HIKARI_PHOTO_OUTBOX", str(outbox))
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
 
     import storage.db as _db_mod
     importlib.reload(_db_mod)
-    import tools.photos._shared as _shared_mod
-    from storage import db as _db
-    importlib.reload(_shared_mod)
-
     from agents import config as _cfg
+    from storage import db as _db
     _cfg.reload()
 
-    return _db, outbox
-
-
-# ===========================================================================
-# Fix 1 — SSRF: non-allowlisted URL rejected
-# ===========================================================================
-
-class TestFluxSSRF:
-    @pytest.mark.asyncio
-    async def test_non_allowlisted_host_returns_none(self, _db_env, monkeypatch):
-        """_call_flux must return None (not fetch) when the url hostname is not
-        in the allowlist."""
-        import tools.photos._shared as _shared
-
-        # Override allowlist to just openrouter.ai so attacker.com fails.
-        monkeypatch.setattr(_shared, "_FLUX_URL_HOST_ALLOWLIST", ("openrouter.ai",))
-
-
-        # Stub the POST so OpenRouter returns a url pointing to attacker.com
-        async def _mock_post(*args, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = lambda: None
-            resp.json = lambda: {"data": [{"url": "https://attacker.com/evil.png"}]}
-            return resp
-
-        # If _call_flux wrongly GETs the url, this sentinel would return bytes;
-        # the test asserts it's None instead (ValueError was raised internally).
-        fetched = []
-
-        async def _mock_get(url, **kwargs):
-            fetched.append(url)
-            resp = MagicMock()
-            resp.raise_for_status = lambda: None
-            resp.content = b"EVIL_BYTES"
-            return resp
-
-        class _FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def post(self, *a, **kw):
-                return await _mock_post()
-
-            async def get(self, url, **kw):
-                return await _mock_get(url)
-
-        monkeypatch.setattr(_shared.httpx, "AsyncClient", lambda **kw: _FakeClient())
-        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-        result = await _shared._call_flux("test prompt", "flux-model")
-
-        assert result is None, f"Expected None for non-allowlisted host, got {result!r}"
-        assert not fetched, f"Should not have fetched attacker url, but fetched: {fetched}"
-
-    @pytest.mark.asyncio
-    async def test_http_url_returns_none(self, _db_env, monkeypatch):
-        """http (non-https) scheme is also rejected."""
-        import tools.photos._shared as _shared
-
-        monkeypatch.setattr(_shared, "_FLUX_URL_HOST_ALLOWLIST", ("openrouter.ai",))
-
-        async def _mock_post(*args, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = lambda: None
-            resp.json = lambda: {"data": [{"url": "http://openrouter.ai/img.png"}]}
-            return resp
-
-        class _FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def post(self, *a, **kw):
-                return await _mock_post()
-
-            async def get(self, url, **kw):
-                raise AssertionError("Should not have fetched http url")
-
-        monkeypatch.setattr(_shared.httpx, "AsyncClient", lambda **kw: _FakeClient())
-        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-        result = await _shared._call_flux("test prompt", "flux-model")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_allowlisted_subdomain_is_accepted(self, _db_env, monkeypatch):
-        """cdn.openrouter.ai (subdomain) should be accepted."""
-        import tools.photos._shared as _shared
-
-        monkeypatch.setattr(_shared, "_FLUX_URL_HOST_ALLOWLIST", ("openrouter.ai",))
-
-        async def _mock_post(*args, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = lambda: None
-            resp.json = lambda: {"data": [{"url": "https://cdn.openrouter.ai/img.png"}]}
-            return resp
-
-        fetched = []
-
-        class _FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def post(self, *a, **kw):
-                return await _mock_post()
-
-            async def get(self, url, **kw):
-                fetched.append(url)
-                resp = MagicMock()
-                resp.raise_for_status = lambda: None
-                resp.content = b"GOOD_BYTES"
-                return resp
-
-        monkeypatch.setattr(_shared.httpx, "AsyncClient", lambda **kw: _FakeClient())
-        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-        result = await _shared._call_flux("test prompt", "flux-model")
-        assert result == b"GOOD_BYTES"
-        assert fetched, "Expected a fetch for the allowlisted subdomain"
-
-
-# ===========================================================================
-# Fix 2 — combined photo cap: scene + selfie share one counter
-# ===========================================================================
-
-class TestCombinedPhotoCap:
-    @pytest.mark.asyncio
-    async def test_third_send_blocked_across_scene_and_selfie(
-        self, _db_env, monkeypatch
-    ):
-        """Sending 1 selfie + 1 scene should fill the cap (=2); the 3rd send
-        (scene) is refused."""
-        db, outbox = _db_env
-
-        # Prime the shared counter with 2 sends (cap = 2).
-        today = time.strftime("%Y-%m-%d")
-        db.runtime_set("photos_sent_date", today)
-        db.runtime_set("photos_sent_today", "2")
-
-        import tools.photos.scene as scene_mod
-        importlib.reload(scene_mod)
-
-        # Patch flux so it won't be called (we expect cap refusal before that).
-        async def _fake_flux(prompt, model):
-            return b"FAKE"
-
-        monkeypatch.setattr(scene_mod, "_call_flux", _fake_flux)
-
-        handler = getattr(scene_mod.scene_photo_send, "handler", scene_mod.scene_photo_send)
-        result = await handler({"hint": ""})
-
-        text = result["content"][0]["text"]
-        assert "daily_cap" in text, f"Expected daily_cap refusal, got: {text!r}"
-
-    @pytest.mark.asyncio
-    async def test_scene_send_increments_shared_counter(self, _db_env, monkeypatch):
-        """A successful scene send must increment the shared photos_sent_today
-        counter (same key used by selfie sends)."""
-        db, outbox = _db_env
-
-        today = time.strftime("%Y-%m-%d")
-        db.runtime_set("photos_sent_date", today)
-        db.runtime_set("photos_sent_today", "0")
-
-        import tools.photos.scene as scene_mod
-        importlib.reload(scene_mod)
-
-        async def _fake_flux(prompt, model):
-            return b"FAKE_IMAGE_BYTES"
-
-        monkeypatch.setattr(scene_mod, "_call_flux", _fake_flux)
-
-        handler = getattr(scene_mod.scene_photo_send, "handler", scene_mod.scene_photo_send)
-        result = await handler({"hint": "coffee mug"})
-
-        text = result["content"][0]["text"]
-        assert not text.startswith("refused:"), f"Unexpected refusal: {text!r}"
-
-        counter = db.runtime_get_int("photos_sent_today", 0)
-        assert counter == 1, f"Shared counter should be 1 after scene send, got {counter}"
+    return _db
 
 
 # ===========================================================================
@@ -237,7 +41,6 @@ class TestClassifierCostLogging:
     @pytest.mark.asyncio
     async def test_cost_logged_after_successful_classify(self, _db_env, monkeypatch, tmp_path):
         """_log_aux_cost is called with the usage tokens from the API response."""
-        db, outbox = _db_env
 
         # Write a fake image file.
         img_path = tmp_path / "test.jpg"
@@ -285,8 +88,6 @@ class TestClassifierCostLogging:
     async def test_cost_log_failure_does_not_raise(self, _db_env, monkeypatch, tmp_path):
         """Even if _log_aux_cost raises, classify_photo_intent must not raise
         (never-raises contract)."""
-        db, outbox = _db_env
-
         img_path = tmp_path / "test.jpg"
         img_path.write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
 

@@ -6,7 +6,7 @@ Coverage:
   - _value_score rubric returns sensible range
   - co-fire guard writes hold for second candidate within 60s
   - on_reaction updates proactive_source_scores EMA and counters
-  - _hard_interval_blocked on reengage_silence path
+  - _hard_interval_blocked path
 """
 from __future__ import annotations
 
@@ -445,24 +445,23 @@ class TestDeferToNextTurn:
         assert "second observation" in texts
 
 
-class TestReengageSilenceValueGate:
-    """Regression for the reengage_silence value-score gate (2026-06-03 fix).
+class TestAnchorlessValueGate:
+    """Regression for the per-source value-score gate on an anchor-less source.
 
-    reengage_silence has no anchor token (ANCHOR_TOKEN_PATHS[...] == ()), so its
-    value_score is 0.3075 + 0.15*timing → 0.4575 (peak) / 0.3825 (off) / 0.3225
-    (quiet). The old min_value_score of 0.5 was unreachable; 0.35 lets it fire
-    peak+off while still blocking quiet hours. Exercises the REAL gate — no
-    patching of _value_score / _source_min_value_score (which masked the bug).
+    weirdly_good_mood_leak has no anchor token (ANCHOR_TOKEN_PATHS[...] == ()),
+    so its value_score is 0.3075 + 0.15*timing → 0.4575 (peak) / 0.3825 (off) /
+    0.3225 (quiet). Its min_value_score of 0.4 fires peak while still blocking
+    quiet hours. Exercises the REAL gate — no patching of _value_score /
+    _source_min_value_score (which masked the original 2026-06-03 bug).
     """
 
-    def _reengage_candidate(self) -> TriggerCandidate:
-        # Mirror agents/engagement/producers/reengage_silence.py field values.
+    def _candidate(self) -> TriggerCandidate:
         return TriggerCandidate(
-            source="reengage_silence",
+            source="weirdly_good_mood_leak",
             pool="agent_spontaneous",
             pattern="notify",
             payload={"elapsed_hours": 5.0, "last_message_ts": "2026-06-03T10:00:00+00:00"},
-            dedup_key="reengage_silence:test",
+            dedup_key="weirdly_good_mood_leak:test",
             decay_at=datetime.now(UTC) + timedelta(hours=1),
             novelty=0.5,
             actionability=0.6,
@@ -473,23 +472,23 @@ class TestReengageSilenceValueGate:
         from agents.engagement import selector
 
         ctx = _make_ctx(
-            enabled={"reengage_silence"},
+            enabled={"weirdly_good_mood_leak"},
             pool_caps={"agent_spontaneous": True},
         )
         ctx.now_local = datetime(2026, 6, 3, 20, 0, tzinfo=UTC)  # 20:00 = preferred
         with patch("agents.proactive._is_quiet_now", return_value=False):
-            result = selector.select([self._reengage_candidate()], ctx)
+            result = selector.select([self._candidate()], ctx)
         assert result is not None
-        assert result.source == "reengage_silence"
+        assert result.source == "weirdly_good_mood_leak"
 
     def test_blocked_during_quiet_hours(self):
         from agents.engagement import selector
 
         ctx = _make_ctx(
-            enabled={"reengage_silence"},
+            enabled={"weirdly_good_mood_leak"},
             pool_caps={"agent_spontaneous": True},
         )
         ctx.now_local = datetime(2026, 6, 3, 3, 0, tzinfo=UTC)  # quiet window
         with patch("agents.proactive._is_quiet_now", return_value=True):
-            result = selector.select([self._reengage_candidate()], ctx)
+            result = selector.select([self._candidate()], ctx)
         assert result is None

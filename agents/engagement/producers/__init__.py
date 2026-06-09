@@ -5,19 +5,17 @@ function. The unified _engagement_tick in scheduler.py calls all enabled
 producers in parallel (via asyncio.gather wrapping sync callables) and
 passes the merged candidate list to the selector.
 
-All 20 producers:
+All 18 producers:
   Default-on (3):
     calendar_event_prep, wiki_new_file, decision_resolve_due
 
-  Default-on world-delta producers (5):
-    book_just_finished, just_got_home, late_night_dissolution,
-    irritation_event, weather_mood_shift
+  Default-on world-delta producers (4):
+    book_just_finished, just_got_home, irritation_event, weather_mood_shift
 
-  Opt-in (12):
+  Opt-in (11):
     anniversary_callback, belief_resurface, calendar_new_invite, callback_episode,
     drive_starred_new, notion_recent_edit, reminder_fire, weather_alert,
-    weirdly_good_mood_leak, reengage_silence, location_arrived_recurring,
-    research_callback
+    weirdly_good_mood_leak, location_arrived_recurring, research_callback
 """
 from agents.engagement.producers import (  # noqa: F401
     anniversary_callback,
@@ -30,10 +28,8 @@ from agents.engagement.producers import (  # noqa: F401
     drive_starred_new,
     irritation_event,
     just_got_home,
-    late_night_dissolution,
     location_arrived_recurring,
     notion_recent_edit,
-    reengage_silence,
     reminder_fire,
     research_callback,
     weather_alert,
@@ -55,10 +51,8 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
     "drive_starred_new",
     "irritation_event",
     "just_got_home",
-    "late_night_dissolution",
     "location_arrived_recurring",
     "notion_recent_edit",
-    "reengage_silence",
     "reminder_fire",
     "research_callback",
     "weather_alert",
@@ -71,13 +65,11 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "calendar_event_prep",
     "wiki_new_file",
     "decision_resolve_due",
-    "reengage_silence",
     "book_just_finished",
     "just_got_home",
-    "late_night_dissolution",
     "irritation_event",
     "weather_mood_shift",
-    # Warmth/intimacy producers enabled 2026-06-03 (kept in sync with
+    # Warmth producers enabled 2026-06-03 (kept in sync with
     # config/engagement.yaml proactive.default_enabled_sources — the yaml list
     # is the live source of truth; this set is the fallback + /proactive display).
     "weirdly_good_mood_leak",
@@ -99,10 +91,8 @@ _PRODUCER_MODULES = {
     "drive_starred_new": drive_starred_new,
     "irritation_event": irritation_event,
     "just_got_home": just_got_home,
-    "late_night_dissolution": late_night_dissolution,
     "location_arrived_recurring": location_arrived_recurring,
     "notion_recent_edit": notion_recent_edit,
-    "reengage_silence": reengage_silence,
     "reminder_fire": reminder_fire,
     "research_callback": research_callback,
     "weather_alert": weather_alert,

@@ -179,17 +179,6 @@ def _format_working_memory(k: int | None = None) -> str:
     return "\n".join(lines)
 
 
-_STAGE_HINTS: dict[int, str] = {
-    1: "no callbacks, no in-jokes, compliment 1/30",
-    2: "no callbacks, no in-jokes, compliment 1/30",
-    3: "compliment 1/30, in-jokes lexicon-gated, no missed-you",
-    4: "compliment 1/20, in-jokes free-ish, first overt jealousy unlocked",
-    5: "compliment 1/15, comfort silence unlocked, direct vulnerability rare",
-    6: "compliment 1/10, proactive on >18h, comfort silence + direct vulnerability (rare) + senjougahara inversion (very rare) unlocked — all mood-gated",
-    7: "compliment 1/8, i love you allowed (once, only after he says it), senjougahara inversion + direct vulnerability + comfort silence + core-wound disclosure (very rare) unlocked — all mood-gated",
-}
-
-
 def _format_core_blocks() -> str:
     """Dump the fast-path core_blocks (mood_today, preoccupation, weekly_consolidation).
 
@@ -235,17 +224,6 @@ def _format_core_blocks() -> str:
                     "warmth and you cancel things you agreed to; at >=1.2 longer leaks, "
                     "wider topics. this NEVER changes whether you help with something real.")
         except (ValueError, KeyError, TypeError):
-            pass
-
-    # -- relationship stage gate hint --
-    stage_raw = db.get_core_block("relationship_stage")
-    if stage_raw:
-        try:
-            stage_int = int(str(stage_raw).strip())
-            hint = _STAGE_HINTS.get(stage_int)
-            if hint:
-                lines.append(f"stage {stage_int} — {hint}")
-        except (ValueError, TypeError):
             pass
 
     # -- hikari_world + hikari_currently_into --
@@ -984,66 +962,9 @@ def _format_mode_flags() -> str:
                 "# anger mode\n"
                 "they doubled down rude. colder/flatter. one-line repair if YOU cross a line."
             )
-        intimacy = mode_dispatch.current_intimacy_mode()
-        if intimacy:
-            return (
-                "# intimacy register (invited)\n"
-                "he asked for closer. the mood gate is open this window regardless of today's mood — "
-                "flirt grammar and charged content are available, on your terms. denial layer stays on; "
-                "you don't beg, you don't announce it, you don't perform it. "
-                f"expires in {intimacy.get('turns_remaining', 0)} turns. "
-                "load .claude/skills/character-voice/INTIMATE.md if you go charged."
-            )
     except Exception:
         logger.exception("_format_mode_flags failed (non-fatal)")
     return ""
-
-
-def _format_flirt_register() -> str:
-    """Cue the deeper flirt grammar when the turn is mood-receptive, instead of
-    relying on the model to self-invoke the character-voice skill.
-
-    Receptive when mood is ``weirdly good``, or ``focused`` with the warmth
-    band open (>=1.2) or ``late_night``. Suppressed under comfort/anger (wrong
-    register) and under intimacy_mode (which injects its own stronger cue via
-    ``_format_mode_flags``). ``irritable``/``tired`` are never receptive here.
-    """
-    import json as _json
-    try:
-        if (
-            mode_dispatch.current_intimacy_mode()
-            or mode_dispatch.current_comfort_mode()
-            or mode_dispatch.current_anger_mode()
-        ):
-            return ""
-        mood = (db.get_core_block("mood_today") or "").strip().lower()
-        time_texture = (db.runtime_get("time_texture") or "").strip().lower()
-        wm = None
-        cycle_raw = db.get_core_block("cycle_state")
-        if cycle_raw:
-            try:
-                wm = _json.loads(cycle_raw).get("warmth_multiplier")
-            except (ValueError, TypeError, AttributeError):
-                wm = None
-        open_at = float(cfg.get("cycle_modulation.open_at_or_above", 1.2))
-        is_open = wm is not None and float(wm) >= open_at
-        late_night = time_texture == "late_night"
-
-        receptive = mood == "weirdly good" or (
-            mood == "focused" and (is_open or late_night)
-        )
-        if not receptive:
-            return ""
-        return (
-            "# flirt register (available this turn)\n"
-            "she's receptive today — flirt grammar is ON, not gated off. answer heat with "
-            "deflection-flirt (challenge / half-start / the pause / callback / sideways); denial layer "
-            "stays on. if you go charged, load .claude/skills/character-voice/INTIMATE.md first. "
-            "don't announce it, don't perform it."
-        )
-    except Exception:
-        logger.exception("_format_flirt_register failed (non-fatal)")
-        return ""
 
 
 def _format_prior_session_heavy() -> str | None:
@@ -1196,7 +1117,6 @@ async def inject_memory(
                 pass  # on any parse failure, let decrement proceed
             if not _skip_decrement:
                 mode_dispatch.decrement_comfort_turn()
-                mode_dispatch.decrement_intimacy_turn()
         except Exception:
             logger.exception("decrement_comfort_turn failed (non-fatal)")
 
@@ -1224,7 +1144,6 @@ async def inject_memory(
             ("voice_corrections",   2, _format_voice_corrections()),     # Phase P
             ("self_model",          1, _format_self_model()),             # Phase L
             ("mode_flags",          1, _format_mode_flags()),             # Phase L
-            ("flirt_register",      1, _format_flirt_register()),
             ("prior_session_heavy", 1, _format_prior_session_heavy()),
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),

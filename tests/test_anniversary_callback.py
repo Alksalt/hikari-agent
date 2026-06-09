@@ -8,15 +8,12 @@ from datetime import date, timedelta
 # helpers
 # ---------------------------------------------------------------------------
 
-def _setup(monkeypatch, tmp_path, *, stage: int = 3, session_id: str = "sess-1"):
-    """Wire a fresh temp DB, set relationship_stage, reload the producer."""
+def _setup(monkeypatch, tmp_path, *, session_id: str = "sess-1"):
+    """Wire a fresh temp DB, reload the producer."""
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
     from storage import db
     importlib.reload(db)
     db._reset_schema_sentinel()
-
-    # Set stage in core_blocks (the canonical store read by db.get_relationship_stage).
-    db.upsert_core_block("relationship_stage", str(stage))
 
     # Set session id.
     db.set_session_id(session_id)
@@ -44,13 +41,8 @@ def _date_days_ago(days: int) -> str:
 # tests
 # ---------------------------------------------------------------------------
 
-def test_returns_empty_below_stage_3(tmp_path, monkeypatch):
-    producer, _ = _setup(monkeypatch, tmp_path, stage=2)
-    assert producer.collect() == []
-
-
 def test_returns_empty_without_anniversaries(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     # Seed a lexicon entry whose first_seen_date is TODAY — no full year yet.
     db.lexicon_record(
         phrase="test phrase",
@@ -68,7 +60,7 @@ def test_returns_empty_without_anniversaries(tmp_path, monkeypatch):
 
 
 def test_emits_lexicon_anniversary(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     anniversary_date = _date_years_ago(1)
     db.lexicon_record(
         phrase="the coffee ritual",
@@ -93,7 +85,7 @@ def test_emits_lexicon_anniversary(tmp_path, monkeypatch):
 
 
 def test_emits_significant_event_anniversary(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     anniversary_date = _date_years_ago(2)
     db.significant_event_insert(
         event_date=anniversary_date,
@@ -111,7 +103,7 @@ def test_emits_significant_event_anniversary(tmp_path, monkeypatch):
 
 def test_respects_window_pm3_days(tmp_path, monkeypatch):
     """Entry exactly 4 days away (in MMDD) should NOT match (window=3)."""
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     # 4 days away in MMDD, 1 year ago.
     target = date.today() - timedelta(days=4)
     try:
@@ -128,7 +120,7 @@ def test_respects_window_pm3_days(tmp_path, monkeypatch):
 
 def test_oldest_wins(tmp_path, monkeypatch):
     """When multiple matches exist, the one with the oldest year is returned."""
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     older_date = _date_years_ago(3)
     newer_date = _date_years_ago(1)
     db.significant_event_insert(
@@ -149,7 +141,7 @@ def test_oldest_wins(tmp_path, monkeypatch):
 
 def test_respects_per_session_cap(tmp_path, monkeypatch):
     """Second collect() with the same session_id returns []."""
-    producer, db = _setup(monkeypatch, tmp_path, stage=3, session_id="sess-cap")
+    producer, db = _setup(monkeypatch, tmp_path, session_id="sess-cap")
     anniversary_date = _date_years_ago(1)
     db.significant_event_insert(
         event_date=anniversary_date,
@@ -167,7 +159,7 @@ def test_respects_per_session_cap(tmp_path, monkeypatch):
 
 
 def test_payload_contains_years_back(tmp_path, monkeypatch):
-    producer, db = _setup(monkeypatch, tmp_path, stage=3)
+    producer, db = _setup(monkeypatch, tmp_path)
     anniversary_date = _date_years_ago(2)
     db.significant_event_insert(
         event_date=anniversary_date,

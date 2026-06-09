@@ -191,3 +191,38 @@ def test_clear_on_session_boundary_never_raises_on_db_error(monkeypatch):
     monkeypatch.setattr(md.db, "runtime_set", _boom)
     # Must not raise even when every db.runtime_set fails
     md.clear_on_session_boundary()
+
+
+# ---------- current_comfort_mode() pure-getter contract ----------
+
+def test_current_comfort_mode_expired_path_does_not_write(monkeypatch):
+    """current_comfort_mode() is pure when turns_remaining <= 0.
+
+    The expired key must NOT be deleted by the getter — that is the
+    responsibility of decrement_comfort_turn() or clear_on_session_boundary().
+    This test verifies no db.runtime_set call fires on the expired path.
+    """
+    import agents.mode_dispatch as md
+
+    # Write a state with turns_remaining=0 directly so it's expired.
+    state = {
+        "activated_at": "2020-01-01T00:00:00+00:00",
+        "trigger": "test",
+        "turns_remaining": 0,
+        "kind": "quiet",
+    }
+    db.runtime_set("comfort_mode_state", json.dumps(state))
+
+    write_calls: list[tuple] = []
+    original_set = md.db.runtime_set
+
+    def _spy_set(key, value):
+        write_calls.append((key, value))
+        return original_set(key, value)
+
+    monkeypatch.setattr(md.db, "runtime_set", _spy_set)
+
+    result = md.current_comfort_mode()
+    assert result is None
+    # No write should have been triggered by the getter.
+    assert not write_calls, f"getter wrote to DB: {write_calls}"

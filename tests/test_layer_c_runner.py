@@ -194,12 +194,12 @@ def test_cadence_governor_harness():
 
     cadence_mod.reset_simulation()
 
-    # reengage_silence is in agent_spontaneous pool (cap 8 per 7d per config).
+    # weirdly_good_mood_leak is in agent_spontaneous pool (cap 8 per 7d per config).
     # Feed 10 candidates — expect only up to the pool cap to emit.
     emitted = 0
     for i in range(10):
         ts = f"2026-05-25T10:{i:02d}:00"
-        if cadence_mod.simulate_emission("reengage_silence", ts):
+        if cadence_mod.simulate_emission("weirdly_good_mood_leak", ts):
             emitted += 1
 
     # Pool cap is 8 for agent_spontaneous per config/engagement.yaml.
@@ -214,11 +214,11 @@ def test_cadence_reset_clears_state():
     cadence_mod.reset_simulation()
     # Saturate a pool.
     for i in range(20):
-        cadence_mod.simulate_emission("reengage_silence", f"2026-05-25T10:{i:02d}:00")
+        cadence_mod.simulate_emission("weirdly_good_mood_leak", f"2026-05-25T10:{i:02d}:00")
 
     # After reset, emissions should start fresh.
     cadence_mod.reset_simulation()
-    result = cadence_mod.simulate_emission("reengage_silence", "2026-05-25T11:00:00")
+    result = cadence_mod.simulate_emission("weirdly_good_mood_leak", "2026-05-25T11:00:00")
     assert result is True, "simulate_emission should return True after reset"
 
 

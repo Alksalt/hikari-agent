@@ -482,7 +482,7 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         pool_caps = {
             "user_anchored": cadence.can_send("wiki_new_file", cadence.Pool.USER_ANCHORED)[0],
             "agent_spontaneous": cadence.can_send(
-                "reengage_silence", cadence.Pool.AGENT_SPONTANEOUS
+                "weirdly_good_mood_leak", cadence.Pool.AGENT_SPONTANEOUS
             )[0],
             "scheduled_ceremony": False,  # ceremony sources have their own dedicated jobs
         }

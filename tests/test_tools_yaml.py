@@ -77,7 +77,6 @@ class TestAllowedToolNames:
         "mcp__hikari_memory__update_core_block",
         "mcp__hikari_memory__task_create",
         "mcp__hikari_memory__task_update",
-        "mcp__hikari_photo__generate_photo",
         "mcp__hikari_wiki__wiki_search",
         "mcp__hikari_wiki__wiki_read",
         "mcp__hikari_wiki__wiki_append",

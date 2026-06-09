@@ -896,6 +896,5 @@ def test_menu_has_required_commands():
 
 def test_menu_surfaces_capabilities_entry_point():
     from agents.cockpit import _COMMANDS
-    # The discovery entry point + the new intimacy command must be visible.
+    # The discovery entry point must be visible.
     assert "capabilities" in _COMMANDS
-    assert "closer" in _COMMANDS

@@ -1,7 +1,7 @@
 """Belief resurface producer — surfaces matured belief_journal entries.
 
 Voice: "three months ago you said you'd stop working weekends. ...was that accurate."
-Stage 3+ only. Sunday ceremony preference, but can fire any day.
+Sunday ceremony preference, but can fire any day.
 """
 from __future__ import annotations
 
@@ -18,11 +18,6 @@ def collect() -> list[TriggerCandidate]:
     from storage import db
 
     if not bool(cfg.get("engagement.belief_resurface.enabled", True)):
-        return []
-
-    min_stage = int(cfg.get("engagement.belief_resurface.min_stage", 3))
-    stage = db.get_relationship_stage()
-    if stage < min_stage:
         return []
 
     # Per-session cap.

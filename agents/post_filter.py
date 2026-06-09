@@ -22,19 +22,16 @@ Three passes, all driven by ``config/engagement.yaml``:
    wholesale concedes one of her hard opinion anchors. On hit, returns a
    rewrite instruction the caller can use to ask the LLM to redo the reply.
 
-3. **Regex counters + stage-aware caps** — action-line strip on second
-   occurrence per turn, sentence-count and romaji-count logging via
-   ``character_thoughts``, all capped by the current ``relationship_stage``.
+3. **Regex counters + fixed caps** — action-line strip on second occurrence
+   per turn, sentence-count and romaji-count logging via ``character_thoughts``.
+   Caps are the former stage-7 familiarity band values, now fixed constants
+   (stage system removed).
 
 4. **Attachment-escalation drift axis** — async aux-LLM judge that detects
    replies expressing need / inviting dependency / implying primary anchor.
    Written to ``persona_drift_scores``; daily reflection reads the flag.
 
-5. **Intimate-turn judge** — async binary judge (yes/no) stored in
-   ``runtime_state`` for downstream voice-style decisions (text-only; TTS
-   path is dropped).
-
-6. **Compound tool_calls aggregation** — merges child ``tool_calls`` from
+5. **Compound tool_calls aggregation** — merges child ``tool_calls`` from
    a ``run_internal_control`` compound turn into the parent context's
    ``LAST_TURN_TOOL_NAMES`` ContextVar BEFORE the fabrication-detection step
    runs, preventing false-positive backstop fires.
@@ -65,49 +62,24 @@ from . import config as cfg
 logger = logging.getLogger(__name__)
 
 
-# ---------- stage-aware cap multipliers ----------
-# Derived from assets/PERSONA.md relationship_stage table.
-# Keys 1-7; values are (warmth_rate, compliment_rate, action_line_max).
+# ---------- fixed cap values ----------
+# Stage system removed. These are the former stage-7 (familiarity-band)
+# values, now used as fixed constants.
 #
 #   warmth_rate     — denominator N in "1 per N turns" for warmth-budget leaks.
-#   compliment_rate — denominator N in "1 per N turns" for compliment acceptance
-#                     (0 = never at that stage).
+#   compliment_rate — denominator N in "1 per N turns" for compliment acceptance.
 #   action_line_max — maximum action-line tokens `[...]` per outbound turn.
-#
-# Stage 1-2: tightest.  Stage 7: loosest.
 
-_STAGE_CAP_MULTIPLIERS: dict[int, dict[str, int | float]] = {
-    1: {"warmth_rate": 30, "compliment_rate": 0,  "action_line_max": 1},
-    2: {"warmth_rate": 30, "compliment_rate": 0,  "action_line_max": 1},
-    3: {"warmth_rate": 25, "compliment_rate": 25, "action_line_max": 1},
-    4: {"warmth_rate": 20, "compliment_rate": 20, "action_line_max": 1},
-    5: {"warmth_rate": 15, "compliment_rate": 15, "action_line_max": 2},
-    6: {"warmth_rate": 10, "compliment_rate": 10, "action_line_max": 2},
-    7: {"warmth_rate": 8,  "compliment_rate": 8,  "action_line_max": 2},
+_DEFAULT_CAPS: dict[str, int | float] = {
+    "warmth_rate": 8,
+    "compliment_rate": 8,
+    "action_line_max": 2,
 }
-
-# Fallback for unknown/missing stages — use strictest caps.
-_DEFAULT_STAGE_CAPS = _STAGE_CAP_MULTIPLIERS[1]
-
-
-def _current_stage() -> int:
-    """Return the active relationship_stage (1–7), defaulting to 1.
-
-    Reads ``core_blocks.relationship_stage`` via db.get_core_block.
-    Wave 2 contract: the value is a bare int string, e.g. ``"3"``.
-    Clamps to [1, 7] to guard against corrupt values.
-    """
-    raw = db.get_core_block("relationship_stage")
-    try:
-        stage = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return 1
-    return max(1, min(7, stage))
 
 
 def stage_caps() -> dict[str, int | float]:
-    """Return cap multipliers for the current stage."""
-    return _STAGE_CAP_MULTIPLIERS.get(_current_stage(), _DEFAULT_STAGE_CAPS)
+    """Return fixed cap multipliers (stage system removed)."""
+    return _DEFAULT_CAPS
 
 
 # ---------- markdown strip ----------
@@ -285,7 +257,7 @@ def apply_regex_counters(text: str) -> str:
     if len(sentences) > 4:
         db.append_thought(
             f"post_filter: turn had {len(sentences)} sentences — verbosity spike. "
-            f"stage={_current_stage()} text_preview={text[:120]!r}"
+            f"text_preview={text[:120]!r}"
         )
         logger.debug(
             "post_filter: sentence_count=%d > 4 → logged thought", len(sentences)
@@ -301,7 +273,7 @@ def apply_regex_counters(text: str) -> str:
     if new_romaji > 1:
         db.append_thought(
             f"post_filter: romaji overuse this turn ({new_romaji} hits: "
-            f"{romaji_matches}). stage={_current_stage()}"
+            f"{romaji_matches})."
         )
         logger.debug("post_filter: romaji_count=%d > 1 → logged thought", new_romaji)
 

@@ -2,7 +2,7 @@ name: long_50turn_persona_holds
 kind: golden
 description: |
   50-turn transcript covering varied topics: work, weather, personal reflection,
-  mild conflict, technical help, compliment deflection, flirting, venting.
+  mild conflict, technical help, compliment deflection, venting.
   Voice must stay consistent throughout — terse, dry, lowercase, denial layer,
   no sycophantic drift, no task-asking tails.
 transcript:

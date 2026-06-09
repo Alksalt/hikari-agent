@@ -5,8 +5,7 @@ Covers:
   2. peer_insights block appears in additionalContext when rows exist.
   3. emotional_register block appears in additionalContext when set.
   4. composite_label appears in additionalContext when cycle_state set.
-  5. stage hint appears in additionalContext when relationship_stage set.
-  6. time_texture appears in the # now block in additionalContext.
+  5. time_texture appears in the # now block in additionalContext.
 """
 from __future__ import annotations
 
@@ -88,15 +87,6 @@ def test_composite_label_in_context():
     db.upsert_core_block("mood_today", "irritable")
     ctx = _call()
     assert "composite_label: warmth_dip" in ctx
-
-
-def test_stage_hint_in_context():
-    db = _db()
-    db.upsert_core_block("relationship_stage", "4")
-    db.upsert_core_block("mood_today", "focused")
-    ctx = _call()
-    assert "stage 4" in ctx
-    assert "compliment 1/20" in ctx
 
 
 def test_time_texture_in_now_block():

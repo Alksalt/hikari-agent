@@ -1,6 +1,6 @@
 """Anniversary callbacks: surface lexicon entries or significant events
 with first_seen / event_date MMDD matching today's MMDD (±3 days).
-Stage 3+ only. Max 1 per session.
+Max 1 per session.
 """
 from __future__ import annotations
 
@@ -27,12 +27,6 @@ def collect() -> list[TriggerCandidate]:
     from storage import db
 
     if not bool(cfg.get("engagement.anniversary_callback.enabled", True)):
-        return []
-
-    # Stage gate.
-    min_stage = int(cfg.get("engagement.anniversary_callback.min_stage", 3))
-    stage = db.get_relationship_stage()
-    if stage < min_stage:
         return []
 
     # Per-session cap.

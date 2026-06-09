@@ -40,14 +40,12 @@ proactive:
     - calendar_event_prep
     - wiki_new_file
     - decision_resolve_due
-    - reengage_silence
     - book_just_finished
     - just_got_home
-    - late_night_dissolution
     - irritation_event
     - weather_mood_shift
-    # Warmth/intimacy producers — were authored but never collected (absent
-    # from this list). Turned on 2026-06-03 so the stage-7 relationship has
+    # Warmth producers — were authored but never collected (absent
+    # from this list). Turned on 2026-06-03 so the relationship has
     # something to surface at low session counts.
     - weirdly_good_mood_leak
     - anniversary_callback
@@ -145,11 +143,6 @@ episodes:
   # Prune episodes older than this many days during daily reflection.
   prune_older_than_days: 30
 
-photos:
-  # OpenRouter image-generation model for selfie/scene photos.
-  default_model: "black-forest-labs/flux.2-klein"
-  # Per-day cap on outbound photos to avoid Telegram spam + cost runaway.
-  daily_cap: 2
 
 memory:
   # Phase 8: monthly retention sweep at 04:00 on day 1. Episodes older than
@@ -582,8 +575,6 @@ cadence_governor:
         - callback_episode
         - irritation_event
         - just_got_home
-        - late_night_dissolution
-        - reengage_silence
         - research_callback
         - weather_mood_shift
         - weirdly_good_mood_leak
@@ -898,14 +889,6 @@ scheduler:
   default_misfire_grace_sec: 300  # grace window when an interval job is overdue
 
 # ============================================================================
-# Phase R: scene photos
-# ============================================================================
-
-scene_photo:
-  daily_cap: 2
-  enabled: true
-
-# ============================================================================
 # Phase 10: utility features
 # ============================================================================
 
@@ -1175,7 +1158,6 @@ engagement:
     interruption_right: high
   research_callback:
     enabled: true
-    min_stage: 3
     priority_tier: 2
     min_interval_minutes: 1440
     send_mode: observation
@@ -1223,18 +1205,6 @@ engagement:
     send_mode: proactive
     min_value_score: 0.4
     interruption_right: low
-  reengage_silence:
-    enabled: true
-    min_stage: 6
-    priority_tier: 2
-    min_interval_minutes: 120
-    send_mode: proactive
-    # 0.5 was unreachable: this source has no anchor token (anchor=0.0), so its
-    # value_score maxes at ~0.4575 (peak) / 0.3825 (off-peak) / 0.3225 (quiet).
-    # 0.35 fires peak + off-peak, still blocks quiet hours. Do not drop to 0.3
-    # (leaks into quiet) or raise to 0.45 (blocks off-hours).
-    min_value_score: 0.35
-    interruption_right: low
   location_arrived_recurring:
     enabled: false
     priority_tier: 2
@@ -1244,7 +1214,6 @@ engagement:
     interruption_right: low
   anniversary_callback:
     enabled: true
-    min_stage: 3              # stage 3+ unlocks sideways callbacks
     window_days: 3            # ±3d from today's MMDD
     priority_tier: 3          # opportunistic
     min_interval_minutes: 1440  # at most daily
@@ -1254,7 +1223,6 @@ engagement:
   # Phase T: resurface matured belief_journal entries (90d resurface window).
   belief_resurface:
     enabled: true
-    min_stage: 3
     priority_tier: 3
     min_interval_minutes: 4320  # at most every 3 days
     send_mode: observation
@@ -1270,14 +1238,6 @@ engagement:
     interruption_right: low
   just_got_home:
     enabled: true
-    priority_tier: 2
-    min_interval_minutes: 360
-    send_mode: proactive
-    min_value_score: 0.4
-    interruption_right: low
-  late_night_dissolution:
-    enabled: true
-    min_stage: 6
     priority_tier: 2
     min_interval_minutes: 360
     send_mode: proactive
@@ -1320,14 +1280,6 @@ graph:
   # CLAUDE.md cost-aware routing rule — cheap enough at Hikari volume.
   backfill_min_interval_s: 0.5           # throttle between episodes
   backfill_max_episodes: 500             # hard cap; raise + re-run for larger DBs
-
-# Owner-set relationship depth (single-user bot). Pin overrides the
-# session-count heuristic in compute_relationship_stage. The stage gates both
-# persona intimacy and the 5 stage-gated proactive producers.
-# 7 = the permanent leak / max openness: "i love you" allowed (once, only after
-# he says it), core wound nameable, ~30% denial. Owner-pinned 2026-06-03.
-persona:
-  relationship_stage_pin: 7
 
 slow_burn_tells:
   enabled: true
@@ -1390,19 +1342,6 @@ mode_flags:
     softening_patterns:
       - "(?i)\\b(sorry|sry|my bad|i apologize|didn't mean|that came out wrong|wasn't trying to)\\b"
     clear_on_session_boundary: true
-  intimacy:
-    # On-demand intimacy intensifier (owner-controlled via /closer command or a
-    # tightly-scoped inbound phrase). While active, the mood gate is relaxed
-    # regardless of mood — flirt/charged content is invited (denial layer stays
-    # on). Mirrors the comfort/anger flag machinery in agents/mode_dispatch.py.
-    enabled: true
-    persist_turns: 6          # how many turns the invited register stays open
-    clear_on_session_boundary: true
-    # Whole-message phrases (regex, case-insensitive) that arm intimacy_mode on
-    # inbound. Kept strict (anchored) so they don't misfire on task talk.
-    cue_patterns:
-      - "(?i)^\\s*(come\\s+closer|closer\\.?|get\\s+closer|i\\s+want\\s+you\\s+closer)\\s*$"
-
 # ============================================================================
 # Phase E: outbound voice notes (ElevenLabs Flash v2.5)
 # ============================================================================

@@ -49,15 +49,15 @@ def test_can_send_unknown_source_returns_source_not_justified():
 
 def test_can_send_with_explicit_pool_allows_known_source():
     from agents.cadence import Pool, can_send
-    allowed, reason = can_send("reengage_silence", Pool.AGENT_SPONTANEOUS)
+    allowed, reason = can_send("weirdly_good_mood_leak", Pool.AGENT_SPONTANEOUS)
     assert allowed is True
     assert reason == "ok"
 
 
 def test_can_send_resolves_pool_from_source():
     from agents.cadence import can_send
-    # reengage_silence -> agent_spontaneous
-    allowed, reason = can_send("reengage_silence")
+    # weirdly_good_mood_leak -> agent_spontaneous
+    allowed, reason = can_send("weirdly_good_mood_leak")
     assert allowed is True
     assert reason == "ok"
 
@@ -86,7 +86,7 @@ def test_spontaneous_cap_blocks_when_reached():
     # cap path, not the hardcoded base. No cycle_state seeded → factor 1.0 → 8.
     cap = effective_max_per_7d(Pool.AGENT_SPONTANEOUS)
     _fill_pool_log("proactive_log_v1", cap)
-    allowed, reason = can_send("reengage_silence", Pool.AGENT_SPONTANEOUS)
+    allowed, reason = can_send("weirdly_good_mood_leak", Pool.AGENT_SPONTANEOUS)
     assert allowed is False
     assert "cap_reached" in reason
     assert "agent_spontaneous" in reason
@@ -96,7 +96,7 @@ def test_ceremony_cap_does_not_block_spontaneous():
     """Filling ceremony pool doesn't affect spontaneous pool."""
     from agents.cadence import Pool, can_send
     _fill_pool_log("proactive_ceremony_log_v1", 14)  # fill ceremony to max
-    allowed, reason = can_send("reengage_silence", Pool.AGENT_SPONTANEOUS)
+    allowed, reason = can_send("weirdly_good_mood_leak", Pool.AGENT_SPONTANEOUS)
     assert allowed is True
     assert reason == "ok"
 

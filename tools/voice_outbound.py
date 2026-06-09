@@ -1,6 +1,6 @@
 """voice_outbound — ElevenLabs Flash v2.5 → OGG/Opus → media_outbox kind='voice'.
 
-Mood-gated, daily-capped, agent-decided. Mirrors tools/photos/generate.py shape.
+Mood-gated, daily-capped, agent-decided.
 """
 from __future__ import annotations
 

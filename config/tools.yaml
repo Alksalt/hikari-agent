@@ -54,12 +54,6 @@ mcp_servers:
     conditional: false
     warm_pool_ttl_sec: 0
 
-  hikari_photo:
-    bucket: 1
-    runtime_factory: "agents.runtime:_photo_server"
-    conditional: false
-    warm_pool_ttl_sec: 0
-
   hikari_codex:
     bucket: 1
     runtime_factory: "agents.runtime:_codex_server"
@@ -343,35 +337,6 @@ tools:
     credentials: null
     example: "session_search('that convo about the thesis')"
     presentation_hint: search_hits
-
-  # --------------------------------------------------------------------------
-  # hikari_photo (bucket 1)
-  # --------------------------------------------------------------------------
-  - id: "mcp__hikari_photo__generate_photo"
-    bucket: 1
-    server: hikari_photo
-    gate: null
-    untrusted_output: false
-    wrap_patterns: []
-    domain: media
-    operation: write
-    risk_tier: low
-    credentials: null
-    example: "generate_photo(mood='focused')"
-    presentation_hint: file_preview
-
-  - id: "mcp__hikari_photo__scene_photo_send"
-    bucket: 1
-    server: hikari_photo
-    gate: null
-    untrusted_output: false
-    wrap_patterns: []
-    domain: media
-    operation: write
-    risk_tier: low
-    credentials: null
-    example: "scene_photo_send(hint='making tea')"
-    presentation_hint: file_preview
 
   # --------------------------------------------------------------------------
   # hikari_wiki (bucket 1)

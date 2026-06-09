@@ -1954,20 +1954,6 @@ def get_core_block(label: str) -> str | None:
     return row["content"] if row else None
 
 
-def get_relationship_stage(default: int = 1) -> int:
-    """Canonical reader for the relationship_stage core_block (a bare int string,
-    e.g. "6"). Clamps to [1, 7]; returns ``default`` if absent or corrupt.
-
-    Single source of truth for the stage-gated proactive producers — they must
-    NOT read runtime_state (compute_relationship_stage writes to core_blocks).
-    """
-    raw = get_core_block("relationship_stage")
-    try:
-        return max(1, min(7, int(str(raw).strip())))
-    except (TypeError, ValueError):
-        return default
-
-
 def all_core_blocks() -> list[dict[str, Any]]:
     with _conn() as c:
         rows = c.execute(

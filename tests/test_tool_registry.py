@@ -101,7 +101,7 @@ def test_dedicated_server_modules_not_in_utility():
 
     names = {t.name for t in discover_utility_tools()}
     # Picking a representative tool from each dedicated server.
-    forbidden = {"recall", "remember", "generate_photo", "wiki_search",
+    forbidden = {"recall", "remember", "wiki_search",
                  "dispatch_claude_session", "list_codex_reports"}
     leaked = forbidden & names
     assert not leaked, (

@@ -210,47 +210,6 @@ async def pick_sticker_file_id(user_msg: str = "", reply: str = "") -> str | Non
     return random.choice(pool)["file_id"]
 
 
-async def force_send_sticker(bot: Bot, chat_id: int) -> str | None:
-    """Send a random sticker from the pool, ignoring probability/cooldown/mood.
-
-    Used by the image_gen-down fallback path. Does NOT reset the regular cooldown.
-    """
-    pool = _pool()
-    if not pool:
-        logger.warning("force_send_sticker: pool is empty — cannot fall back")
-        return None
-    file_id = random.choice(pool)["file_id"]
-    sent_at_ms = int(time.time() * 1000)
-    ikey = "sticker_" + hashlib.sha256(f"{file_id}{sent_at_ms}".encode()).hexdigest()[:24]
-    row_id: int | None = None
-    try:
-        row_id = db.media_outbox_insert(
-            "sticker",
-            ikey,
-            {"file_id": file_id, "chat_id": chat_id, "context": "force_send"},
-            claim_inline=True,  # sent in-line below; drain must not re-send it
-        )
-    except Exception:
-        logger.debug("force_send_sticker: media_outbox pre-insert failed (non-fatal)")
-    try:
-        tg_msg = await bot.send_sticker(chat_id=chat_id, sticker=file_id)
-    except Exception:
-        logger.exception("force_send_sticker: send failed (non-fatal)")
-        if row_id is not None:
-            try:
-                db.media_outbox_mark_failed(row_id, "send_sticker raised")
-            except Exception:
-                pass
-        return None
-    if row_id is not None:
-        try:
-            tg_msg_id = getattr(tg_msg, "message_id", None)
-            db.media_outbox_mark_sent(row_id, tg_msg_id)
-        except Exception:
-            pass
-    return file_id
-
-
 async def maybe_send_sticker(
     bot: Bot,
     chat_id: int,

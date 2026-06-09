@@ -7,9 +7,7 @@ the cooldown gate, and the disabled flag.
 from __future__ import annotations
 
 import importlib
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -26,6 +24,19 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     config.reload()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_config():
+    """_write_cfg points the config singleton at a per-test yaml via
+    config.reload(). monkeypatch reverts the env var at teardown but NOT the
+    loaded singleton, which leaked sticker-only config into every test that
+    ran after this file (e.g. auth.precheck read 'shadow'). Reload from the
+    real path after each test."""
+    yield
+    import os
+    os.environ.pop("HIKARI_CONFIG_PATH", None)
+    config.reload()
 
 
 def _write_cfg(tmp_path: Path, monkeypatch, yaml_text: str) -> None:
@@ -172,93 +183,6 @@ def test_stickers_bump_outbound_counter(monkeypatch, tmp_path):
     assert stickers._bump_outbound_counter() == 1
     assert stickers._bump_outbound_counter() == 2
     assert db.runtime_get_int(db.OUTBOUND_MSG_COUNTER_KEY, 0) == 2
-
-
-# ---------- force_send_sticker (image_gen-down fallback) ----------
-
-@pytest.mark.asyncio
-async def test_force_send_sticker_sends_when_pool_nonempty(monkeypatch, tmp_path):
-    _write_cfg(tmp_path, monkeypatch,
-        "stickers:\n"
-        "  enabled: true\n"
-        "  probability_per_reply: 0.0\n"  # would normally block — force ignores it
-        "  cooldown_min_messages: 999\n"   # would normally block — force ignores it
-        "  mood_blocklist: ['irritable']\n"
-        "  pool: ['abc123']\n"
-    )
-    mock_bot = AsyncMock()
-    fid = await stickers.force_send_sticker(mock_bot, 999)
-    assert fid == "abc123"
-    mock_bot.send_sticker.assert_awaited_once_with(chat_id=999, sticker="abc123")
-
-
-@pytest.mark.asyncio
-async def test_force_send_sticker_returns_none_when_pool_empty(monkeypatch, tmp_path):
-    _write_cfg(tmp_path, monkeypatch,
-        "stickers:\n"
-        "  enabled: true\n"
-        "  pool: []\n"
-    )
-    mock_bot = AsyncMock()
-    fid = await stickers.force_send_sticker(mock_bot, 999)
-    assert fid is None
-    mock_bot.send_sticker.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_force_send_sticker_ignores_mood_and_cooldown(monkeypatch, tmp_path):
-    _write_cfg(tmp_path, monkeypatch,
-        "stickers:\n"
-        "  enabled: true\n"
-        "  probability_per_reply: 0.0\n"
-        "  cooldown_min_messages: 999\n"
-        "  mood_blocklist: ['irritable']\n"
-        "  pool: ['xyz']\n"
-    )
-    # Mood that the regular gate would block on.
-    db.upsert_core_block("mood_today", "irritable")
-    # Cooldown that the regular gate would block on (last send "just now").
-    db.runtime_set("stickers_last_at_counter", 999_999)
-
-    mock_bot = AsyncMock()
-    fid = await stickers.force_send_sticker(mock_bot, 42)
-    assert fid == "xyz"
-    mock_bot.send_sticker.assert_awaited_once_with(chat_id=42, sticker="xyz")
-    # Forced send must NOT reset the regular cooldown counter.
-    assert db.runtime_get_int("stickers_last_at_counter", 0) == 999_999
-
-
-# ---------- generate_photo failure path sets runtime flag ----------
-
-@pytest.mark.asyncio
-async def test_generate_photo_sets_failure_ts_on_flux_failure(monkeypatch, tmp_path):
-    """When _call_flux returns None, generate_photo stamps a recent ISO ts
-    into runtime_state under the agreed key — that's the bridge's signal."""
-    from tools.photos import generate as gen_mod
-
-    # Make sure mood doesn't refuse and cap isn't hit.
-    db.upsert_core_block("mood_today", "focused")
-
-    async def _fake_flux_none(prompt, model):
-        return None
-
-    monkeypatch.setattr(gen_mod, "_call_flux", _fake_flux_none)
-
-    # Ensure flag is clear pre-call.
-    db.runtime_set("image_gen_last_failure_ts", None)
-    assert db.runtime_get("image_gen_last_failure_ts") is None
-
-    # The SDK @tool decorator wraps; call the underlying coroutine via .__wrapped__
-    # if present, else direct call. The decorator returns an SdkMcpTool whose
-    # .handler is the original async fn. Use that for direct invocation.
-    handler = getattr(gen_mod.generate_photo, "handler", gen_mod.generate_photo)
-    await handler({"mood": "focused"})
-
-    ts = db.runtime_get("image_gen_last_failure_ts")
-    assert ts is not None
-    # Verify it parses as a recent ISO timestamp.
-    parsed = datetime.fromisoformat(ts)
-    assert parsed is not None
 
 
 # ---------- LLM picker: unknown sticker id → fallback to random ----------
@@ -455,25 +379,3 @@ def test_stickers_bump_uses_runtime_increment(monkeypatch, tmp_path):
     assert by_called == 1, f"Must increment by 1, got by={by_called}"
     assert isinstance(result, int), "Must return the new counter value as int"
 
-
-# ---------- generate_photo failure path sets runtime flag ----------
-
-@pytest.mark.asyncio
-async def test_generate_photo_failure_text_contains_image_gen_down(monkeypatch, tmp_path):
-    """The text returned to the LLM must contain the ``image_gen_down`` token
-    so the LLM knows to stay silent about image generation."""
-    from tools.photos import generate as gen_mod
-
-    db.upsert_core_block("mood_today", "focused")
-
-    async def _fake_flux_none(prompt, model):
-        return None
-
-    monkeypatch.setattr(gen_mod, "_call_flux", _fake_flux_none)
-
-    handler = getattr(gen_mod.generate_photo, "handler", gen_mod.generate_photo)
-    result = await handler({"mood": "focused"})
-
-    # SDK tool result shape: {"content": [{"type": "text", "text": "..."}]}
-    text = result["content"][0]["text"]
-    assert "image_gen_down" in text

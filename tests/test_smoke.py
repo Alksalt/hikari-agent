@@ -18,7 +18,7 @@ def test_persona_present():
 
 def test_all_skills_present():
     skills_dir = REPO_ROOT / ".claude" / "skills"
-    expected = ["character-voice", "recall-memory", "generate-photo",
+    expected = ["character-voice", "recall-memory",
                 "schedule-heartbeat", "drive-search"]
     for name in expected:
         skill_md = skills_dir / name / "SKILL.md"
@@ -209,20 +209,6 @@ def test_proactive_reengage_logic(tmp_path, monkeypatch):
     # quiet hours might still suppress — assert it's a bool, not an error
     res = proactive.should_send_reengagement()
     assert isinstance(res, bool)
-
-
-def test_photo_tool_refuses_irritable(tmp_path, monkeypatch):
-    """generate_photo refuses when mood is irritable (no OpenRouter call needed)."""
-    import asyncio
-    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
-    monkeypatch.setenv("HIKARI_PHOTO_OUTBOX", str(tmp_path / "outbox"))
-    from storage import db
-    importlib.reload(db)
-    from tools import photos
-    importlib.reload(photos)
-    out = asyncio.run(photos.generate_photo.handler({"mood": "irritable"}))
-    text = out["content"][0]["text"]
-    assert "refused" in text and "irritable" in text
 
 
 def test_runtime_uses_accept_edits(monkeypatch):

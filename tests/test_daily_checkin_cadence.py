@@ -40,7 +40,7 @@ def _fill_ceremony_log(n: int) -> None:
 def test_cap_blocks_normal_source_at_max():
     from agents import cadence
     _fill_proactive_log(8)
-    allowed, reason = cadence.can_send("reengage_silence", cadence.Pool.AGENT_SPONTANEOUS)
+    allowed, reason = cadence.can_send("weirdly_good_mood_leak", cadence.Pool.AGENT_SPONTANEOUS)
     assert allowed is False
     assert "cap_reached" in reason
 

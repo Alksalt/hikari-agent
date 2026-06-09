@@ -1,11 +1,11 @@
 """Phase I proactive engagement tests.
 
 Coverage:
-  - One test per producer (15 tests): mock data layer, assert collect() shape.
+  - One test per producer (13 tests): mock data layer, assert collect() shape.
   - Selector: highest-score wins, disabled sources excluded, pool cap respected.
   - Guard: generic opener, missing anchor, well-formed, question-pattern.
   - /proactive command: status listing, on/off toggle, default count.
-  - Config: default_enabled_sources has exactly 4 entries.
+  - Config: default_enabled_sources has exactly 13 entries.
 """
 from __future__ import annotations
 
@@ -287,35 +287,6 @@ class TestProducerWeirdlyGoodMoodLeak:
         assert results[0].source == "weirdly_good_mood_leak"
 
 
-class TestProducerReengageSilence:
-    def test_collect_empty_when_disabled(self):
-        from agents.engagement.producers import reengage_silence
-        with patch("agents.config.get", return_value=False):
-            assert reengage_silence.collect() == []
-
-    def test_collect_returns_candidate_when_conditions_met(self):
-        from agents.engagement.producers import reengage_silence
-        last_ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
-
-        def _runtime_get_side_effect(key):
-            if key == "last_user_message":
-                return last_ts
-            return None  # silence_until, reengage_sent_for_gap → not set
-
-        with (
-            patch("agents.config.get", return_value=True),
-            patch("agents.config.section", return_value={
-                "reengage_min_hours": 2, "reengage_max_hours": 6,
-                "quiet_start_hour": 23, "quiet_end_hour": 8,
-            }),
-            patch("storage.db.runtime_get", side_effect=_runtime_get_side_effect),
-            patch.object(reengage_silence, "_is_quiet_now", return_value=False),
-        ):
-            results = reengage_silence.collect()
-        assert len(results) == 1
-        assert results[0].source == "reengage_silence"
-
-
 class TestProducerLocationArrivedRecurring:
     def test_collect_empty_when_no_pattern(self):
         from agents.engagement.producers import location_arrived_recurring
@@ -413,14 +384,14 @@ class TestSelector:
 class TestGuard:
     def test_rejects_generic_opener(self):
         from agents.engagement.guard import passes
-        c = _make_candidate("reengage_silence")
+        c = _make_candidate("weirdly_good_mood_leak")
         ok, reason = passes("hey, want to chat?", c)
         assert not ok
         assert reason == "generic_opener"
 
     def test_rejects_hi_opener(self):
         from agents.engagement.guard import passes
-        c = _make_candidate("reengage_silence")
+        c = _make_candidate("weirdly_good_mood_leak")
         ok, reason = passes("Hi there, just checking in", c)
         assert not ok
         assert reason == "generic_opener"
@@ -476,7 +447,7 @@ class TestGuard:
 
     def test_accepts_no_anchor_required_sources(self):
         from agents.engagement.guard import passes
-        for source in ("weirdly_good_mood_leak", "reengage_silence"):
+        for source in ("weirdly_good_mood_leak",):
             c = _make_candidate(source, pattern="notify")
             ok, reason = passes("you went quiet.", c)
             assert ok, f"Expected ok for {source}, got {reason}"
@@ -606,13 +577,11 @@ class TestConfig:
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
-        # 9 baseline (3 core + reengage_silence + 5 world-delta) PLUS 5 warmth/
-        # intimacy producers, all enabled 2026-06-03.
-        assert len(source_list) == 14
-        assert "reengage_silence" in source_list
+        # 7 baseline (3 core + 4 world-delta) PLUS 5 warmth producers
+        # (reengage_silence + late_night_dissolution removed 2026-06-09).
+        assert len(source_list) == 12
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list
-        assert "late_night_dissolution" in source_list
         assert "irritation_event" in source_list
         assert "weather_mood_shift" in source_list
         for warm in (

@@ -88,12 +88,10 @@ ANCHOR_TOKEN_PATHS: dict[str, tuple[str, ...]] = {
     "notion_recent_edit":          ("page_title",),
     "weather_alert":               ("alert_summary",),
     "weirdly_good_mood_leak":      (),
-    "reengage_silence":            (),
     "location_arrived_recurring":  ("place_name",),
-    # Sprint B Wave 1 — 5 new producers
+    # Sprint B Wave 1 — 4 new producers
     "book_just_finished":          ("finished_book",),
     "just_got_home":               (),                        # payload has no stable text anchor; skip check
-    "late_night_dissolution":      ("elapsed_hours",),
     "irritation_event":            ("frustration",),
     "weather_mood_shift":          ("to_condition",),
     # Phase Q — anniversary callbacks

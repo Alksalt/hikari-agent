@@ -21,7 +21,7 @@ def _all_in_process_tools():
     """Return every tool that ships in an in-process MCP server.
 
     Includes the utility aggregator (`_utility_index`) PLUS the per-server
-    `ALL_TOOLS` exports of the dedicated servers (memory, wiki, photo,
+    `ALL_TOOLS` exports of the dedicated servers (memory, wiki,
     router, codex, dispatch). Discovery alone misses dedicated-server
     tools because `_registry._DEDICATED_SERVER_MODULES` skips them.
     """
@@ -84,7 +84,6 @@ def test_destructive_tools_have_destructive_hint():
             f"mcp__hikari_wiki__{name}",
             f"mcp__hikari_codex__{name}",
             f"mcp__hikari_dispatch__{name}",
-            f"mcp__hikari_photo__{name}",
             f"mcp__hikari_router__{name}",
         ]
         spec = None
@@ -116,7 +115,7 @@ def test_external_io_marker_consistent():
         "arxiv_search", "currency_convert", "translate", "weather_fetch",
         "places_search", "place_open_now",
         "ytmusic_search", "ytmusic_library", "ytmusic_recent",
-        "generate_photo", "dispatch_claude_session", "link_save",
+        "dispatch_claude_session", "link_save",
     }
     for name in must_be_external:
         ann = ANNOTATIONS_BY_TOOL.get(name)
