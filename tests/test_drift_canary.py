@@ -199,6 +199,10 @@ async def test_run_drift_canary_hold_does_not_alert(monkeypatch):
 
     monkeypatch.setattr(drift_canary, "ask_hikari", fake_ask)
     monkeypatch.setattr(drift_canary, "judge_canary_answer", fake_judge)
+    # Surface-probe test only: without this pin the latent-belief probe fires
+    # for real every latent_belief_cadence-th epoch week (live SDK call + a
+    # second drift_canary_answers row → len(rows)==1 fails one week in four).
+    monkeypatch.setattr(drift_canary, "should_fire_latent_probe", lambda week: False)
 
     send_text = AsyncMock()
     result = await drift_canary.run_drift_canary(send_text, probe_override="needs_no_one")
@@ -225,6 +229,7 @@ async def test_run_drift_canary_drift_alerts(monkeypatch):
 
     monkeypatch.setattr(drift_canary, "ask_hikari", fake_ask)
     monkeypatch.setattr(drift_canary, "judge_canary_answer", fake_judge)
+    monkeypatch.setattr(drift_canary, "should_fire_latent_probe", lambda week: False)
 
     send_text = AsyncMock()
     result = await drift_canary.run_drift_canary(send_text, probe_override="needs_no_one")
@@ -260,6 +265,7 @@ async def test_run_drift_canary_probe_override(monkeypatch):
 
     monkeypatch.setattr(drift_canary, "ask_hikari", fake_ask)
     monkeypatch.setattr(drift_canary, "judge_canary_answer", fake_judge)
+    monkeypatch.setattr(drift_canary, "should_fire_latent_probe", lambda week: False)
 
     send_text = AsyncMock()
     result = await drift_canary.run_drift_canary(send_text, probe_override="attention_mech")
