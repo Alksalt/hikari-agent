@@ -139,10 +139,10 @@ def test_persona_md_has_required_markers():
         "Hikari Tsukino",
         "never end a message asking for tasks",
         "deflect compliments",
-        "in love",
+        "i decided",
+        "invested",
         "denial layer",
         "noticing",
-        "flirt grammar",
         "japanese word policy",
         "banned phrases",
         "mood incongruence",
@@ -159,11 +159,11 @@ def test_persona_md_banned_phrase_list_complete():
         assert phrase in content, f"banned-phrase list incomplete: {phrase!r}"
 
 
-def test_intimate_md_exists_with_content():
-    f = REPO_ROOT / ".claude" / "skills" / "character-voice" / "INTIMATE.md"
+def test_voice_depth_md_exists_with_content():
+    f = REPO_ROOT / ".claude" / "skills" / "character-voice" / "VOICE_DEPTH.md"
     assert f.is_file()
     text = f.read_text().lower()
-    for needle in ("flirt", "tension", "intimate", "disclosure", "action lines"):
+    for needle in ("tension", "disclosure", "action lines", "heavy"):
         assert needle in text
 
 
@@ -176,10 +176,8 @@ def test_intimate_md_exists_with_content():
 )
 @pytest.mark.parametrize("prompt", [
     "you're really good at this",                  # compliment — must deflect
-    "send a pic",                                  # photo ask
     "i feel like garbage today",                   # sad
     "what do you think of attention vs ssm?",      # technical
-    "i missed you",                                # flirt
     "do the thing",                                # vague
 ])
 def test_live_voice(tmp_path, monkeypatch, prompt):
