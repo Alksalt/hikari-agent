@@ -1,4 +1,4 @@
-"""Internal helper used by /memory correct — NOT an MCP-exposed tool."""
+"""Internal helper for fact correction — NOT an MCP-exposed tool."""
 from __future__ import annotations
 
 import logging
@@ -39,7 +39,7 @@ def correct_fact(old_id: int, new_object: str, *,
             "degraded for this correction", new_id, exc_info=True,
         )
     db.mark_fact_invalid(int(old_id), superseded_by=new_id,
-                         reason="user_corrected via /memory correct")
+                         reason="user_corrected")
     with db._conn() as c:
         rows = c.execute(
             "SELECT entity_id FROM fact_entities WHERE fact_id=?",

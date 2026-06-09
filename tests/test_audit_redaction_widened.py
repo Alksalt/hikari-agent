@@ -117,32 +117,3 @@ def test_redact_empty_string():
 def test_redact_clean_text():
     text = "hello world, no secrets here"
     assert _redact(text) == text
-
-
-# ---------------------------------------------------------------------------
-# /audit id defense-in-depth (cockpit integration)
-# ---------------------------------------------------------------------------
-
-def test_audit_id_redacts_bearer_in_row(tmp_path, monkeypatch):
-    """format_audit('id', ...) must redact Bearer tokens stored in audit rows."""
-    import importlib
-    db_path = tmp_path / "test.db"
-    monkeypatch.setenv("HIKARI_DB_PATH", str(db_path))
-    import storage.db as _db_mod
-    importlib.reload(_db_mod)
-    from storage import db as _db
-    monkeypatch.setattr(_db, "_DB_PATH", db_path)
-    _db._reset_schema_sentinel()
-
-    # Write an audit row that contains a Bearer token in args_json
-    row_id = _db.audit_append(
-        "test_tool",
-        '{"authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"}',
-        "result ok",
-    )
-
-    from agents.cockpit import format_audit
-    result = format_audit("id", [str(row_id)])
-
-    # The Bearer token body should not appear in the rendered output
-    assert "eyJhbGciOiJIUzI1NiJ9" not in result

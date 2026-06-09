@@ -645,6 +645,18 @@ async def maybe_run_daily_checkin(send_text) -> bool:
     if result.status != "sent":
         logger.info("daily_checkin: skipped (%s)", result.reason)
         return False
+    # Phase 5b: with /checkin gone, the run-now / skip-tomorrow keyboard
+    # attaches at the push site — directly on the check-in question.
+    try:
+        from agents.telegram_bridge import (  # noqa: PLC0415
+            _kb_checkin_status,
+            attach_keyboard_to_sent_message,
+        )
+        await attach_keyboard_to_sent_message(
+            result.telegram_message_id, _kb_checkin_status(),
+        )
+    except Exception:
+        logger.exception("daily_checkin: keyboard attach failed (non-fatal)")
     cadence.record_ceremony_sent("daily_checkin")
     mark_fired_today(now_local)
     # Clear force flag only on success — abort paths leave it set so the

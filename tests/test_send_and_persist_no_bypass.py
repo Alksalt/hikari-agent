@@ -185,16 +185,6 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "_cb_checkin",
         "_cb_reminder",
         "_cb_proactive",
-        "_cb_memory",
-        "_cb_rem",
-        "_cb_diary",
-        "_cb_receipt",
-        "cmd_approvals",
-        "cmd_checkin",
-        "cmd_reminders",
-        "cmd_memorydump",
-        "cmd_diary",
-        "cmd_receipt",
     }
     violations: list[str] = []
 
@@ -231,11 +221,13 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
 
 
 def test_proactive_messages_no_keyboard():
-    """Proactive messages must not attach an inline keyboard.
+    """Generic proactive messages must not attach an inline keyboard.
 
     Verifies that _attach_proactive_keyboard and _kb_proactive are gone from
-    telegram_bridge.py, and that edit_message_reply_markup is never called in
-    the proactive send path.
+    telegram_bridge.py, and that edit_message_reply_markup is only called
+    inside attach_keyboard_to_sent_message — the Phase 5b push-site helper
+    that reminder fires and the daily check-in use (those are deliberate
+    keyboard surfaces; heartbeats and other proactive sends are not).
     """
     import ast
     import pathlib
@@ -250,19 +242,34 @@ def test_proactive_messages_no_keyboard():
         "_kb_proactive still present in telegram_bridge.py"
     )
 
-    calls_to_edit_markup: list[str] = []
+    ALLOWED_EDIT_MARKUP_FUNCS = {"attach_keyboard_to_sent_message"}
+    violations: list[str] = []
 
     class EditMarkupVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.stack: list[str] = []
+
+        def visit_AsyncFunctionDef(self, node):
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_FunctionDef(self, node):
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
         def visit_Call(self, node):
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "edit_message_reply_markup"
+                and not (self.stack and self.stack[0] in ALLOWED_EDIT_MARKUP_FUNCS)
             ):
-                calls_to_edit_markup.append(f"line {node.lineno}")
+                violations.append(f"line {node.lineno} in {'/'.join(self.stack) or '<module>'}")
             self.generic_visit(node)
 
     EditMarkupVisitor().visit(tree)
-    assert not calls_to_edit_markup, (
-        "edit_message_reply_markup still called in telegram_bridge.py: "
-        + ", ".join(calls_to_edit_markup)
+    assert not violations, (
+        "edit_message_reply_markup called outside attach_keyboard_to_sent_message: "
+        + ", ".join(violations)
     )

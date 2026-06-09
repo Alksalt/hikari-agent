@@ -470,46 +470,25 @@ launchctl kickstart -k gui/$(id -u)/com.hikari.agent
 
 ---
 
-## Telegram commands
+## Conversational control
 
-The Telegram autocomplete menu is sourced from `agents/cockpit.py:_COMMANDS`
-ordered by usage tier (most-used first). `/start`, `/grab_stickers`,
-`/memory_diff` are hidden from the autocomplete menu but still callable
-when typed manually.
+There are no slash-commands. All reads and controls go through conversation:
 
-**Tier 1 — daily**
-| Command       | What it does                                              |
-|---------------|-----------------------------------------------------------|
-| `/silence`    | mute proactive messages for N minutes (default 120)       |
-| `/unsilence`  | resume proactive messages immediately                     |
-| `/checkin`    | morning checkin: run now / skip tomorrow                  |
-| `/memory`     | inspect / correct / forget memory + session search        |
+- **reminder_list** — list active reminders
+- **link_search / link_list** — search or browse saved links
+- **receipt_read** — read today's or the week's day-receipt
+- **diary_read** — read recent diary entries
+- **set_silence** — mute proactive messages for a duration (e.g. "silence for 2h")
+- **set_proactive_source** — enable/disable/snooze individual proactive sources
+- **checkin_control** — run or skip the morning check-in
 
-**Tier 2 — weekly / when needed**
-| Command       | What it does                                              |
-|---------------|-----------------------------------------------------------|
-| `/reminders`  | list active reminders with snooze/dismiss buttons         |
-| `/status`     | structured health + activity dump                         |
-| `/proactive`  | `recent` / `why <id>` / `snooze <source> <duration>`      |
-| `/tasks`      | list open background tasks                                |
-| `/cancel`     | cancel a pending in-flight tool call                      |
-| `/help`       | list of registered commands                               |
+**Inline keyboards** on push messages:
+- Reminder cards: snooze / dismiss buttons (`reminder:` namespace)
+- Approval requests: reject / details buttons (`appr:` namespace)
+- Check-in: status buttons (`checkin:` namespace)
+- Proactive events: why / snooze / mute buttons (`pro:` namespace)
 
-**Tier 3 — monthly / debug**
-| Command       | What it does                                              |
-|---------------|-----------------------------------------------------------|
-| `/approvals`  | list pending gatekeeper approvals                         |
-| `/settings`   | runtime settings; `get <key>` / `set <key> <value>`       |
-| `/capabilities` | tool families, skill count, MCP server health           |
-| `/tools`      | tool registry by capability group; `recent` / `policy`    |
-| `/audit`      | audit log; `recent [N]` / `tools` / `approvals` / `id <id>`|
-
-**Hidden (handler-only, type manually)**
-| Command          | What it does                                                  |
-|------------------|---------------------------------------------------------------|
-| `/start`         | bootstrap message — redundant with texting the bot            |
-| `/grab_stickers` | one-off: capture sticker file_ids and emit YAML snippet       |
-| `/memory_diff`   | dev-only: SQLite vs Graphiti reconciliation                   |
+**One-time sticker capture:** `uv run python scripts/grab_stickers.py`
 
 ---
 

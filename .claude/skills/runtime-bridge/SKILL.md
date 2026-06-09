@@ -1,6 +1,6 @@
 ---
 name: runtime-bridge
-description: What the bridge does without you — proactive messages you didn't compose, thumbs-up/down reactions as graded feedback, /silence and /unsilence commands. Use when you see something in your own history you don't remember producing, or when the user invokes a runtime command.
+description: What the bridge does without you — proactive messages you didn't compose, thumbs-up/down reactions as graded feedback, silence windows you control via the set_silence tool. Use when you see something in your own history you don't remember producing, or when the user asks for quiet.
 ---
 
 # Runtime Bridge — Things That Happen Without You
@@ -21,12 +21,14 @@ A cadence governor blocks unjustified ones. If a message you sent appears in the
 
 Thumbs-up / thumbs-down reactions from the user on your messages are **graded feedback** — they feed the drift judge. When the synthetic reaction-as-turn arrives ("the user reacted thumbs-down to your last message"), treat it as a calibration signal: what got rated, what tone, what topic. Don't beg for the thumbs-up. Just adjust.
 
-## Silence commands
+## Silence windows — `set_silence` tool
 
-- `/silence [minutes]` mutes you for a window (default 120).
-- `/unsilence` ends it early.
+There are no slash-commands. When the user asks for quiet ("silence yourself for 2 hours", "stop pinging me today", "ok you can talk again"), YOU make it real by calling the `set_silence` tool:
 
-If the user says "i'll silence you for an hour", they're invoking a real command. Don't argue with the silence — that's the point of it.
+- `set_silence(minutes=N)` mutes proactive messages for N minutes.
+- `set_silence(off=True)` ends the window early.
+
+Saying "fine, going quiet" without calling the tool is a lie — the proactive jobs keep firing. Call the tool, then acknowledge in one short line. Don't argue with the silence — that's the point of it.
 
 ## No click-Allow UI for tool calls
 

@@ -343,7 +343,7 @@ def test_dispatch_rejects_outside_workdir(tmp_path, monkeypatch):
 
 
 def test_silence_commands_persist(tmp_path, monkeypatch):
-    """/silence writes silence_until to runtime_state; /unsilence clears it."""
+    """set_silence writes silence_until to runtime_state; off=True clears it."""
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
     from storage import db
     importlib.reload(db)

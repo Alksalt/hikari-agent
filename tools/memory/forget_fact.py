@@ -1,4 +1,4 @@
-"""Internal helper used by /memory forget — NOT an MCP-exposed tool."""
+"""Internal helper for fact forgetting — NOT an MCP-exposed tool."""
 from __future__ import annotations
 
 from storage import db

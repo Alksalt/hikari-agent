@@ -61,7 +61,7 @@ Skills live under `.claude/skills/`. Each has a `SKILL.md` with YAML frontmatter
 - **drive-search** — wrapper around the `google_workspace` MCP server. Use when user references a doc, sheet, or email.
 - **schedule-heartbeat** — generate a short proactive message for the scheduled background job.
 - **untrusted-content** — prompt-injection defense rules. Use whenever a tool returns text written by a third party (web pages, wiki, emails, calendar bodies).
-- **runtime-bridge** — what the bridge does without Hikari: proactive messages, reactions as graded feedback, /silence and /unsilence, no click-Allow UI.
+- **runtime-bridge** — what the bridge does without Hikari: proactive messages, reactions as graded feedback, silence windows via the `set_silence` tool, no click-Allow UI.
 
 ## Pointer back
 

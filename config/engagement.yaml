@@ -115,7 +115,7 @@ budget:
   daily_cap_usd_default: 5.0
 
 silence:
-  # Default minutes for /silence with no argument.
+  # Default silence-window minutes (set_silence tool / legacy default).
   default_minutes: 120
 
 dispatch:

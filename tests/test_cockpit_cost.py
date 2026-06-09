@@ -1,10 +1,14 @@
-"""Phase C — main-chat cost rollup + cockpit status display."""
+"""Phase C — main-chat cost rollup (llm_costs table).
+
+Phase 5b removed /status and cockpit.format_status; only the DB rollup
+helpers remain under test here.
+"""
 from __future__ import annotations
 
 import importlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -80,84 +84,3 @@ def test_llm_costs_rollup_by_model_breakdown():
     # Sorted descending by cost
     models_ordered = list(result["by_model"].keys())
     assert models_ordered[0] == "claude-sonnet-4-6"
-
-
-# ---------------------------------------------------------------------------
-# 3. /cockpit status — shows new chat cost lines
-# ---------------------------------------------------------------------------
-
-def _make_mock_app():
-    """Return a minimal mock app that satisfies format_status's scheduler probe."""
-    app = MagicMock()
-    app.bot_data = {}
-    return app
-
-
-@pytest.mark.asyncio
-async def test_cockpit_status_shows_main_chat_cost(monkeypatch):
-    _insert_cost("claude-sonnet-4-6", 0.05, hours_ago=1)
-
-    from agents import cockpit as ck
-    from agents import config as cfg
-
-    monkeypatch.setattr(cfg, "get", lambda k, d=None: (
-        200.0 if k == "runtime.agent_sdk_monthly_credit_usd" else d
-    ))
-
-    with (
-        patch("tools.budget.daily_cap", return_value=1.00),
-        patch.object(db, "runtime_get", return_value="0.0"),
-    ):
-        text = await ck.format_status(_make_mock_app())
-
-    assert "chat cost" in text
-    assert "24h:" in text
-    assert "30d:" in text
-    assert "turns" in text
-
-
-# ---------------------------------------------------------------------------
-# 4. /cockpit status — 80% alert fires when 30d cost > threshold
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_cockpit_status_alerts_at_80pct(monkeypatch):
-    # Seed 30d cost > $160 (80% of $200).
-    _insert_cost("claude-sonnet-4-6", 80.00, hours_ago=24 * 5)   # 5 days ago
-    _insert_cost("claude-sonnet-4-6", 85.00, hours_ago=24 * 10)  # 10 days ago
-
-    from agents import cockpit as ck
-    from agents import config as cfg
-
-    monkeypatch.setattr(cfg, "get", lambda k, d=None: (
-        200.0 if k == "runtime.agent_sdk_monthly_credit_usd" else d
-    ))
-
-    with (
-        patch("tools.budget.daily_cap", return_value=1.00),
-        patch.object(db, "runtime_get", return_value="0.0"),
-    ):
-        text = await ck.format_status(_make_mock_app())
-
-    assert "80%" in text
-    assert "200" in text
-
-
-@pytest.mark.asyncio
-async def test_cockpit_status_no_alert_below_80pct(monkeypatch):
-    _insert_cost("claude-sonnet-4-6", 1.00, hours_ago=1)
-
-    from agents import cockpit as ck
-    from agents import config as cfg
-
-    monkeypatch.setattr(cfg, "get", lambda k, d=None: (
-        200.0 if k == "runtime.agent_sdk_monthly_credit_usd" else d
-    ))
-
-    with (
-        patch("tools.budget.daily_cap", return_value=1.00),
-        patch.object(db, "runtime_get", return_value="0.0"),
-    ):
-        text = await ck.format_status(_make_mock_app())
-
-    assert "80%" not in text

@@ -434,6 +434,21 @@ async def fire_due_reminders(send_text) -> int:
 
         fired += 1
 
+        # Phase 5b: with /reminders gone, the snooze/dismiss keyboard attaches
+        # at the push site — directly on the fired reminder message.
+        try:
+            from agents.telegram_bridge import (  # noqa: PLC0415
+                _kb_reminder,
+                attach_keyboard_to_sent_message,
+            )
+            await attach_keyboard_to_sent_message(
+                result.telegram_message_id, _kb_reminder(row["id"]),
+            )
+        except Exception:
+            logger.exception(
+                "fire_due_reminders: keyboard attach failed (non-fatal) #%s", row["id"],
+            )
+
         # ---------- recurrence_rule: reschedule in-place (infinite loop) ----------
         recurrence_rule = row.get("recurrence_rule") or ""
         if recurrence_rule:

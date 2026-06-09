@@ -1,7 +1,6 @@
 """``diary_read`` — read Hikari's recent diary entries.
 
-Wraps ``db.diary_entries_recent``, the same store the /diary command
-and ``cockpit.format_diary`` use. Optional ``days`` arg controls how
+Wraps ``db.diary_entries_recent``. Optional ``days`` arg controls how
 many entries to return (default 7); ``page`` offsets for older entries.
 """
 from __future__ import annotations

@@ -207,31 +207,3 @@ async def test_post_init_graph_failure_is_non_fatal():
 
     assert not raised
     assert log_called
-
-
-# ---------------------------------------------------------------------------
-# Test 6 — /memory_diff command returns both result sets
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-@pytest.mark.uses_real_graph
-async def test_memory_diff_command_returns_both_result_sets():
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    from agents.telegram_bridge import cmd_memory_diff
-
-    fake_update = MagicMock()
-    fake_update.effective_user.id = 12345
-    fake_update.message.reply_text = AsyncMock()
-    fake_context = MagicMock()
-    fake_context.args = ["oslo"]
-
-    with patch("agents.telegram_bridge.owner_id", return_value=12345), \
-         patch("storage.retrieval.legacy_retrieve", return_value=[{"subject": "user", "predicate": "lives_in", "object": "oslo"}]), \
-         patch("storage.graph.search", new=AsyncMock(return_value=[MagicMock(fact="user lives in oslo")])):
-        await cmd_memory_diff(fake_update, fake_context)
-
-    reply_text = fake_update.message.reply_text.call_args[0][0]
-    assert "SQLite" in reply_text
-    assert "Graphiti" in reply_text
-    assert "oslo" in reply_text.lower()

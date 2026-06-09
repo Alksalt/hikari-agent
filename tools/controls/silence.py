@@ -1,13 +1,13 @@
 """``set_silence`` — silence proactive messages for N minutes (or clear).
 
-Writes the same ``silence_until`` runtime_state key the /silence and
-/unsilence Telegram commands write, so the proactive gate's silence
-check keeps working without any changes.
+Writes the ``silence_until`` runtime_state key the proactive gate's
+silence check reads (the same key the retired /silence and /unsilence
+commands wrote before Phase 5b).
 
 Args:
   minutes: int > 0 — silence proactives for this many minutes.
-  off: bool — if True, clear the silence immediately (equivalent to
-       /unsilence). ``minutes`` is ignored when off=True.
+  off: bool — if True, clear the silence immediately.
+       ``minutes`` is ignored when off=True.
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ async def set_silence(args: dict[str, Any]) -> dict[str, Any]:
         )
 
     until_utc = datetime.now(UTC) + timedelta(minutes=minutes)
-    # Write the same key the /silence command writes
+    # The proactive gate reads this runtime_state key
     db.runtime_set("silence_until", until_utc.isoformat())
 
     expiry_str = _until_local(until_utc)

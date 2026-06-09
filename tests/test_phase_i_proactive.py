@@ -4,7 +4,7 @@ Coverage:
   - One test per producer (13 tests): mock data layer, assert collect() shape.
   - Selector: highest-score wins, disabled sources excluded, pool cap respected.
   - Guard: generic opener, missing anchor, well-formed, question-pattern.
-  - /proactive command: status listing, on/off toggle, default count.
+  - proactive status formatter: active-source listing, default count.
   - Config: default_enabled_sources has exactly 13 entries.
 """
 from __future__ import annotations
@@ -12,9 +12,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from agents.engagement.triggers import TriggerCandidate
 
@@ -461,110 +459,31 @@ class TestGuard:
 
 
 # ============================================================================
-# /proactive command tests
+# proactive status formatter (consumed by the set_proactive_source tool)
 # ============================================================================
 
-class TestProactiveCommand:
-    @pytest.mark.asyncio
-    async def test_status_lists_sources_with_marks(self):
+class TestProactiveStatusFormatter:
+    def test_status_lists_sources_with_marks(self):
+        """format_proactive_status (now surfaced via set_proactive_source
+        action='status') lists every default-enabled source as active and
+        never shows reminder_fire as enabled."""
+        from agents.cockpit import format_proactive_status
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
-        from agents.telegram_bridge import cmd_proactive
-
-        update = MagicMock()
-        update.effective_user.id = 999
-        update.message.reply_text = AsyncMock()
-        context = MagicMock()
-        context.args = ["status"]
 
         with (
-            patch("agents.telegram_bridge.owner_id", return_value=999),
             patch("storage.db.runtime_get", return_value=None),
             patch("agents.config.get", return_value=None),
             patch("storage.db.proactive_send_count_7d", return_value=0),
         ):
-            await cmd_proactive(update, context)
+            text = format_proactive_status()
 
-        call_args = update.message.reply_text.call_args[0][0]
-        # /proactive (no-arg) now renders via format_proactive_status: an
-        # "active sources" section + a "disabled" section (no [✓] marks).
-        assert "active sources" in call_args
-        active_part = call_args.split("disabled")[0]
+        assert "active sources" in text
+        active_part = text.split("disabled")[0]
         for src in sorted(DEFAULT_ENABLED_SOURCES):
             assert src in active_part, f"{src} should be listed as active"
         assert "reminder_fire" not in active_part, (
-            "reminder_fire must not show as enabled in /proactive status"
+            "reminder_fire must not show as enabled in proactive status"
         )
-
-    @pytest.mark.asyncio
-    async def test_on_adds_source_to_runtime(self):
-        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
-        from agents.telegram_bridge import cmd_proactive
-
-        update = MagicMock()
-        update.effective_user.id = 999
-        update.message.reply_text = AsyncMock()
-        context = MagicMock()
-        context.args = ["on", "weather_alert"]
-
-        stored = {}
-
-        def fake_runtime_set(k, v):
-            stored[k] = v
-
-        with (
-            patch("agents.telegram_bridge.owner_id", return_value=999),
-            patch("storage.db.runtime_get", return_value=None),
-            patch("storage.db.runtime_set", side_effect=fake_runtime_set),
-            patch("agents.config.get", return_value=list(DEFAULT_ENABLED_SOURCES)),
-        ):
-            await cmd_proactive(update, context)
-
-        assert "proactive_enabled_sources_override" in stored
-        stored_set = set(json.loads(stored["proactive_enabled_sources_override"]))
-        assert "weather_alert" in stored_set
-
-    @pytest.mark.asyncio
-    async def test_off_removes_source_from_runtime(self):
-        from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
-        from agents.telegram_bridge import cmd_proactive
-
-        update = MagicMock()
-        update.effective_user.id = 999
-        update.message.reply_text = AsyncMock()
-        context = MagicMock()
-        context.args = ["off", "wiki_new_file"]
-
-        stored = {}
-
-        def fake_runtime_set(k, v):
-            stored[k] = v
-
-        with (
-            patch("agents.telegram_bridge.owner_id", return_value=999),
-            patch("storage.db.runtime_get", return_value=None),
-            patch("storage.db.runtime_set", side_effect=fake_runtime_set),
-            patch("agents.config.get", return_value=list(DEFAULT_ENABLED_SOURCES)),
-        ):
-            await cmd_proactive(update, context)
-
-        stored_set = set(json.loads(stored["proactive_enabled_sources_override"]))
-        assert "wiki_new_file" not in stored_set
-
-    @pytest.mark.asyncio
-    async def test_unknown_source_returns_error(self):
-        from agents.telegram_bridge import cmd_proactive
-
-        update = MagicMock()
-        update.effective_user.id = 999
-        update.message.reply_text = AsyncMock()
-        context = MagicMock()
-        context.args = ["on", "totally_fake_source_xyz"]
-
-        with patch("agents.telegram_bridge.owner_id", return_value=999):
-            await cmd_proactive(update, context)
-
-        reply = update.message.reply_text.call_args[0][0]
-        assert "unknown source" in reply
 
 
 # ============================================================================

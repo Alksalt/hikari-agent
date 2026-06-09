@@ -11,7 +11,8 @@ action='run_now': queues the check-in to fire on the next scheduler tick
   here, run_now sets state and the scheduler fires within a minute.
 
 action='skip_tomorrow': adds tomorrow to the skip_dates list via
-  ``apply_schedule_edit``, the same call the /checkin skip command makes.
+  ``apply_schedule_edit`` (the same call the retired /checkin skip
+  command made before Phase 5b).
 """
 from __future__ import annotations
 

@@ -15,12 +15,11 @@ import random
 import sys
 import time
 from collections import deque
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import (
-    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MessageReactionUpdated,
@@ -31,7 +30,6 @@ from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
-    CommandHandler,
     ContextTypes,
     MessageHandler,
     MessageReactionHandler,
@@ -47,11 +45,11 @@ from tools.photos import OUTBOX as PHOTO_OUTBOX  # media_outbox drain path
 
 from . import affect as affect_mod
 from . import belief_frame as belief_mod
-from . import cockpit, injection_guard, post_filter
 from . import config as cfg
 from . import daily_checkin as daily_checkin_mod
 from . import drift_judge as drift_mod
 from . import handoff as handoff_mod
+from . import injection_guard, post_filter
 from . import postsend as postsend_mod
 from . import reactions as reactions_mod
 from . import sdk_pool as _sdk_pool
@@ -71,12 +69,11 @@ from .log_scrub import install_root_filter
 from .messaging import send_ephemeral_ack
 from .politeness_gate import is_rude, random_refusal
 from .post_filter import filter_outgoing
-from .runtime import REPO_ROOT, owner_id, respond, run_internal_control, run_user_turn
+from .runtime import REPO_ROOT, owner_id, respond, run_user_turn
 from .scheduler import build_scheduler
 
 logger = logging.getLogger(__name__)
 
-_BOOT_TIME: float = time.time()  # Phase 6A: uptime for /status
 _SCHEDULER_REF = None  # Set after scheduler.start() in post_init
 _BG_TASKS: set[asyncio.Task] = set()  # GC guard: keeps fire-and-forget tasks alive
 
@@ -1774,733 +1771,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _drain_media_outbox(context.bot, chat.id)
 
 
-# ---------- commands ----------
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Route /start through the agent so she responds in-character (not 'Welcome!')."""
-    user = update.effective_user
-    chat = update.effective_chat
-    message = update.message
-    if not user or not chat or not message or user.id != owner_id():
-        return
-    # Record the actual user event compactly so reflection/handoff/lexicon see
-    # "[/start]" — not the bracketed instruction text (codex H-1 fix).
-    try:
-        _start_mid = db.append_message("user", "[/start]", source="event")
-        db.runtime_set("last_user_message", db._now())
-        db.runtime_set("last_user_message_id", str(_start_mid))
-    except Exception:
-        logger.exception("cmd_start: event row write failed (non-fatal)")
-    # Use run_internal_control — this is a control prompt, not user text.
-    # It does NOT append to messages or mutate session, so the synthetic
-    # instruction cannot leak into reflection/handoff/lexicon.
-    try:
-        reply = await run_internal_control(
-            "[the user just opened the chat with /start. react in your voice — "
-            "short, denial layer on. don't welcome them like a service.]"
-        )
-    except Exception:
-        logger.exception("agent failed on /start")
-        await send_ephemeral_ack(
-            context.bot, chat.id, "(brain hit a wall. try again.)",
-            reason="start_error", reply_to=message,
-        )
-        return
-    if reply:
-        await _send_with_choreography(context.bot, message, reply)
-    await _drain_media_outbox(context.bot, chat.id)
-
-
-async def cmd_silence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    override = db.runtime_get("settings.silence.default_minutes")
-    _cfg_default = int(cfg.get("silence.default_minutes", 120))
-    try:
-        default_minutes = int(override) if override else _cfg_default
-    except (ValueError, TypeError):
-        default_minutes = _cfg_default
-    minutes = default_minutes
-    if context.args:
-        try:
-            minutes = max(1, int(context.args[0]))
-        except (ValueError, IndexError):
-            pass
-    until = datetime.now(UTC) + timedelta(minutes=minutes)
-    db.runtime_set("silence_until", until.isoformat())
-    try:
-        chat_id = message.chat_id if message else None
-        db.proactive_event_record_silence_window(chat_id=chat_id)
-    except Exception:
-        logger.exception("proactive_event_record_silence_window failed (non-fatal)")
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        cockpit.format_silence_ack(minutes),
-        reason="silence_ack", reply_to=message,
-    )
-
-
-async def cmd_unsilence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    db.runtime_set("silence_until", None)
-    await send_ephemeral_ack(
-        context.bot, message.chat_id, "fine. you can hear me again.",
-        reason="silence_ack", reply_to=message,
-    )
-
-
-_STICKER_CAPTURE_MODE_KEY = "sticker_capture_mode"
-_STICKER_CAPTURE_POOL_KEY = "sticker_capture_pool"
-
-
-async def cmd_grab_stickers(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """Phase 9 — capture file_ids of every sticker the owner sends, then
-    print a YAML snippet ready to paste into config/engagement.yaml.
-
-    Subcommands:
-      /grab_stickers          — show status
-      /grab_stickers start    — enter capture mode (every inbound sticker captured)
-      /grab_stickers stop     — exit capture mode + print the YAML snippet
-      /grab_stickers reset    — exit + drop the accumulated pool
-    """
-    import json
-
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-
-    arg = (context.args[0].strip().lower() if context.args else "").strip()
-    on = db.runtime_get(_STICKER_CAPTURE_MODE_KEY) == "1"
-    pool_json = db.runtime_get(_STICKER_CAPTURE_POOL_KEY) or "[]"
-    try:
-        pool = json.loads(pool_json)
-        if not isinstance(pool, list):
-            pool = []
-    except (ValueError, TypeError):
-        pool = []
-
-    if arg == "start":
-        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, "1")
-        # Don't clobber an existing partial pool — let user append across sessions.
-        await send_ephemeral_ack(
-            context.bot, message.chat_id,
-            f"sticker capture ON. send me stickers; i'll log them. "
-            f"({len(pool)} already queued.) /grab_stickers stop to finish.",
-            reason="stickers_cmd", reply_to=message, silent=True,
-        )
-        return
-
-    if arg in ("stop", "done", "finish"):
-        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
-        if not pool:
-            await send_ephemeral_ack(
-                context.bot, message.chat_id,
-                "captured nothing. send stickers while capture is on first.",
-                reason="stickers_cmd", reply_to=message, silent=True,
-            )
-            return
-        # Emit dict format so descriptions can be filled in. Pasting a
-        # flat-string snippet over the current pool wipes every description
-        # and degrades the situational LLM picker to random — situational
-        # selection depends on the description text.
-        snippet_lines = ["stickers:", "  pool:"]
-        for fid in pool:
-            # Telegram file_ids today are alphanumeric + _ + -, but escape
-            # double quotes + backslashes defensively in case a future
-            # source emits anything weirder (review-F6).
-            fid_safe = str(fid).replace("\\", "\\\\").replace('"', '\\"')
-            snippet_lines.append(f'    - file_id: "{fid_safe}"')
-            snippet_lines.append('      description: ""  # fill in or LLM picks at random')
-        snippet = "\n".join(snippet_lines)
-        await send_ephemeral_ack(
-            context.bot, message.chat_id,
-            f"captured {len(pool)} sticker(s). paste this into "
-            f"config/engagement.yaml (replace the existing `stickers.pool:`). "
-            f"FILL IN the descriptions or situational selection won't work:\n\n"
-            f"```\n{snippet}\n```",
-            reason="stickers_cmd", reply_to=message, silent=True,
-        )
-        # Leave the pool intact in case they want to capture more later.
-        return
-
-    if arg == "reset":
-        db.runtime_set(_STICKER_CAPTURE_MODE_KEY, None)
-        db.runtime_set(_STICKER_CAPTURE_POOL_KEY, None)
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, "sticker capture cleared.",
-            reason="stickers_cmd", reply_to=message, silent=True,
-        )
-        return
-
-    # No arg → status.
-    state = "ON" if on else "off"
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        f"sticker capture is {state}. {len(pool)} file_id(s) queued.\n"
-        f"/grab_stickers start | stop | reset",
-        reason="stickers_cmd", reply_to=message, silent=True,
-    )
-
-
-async def handle_inbound_sticker(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,  # noqa: ARG001
-) -> None:
-    """Phase 9 — when sticker-capture mode is on, log inbound owner stickers.
-
-    Outside capture mode, owner stickers are silently ignored (we don't have
-    a conversational handler for them yet)."""
-    import json
-
-    user = update.effective_user
-    message = update.message
-    if not user or not message or not message.sticker:
-        return
-    if user.id != owner_id():
-        return
-    if db.runtime_get(_STICKER_CAPTURE_MODE_KEY) != "1":
-        return
-
-    pool_json = db.runtime_get(_STICKER_CAPTURE_POOL_KEY) or "[]"
-    try:
-        pool = json.loads(pool_json)
-        if not isinstance(pool, list):
-            pool = []
-    except (ValueError, TypeError):
-        pool = []
-
-    file_id = message.sticker.file_id
-    if file_id in pool:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id,
-            f"already have that one ({len(pool)} total).",
-            reason="stickers_cmd", reply_to=message, silent=True,
-        )
-        return
-    pool.append(file_id)
-    db.runtime_set(_STICKER_CAPTURE_POOL_KEY, json.dumps(pool))
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        f"captured ({len(pool)}). send more or /grab_stickers stop.",
-        reason="stickers_cmd", reply_to=message, silent=True,
-    )
-
-
-async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List running + recent background tasks."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    running = db.bg_tasks_running()
-    recent = db.bg_tasks_recent(chat_id=user.id, limit=5)
-    lines: list[str] = []
-    if running:
-        lines.append(f"running ({len(running)}):")
-        for r in running:
-            lines.append(f"  {r['task_id'][:8]} — {r['status']} — {r['prompt'][:60]}")
-    else:
-        lines.append("nothing running.")
-    if recent:
-        lines.append("")
-        lines.append("recent:")
-        for r in recent:
-            cost = r.get("cost_usd") or 0.0
-            lines.append(
-                f"  {r['task_id'][:8]} [{r['status']}] ${cost:.2f} — {r['prompt'][:50]}"
-            )
-    await send_ephemeral_ack(
-        context.bot, message.chat_id, "\n".join(lines),
-        reason="tasks", reply_to=message,
-    )
-
-
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Cancel a background task by id-prefix. Note: in-process asyncio.Task cancellation
-    is not straightforward — for v1 this only marks the row cancelled. The nested SDK
-    client will keep running until its turn cap or budget cap; future work to actually
-    interrupt it."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    if not context.args:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, "usage: /cancel <task_id_prefix>",
-            reason="cancel", reply_to=message,
-        )
-        return
-    prefix = context.args[0].strip().lower()
-    running = db.bg_tasks_running()
-    matches = [r for r in running if r["task_id"].lower().startswith(prefix)]
-    if not matches:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, f"no running task starting with {prefix!r}.",
-            reason="cancel", reply_to=message,
-        )
-        return
-    if len(matches) > 1:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, f"ambiguous; {len(matches)} match. be more specific.",
-            reason="cancel", reply_to=message,
-        )
-        return
-    target = matches[0]
-    db.bg_task_cancel_request(target["task_id"])
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        f"cancel requested for {target['task_id'][:8]}. the worker will stop after its current tool turn.",
-        reason="cancel", reply_to=message,
-    )
-
-
-async def cmd_memory_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Side-by-side SQLite vs Graphiti recall for a query."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    query = " ".join(context.args or []).strip()
-    if not query:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, "usage: /memory_diff <query>",
-            reason="memory_cmd", reply_to=message,
-        )
-        return
-
-    from storage.graph import search as graph_search  # noqa: PLC0415
-    from storage.retrieval import legacy_retrieve  # noqa: PLC0415
-
-    sqlite_hits = []
-    try:
-        sqlite_hits = legacy_retrieve(query) or []
-    except Exception:
-        logger.exception("memory_diff: sqlite retrieve failed")
-
-    graph_hits = []
-    try:
-        graph_hits = await graph_search(query) or []
-    except Exception:
-        logger.exception("memory_diff: graph search failed")
-
-    try:
-        outbox_stats = db.graph_outbox_stats()
-        header = (
-            f"outbox: pending={outbox_stats['pending']} "
-            f"sent={outbox_stats['sent']} "
-            f"failed={outbox_stats['failed']} "
-            f"skipped={outbox_stats['skipped']}"
-        )
-    except Exception:
-        header = "outbox: stats unavailable"
-
-    lines = [f"/memory_diff: {query}", "", header, "", "SQLite (current):"]
-    for h in sqlite_hits[:5]:
-        lines.append(f"- {str(h)[:120]}")
-    if not sqlite_hits:
-        lines.append("(none)")
-    lines.append("")
-    lines.append("Graphiti:")
-    for h in graph_hits[:5]:
-        lines.append(f"- {str(h)[:120]}")
-    if not graph_hits:
-        lines.append("(none)")
-    await send_ephemeral_ack(
-        context.bot, message.chat_id, "\n".join(lines),
-        reason="memory_cmd", reply_to=message,
-    )
-
-
-async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/memory — query / edit the fact + message memory.
-
-    Routes:
-      (no args)            — 10 most recent facts
-      fact <id>            — full fact + provenance + linked entities
-      forget <id>          — soft-delete a fact
-      correct <id> <new>   — invalidate + replace a fact
-      <freetext>           — fuzzy search facts + sessions
-    """
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-
-    args = context.args or []
-    sub = args[0].lower() if args else ""
-
-    async def _mem_ack(text: str, silent: bool = False) -> None:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, text,
-            reason="memory_cmd", reply_to=message, silent=silent,
-        )
-
-    # ---- /memory (no args) → recent ----
-    if not sub:
-        facts = db.active_facts(limit=10)
-        if not facts:
-            await _mem_ack("no facts yet.")
-            return
-        lines = [f"recent {len(facts)} facts:"]
-        for f in facts:
-            obj_short = f['object'][:80]
-            lines.append(f"  #{f['id']}: {f['predicate']} — {obj_short}  [{f['valid_from'][:10]}]")
-        await _mem_ack("\n".join(lines)[:3900])
-        return
-
-    # ---- fact ----
-    if sub == "fact":
-        if len(args) < 2:
-            await _mem_ack("usage: /memory fact <id>")
-            return
-        try:
-            fid = int(args[1])
-        except ValueError:
-            await _mem_ack("id must be an integer.")
-            return
-        fact = db.fact_by_id(fid)
-        if not fact:
-            await _mem_ack(f"fact {fid}: not found.")
-            return
-        prov = db.fact_provenance(fid)
-        with db._conn() as c:
-            entity_rows = c.execute(
-                "SELECT e.kind, e.canonical_name FROM entities e "
-                "JOIN fact_entities fe ON fe.entity_id = e.id "
-                "WHERE fe.fact_id = ?", (fid,)
-            ).fetchall()
-        lines = [
-            f"fact #{fid}",
-            f"  subject:   {fact['subject']}",
-            f"  predicate: {fact['predicate']}",
-            f"  object:    {fact['object']}",
-            f"  status:    {fact.get('status', 'active')}",
-            f"  valid_from: {fact.get('valid_from', '')}",
-        ]
-        if fact.get("valid_to"):
-            lines.append(f"  valid_to:  {fact['valid_to']}")
-        if fact.get("attribution"):
-            lines.append(f"  attribution: {fact['attribution']}")
-        if fact.get("confidence") is not None:
-            lines.append(f"  confidence: {fact['confidence']}")
-        if prov and prov.get("source_message_id"):
-            _ts = prov.get('ts') or ''
-            lines.append(f"  source_msg: #{prov['source_message_id']} @ {_ts[:19]}")
-        if entity_rows:
-            ent_str = ", ".join(f"{r['kind']}:{r['canonical_name']}" for r in entity_rows)
-            lines.append(f"  entities: {ent_str}")
-        await _mem_ack("\n".join(lines)[:3900])
-        return
-
-    # ---- forget ----
-    if sub == "forget":
-        if len(args) < 2:
-            await _mem_ack("usage: /memory forget <id>")
-            return
-        try:
-            fid = int(args[1])
-        except ValueError:
-            await _mem_ack("id must be an integer.")
-            return
-        from tools.memory.forget_fact import forget_fact
-        ok = forget_fact(fid)
-        if ok:
-            await _mem_ack(f"forgot {fid}.")
-        else:
-            await _mem_ack(f"fact {fid}: not found.")
-        return
-
-    # ---- correct ----
-    if sub == "correct":
-        if len(args) < 3:
-            await _mem_ack("usage: /memory correct <id> <new object>")
-            return
-        try:
-            fid = int(args[1])
-        except ValueError:
-            await _mem_ack("id must be an integer.")
-            return
-        new_obj = " ".join(args[2:]).strip()
-        from tools.memory.correct_fact import correct_fact
-        try:
-            new_id = correct_fact(fid, new_obj)
-        except ValueError as exc:
-            await _mem_ack(str(exc))
-            return
-        await _mem_ack(f"corrected {fid} → new fact #{new_id}.")
-        return
-
-    # ---- freetext search (facts + sessions) ----
-    q = " ".join(args).strip()
-    fact_hits = db.facts_text_search(q, limit=8)
-    session_hits = db.messages_fts_search(q, limit=5)
-    if not fact_hits and not session_hits:
-        await _mem_ack(f"no matches for {q!r}.")
-        return
-    lines = [f"search: {q!r}"]
-    if fact_hits:
-        lines.append(f"\nfacts ({len(fact_hits)}):")
-        for f in fact_hits:
-            lines.append(f"  #{f['id']}: {f['predicate']} — {f['object'][:80]}")
-    if session_hits:
-        lines.append(f"\nmessages ({len(session_hits)}):")
-        for r in session_hits:
-            snippet = (r["content"] or "")[:80].replace("\n", " ")
-            lines.append(f"  [{r['role']} #{r['id']} @ {r['ts'][:10]}] {snippet}")
-    await _mem_ack("\n".join(lines)[:3900])
-
-
-async def cmd_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List pending gatekeeper approvals, or cancel one by id.
-
-    Usage:
-      /approvals                — list pending approvals for this chat
-      /approvals cancel <id>   — admin-cancel a pending approval by row id
-    """
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-
-    arg = " ".join(context.args).strip() if context.args else ""
-
-    async def _appr_ack(text: str) -> None:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, text,
-            reason="approvals_cmd", reply_to=message,
-        )
-
-    if arg.startswith("cancel "):
-        try:
-            row_id = int(arg.split(maxsplit=1)[1])
-        except (IndexError, ValueError):
-            await _appr_ack("usage: /approvals cancel <id>")
-            return
-        from tools.gatekeeper import GATEKEEPER
-        # Look up the tool_use_id for this row so we can resolve via the
-        # in-memory pending slot (which is keyed by tool_use_id, not row id).
-        tool_use_id_for_cancel: str | None = None
-        with db._conn() as _c:
-            _row = _c.execute(
-                "SELECT tool_use_id FROM approvals WHERE id = ? AND status = 'pending'",
-                (row_id,),
-            ).fetchone()
-        if _row:
-            tool_use_id_for_cancel = str(_row["tool_use_id"] or "")
-        if not tool_use_id_for_cancel:
-            await _appr_ack(f"approval {row_id}: not found or already resolved.")
-            return
-        resolved = await GATEKEEPER.resolve(tool_use_id_for_cancel, "admin_cancel")
-        if resolved:
-            await _appr_ack(f"approval {row_id}: cancelled.")
-        else:
-            await _appr_ack(f"approval {row_id}: not found or already resolved.")
-        return
-
-    chat_id = update.effective_chat.id
-    with db._conn() as c:
-        rows = c.execute(
-            "SELECT id, tool_name, summary, created_at, deadline_iso "
-            "FROM approvals "
-            "WHERE chat_id = ? AND status = 'pending' AND gate_kind = 'gatekeeper' "
-            "ORDER BY id DESC",
-            (chat_id,),
-        ).fetchall()
-    if not rows:
-        await _appr_ack("nothing pending.")
-        return
-    await _appr_ack(f"pending approvals ({len(rows)}):")
-    for r in rows:
-        summary = (r["summary"] or "")[:80]
-        deadline = r["deadline_iso"] or "?"
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=f"#{r['id']}: {summary}\ndeadline: {deadline}",
-            reply_markup=_kb_approval(r["id"]),
-        )
-
-
-async def cmd_proactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/proactive status | on <source> | off <source>"""
-    import json as _json
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-
-    from agents.engagement.producers import ALL_PRODUCER_IDS, DEFAULT_ENABLED_SOURCES
-
-    args = context.args or []
-
-    async def _pro_ack(text: str) -> None:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, text,
-            reason="proactive_cmd", reply_to=message,
-        )
-
-    # Phase 6A: new subcommands — recent, why, snooze
-    if args and args[0] == "recent":
-        days = 7
-        if len(args) > 1:
-            try:
-                days = int(args[1])
-            except ValueError:
-                pass
-        text = cockpit.format_proactive_recent(days=days)
-        await _pro_ack(text)
-        return
-
-    if args and args[0] == "why":
-        if len(args) < 2:
-            await _pro_ack("usage: /proactive why <event_id>")
-            return
-        try:
-            event_id = int(args[1])
-        except ValueError:
-            await _pro_ack(f"invalid id: {args[1]}")
-            return
-        text = cockpit.format_proactive_why(event_id)
-        await _pro_ack(text)
-        return
-
-    if args and args[0] == "snooze":
-        if len(args) < 3:
-            await _pro_ack("usage: /proactive snooze <source> <duration>  e.g. 2h")
-            return
-        source = args[1]
-        duration_str = args[2]
-        text = cockpit.format_proactive_snooze(source, duration_str)
-        await _pro_ack(text)
-        return
-
-    if not args or args[0] == "status":
-        # Richer renderer: next ping window + active + snoozed (TTLs) + disabled.
-        await _pro_ack(cockpit.format_proactive_status())
-        return
-
-    op = args[0]
-    if op not in ("on", "off") or len(args) < 2:
-        await _pro_ack("usage: /proactive on|off <source> | /proactive status")
-        return
-
-    source = args[1]
-    if source not in ALL_PRODUCER_IDS:
-        await _pro_ack(f"unknown source: {source}")
-        return
-
-    raw_override = db.runtime_get("proactive_enabled_sources_override")
-    if raw_override:
-        try:
-            enabled = set(_json.loads(raw_override))
-        except (ValueError, TypeError):
-            enabled = set(DEFAULT_ENABLED_SOURCES)
-    else:
-        cfg_sources = cfg.get("proactive.default_enabled_sources")
-        enabled = set(cfg_sources) if cfg_sources else set(DEFAULT_ENABLED_SOURCES)
-
-    if op == "on":
-        enabled.add(source)
-    else:
-        enabled.discard(source)
-
-    db.runtime_set("proactive_enabled_sources_override", _json.dumps(sorted(enabled)))
-    await _pro_ack(f"{op} {source}. now enabled: {sorted(enabled)}")
-
-
-# ---------------------------------------------------------------------------
-# Phase 6A cockpit commands
-# ---------------------------------------------------------------------------
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/help — list all registered commands with one-line descriptions."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, cockpit.format_help(),
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/status — system status dashboard."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    text = await cockpit.format_status(context.application)
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, text,
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/tools [policy|recent] — list tool registry or recent tool calls."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = context.args or []
-    subcmd = args[0].lower() if args else "policy"
-    rest = args[1:] if len(args) > 1 else []
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, cockpit.format_tools(subcmd, rest),
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/audit [recent [N]|tools|approvals|id <id>] — paginate audit_log."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = context.args or []
-    subcmd = args[0].lower() if args else "recent"
-    rest = args[1:] if len(args) > 1 else []
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, cockpit.format_audit(subcmd, rest),
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_capabilities(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/capabilities — tool families + MCP server health."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    text = await cockpit.format_capabilities()
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, text,
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/settings [get <key>|set <key> <value>] — allowlisted runtime settings."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = context.args or []
-    subcmd = args[0].lower() if args else "list"
-    rest = args[1:] if len(args) > 1 else []
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, cockpit.format_settings(subcmd, rest),
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
 # ---------------------------------------------------------------------------
 # InlineKeyboardMarkup builders
 # ---------------------------------------------------------------------------
@@ -2527,6 +1797,34 @@ def _kb_reminder(reminder_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("dismiss", callback_data=f"reminder:dismiss:{reminder_id}:"),
     ]])
 
+
+async def attach_keyboard_to_sent_message(
+    telegram_message_id: int | None, reply_markup: InlineKeyboardMarkup,
+) -> bool:
+    """Attach an inline keyboard to an already-sent push message.
+
+    The proactive send pipeline (reserve_and_send → send_and_persist) is
+    text-only, so push sites (reminder fires, daily check-in) call this after
+    a successful send to add their keyboard. Best-effort: returns False and
+    never raises when the bridge isn't live (tests, scripts) or the edit
+    fails.
+    """
+    bot = _get_current_bot()
+    if bot is None or telegram_message_id is None:
+        return False
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=owner_id(),
+            message_id=telegram_message_id,
+            reply_markup=reply_markup,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "attach_keyboard_to_sent_message failed (non-fatal) msg_id=%s",
+            telegram_message_id,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -2668,202 +1966,6 @@ async def _cb_proactive(bot, chat_id: int, action: str, parts: list[str]) -> Non
         await bot.send_message(chat_id=chat_id, text=f"unknown proactive action: {action!r}")
 
 
-async def _cb_memory(bot, chat_id: int, action: str, parts: list[str]) -> None:
-    """Handles mem:forget:<fid>, mem:forget_confirm:<fid>, mem:context:<fid>,
-    mem:pin:<fid>, mem:pin_confirm:<fid>, mem:page:<n>.
-
-    Destructive actions (forget, pin) require a confirm step before mutating:
-      Forget button  → mem:forget:<fid>         → asks for confirmation
-      Confirm button → mem:forget_confirm:<fid> → marks fact invalid
-      Pin button     → mem:pin:<fid>            → asks for confirmation
-      Confirm button → mem:pin_confirm:<fid>    → sets status=pinned
-    """
-    if action in ("forget", "forget_confirm", "context", "pin", "pin_confirm"):
-        fact_id_str = parts[2] if len(parts) > 2 else "0"
-        try:
-            fact_id = int(fact_id_str)
-        except ValueError:
-            await bot.send_message(chat_id=chat_id, text=f"invalid fact id: {fact_id_str!r}")
-            return
-
-        if action == "forget":
-            # First tap: ask for confirmation before mutating.
-            markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    f"Yes, forget #{fact_id}",
-                    callback_data=f"mem:forget_confirm:{fact_id}",
-                ),
-                InlineKeyboardButton("Cancel", callback_data="mem:page:0"),
-            ]])
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"forget fact #{fact_id}? this marks it invalid and cannot be undone.",
-                reply_markup=markup,
-            )
-
-        elif action == "forget_confirm":
-            try:
-                db.mark_fact_invalid(fact_id)
-                await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: marked invalid.")
-            except Exception as exc:
-                await bot.send_message(chat_id=chat_id, text=f"forget failed: {exc}")
-
-        elif action == "context":
-            try:
-                prov = db.fact_provenance(fact_id)
-                if prov:
-                    lines = [f"fact #{fact_id} provenance:"]
-                    for k, v in prov.items():
-                        if v is not None:
-                            lines.append(f"  {k}: {str(v)[:120]}")
-                    await bot.send_message(chat_id=chat_id, text="\n".join(lines)[:3000])
-                else:
-                    await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: no provenance found.")
-            except Exception as exc:
-                await bot.send_message(chat_id=chat_id, text=f"context lookup failed: {exc}")
-
-        elif action == "pin":
-            # First tap: ask for confirmation before mutating.
-            markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    f"Yes, pin #{fact_id}",
-                    callback_data=f"mem:pin_confirm:{fact_id}",
-                ),
-                InlineKeyboardButton("Cancel", callback_data="mem:page:0"),
-            ]])
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"pin fact #{fact_id}? pinned facts are excluded from decay/pruning.",
-                reply_markup=markup,
-            )
-
-        elif action == "pin_confirm":
-            try:
-                with db._conn() as c:
-                    c.execute(
-                        "UPDATE facts SET status = 'pinned' WHERE id = ?",
-                        (fact_id,),
-                    )
-                await bot.send_message(chat_id=chat_id, text=f"fact #{fact_id}: pinned.")
-            except Exception as exc:
-                await bot.send_message(chat_id=chat_id, text=f"pin failed: {exc}")
-
-    elif action == "page":
-        # 0-based page index to match cockpit.format_memorydump; the callback
-        # data already carries 0-based values (set by cockpit's nav_row builder).
-        page_str = parts[2] if len(parts) > 2 else "0"
-        try:
-            page = max(0, int(page_str))
-        except ValueError:
-            page = 0
-        try:
-            text, keyboard_rows = cockpit.format_memorydump(page=page)
-            if keyboard_rows:
-                markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-                     for btn in row]
-                    for row in keyboard_rows
-                ])
-                await bot.send_message(chat_id=chat_id, text=text[:4000], reply_markup=markup)
-            else:
-                await bot.send_message(chat_id=chat_id, text=text[:4000])
-        except Exception as exc:
-            await bot.send_message(chat_id=chat_id, text=f"mem:page failed: {exc}")
-
-    else:
-        await bot.send_message(chat_id=chat_id, text=f"unknown memory action: {action!r}")
-
-
-async def _cb_rem(bot, chat_id: int, action: str, parts: list[str]) -> None:
-    """Handles rem:page:<n>, rem:cancel:<id>, rem:snooze:<id>:<hours>."""
-    if action == "page":
-        page_str = parts[2] if len(parts) > 2 else "1"
-        try:
-            page = max(1, int(page_str))
-        except ValueError:
-            page = 1
-        per_page = 10
-        all_rows = db.reminder_list(active_only=True)
-        chunk = all_rows[(page - 1) * per_page: page * per_page]
-        if not chunk:
-            await bot.send_message(chat_id=chat_id, text=f"no reminders on page {page}.")
-            return
-        for r in chunk:
-            rid = r["id"]
-            fire_at = (r.get("fire_at") or "")[:16]
-            text_label = (r.get("text") or f"reminder {rid}")[:60]
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"#{rid} {fire_at}  {text_label}",
-                reply_markup=_kb_reminder(rid),
-            )
-
-    elif action == "cancel":
-        rid_str = parts[2] if len(parts) > 2 else "0"
-        try:
-            rid = int(rid_str)
-        except ValueError:
-            await bot.send_message(chat_id=chat_id, text=f"invalid id: {rid_str!r}")
-            return
-        db.reminder_cancel(rid)
-        await bot.send_message(chat_id=chat_id, text=f"reminder {rid}: cancelled.")
-
-    elif action == "snooze":
-        rid_str = parts[2] if len(parts) > 2 else "0"
-        hours_str = parts[3] if len(parts) > 3 else "1"
-        try:
-            rid = int(rid_str)
-            hours = float(hours_str)
-        except ValueError:
-            await bot.send_message(chat_id=chat_id, text="invalid rem:snooze params.")
-            return
-        from datetime import UTC as _UTC  # noqa: PLC0415
-        from datetime import datetime as _dt
-        from datetime import timedelta as _td
-        fire_at = (_dt.now(_UTC) + _td(hours=hours)).isoformat()
-        try:
-            db.reminder_update_fire_at(rid, fire_at)
-            db.reminder_requeue_sync(rid)
-            await bot.send_message(chat_id=chat_id, text=f"reminder {rid}: snoozed {hours}h.")
-        except Exception as exc:
-            await bot.send_message(chat_id=chat_id, text=f"rem:snooze failed: {exc}")
-
-    else:
-        await bot.send_message(chat_id=chat_id, text=f"unknown rem action: {action!r}")
-
-
-async def _cb_diary(bot, chat_id: int, parts: list[str]) -> None:
-    """Handles diary:page:<n> callbacks."""
-    page_str = parts[2] if len(parts) > 2 else "0"
-    try:
-        page = max(0, int(page_str))
-    except ValueError:
-        page = 0
-    text, nav_row = cockpit.format_diary(page=page)
-    if nav_row:
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-            for btn in nav_row
-        ]])
-        await bot.send_message(chat_id=chat_id, text=(text or "no entries.")[:4000], reply_markup=markup)
-    else:
-        await bot.send_message(chat_id=chat_id, text=(text or "no entries.")[:4000])
-
-
-async def _cb_receipt(bot, chat_id: int, parts: list[str]) -> None:
-    """Handles receipt:<view> callbacks (today/week/made/moved/learned/avoided)."""
-    view = parts[1] if len(parts) > 1 else "today"
-    text, keyboard_row = cockpit.format_receipt(view=view)
-    if keyboard_row:
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-            for btn in keyboard_row
-        ]])
-        await bot.send_message(chat_id=chat_id, text=(text or "nothing logged.")[:4000], reply_markup=markup)
-    else:
-        await bot.send_message(chat_id=chat_id, text=(text or "nothing logged.")[:4000])
-
-
 async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route all inline-keyboard callbacks. Owner-gated."""
     query = update.callback_query
@@ -2894,217 +1996,10 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif namespace == "pro":
             action = parts[1] if len(parts) > 1 else ""
             await _cb_proactive(bot, chat_id, action, parts)
-        elif namespace == "mem":
-            action = parts[1] if len(parts) > 1 else ""
-            await _cb_memory(bot, chat_id, action, parts)
-        elif namespace == "rem":
-            action = parts[1] if len(parts) > 1 else ""
-            await _cb_rem(bot, chat_id, action, parts)
-        elif namespace == "diary":
-            await _cb_diary(bot, chat_id, parts)
-        elif namespace == "receipt":
-            await _cb_receipt(bot, chat_id, parts)
         else:
             logger.warning("_handle_callback: unknown namespace %r in data %r", namespace, data)
     except Exception:
         logger.exception("_handle_callback: error handling data=%r", data)
-
-
-# ---------------------------------------------------------------------------
-# /reminders + /checkin
-# ---------------------------------------------------------------------------
-
-async def _send_cockpit_text(message, text: str) -> None:
-    if not text:
-        return
-    await send_ephemeral_ack(
-        message.get_bot(), message.chat_id, text[:4000],
-        reason="cockpit_cmd", reply_to=message,
-    )
-
-
-async def cmd_diary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/diary [page] — last diary entries paginated."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = (context.args or [])
-    page = int(args[0]) if args and args[0].isdigit() else 0
-    text, nav_row = cockpit.format_diary(page=page)
-    if nav_row:
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-            for btn in nav_row
-        ]])
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=(text or "no diary entries.")[:4000],
-            reply_markup=markup,
-        )
-    else:
-        await _send_cockpit_text(message, text)
-
-
-async def cmd_memorydump(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/memorydump [page] — paginated fact browser with per-fact inline buttons."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = (context.args or [])
-    page = int(args[0]) if args and args[0].isdigit() else 0
-    text, keyboard_rows = cockpit.format_memorydump(page=page)
-    if not keyboard_rows:
-        await _send_cockpit_text(message, text)
-        return
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-         for btn in row]
-        for row in keyboard_rows
-    ])
-    await context.bot.send_message(
-        chat_id=message.chat_id,
-        text=text[:4000],
-        reply_markup=markup,
-    )
-
-
-async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/links [search] — search bookmark shelf or list all recent."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = (context.args or [])
-    query = " ".join(args) if args else None
-    chunks = cockpit.format_links(query=query)
-    for chunk in chunks:
-        await _send_cockpit_text(message, chunk)
-
-
-async def cmd_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/receipt [today|week|category] — day/week receipt with filter buttons."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = (context.args or [])
-    view = args[0] if args else "today"
-    text, keyboard_row = cockpit.format_receipt(view=view)
-    if keyboard_row:
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
-            for btn in keyboard_row
-        ]])
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=(text or "nothing logged.")[:4000],
-            reply_markup=markup,
-        )
-    else:
-        await _send_cockpit_text(message, text)
-
-
-async def cmd_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/decision [pending|resolve <id> <0|1>] — calibration log."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = (context.args or [])
-    subcmd = args[0] if args else None
-    text = cockpit.format_decision(subcmd=subcmd, args=args[1:] if len(args) > 1 else [])
-    await _send_cockpit_text(message, text)
-
-
-async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/voice — last voice transcript + STT health + 3 recent prompts."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    text = cockpit.format_voice()
-    await _send_cockpit_text(message, text)
-
-
-async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/reminders — list active reminders with snooze/dismiss buttons."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    rows = db.reminder_list(active_only=True)
-    if not rows:
-        await send_ephemeral_ack(
-            context.bot, message.chat_id, "no active reminders.",
-            reason="reminders_cmd", reply_to=message,
-        )
-        return
-    display = rows[:15]
-    await send_ephemeral_ack(
-        context.bot, message.chat_id,
-        f"active reminders ({len(rows)}):",
-        reason="reminders_cmd", reply_to=message,
-    )
-    for r in display:
-        rid = r["id"]
-        fire_at = (r.get("fire_at") or "")[:16]
-        text_label = (r.get("text") or f"reminder {rid}")[:60]
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=f"#{rid} {fire_at}  {text_label}",
-            reply_markup=_kb_reminder(rid),
-        )
-
-
-async def cmd_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/checkin [run | skip tomorrow] — morning checkin controls."""
-    user = update.effective_user
-    message = update.message
-    if not user or not message or user.id != owner_id():
-        return
-    args = context.args or []
-    arg_str = " ".join(args).strip().lower()
-
-    if arg_str == "run":
-        async def _send(text: str) -> tuple[str, int | None, bool]:
-            from agents.messaging import send_and_persist
-            result = await send_and_persist(
-                bot=context.bot, chat_id=message.chat_id, text=text,
-                source="daily_checkin", persist=True,
-                run_hooks=False, skip_choreography=True,
-            )
-            return result.final_text, result.telegram_message_id, result.ok
-        try:
-            await daily_checkin_mod.maybe_run_daily_checkin(_send)
-        except Exception:
-            logger.exception("cmd_checkin: maybe_run_daily_checkin failed")
-        return
-
-    if arg_str == "skip tomorrow":
-        from datetime import date, timedelta
-        tomorrow = (date.today() + timedelta(days=1)).isoformat()
-        try:
-            from agents.daily_checkin import apply_schedule_edit
-            apply_schedule_edit({"kind": "skip", "date": tomorrow})
-            await send_ephemeral_ack(
-                context.bot, message.chat_id, f"checkin skipped for {tomorrow}.",
-                reason="checkin_cmd", reply_to=message,
-            )
-        except Exception as exc:
-            await send_ephemeral_ack(
-                context.bot, message.chat_id, f"skip failed: {exc}",
-                reason="checkin_cmd", reply_to=message,
-            )
-        return
-
-    # No args — status + buttons
-    await context.bot.send_message(
-        chat_id=message.chat_id,
-        text="morning checkin options:",
-        reply_markup=_kb_checkin_status(),
-    )
 
 
 _REACTION_TURN_COOLDOWN_KEY = "reaction_turn_last_at"
@@ -3416,32 +2311,12 @@ def build_application() -> Application:
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set in environment")
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("silence", cmd_silence))
-    app.add_handler(CommandHandler("unsilence", cmd_unsilence))
-    app.add_handler(CommandHandler("tasks", cmd_tasks))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler("memory_diff", cmd_memory_diff))
-    app.add_handler(CommandHandler("memory", cmd_memory))
-    app.add_handler(CommandHandler("approvals", cmd_approvals))
-    app.add_handler(CommandHandler("proactive", cmd_proactive))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("tools", cmd_tools))
-    app.add_handler(CommandHandler("audit", cmd_audit))
-    app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(CommandHandler("capabilities", cmd_capabilities))
-    # Phase 9: sticker-pack install — owner sends stickers while capture mode
-    # is on; bot logs file_ids and emits a YAML snippet on /grab_stickers stop.
-    app.add_handler(CommandHandler("grab_stickers", cmd_grab_stickers))
-    app.add_handler(CommandHandler("reminders", cmd_reminders))
-    app.add_handler(CommandHandler("checkin", cmd_checkin))
-    app.add_handler(CommandHandler("diary", cmd_diary))
-    app.add_handler(CommandHandler("memorydump", cmd_memorydump))
-    app.add_handler(CommandHandler("links", cmd_links))
-    app.add_handler(CommandHandler("receipt", cmd_receipt))
-    app.add_handler(CommandHandler("decision", cmd_decision))
-    app.add_handler(CommandHandler("voice", cmd_voice))
+    # Phase 5b (useful-agent pivot): ZERO slash-command handlers registered.
+    # Operator control moved to conversational tools (set_silence,
+    # set_proactive_source, checkin_control, reminder_list, diary_read,
+    # link_search, receipt_read, recall, ...) and inline keyboards.
+    # Command-shaped texts ("/start", "/status") fall through to
+    # handle_message and get a normal in-character conversational turn.
     app.add_handler(CallbackQueryHandler(_handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
@@ -3456,8 +2331,11 @@ def build_application() -> Application:
     # Mime routing and size checks are handled inside handle_document.
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.Sticker.ALL, handle_inbound_sticker))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Inbound stickers: no live handler. One-time file_id harvesting for the
+    # sticker pool lives in scripts/grab_stickers.py (stop the bridge first).
+    # No ~filters.COMMAND exclusion — command-shaped texts ("/start") must
+    # reach handle_message and become a normal conversational turn.
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
     # Phase 8: 👍/👎 ground-truth for the drift judge. Owner-only handler;
     # writes a +1 / -1 row into user_feedback keyed by the outbound message_id.
     app.add_handler(MessageReactionHandler(handle_message_reaction))
@@ -3611,7 +2489,7 @@ def main() -> None:
         scheduler = build_scheduler(send_text)
         global _SCHEDULER_REF
         _SCHEDULER_REF = scheduler
-        application.bot_data["scheduler"] = scheduler  # Phase 6A: /status can read jobs
+        application.bot_data["scheduler"] = scheduler  # introspection: live job list
         # scheduler.start() is deferred until after sdk_pool.startup() below so
         # scheduled jobs that call run_scheduled_action don't race against pool init.
 
@@ -3673,11 +2551,11 @@ def main() -> None:
 
         # Phase E: wire the gatekeeper send_text BEFORE recovery so nudge
         # messages during restart_recovery can actually reach Telegram.
+        # Phase 5b: zero slash-commands — push an empty list so stale command
+        # menus cached on Telegram clients get cleared.
         try:
-            await application.bot.set_my_commands([
-                BotCommand(name, desc[:256]) for name, desc in cockpit._COMMANDS.items()
-            ])
-            logger.info("set_my_commands: registered %d", len(cockpit._COMMANDS))
+            await application.bot.set_my_commands([])
+            logger.info("set_my_commands: cleared command menu (zero slash-commands)")
         except Exception:
             logger.exception("set_my_commands failed (non-fatal)")
 

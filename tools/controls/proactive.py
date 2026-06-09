@@ -1,8 +1,9 @@
 """``set_proactive_source`` — enable, disable, or snooze a proactive source.
 
-Mirrors /proactive on|off|snooze logic from the Telegram bridge, writing
-the same ``proactive_enabled_sources_override`` and
-``proactive_snooze_until`` runtime_state keys.
+Writes the ``proactive_enabled_sources_override`` and
+``proactive_snooze_until`` runtime_state keys the proactive scheduler
+reads (the retired /proactive command wrote the same keys before
+Phase 5b).
 
 Also accepts action='status' to return the current enabled/disabled/
 snoozed state per source (reuses ``cockpit.format_proactive_status``).
