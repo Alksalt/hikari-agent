@@ -15,7 +15,7 @@ All 20 producers:
 
   Opt-in (12):
     anniversary_callback, belief_resurface, calendar_new_invite, callback_episode,
-    drive_starred_new, notion_recent_edit, weather_alert,
+    drive_starred_new, notion_recent_edit, reminder_fire, weather_alert,
     weirdly_good_mood_leak, reengage_silence, location_arrived_recurring,
     research_callback
 """
@@ -28,7 +28,6 @@ from agents.engagement.producers import (  # noqa: F401
     callback_episode,
     decision_resolve_due,
     drive_starred_new,
-    flirt_initiation,
     irritation_event,
     just_got_home,
     late_night_dissolution,
@@ -54,7 +53,6 @@ ALL_PRODUCER_IDS: frozenset[str] = frozenset({
     "calendar_new_invite",
     "decision_resolve_due",
     "drive_starred_new",
-    "flirt_initiation",
     "irritation_event",
     "just_got_home",
     "late_night_dissolution",
@@ -87,7 +85,6 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "belief_resurface",
     "research_callback",
     "callback_episode",
-    "flirt_initiation",
 })
 
 # Map source id → module for dynamic dispatch by the scheduler.
@@ -100,7 +97,6 @@ _PRODUCER_MODULES = {
     "calendar_new_invite": calendar_new_invite,
     "decision_resolve_due": decision_resolve_due,
     "drive_starred_new": drive_starred_new,
-    "flirt_initiation": flirt_initiation,
     "irritation_event": irritation_event,
     "just_got_home": just_got_home,
     "late_night_dissolution": late_night_dissolution,
