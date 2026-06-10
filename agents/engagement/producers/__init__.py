@@ -77,6 +77,9 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "belief_resurface",
     "research_callback",
     "callback_episode",
+    # Silent awareness only (send_mode: silent) — lets the selector hold back
+    # competing pings near a due reminder; fire_due_reminders stays the owner.
+    "reminder_fire",
 })
 
 # Map source id → module for dynamic dispatch by the scheduler.

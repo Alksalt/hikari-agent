@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from agents.engagement.triggers import TriggerCandidate
@@ -319,16 +319,49 @@ def score(candidate: TriggerCandidate, ctx: SimpleNamespace) -> float:
     return s
 
 
+def _imminent_reminder(candidates: list[TriggerCandidate]) -> bool:
+    """True when a (silent) reminder_fire candidate is due within the
+    suppression window — the selector then holds back any competing
+    proactive ping so the reminder lands without a back-to-back double.
+
+    Candidates only exist when the reminder_fire source is enabled, so no
+    extra gating is needed here. Already-overdue reminders (fire_at in the
+    past) count as imminent — fire_due_reminders delivers them within 60s.
+    """
+    from agents import config as _cfg
+    window_min = float(_cfg.get("engagement.reminder_fire.suppression_window_minutes", 10))
+    horizon = datetime.now(UTC) + timedelta(minutes=window_min)
+    for c in candidates:
+        if c.source != "reminder_fire":
+            continue
+        raw = str(c.payload.get("fire_at") or "")
+        try:
+            fire_at = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            continue
+        if fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=UTC)
+        if fire_at <= horizon:
+            return True
+    return False
+
+
 def select(candidates: list[TriggerCandidate], ctx: SimpleNamespace) -> TriggerCandidate | None:
     """Return the highest-scoring enabled candidate that fits within pool caps,
     passes send_mode and value_score filters, or None if nothing qualifies.
 
     Extensions vs original:
     - Filters out sources with send_mode == "silent".
+    - Holds back ALL candidates while a reminder is due within the
+      suppression window (reminder_fire silent-awareness, see
+      agents/engagement/producers/reminder_fire.py).
     - Computes value_score per candidate; filters below per-source min_value_score.
     - Applies bundle co-firing guard on the top-2 finalists.
     """
     if not candidates:
+        return None
+    if _imminent_reminder(candidates):
+        logger.info("selector: holding tick — reminder due within suppression window")
         return None
     enabled_sources: set[str] = ctx.enabled_sources
     snoozed: set[str] = _snoozed_sources()

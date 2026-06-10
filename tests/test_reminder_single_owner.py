@@ -54,16 +54,19 @@ async def test_fire_due_reminders_marks_fired_in_same_transaction():
     assert row["fired_at"] is not None, "fired_at should be set after successful send"
 
 
-def test_reminder_fire_producer_disabled_in_config():
-    """reminder_fire producer must be absent or enabled: false in engagement.yaml."""
+def test_reminder_fire_producer_is_silent_awareness():
+    """reminder_fire is enabled-but-silent: it may surface candidates for the
+    selector's suppression window but must NEVER be a second firing path.
+    Flipping send_mode to 'proactive' would resurrect the double-fire bug
+    sprint-9 killed."""
     config_path = Path(__file__).parent.parent / "config" / "engagement.yaml"
     with open(config_path) as f:
         data = yaml.safe_load(f)
 
-    engagement = data.get("engagement", {})
-    reminder_fire = engagement.get("reminder_fire")
-
-    # Either the key is absent OR explicitly disabled.
-    assert reminder_fire is None or reminder_fire.get("enabled") is False, (
-        f"reminder_fire producer must be absent or enabled: false, got: {reminder_fire!r}"
+    reminder_fire = data.get("engagement", {}).get("reminder_fire")
+    assert reminder_fire is not None, "reminder_fire block must exist"
+    assert reminder_fire.get("enabled") is True
+    assert reminder_fire.get("send_mode") == "silent", (
+        f"reminder_fire send_mode must stay 'silent' — fire_due_reminders is "
+        f"the sole firing path. got: {reminder_fire.get('send_mode')!r}"
     )

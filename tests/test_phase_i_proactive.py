@@ -144,11 +144,17 @@ class TestProducerReminderFire:
             assert reminder_fire.collect() == []
 
     def test_collect_returns_empty_when_disabled(self):
-        # reminder_fire producer is disabled in config/engagement.yaml (9C-1 single-owner fix).
-        # proactive.fire_due_reminders is the sole firing path.
+        # The producer must still honor enabled: false (it ships enabled +
+        # send_mode: silent since the silent-awareness change; the flag is the
+        # operator kill switch).
+        from agents import config as _cfg
         from agents.engagement.producers import reminder_fire
         due = [{"id": 1, "text": "call dentist", "fire_at": datetime.now(UTC).isoformat()}]
-        with patch("storage.db.reminder_due", return_value=due):
+        with (
+            patch("storage.db.reminder_due", return_value=due),
+            patch.object(_cfg, "get", side_effect=lambda k, d=None: (
+                False if k == "engagement.reminder_fire.enabled" else d)),
+        ):
             results = reminder_fire.collect()
         assert results == [], (
             "reminder_fire producer must return empty when disabled in config"
@@ -465,8 +471,8 @@ class TestGuard:
 class TestProactiveStatusFormatter:
     def test_status_lists_sources_with_marks(self):
         """format_proactive_status (now surfaced via set_proactive_source
-        action='status') lists every default-enabled source as active and
-        never shows reminder_fire as enabled."""
+        action='status') lists every default-enabled source as active —
+        including reminder_fire, which is enabled as silent awareness."""
         from agents.cockpit import format_proactive_status
         from agents.engagement.producers import DEFAULT_ENABLED_SOURCES
 
@@ -481,9 +487,6 @@ class TestProactiveStatusFormatter:
         active_part = text.split("disabled")[0]
         for src in sorted(DEFAULT_ENABLED_SOURCES):
             assert src in active_part, f"{src} should be listed as active"
-        assert "reminder_fire" not in active_part, (
-            "reminder_fire must not show as enabled in proactive status"
-        )
 
 
 # ============================================================================
@@ -496,9 +499,11 @@ class TestConfig:
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
-        # 7 baseline (3 core + 4 world-delta) PLUS 5 warmth producers
-        # (reengage_silence + late_night_dissolution removed 2026-06-09).
-        assert len(source_list) == 12
+        # 7 baseline (3 core + 4 world-delta) + 5 warmth producers
+        # (reengage_silence + late_night_dissolution removed 2026-06-09)
+        # + reminder_fire (silent awareness, 2026-06-10).
+        assert len(source_list) == 13
+        assert "reminder_fire" in source_list
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list
         assert "irritation_event" in source_list

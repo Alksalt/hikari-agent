@@ -47,6 +47,9 @@ proactive:
     - belief_resurface
     - research_callback
     - callback_episode
+    # Silent awareness only — surfaces due reminders to the selector so it
+    # can suppress competing pings; never sends (send_mode: silent).
+    - reminder_fire
 
 # --- Gap awareness ---
 # Inject `# gap_since_last:` block into inject_memory when the user
@@ -1139,13 +1142,19 @@ engagement:
     send_mode: proactive
     min_value_score: 0.6
     interruption_right: medium
+  # SILENT AWARENESS, not a firing path. fire_due_reminders (dedicated 60s
+  # job) is the SOLE owner — it has the proactive-disabled exemption,
+  # recurrence, keyboards. send_mode: silent means the selector sees the due
+  # reminder (to hold back competing proactive pings inside the suppression
+  # window) but can never send it. Do NOT flip send_mode to proactive.
   reminder_fire:
-    enabled: false
+    enabled: true
     priority_tier: 1
     min_interval_minutes: 5
-    send_mode: proactive
+    send_mode: silent
     min_value_score: 0.9
     interruption_right: high
+    suppression_window_minutes: 10
   research_callback:
     enabled: true
     priority_tier: 2
