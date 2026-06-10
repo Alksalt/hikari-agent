@@ -185,6 +185,11 @@ def _resolve_model_fallback() -> str:
 # Fallback is Sonnet (never Haiku) — user rule: no Haiku anywhere.
 MODEL_FALLBACK = _resolve_model_fallback()
 
+# Aux/classifier model for run_internal_text (DECISIONS 2026-06-02: Haiku IS
+# allowed for trivial classification/control in this project; the per-turn
+# chat/persona path stays Sonnet). Overridable via aux_model.sdk_model.
+MODEL_HAIKU = str(cfg.get("aux_model.sdk_model") or "claude-haiku-4-5")
+
 _AUX_REFLECTION_SYSTEM = (
     "You are a structured-output assistant. "
     "Follow the instructions in the user message exactly. "
@@ -417,11 +422,12 @@ async def _call_aux_llm(
     model: str | None = None,
     max_tokens: int = 512,
 ) -> str:
-    """Cheap LLM call via OpenRouter for reflection and other no-tool ops.
-
-    All auxiliary (non-persona-turn) LLM work routes here: evening_diary,
-    future_letter, reflection consolidation, topic tagging, etc. Uses httpx
-    directly against the OpenRouter API — no SDK subprocess, no Haiku.
+    """Cheap LLM call via OpenRouter — kept ONLY for synchronous pre-reply
+    classifiers where the ~3-6s SDK subprocess spawn would degrade chat
+    latency. Today that is sticker selection (stickers.py) and the dispatch
+    task extractor (tools/dispatch/task_extractor.py). Everything else
+    migrated to ``run_internal_text`` (SDK, OAuth subscription) 2026-06-10.
+    Uses httpx directly against the OpenRouter API — no SDK subprocess.
 
     Args:
         prompt: User-turn content. The system prompt is fixed structured-output
@@ -825,6 +831,41 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
             if bool(cfg.get("runtime.cache_ttl_1h_enabled", True))
             else []
         ),
+    )
+
+
+def _build_aux_options(*, system: str, model: str,
+                       max_turns: int = 1) -> ClaudeAgentOptions:
+    """Stripped SDK options for no-tool aux text/classification calls.
+
+    The deliberate inverse of ``_build_options``: no persona (a custom system
+    prompt would be biased and waste cache tokens), no MCP servers, no allowed
+    tools, no hooks, no gatekeeper, no project settings, no skills, no resume.
+    ``max_turns=1`` is belt-and-suspenders — even if a tool slipped through,
+    one turn can't call-and-observe. OAuth via the SDK as always; never
+    ANTHROPIC_API_KEY.
+    """
+    fallback = MODEL_FALLBACK if MODEL_FALLBACK != model else MODEL_PRIMARY
+    return ClaudeAgentOptions(
+        model=model,
+        fallback_model=fallback,
+        cwd=str(REPO_ROOT),
+        setting_sources=[],
+        skills=None,
+        system_prompt=system,
+        agents={},
+        mcp_servers={},
+        allowed_tools=[],
+        disallowed_tools=[],
+        hooks={},
+        can_use_tool=None,
+        max_turns=max_turns,
+        max_budget_usd=None,
+        resume=None,
+        permission_mode="default",
+        thinking={"type": "adaptive"},
+        effort="low",
+        betas=[],
     )
 
 
@@ -1362,23 +1403,78 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
     return "".join(parts).strip()
 
 
+async def run_internal_text(
+    prompt: str,
+    *,
+    system: str = _AUX_REFLECTION_SYSTEM,
+    model: str | None = None,
+    max_tokens: int = 512,
+) -> str:
+    """Stateless single-shot SDK text/classification call (the OAuth
+    replacement for the OpenRouter ``_call_aux_llm`` path).
+
+    No tools, no persona, no session resume, no memory injection, no
+    ``_RUN_LOCK`` (stateless calls can't race the live session). Defaults to
+    ``MODEL_HAIKU`` — pass ``model=MODEL_PRIMARY`` for output where structure
+    or voice quality matters (daily reflection YAML, annual review).
+
+    Failure contract matches what aux callers already handle: returns ``""``
+    on SDK transport/process errors AND when the reply matches
+    ``looks_like_sdk_error`` (a leaked "API Error: 401 …" string must never
+    become a fake reflection fact — the evening_diary guard, generalized).
+
+    ``max_tokens`` is accepted for signature parity with ``_call_aux_llm``;
+    the SDK exposes no per-call completion cap, and callers already parse
+    defensively (yaml.safe_load / json.loads / word-slice).
+    """
+    del max_tokens  # documented no-op — see docstring
+    model = model or MODEL_HAIKU
+    options = _build_aux_options(system=system, model=model)
+    parts: list[str] = []
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            parts.append(block.text)
+                elif isinstance(msg, ResultMessage):
+                    if msg.subtype != "success":
+                        logger.warning("aux_sdk call ended subtype=%s", msg.subtype)
+                    if msg.usage:
+                        _record_llm_cost(
+                            getattr(msg, "model_usage", None),
+                            path="aux_sdk",
+                            fallback_model=model,
+                            fallback_usage=msg.usage,
+                        )
+    except (ProcessError, CLIConnectionError, OSError) as exc:
+        logger.warning("aux_sdk call failed (%s) — returning empty", type(exc).__name__)
+        return ""
+    raw = "".join(parts).strip()
+    if looks_like_sdk_error(raw):
+        logger.warning("aux_sdk reply looks like a leaked SDK error — returning empty")
+        return ""
+    return raw
+
+
 async def run_reflection_call(prompt: str) -> str:
     """Single LLM call for the daily reflection (no tool use expected).
 
-    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash. Cost is
-    ~$0.14/$0.28 per 1M tokens, which is orders of magnitude cheaper than
-    Sonnet and sufficient for YAML extraction / topic tagging / consolidation.
+    Routes via ``run_internal_text`` → SDK → Sonnet (OAuth subscription, $0
+    marginal). Sonnet rather than Haiku: the full reflection schema (facts +
+    supersede + observations + peer_update + self_model + thought) is the
+    most important background job and the largest structured output — max
+    YAML reliability wins over speed here (background cron, nobody waits).
 
-    No MCP servers, no hooks, no session resume. Any callers that were
-    previously using Haiku or the Claude SDK for reflection must use this
-    function. The token cap is config-driven (``reflection.max_output_tokens``,
-    default 4096): the full reflection schema (facts + supersede + observations
-    + peer_update + self_model + thought) overran the old 2048 cap on busy
-    days, and a truncated reply is unparseable YAML — the dominant cause of
-    silently skipped reflections in the logs.
+    No MCP servers, no hooks, no session resume. The token cap stays
+    config-driven (``reflection.max_output_tokens``, default 4096) for
+    signature parity; see ``run_internal_text`` for its semantics.
     """
     max_tokens = int(cfg.get("reflection.max_output_tokens", 4096))
-    return await _call_aux_llm(prompt, max_tokens=max_tokens)
+    return await run_internal_text(
+        prompt, model=MODEL_PRIMARY, max_tokens=max_tokens)
 
 
 async def run_aux_composition(
@@ -1387,23 +1483,22 @@ async def run_aux_composition(
     system: str | None = None,
     max_tokens: int = 1024,
 ) -> str:
-    """Cheap LLM call for private text-generation tasks: diary, future_letter,
-    and any other composition that does NOT need SDK tools or session context.
+    """Cheap LLM call for private text-generation tasks: diary, dialectic,
+    tonal_recall, and any other composition/classification that does NOT need
+    SDK tools or session context.
 
-    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash.
-    Unlike ``run_internal_control``, this path never spawns an SDK subprocess
-    — it's pure httpx, so there is no per-turn budget, no process fork, and
-    no risk of leaking into the live session. Use for:
+    Routes via ``run_internal_text`` → SDK → Haiku (OAuth subscription, $0
+    marginal). Background-only callers: nobody is waiting on the reply, so
+    the SDK subprocess spawn latency is fine. Unlike ``run_internal_control``
+    there are no tools reachable and no persona — pure text in/out, no risk
+    of leaking into the live session.
 
-    - ``evening_diary.compose_diary`` — private diary composition
-    - ``future_letter.pick_decision_theme`` / ``compose_letter`` — monthly letter
-    - Any future private-generation task that needs >512 tokens but no tools
-
-    Token default is 1024 (composition tasks produce longer output than YAML
-    classifiers but shorter than weekly consolidation). Pass a higher value
-    (e.g. 2048) for long-form letter bodies.
+    Token default is 1024 for signature parity (see ``run_internal_text`` —
+    the SDK has no per-call completion cap; callers parse defensively).
     """
-    kwargs: dict = {"max_tokens": max_tokens}
-    if system is not None:
-        kwargs["system"] = system
-    return await _call_aux_llm(prompt, **kwargs)
+    return await run_internal_text(
+        prompt,
+        system=system or _AUX_REFLECTION_SYSTEM,
+        model=MODEL_HAIKU,
+        max_tokens=max_tokens,
+    )
