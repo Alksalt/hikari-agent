@@ -26,13 +26,8 @@ false_start:
 
 
 proactive:
-  heartbeat_min_interval_hours: 4
-  heartbeat_max_interval_hours: 8
   quiet_start_hour: 23
   quiet_end_hour: 6
-  user_active_skip_minutes: 60
-  reengage_min_hours: 2
-  reengage_max_hours: 6
   # Pre-run gate for the engagement_tick scheduler job: check quiet hours +
   # silence before running any producers. Set false to disable (useful in dev).
   scheduler_gate_enabled: true

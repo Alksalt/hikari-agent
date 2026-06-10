@@ -214,12 +214,12 @@ class TestReactionIsolation:
         from agents.engagement.sender import on_reaction
 
         _seed_score("reminder_fire", 0.4)
-        _seed_score("reengage_silence", 0.3)
+        _seed_score("fake_test_source", 0.3)
 
         on_reaction("reminder_fire", "up")
 
         reminder_score = _get_score("reminder_fire")
-        reengage_score = _get_score("reengage_silence")
+        reengage_score = _get_score("fake_test_source")
 
         assert reminder_score is not None and reminder_score > 0.4, "reminder should have increased"
         assert reengage_score is not None and abs(reengage_score - 0.3) < 1e-6, (

@@ -2,10 +2,11 @@
 
 Covers:
 - always_approve per-session per-tool allowlist (hit, miss, TTL expiry)
-- /approvals slash command (empty, populated)
-- /approvals cancel <id> admin cancel
 - per-tool timeout override via gate_timeout_sec in tools.yaml
 - per-tool timeout fallback to default when gate_timeout_sec is absent
+
+(The /approvals slash-command coverage moved to test_telegram_cockpit_cmds.py
+when slash-commands were removed.)
 """
 
 from __future__ import annotations

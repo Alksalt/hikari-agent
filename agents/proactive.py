@@ -1,10 +1,10 @@
-"""Proactive reminder / sync helpers + heartbeat eligibility checks.
+"""Proactive reminder / sync helpers.
 
-The three legacy send functions (maybe_send_heartbeat, maybe_send_reengagement,
-maybe_send_calendar_heartbeat) were deleted in Phase J; they are superseded by
-_engagement_tick in agents/scheduler.py.  Eligibility helpers (should_send_heartbeat,
-_is_quiet_now, etc.) are kept because tests and the engagement producer layer
-still reference them.
+The legacy heartbeat/re-engagement send functions and their eligibility
+helpers were deleted (Phase J + 2026-06 cleanup); the engagement tick in
+agents/scheduler.py supersedes them.  ``_is_quiet_now`` stays — it is the
+canonical quiet-hours check used by the engagement guard, selector, and
+proactive_gate.
 """
 
 from __future__ import annotations
@@ -49,55 +49,6 @@ def _is_quiet_now() -> bool:
     if start <= end:
         return start <= now < end
     return now >= start or now < end
-
-
-def _mood_from_core() -> str:
-    return (db.get_core_block("mood_today") or "focused").strip().lower() or "focused"
-
-
-def should_send_heartbeat() -> bool:
-    p = _p()
-    now = datetime.now(UTC)
-    if _is_quiet_now():
-        return False
-    last_user = _parse_dt(db.runtime_get("last_user_message"))
-    user_active_skip_min = int(p.get("user_active_skip_minutes", 60))
-    if last_user and (now - last_user).total_seconds() < user_active_skip_min * 60:
-        return False
-    last_sent = _parse_dt(db.runtime_get("last_proactive_sent"))
-    min_interval_hr = float(p.get("heartbeat_min_interval_hours", 4))
-    if last_sent and (now - last_sent).total_seconds() < min_interval_hr * 3600:
-        return False
-    return True
-
-
-def _last_message_role() -> tuple[str | None, datetime | None]:
-    rows = db.recent_messages(limit=1, exclude_ephemeral=True)
-    if not rows:
-        return None, None
-    last = rows[0]
-    return last["role"], _parse_dt(last["ts"])
-
-
-def should_send_reengagement() -> bool:
-    """She had the last word, user is silent in the window, and we haven't
-    already sent a re-engagement nudge for this specific silence gap."""
-    p = _p()
-    now = datetime.now(UTC)
-    if _is_quiet_now():
-        return False
-    role, last_ts = _last_message_role()
-    if role != "assistant" or not last_ts:
-        return False
-    elapsed = (now - last_ts).total_seconds() / 3600
-    lo = float(p.get("reengage_min_hours", 2))
-    hi = float(p.get("reengage_max_hours", 6))
-    if not (lo <= elapsed <= hi):
-        return False
-    sent_for = db.runtime_get("reengage_sent_for_gap")
-    if sent_for == last_ts.isoformat():
-        return False
-    return True
 
 
 # TODO: remove after all callers migrate to reserve_and_send (Sprint 4 Phase 4B+).

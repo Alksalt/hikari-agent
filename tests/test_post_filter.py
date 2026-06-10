@@ -33,29 +33,14 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _DEFAULT_CAPS / stage_caps()
+# _ACTION_LINE_MAX
 # ---------------------------------------------------------------------------
 
 
-def test_default_caps_has_required_keys():
-    from agents.post_filter import _DEFAULT_CAPS
-    assert "warmth_rate" in _DEFAULT_CAPS
-    assert "compliment_rate" in _DEFAULT_CAPS
-    assert "action_line_max" in _DEFAULT_CAPS
-
-
-def test_stage_caps_returns_fixed_caps():
-    from agents.post_filter import _DEFAULT_CAPS, stage_caps
-    # stage_caps() is now constant — no DB dependency
-    caps = stage_caps()
-    assert caps == _DEFAULT_CAPS
-
-
-def test_stage_caps_action_line_max_allows_multiple():
-    from agents.post_filter import stage_caps
-    caps = stage_caps()
-    # Fixed caps are former stage-7 values: action_line_max=2
-    assert caps["action_line_max"] >= 2
+def test_action_line_max_allows_multiple():
+    from agents.post_filter import _ACTION_LINE_MAX
+    # Fixed cap is the former stage-7 value: action_line_max=2
+    assert _ACTION_LINE_MAX >= 2
 
 
 # ---------------------------------------------------------------------------

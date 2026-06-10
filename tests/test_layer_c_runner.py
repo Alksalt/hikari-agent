@@ -142,8 +142,7 @@ async def test_cost_cap_aborts():
 
     # Any two golden cases will do.
     cases = sorted(GOLDEN_DIR.glob("*.yaml"))
-    if len(cases) < 2:
-        pytest.skip("Need at least 2 golden cases")
+    assert len(cases) >= 2, "golden dir nearly empty — add cases or delete this test"
 
     # Return a cost just over 0.25 so the first case eats the cap.
     expensive_verdict = JudgeVerdict(

@@ -78,7 +78,6 @@ def test_research_callback_mood_gate_reads_core_block(tmp_path, monkeypatch):
     from datetime import UTC, datetime
 
     db.upsert_core_block("mood_today", "irritable")
-    db.runtime_set("relationship_stage", 3)
 
     # Seed a ready research task.
     with db._conn() as c:

@@ -63,23 +63,10 @@ logger = logging.getLogger(__name__)
 
 
 # ---------- fixed cap values ----------
-# Stage system removed. These are the former stage-7 (familiarity-band)
-# values, now used as fixed constants.
-#
-#   warmth_rate     — denominator N in "1 per N turns" for warmth-budget leaks.
-#   compliment_rate — denominator N in "1 per N turns" for compliment acceptance.
-#   action_line_max — maximum action-line tokens `[...]` per outbound turn.
+# Stage system removed. Former stage-7 (familiarity-band) value, now a fixed
+# constant: maximum action-line tokens `[...]` per outbound turn.
 
-_DEFAULT_CAPS: dict[str, int | float] = {
-    "warmth_rate": 8,
-    "compliment_rate": 8,
-    "action_line_max": 2,
-}
-
-
-def stage_caps() -> dict[str, int | float]:
-    """Return fixed cap multipliers (stage system removed)."""
-    return _DEFAULT_CAPS
+_ACTION_LINE_MAX = 2
 
 
 # ---------- markdown strip ----------
@@ -197,8 +184,8 @@ def apply_regex_counters(text: str) -> str:
 
     Three passes:
     1. Action-line strip — count `[...]` brackets. If the count for this
-       turn would exceed the stage's ``action_line_max``, remove the
-       excess action-line(s) from the text.
+       turn would exceed ``_ACTION_LINE_MAX``, remove the excess
+       action-line(s) from the text.
     2. Sentence count — if > 4 sentences, log a ``character_thought``.
     3. Romaji count — if > 1 romaji word in this turn, log a thought.
 
@@ -208,8 +195,7 @@ def apply_regex_counters(text: str) -> str:
     if not text:
         return text
 
-    caps = stage_caps()
-    action_max: int = int(caps.get("action_line_max", 1))
+    action_max: int = _ACTION_LINE_MAX
 
     # --- action-line counter + strip ---
     action_key = _turn_key("action_lines")

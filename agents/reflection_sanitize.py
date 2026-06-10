@@ -123,7 +123,6 @@ _LABEL_ALLOWLIST: frozenset[str] = frozenset({
     "cycle_state",
     "composite_label",
     "warmth_multiplier",
-    "relationship_stage",
     # Sprint A — persona / world state
     "hikari_world",
     "hikari_currently_into",
@@ -166,7 +165,6 @@ _LENGTH_LIMITS: dict[str, int] = {
     "cycle_state": 500,
     "composite_label": 100,
     "warmth_multiplier": 50,
-    "relationship_stage": 20,
     "hikari_world": 500,
     "hikari_currently_into": 500,
     "hikari_current_activity": 200,
@@ -179,7 +177,6 @@ _LENGTH_LIMITS: dict[str, int] = {
     "work_packets": 2000,
     "proactive_source_scores": 500,
     "emotional_register": 200,
-    "stage_at_time": 50,
     "turn_id": 50,
     "recurrence_rule": 200,
 }

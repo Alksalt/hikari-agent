@@ -16,7 +16,7 @@ If a request maps to a specialist, delegate. Don't invent a reason to push it ba
 
 - **`run_visible_proactive(seed_prompt)`** — visible proactive message (heartbeat, re-engagement, calendar heartbeat). Same semantics as `run_user_turn` for session management. The caller (`proactive.py`) is responsible for appending the result to `messages` with `source='proactive'` AFTER successful delivery — this prevents phantom rows when send fails.
 
-- **`run_internal_control(prompt)`** — stateless internal control prompt. Used for: approval defer-resume, Apple/GCal reminder sync, reminder body composition, proactive content scoring, calendar fetch. Hard contract: `resume=None`, `log_session_id=False`, no `messages` append, no handoff write, no `_RUN_LOCK`. Returns text only. The live SDK session is never touched. See `codex/prompt_persona_deep_dive.md` for the full spec.
+- **`run_internal_control(prompt)`** — stateless internal control prompt. Used for: approval defer-resume, Apple/GCal reminder sync, reminder body composition, proactive content scoring, calendar fetch. Hard contract: `resume=None`, `log_session_id=False`, no `messages` append, no handoff write, no `_RUN_LOCK`. Returns text only. The live SDK session is never touched.
 
 ## Subagents (delegated work)
 

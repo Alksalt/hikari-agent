@@ -41,6 +41,7 @@ dev = [
     "google-auth-oauthlib>=1.4.0",
     "pytest>=9.0",
     "pytest-asyncio>=1.3",
+    "pytest-timeout>=2.3",
     "ruff>=0.4",
 ]
 
@@ -74,6 +75,9 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-m 'not slow'"
+# Safety net: a test that hangs (stray MCP subprocess, accidental network
+# call) fails at 120s instead of blocking the whole suite indefinitely.
+timeout = 120
 markers = [
     "slow: tests that hit live models — skipped by default, run via pytest -m slow",
     "uses_real_graph: tests that manage their own graph patches; opt out of conftest _block_graphiti",

@@ -216,7 +216,7 @@ class TestHigherTierWinsAtSameTick:
             payload={"title": "standup", "minutes_until": 10},
         )
         tier3 = _candidate(
-            "reengage_silence",
+            "fake_test_source",
             pool="agent_spontaneous",
             novelty=0.6,
             actionability=0.6,
@@ -224,7 +224,7 @@ class TestHigherTierWinsAtSameTick:
             payload={},
         )
 
-        ctx = _ctx(enabled={"calendar_event_prep", "reengage_silence"})
+        ctx = _ctx(enabled={"calendar_event_prep", "fake_test_source"})
 
         def _tier(source: str) -> float:
             return 1.5 if source == "calendar_event_prep" else 0.6

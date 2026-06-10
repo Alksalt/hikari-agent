@@ -171,42 +171,6 @@ def test_scheduler_builds(monkeypatch):
     assert expected.issubset(ids), f"missing jobs: {expected - ids}"
 
 
-def test_proactive_should_send_logic(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
-    from storage import db
-    importlib.reload(db)
-    from agents import proactive
-    importlib.reload(proactive)
-    result = proactive.should_send_heartbeat()
-    assert isinstance(result, bool)
-
-
-def test_proactive_reengage_logic(tmp_path, monkeypatch):
-    """Re-engagement fires only when bot had last word and silence is in 2-6h window."""
-    import datetime as _dt
-    monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
-    from storage import db
-    importlib.reload(db)
-    from agents import proactive
-    importlib.reload(proactive)
-
-    # No messages → no reengage
-    assert proactive.should_send_reengagement() is False
-
-    # User had last word → no reengage
-    db.append_message("user", "hi")
-    assert proactive.should_send_reengagement() is False
-
-    # Manually insert an old assistant message 3h ago
-    with db._conn() as c:
-        three_h_ago = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=3)).isoformat()
-        c.execute("INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)",
-                  ("assistant", "you went quiet. that's disruptive.", three_h_ago))
-    # quiet hours might still suppress — assert it's a bool, not an error
-    res = proactive.should_send_reengagement()
-    assert isinstance(res, bool)
-
-
 def test_runtime_uses_accept_edits(monkeypatch):
     """Phase 3 dropped bypassPermissions in favor of acceptEdits + tighter allowlist."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")

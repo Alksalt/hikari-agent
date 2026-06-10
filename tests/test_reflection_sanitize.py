@@ -16,7 +16,6 @@ SPRINT_A_LABELS = [
     "cycle_state",
     "composite_label",
     "warmth_multiplier",
-    "relationship_stage",
     "hikari_world",
     "hikari_currently_into",
     "hikari_current_activity",
@@ -60,9 +59,10 @@ def test_instruction_shape_in_sprint_a_label_raises():
         )
 
 
-def test_relationship_stage_normal_value_accepted():
-    result = sanitize("5", kind="core_block", label="relationship_stage")
-    assert result == "5"
+def test_removed_stage_label_rejected():
+    # relationship_stage left the allowlist with the 2026-06-09 intimacy purge.
+    with pytest.raises(ValueError):
+        sanitize("5", kind="core_block", label="relationship_stage")
 
 
 def test_hikari_world_json_accepted():
