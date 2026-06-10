@@ -291,6 +291,8 @@ async def run_layer_c_rubric_live(case_path: pathlib.Path) -> LayerCResult:
             usd_cost=0.0,
         )
 
+    from unittest.mock import AsyncMock
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = pathlib.Path(tmpdir) / "hikari_live_eval.db"
         with (
@@ -305,9 +307,21 @@ async def run_layer_c_rubric_live(case_path: pathlib.Path) -> LayerCResult:
             from agents import config as config_mod
             config_mod.reload()
 
-            with patch(
-                "agents.sdk_pool.is_live_persistent_path_enabled",
-                return_value=False,
+            # Block graph I/O entirely (mirrors tests/conftest._block_graphiti):
+            # HIKARI_DB_PATH redirects SQLite but NOT the Kuzu graph — without
+            # this, a live eval either fights the running bot for the Kuzu file
+            # lock or, worse, writes eval episodes into the production graph.
+            with (
+                patch(
+                    "storage.graph.get_graph",
+                    new=AsyncMock(side_effect=RuntimeError("graph blocked in live eval")),
+                ),
+                patch("storage.graph.add_episode_safe", new=AsyncMock(return_value=False)),
+                patch("storage.graph.schedule_episode", new=lambda *a, **kw: False),
+                patch(
+                    "agents.sdk_pool.is_live_persistent_path_enabled",
+                    return_value=False,
+                ),
             ):
                 import agents.runtime as runtime_mod
                 actual_text = await runtime_mod.run_user_turn(user_input)
