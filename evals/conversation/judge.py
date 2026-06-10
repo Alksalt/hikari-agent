@@ -87,7 +87,10 @@ async def judge_voice_drift(
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 1024,
+                # 2048, not 1024: reasoning models spend tokens on reasoning
+                # BEFORE content; the 50-turn golden hit finish_reason=length
+                # with content=None at 1024.
+                "max_tokens": 2048,
             },
         )
         resp.raise_for_status()
