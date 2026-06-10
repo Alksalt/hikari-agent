@@ -46,12 +46,6 @@ def test_access_mode_write_on_apple_events(registry):
     assert spec.access_mode == "write"
 
 
-def test_access_mode_destructive_on_apple_shortcuts(registry):
-    spec = registry._resolve("mcp__apple_shortcuts__*")
-    assert spec is not None
-    assert spec.access_mode == "destructive"
-
-
 def test_access_mode_write_on_playwright(registry):
     # Sprint A: wildcard flipped to write so any future persistent-state
     # playwright tool fails closed via the gatekeeper wildcard-write deny path.
@@ -70,23 +64,6 @@ def test_access_mode_write_on_notion_wildcard(registry):
 def test_access_mode_write_on_github_wildcard(registry):
     # Phase 0.2 reviewer-fix: wildcard flipped to write → fail-closed.
     spec = registry._resolve("mcp__github__*")
-    assert spec is not None
-    assert spec.access_mode == "write"
-
-
-def test_access_mode_write_on_youtube_transcript(registry):
-    # Sprint A: wildcard flipped to write so any future write tool fails
-    # closed via the gatekeeper wildcard-write deny path.
-    spec = registry._resolve("mcp__youtube_transcript__*")
-    assert spec is not None
-    assert spec.access_mode == "write"
-
-
-def test_access_mode_write_on_duckdb(registry):
-    # Sprint A: wildcard flipped to write so any future write tool (e.g.
-    # CREATE TABLE, INSERT) fails closed via the gatekeeper wildcard-write
-    # deny path rather than silently passing.
-    spec = registry._resolve("mcp__duckdb__*")
     assert spec is not None
     assert spec.access_mode == "write"
 
@@ -117,19 +94,6 @@ def test_resolve_with_kind_unknown(registry):
 # ---------------------------------------------------------------------------
 # gatekeeper_can_use_tool — wildcard write/destructive → deny
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_destructive_wildcard_denied():
-    """A tool that resolves only via a destructive wildcard must be denied."""
-    from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
-    ns = SimpleNamespace(tool_use_id="t1")
-    result = await gatekeeper_can_use_tool("mcp__apple_shortcuts__run_arbitrary_shortcut", {}, ns)
-    msg = getattr(result, "message", "") or ""
-    behavior = getattr(result, "behavior", "")
-    assert "destructive" in msg or behavior == "deny", (
-        f"expected deny for destructive wildcard, got behavior={behavior!r} msg={msg!r}"
-    )
-
 
 @pytest.mark.asyncio
 async def test_write_wildcard_denied():

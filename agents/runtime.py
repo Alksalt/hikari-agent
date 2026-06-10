@@ -36,7 +36,6 @@ from claude_agent_sdk import (
 
 from agents import config as cfg
 from storage import db
-from tools import codex as codex_tools
 from tools import dispatch as dispatch_tools
 from tools import memory as memory_tools
 from tools import router as router_tools
@@ -698,13 +697,6 @@ def _wiki_server():
 @cache
 def _dispatch_server():
     return create_sdk_mcp_server(name="hikari_dispatch", tools=dispatch_tools.PUBLIC_TOOLS)
-
-
-@cache
-def _codex_server():
-    """Phase 8: small MCP server that exposes the codex/ review reports to
-    Hikari (list + read). Wrapped as untrusted on read."""
-    return create_sdk_mcp_server(name="hikari_codex", tools=codex_tools.ALL_TOOLS)
 
 
 @cache

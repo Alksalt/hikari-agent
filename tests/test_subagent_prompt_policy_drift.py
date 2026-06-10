@@ -221,11 +221,9 @@ def test_no_llm_facing_destructive_write_ungated():
     Wildcards are excluded — their policy is governed by the wildcard-write deny
     in gatekeeper_can_use_tool, not by gate: value.
     """
-    # apple_shortcuts wildcard has access_mode=destructive but no explicit write
-    # entries — exempted because it has no network-reachable external accounts.
     # apple_events is NOT exempted: its LLM-facing write tools carry gate:
     # gatekeeper (Phase 4 unification), so they pass the gate != null check naturally.
-    _EXEMPT_SERVERS = {"apple_shortcuts"}
+    _EXEMPT_SERVERS: set[str] = set()
 
     registry = load_registry()
     failures: list[str] = []

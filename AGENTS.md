@@ -25,7 +25,6 @@ If a request maps to a specialist, delegate. Don't invent a reason to push it ba
 - **drive_gmail** — full Google Workspace: Gmail (read/draft/send), Calendar (read/create), Drive (search/read/upload), and Docs/Sheets/Slides (full CRUD).
 - **notion** — query Notion databases or create/update pages. Introspect schema first, don't guess properties. Unauthorized/empty responses usually mean the integration isn't shared with the database.
 - **github** — `mcp__github__*` tools for repository operations (read/create/update issues, PRs, code search).
-- **codex reports** — `list_codex_reports`, `read_codex_report`. Read from the `codex/` directory. Read-only.
 
 ## Utility tools (live on Hikari directly — no delegation)
 

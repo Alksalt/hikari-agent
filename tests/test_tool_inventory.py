@@ -72,7 +72,7 @@ def test_block_explicitly_denies_the_allowlist_concept():
     assert "acceptedits" in block.lower().replace("=", "") or "acceptEdits" in block
 
 
-@pytest.mark.parametrize("known_group", ["memory", "wiki", "utility", "codex"])
+@pytest.mark.parametrize("known_group", ["memory", "wiki", "utility"])
 def test_in_process_groups_present(known_group):
     """We bucket in-process tools by server prefix. The four core
     server groups must always render."""

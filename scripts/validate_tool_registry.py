@@ -37,7 +37,7 @@ def run() -> list[str]:
     # (b) Every explicit bucket-1 tool in yaml must be discoverable
     # We check bucket-1 NON-utility tools (utility tools are auto-discovered,
     # not registered by name in yaml individually except for security-tagged ones).
-    # The dedicated-server tools (memory/wiki/dispatch/codex/photo) are checked
+    # The dedicated-server tools (memory/wiki/dispatch/photo) are checked
     # by verifying their server specs exist (already done in validate()).
 
     # (c) Every bucket-3 explicit id must have a server entry

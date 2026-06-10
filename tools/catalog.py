@@ -38,16 +38,12 @@ _SERVER_DOMAIN: dict[str, str] = {
     "hikari_utility": "utility",
     "hikari_wiki": "wiki",
     "hikari_dispatch": "dispatch",
-    "hikari_codex": "codex",
     "hikari_router": "router",
     "google_workspace": "google",
     "notion": "notion",
     "github": "github",
     "apple_events": "apple",
-    "apple_shortcuts": "apple",
-    "youtube_transcript": "youtube",
     "playwright": "browser",
-    "duckdb": "database",
 }
 
 # Fine-grained description map keyed on exact tool id or id-prefix (no wildcard).
@@ -106,15 +102,6 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "set note on receipt entry",
     "mcp__hikari_utility__receipt_delete":
         "delete remove receipt entry log",
-    # --- youtube / video ---
-    "mcp__youtube_transcript__get_transcript":
-        "fetch youtube video transcript captions subtitles",
-    "mcp__youtube_transcript__get_timed_transcript":
-        "fetch youtube video timed transcript captions timestamps",
-    "mcp__youtube_transcript__get_video_info":
-        "get youtube video info title description metadata",
-    "mcp__youtube_transcript__get_available_languages":
-        "list youtube video transcript available caption languages",
     # --- ytmusic ---
     "mcp__hikari_utility__ytmusic_recent":
         "list recent youtube music played history tracks songs",
@@ -303,9 +290,6 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "enable disable snooze proactive source morning brief weather",
     "mcp__hikari_utility__checkin_control":
         "run skip morning checkin daily check-in",
-    # --- playlist ---
-    "mcp__hikari_utility__playlist_list":
-        "list hikari curated playlist tracks songs music mood filter",
     # --- utility misc ---
     "mcp__hikari_utility__translate":
         "translate text language russian english ukrainian japanese",
@@ -347,9 +331,6 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "approve promote skill to production",
     "mcp__hikari_utility__run_skill":
         "run execute skill automation",
-    # --- duckdb ---
-    "mcp__duckdb__query":
-        "sql query local file database duckdb analytics",
     # --- playwright ---
     "mcp__playwright__navigate":
         "browse web page playwright browser navigation",
@@ -365,11 +346,6 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "web search internet query google results",
     "Agent":
         "dispatch background subagent task parallel agent",
-    # --- codex ---
-    "mcp__hikari_codex__list_codex_reports":
-        "list codex audit architecture review reports",
-    "mcp__hikari_codex__read_codex_report":
-        "read codex audit architecture review report",
     # --- router ---
     "mcp__hikari_router__tool_search":
         "search toolbelt find tool by topic capability",
@@ -382,7 +358,7 @@ _DOMAIN_SYNONYMS: dict[str, list[str]] = {
     "email":    ["gmail", "message", "inbox", "send", "draft", "reply", "unread"],
     "gmail":    ["email", "message", "inbox", "unread"],
     "receipt":  ["log", "made", "moved", "learned", "avoided", "activity", "track"],
-    "youtube":  ["video", "transcript", "captions", "yt", "ytmusic", "music"],
+    "youtube":  ["video", "yt", "ytmusic", "music"],
     "weather":  ["temperature", "rain", "umbrella", "clothing"],
     "forecast": ["weather", "temperature", "rain"],
     "calendar": ["event", "schedule", "appointment", "meeting", "gcal", "apple"],
@@ -497,7 +473,6 @@ def _token_expand(base_text: str) -> str:
 
 _ID_DOMAIN_OVERRIDES: dict[str, str] = {
     "mcp__hikari_utility__ytmusic": "music",
-    "mcp__hikari_utility__playlist": "music",
     "mcp__hikari_router__tool_search": "meta",
     "mcp__hikari_utility__weather": "weather",
     "mcp__hikari_utility__receipt": "receipt",
@@ -677,7 +652,6 @@ def _default_examples(tool_id: str, description: str) -> list[str]:
     _meta_prefixes = (
         "mcp__hikari_router__",
         "mcp__hikari_dispatch__",
-        "mcp__hikari_codex__",
     )
     if any(tool_id.startswith(p) for p in _meta_prefixes):
         return []
@@ -690,8 +664,6 @@ def _default_examples(tool_id: str, description: str) -> list[str]:
         exs.append("what's on my calendar")
     if "receipt" in lower or "activity" in lower or "track" in lower:
         exs.append("log what I did today")
-    if "youtube" in lower or "transcript" in lower or "video" in lower:
-        exs.append("get youtube video captions")
     if "weather" in lower or "temperature" in lower:
         exs.append("what's the weather")
     if "wiki" in lower or "knowledge" in lower or "vault" in lower:
@@ -711,8 +683,8 @@ def _derive_tags(tool_id: str, domain: str, operation: str, description: str) ->
     for kw in ("gmail", "calendar", "drive", "docs", "sheets", "slides",
                "notion", "github", "youtube", "weather", "wiki", "reminder",
                "receipt", "memory", "photo", "translate", "currency",
-               "arxiv", "places", "ytmusic", "notes", "duckdb", "sql",
-               "playwright", "browser", "dispatch", "skill", "codex",
+               "arxiv", "places", "ytmusic", "notes", "sql",
+               "playwright", "browser", "dispatch", "skill",
                "decision", "link", "attachment", "python"):
         if kw in lower:
             tags.append(kw)

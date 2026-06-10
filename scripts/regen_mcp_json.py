@@ -35,24 +35,6 @@ _SERVER_COMMENTS: dict[str, str] = {
         "FastMCP.run() in asyncio.run(), so we bypass it by importing the "
         "module (which registers tools) then calling mcp.run() directly."
     ),
-    "youtube_transcript": (
-        "jkawamoto/mcp-youtube-transcript — Python, distributed via uvx. "
-        "The bare npm name 'mcp-youtube-transcript' was unpublished March 2025 "
-        "and is squat-bait; pinned to a git tag so a hostile force-push can't "
-        "swap the code on next launch. "
-        "See https://github.com/jkawamoto/mcp-youtube-transcript."
-    ),
-    "duckdb": (
-        "Read-only DuckDB analytics over Hikari's SQLite stores. Boots an "
-        "in-memory DuckDB (DuckDB limitation: in-memory is always writable, "
-        "but no real DB is exposed); the agent ATTACHes the user's SQLite "
-        "files at query time via DuckDB's sqlite_scanner extension: "
-        "INSTALL sqlite; LOAD sqlite; ATTACH 'data/hikari.db' AS hikari "
-        "(TYPE sqlite, READ_ONLY); — see docs/duckdb_mcp.md for example "
-        "queries. Receipts SQLite lives at $DAY_RECEIPT_DB or "
-        "~/.day-receipt/receipt.db. Ephemeral connections keep the SQLite "
-        "files unlocked for concurrent reads with the bot writer."
-    ),
 }
 
 _TOP_COMMENT = (

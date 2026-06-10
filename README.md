@@ -522,7 +522,7 @@ uv run pytest tests/persona/ -q                   # persona regression suite
 uv run pytest tests/test_link_shelf_ssrf.py -q    # security regression sweep
 uv run ruff check .
 uv run python scripts/validate_tool_registry.py
-uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts --allow-unreachable duckdb,github,playwright
+uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
 uv run python scripts/regen_mcp_json.py --check
 ```
 
@@ -607,6 +607,6 @@ hikari-agent/
 - **Max SDK quota** ($200/mo): heavy heartbeat usage can exhaust quota. Mitigation: prompt caching on persona blocks (auto-enabled by SDK), `max_budget_usd` cap per turn, `max_turns` cap.
 - **Google OAuth testing-mode expiry**: refresh tokens die after 7 days in Testing-mode apps. Boot probe surfaces this loudly; rotation = re-run `scripts/setup_google_oauth.py`.
 - **Graphiti is optional**: set `GRAPHITI_ENABLED=false` to skip the 30-s outbox drain worker. Outbox rows still accumulate in SQLite; they just don't get pushed to the graph. Reconcile with `scripts/reconcile_graph.py` when you re-enable.
-- **macOS Automation prompts**: first call to apple_events / apple_shortcuts / apple_notes triggers a system permission prompt. Accept in System Settings → Privacy & Security → Automation. There is no CLI workaround.
+- **macOS Automation prompts**: first call to apple_events / apple_notes triggers a system permission prompt. Accept in System Settings → Privacy & Security → Automation. There is no CLI workaround.
 - **Anthropic content safety** may refuse explicit material from `STAGES.md`. That content has to migrate to a separate OpenRouter route if needed — TBD.
 - **Single-user assumption**: every command, every hook, every gate checks `OWNER_TELEGRAM_ID`. Removing that lock would require revisiting half the codebase. Don't.

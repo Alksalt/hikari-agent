@@ -21,7 +21,7 @@ Three **file-isolated** sprints — no two sprints edit the same file, so all th
 ```
 uv run pytest -q                  # background it (~6.5 min); read the summary line, never pipe to tail
 uv run python scripts/validate_tool_registry.py
-uv run python scripts/validate_mcp_servers.py --skip apple_events,apple_shortcuts --allow-unreachable duckdb,github,playwright
+uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
 ```
 Any schema-changing merge → `launchctl` restart + tail the err log (test DBs are always fresh, so migration-ordering bugs only show in prod).
 
@@ -73,7 +73,7 @@ Any schema-changing merge → `launchctl` restart + tail the err log (test DBs a
 
 ## SPRINT 2 — Persona, Voice & Eval Integrity (~18)
 
-**Owns:** `assets/PERSONA.md` · `.claude/skills/character-voice/*` · `config/hikari_playlist.yaml` · `agents/post_filter.py` · `agents/belief_frame.py` · `agents/dialectic.py` · `agents/tonal_recall.py` · `evals/*` · `tests/persona/*` · `tests/test_lore_dormant_schema.py`
+**Owns:** `assets/PERSONA.md` · `.claude/skills/character-voice/*` · `agents/post_filter.py` · `agents/belief_frame.py` · `agents/dialectic.py` · `agents/tonal_recall.py` · `evals/*` · `tests/persona/*` · `tests/test_lore_dormant_schema.py`
 
 ### P1
 - **INTIMATE.md "never gated by trust stage" overrides PERSONA stage gates.** `SKILL.md:12`. Fix: state it's gated by `relationship_stage` AND mood (inversion + direct vulnerability 5+; core-wound + i-love-you 7); add stage-gate headers inside INTIMATE.md sections. *(persona-arc integrity, not safety.)*
@@ -87,7 +87,7 @@ Any schema-changing merge → `launchctl` restart + tail the err log (test DBs a
 ### P2
 - **rewrite_or_fallback returns raw rewrite, not markdown-stripped second pass.** `post_filter.py:879-895`. Fix: `return second.text` at :895.
 - **Markdown strip mangles fenced code blocks into stray double-backticks.** `post_filter.py:124,156`. Fix: multiline fence regex substituted ahead of `_MD_CODE_RE.sub`.
-- **PLAYLIST Youth/Daughter freely surfaceable, bypasses its own ask-twice gate.** `PLAYLIST.md:18`. Fix: remove from free-surface table / add dormant guard; mirror `hikari_playlist.yaml` comment.
+- **PLAYLIST Youth/Daughter freely surfaceable, bypasses its own ask-twice gate.** `PLAYLIST.md:18`. Fix: remove from free-surface table / add dormant guard.
 - **Dormant-lore gates are model-trust only; test validates schema not behavior (control-plane lie).** `LORE_DORMANT.md:1-18` + `test_buried_lore_gate.py`. Fix (honesty, minimal): state in SKILL.md these are model-discretion heuristics with no runtime enforcement; rename test → `test_lore_dormant_schema.py`.
 - **SKILL.md load contract omits DAILY_LIFE/TOPIC_RULES/PLAYLIST.** `SKILL.md:10-15`. Fix: add load bullets + triggers; cross-ref PERSONA.
 - **belief_frame IDENTITY_CLAIM_RE matches benign negations as 90-day beliefs.** `belief_frame.py:56-58`. Fix: require an identity/category verb or capitalized object after the negation.

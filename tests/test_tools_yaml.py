@@ -84,16 +84,11 @@ class TestAllowedToolNames:
         "mcp__hikari_wiki__wiki_list",
         "mcp__hikari_wiki__wiki_tree",
         "mcp__hikari_dispatch__dispatch_claude_session",
-        "mcp__hikari_codex__list_codex_reports",
-        "mcp__hikari_codex__read_codex_report",
         "mcp__apple_events__*",
-        "mcp__apple_shortcuts__*",
         "mcp__github__*",
         "mcp__google_workspace__*",
         "mcp__notion__*",
         "mcp__playwright__*",
-        "mcp__youtube_transcript__*",
-        "mcp__duckdb__*",
     ]
 
     def test_registry_includes_all_expected(self, registry):

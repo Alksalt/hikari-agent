@@ -95,14 +95,14 @@ def test_allowed_tool_names_no_duplicates():
 
 
 def test_dedicated_server_modules_not_in_utility():
-    """The registry must NOT pull memory/photos/wiki/dispatch/codex into
+    """The registry must NOT pull memory/photos/wiki/dispatch into
     hikari_utility — those have their own MCP servers."""
     from tools._registry import discover_utility_tools
 
     names = {t.name for t in discover_utility_tools()}
     # Picking a representative tool from each dedicated server.
     forbidden = {"recall", "remember", "wiki_search",
-                 "dispatch_claude_session", "list_codex_reports"}
+                 "dispatch_claude_session"}
     leaked = forbidden & names
     assert not leaked, (
         f"dedicated-server tools leaked into hikari_utility: {leaked}"

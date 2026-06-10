@@ -105,9 +105,9 @@ def test_receipt_all_top3_receipt():
 def test_youtube_top3_contains_youtube_tool():
     names = top3_names("youtube")
     assert any(
-        "youtube_transcript" in n or "ytmusic" in n
+        "ytmusic" in n
         for n in names
-    ), f"Expected youtube/ytmusic tool in top-3 for 'youtube', got: {names}"
+    ), f"Expected ytmusic tool in top-3 for 'youtube', got: {names}"
 
 
 def test_weather_top1_is_weather():

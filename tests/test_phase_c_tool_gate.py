@@ -3,7 +3,7 @@
 Covers the eight security fixes from sprint-1-external-surface Phase C:
   1. Enum validation of gate/access_mode at registry load
   2. mcp__hikari_utility__* wildcard access_mode:write
-  3. playwright/youtube/duckdb wildcard access_mode:write
+  3. playwright wildcard access_mode:write
   4. note_create gate:gatekeeper
   5. summarize() server-prefix fallbacks raise NotImplementedError
   6. Canary deep-walk (nested payloads)
@@ -175,14 +175,12 @@ class TestHikariUtilityWildcardWrite:
 
 
 # ===========================================================================
-# Fix 3 — playwright/youtube/duckdb wildcard access_mode:write
+# Fix 3 — playwright wildcard access_mode:write
 # ===========================================================================
 
 class TestExternalWildcardWrite:
     @pytest.mark.parametrize("prefix,example_tool", [
         ("mcp__playwright__", "mcp__playwright__navigate"),
-        ("mcp__youtube_transcript__", "mcp__youtube_transcript__get_something_new"),
-        ("mcp__duckdb__", "mcp__duckdb__create_table"),
     ])
     def test_wildcard_access_mode_is_write(self, registry, prefix, example_tool):
         spec = registry._resolve(example_tool)

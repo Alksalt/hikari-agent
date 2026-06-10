@@ -187,11 +187,6 @@ memory:
     voice_corrections:
       enabled: true
 
-codex:
-  # Phase 8: directory containing the codex/ review reports. Relative paths
-  # resolve against the current working directory (i.e. the bot's repo root).
-  reports_dir: "./codex"
-
 # ============================================================================
 # Stage 1: persona hardening — refusal filter, politeness gate, sycophancy guard
 # ============================================================================

@@ -43,13 +43,12 @@ _INFRASTRUCTURE_MODULES: set[str] = {
 # Subpackages that are NOT utility-server features and must not be merged
 # into ``hikari_utility``. They live in ``tools/`` because they're
 # conceptually tool code, but they're wired to dedicated MCP servers by
-# ``agents/runtime.py`` (memory, photos, wiki, dispatch, codex).
+# ``agents/runtime.py`` (memory, photos, wiki, dispatch).
 _DEDICATED_SERVER_MODULES: set[str] = {
     "memory",
     "photos",
     "wiki",
     "dispatch",
-    "codex",
     "router",
 }
 

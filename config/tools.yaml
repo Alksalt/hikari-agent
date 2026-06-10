@@ -54,12 +54,6 @@ mcp_servers:
     conditional: false
     warm_pool_ttl_sec: 0
 
-  hikari_codex:
-    bucket: 1
-    runtime_factory: "agents.runtime:_codex_server"
-    conditional: false
-    warm_pool_ttl_sec: 0
-
   hikari_router:
     bucket: 1
     runtime_factory: "agents.runtime:_router_server"
@@ -133,42 +127,6 @@ mcp_servers:
       - "mcp-server-apple-events@2.2.1"
     env: {}
     warm_pool_ttl_sec: 1800
-
-  apple_shortcuts:
-    bucket: 3
-    command: "npx"
-    args:
-      - "-y"
-      - "mcp-server-apple-shortcuts@2025.4.8"
-    env: {}
-    warm_pool_ttl_sec: 1800
-
-  youtube_transcript:
-    bucket: 3
-    command: "uvx"
-    args:
-      - "--from"
-      - "git+https://github.com/jkawamoto/mcp-youtube-transcript@v0.6.4"
-      - "mcp-youtube-transcript"
-    env: {}
-    warm_pool_ttl_sec: 300
-
-  duckdb:
-    bucket: 3
-    command: "uvx"
-    args:
-      - "--from"
-      - "mcp-server-motherduck==1.0.6"
-      - "mcp-server-motherduck"
-      - "--db-path"
-      - ":memory:"
-      - "--ephemeral-connections"
-      - "--max-rows"
-      - "256"
-      - "--query-timeout"
-      - "15"
-    env: {}
-    warm_pool_ttl_sec: 300
 
 # ============================================================================
 # Tools
@@ -447,35 +405,6 @@ tools:
     credentials: null
     example: "dispatch_claude_session(prompt='summarize...')"
     presentation_hint: null
-
-  # --------------------------------------------------------------------------
-  # hikari_codex (bucket 1)
-  # --------------------------------------------------------------------------
-  - id: "mcp__hikari_codex__list_codex_reports"
-    bucket: 1
-    server: hikari_codex
-    gate: null
-    untrusted_output: false
-    wrap_patterns: []
-    domain: codex
-    operation: read
-    risk_tier: low
-    credentials: null
-    example: "list_codex_reports()"
-    presentation_hint: list_of_records
-
-  - id: "mcp__hikari_codex__read_codex_report"
-    bucket: 1
-    server: hikari_codex
-    gate: null
-    untrusted_output: true
-    wrap_patterns: ["^mcp__hikari_codex__read_codex_report$"]
-    domain: codex
-    operation: read
-    risk_tier: low
-    credentials: null
-    example: "read_codex_report('security-review-2026-05')"
-    presentation_hint: wiki_note
 
   # --------------------------------------------------------------------------
   # hikari_utility (bucket 1) — explicit names for untrusted/wrap; rest auto
@@ -1060,20 +989,6 @@ tools:
     description: "chain-of-actions progress beat for multi-step turns; rate-limited; routes sub-2s through sendChatAction(\"typing\"), >2s through bot.send_message"
     example: "progress(message='...looking that up.', mode='auto')"
     presentation_hint: null
-
-  - id: "mcp__hikari_utility__playlist_list"
-    bucket: 1
-    server: hikari_utility
-    gate: null
-    untrusted_output: false
-    wrap_patterns: ["^mcp__hikari_utility__playlist_list$"]
-    domain: utility
-    operation: read
-    risk_tier: low
-    credentials: null
-    description: "list Hikari's curated playlist tracks from config/hikari_playlist.yaml; filter by mood_tag, topic, limit"
-    example: "playlist_list(mood='late_night', limit=5)"
-    presentation_hint: list_of_records
 
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # access_mode:write so unregistered write tools fail closed via the
@@ -3015,23 +2930,6 @@ tools:
     example: "* wildcard for Apple Events tools"
     presentation_hint: null
 
-  # Apple Shortcuts — wildcard
-  # gate changed null → gatekeeper (Sprint A): shortcuts can run arbitrary
-  # macOS automations and must go through the GATEKEEPER approval flow.
-  - id: "mcp__apple_shortcuts__*"
-    bucket: 3
-    server: apple_shortcuts
-    gate: gatekeeper
-    access_mode: destructive
-    untrusted_output: true
-    wrap_patterns: ["^mcp__apple_shortcuts__"]
-    domain: macos
-    operation: execute
-    risk_tier: high
-    credentials: null
-    example: "run shortcut 'Morning Summary'"
-    presentation_hint: null
-
   # Playwright — navigation/inspection tools. access_mode:write so any
   # future persistent-state playwright tool fails closed via the
   # gatekeeper wildcard-write deny path rather than silently passing.
@@ -3048,39 +2946,6 @@ tools:
     credentials: null
     example: "playwright navigate to 'https://...'"
     presentation_hint: null
-
-  # YouTube Transcript — wildcard. access_mode:write so any future
-  # write tool fails closed via the gatekeeper wildcard-write deny path.
-  - id: "mcp__youtube_transcript__*"
-    bucket: 3
-    server: youtube_transcript
-    gate: null
-    access_mode: write
-    untrusted_output: true
-    wrap_patterns: ["^mcp__youtube_transcript__"]
-    domain: media
-    operation: read
-    risk_tier: low
-    credentials: null
-    example: "get_transcript('https://youtu.be/...')"
-    presentation_hint: wiki_note
-
-  # DuckDB — wildcard. access_mode:write so any future write tool
-  # (e.g. CREATE TABLE, INSERT) fails closed via the gatekeeper
-  # wildcard-write deny path rather than silently passing.
-  - id: "mcp__duckdb__*"
-    bucket: 3
-    server: duckdb
-    gate: null
-    access_mode: write
-    untrusted_output: true
-    wrap_patterns: ["^mcp__duckdb__"]
-    domain: analytics
-    operation: read
-    risk_tier: low
-    credentials: null
-    example: "duckdb query('SELECT * FROM ... LIMIT 10')"
-    presentation_hint: list_of_records
 
 # ============================================================================
 # Subagents

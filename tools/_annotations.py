@@ -72,16 +72,11 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "wiki_tree": ANN_READ_LOCAL,
     "wiki_append": ANN_WRITE_LOCAL,
     "morning_brief": ANN_READ_LOCAL,
-    # --- codex reports (filesystem) ---
-    "list_codex_reports": ANN_READ_LOCAL,
-    "read_codex_report": ANN_READ_LOCAL,
     # --- attachments (filesystem) ---
     "read_attachment": ANN_READ_LOCAL,
     # --- calc / python_run (pure compute) ---
     "calc": ANN_READ_LOCAL,
     "python_run": ANN_READ_LOCAL,
-    # --- playlist (local YAML read) ---
-    "playlist_list": ANN_READ_LOCAL,
     # --- router (in-memory BM25) ---
     "tool_search": ANN_READ_LOCAL,
     # --- day_receipt (DB) ---

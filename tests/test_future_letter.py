@@ -92,7 +92,7 @@ def test_format_evidence_block_includes_all_sections():
         "receipts": {
             "made": [{"date": "2026-05-10", "text": "shipped the api"}],
             "moved": [],
-            "learned": [{"date": "2026-05-15", "text": "duckdb is faster"}],
+            "learned": [{"date": "2026-05-15", "text": "sqlite is faster"}],
             "avoided": [],
         },
         "episodes": [{"date": "2026-05-12",
@@ -108,7 +108,7 @@ def test_format_evidence_block_includes_all_sections():
     block = _format_evidence_block(data, per_cat_cap=5)
     assert "WINDOW: 2026-04-21 → 2026-05-21" in block
     assert "shipped the api" in block
-    assert "duckdb is faster" in block
+    assert "sqlite is faster" in block
     assert "long meeting day" in block
     assert "they were quieter today" in block
     assert "draft Q3 plan" in block
