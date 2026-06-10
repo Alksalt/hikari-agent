@@ -137,6 +137,11 @@ def _run_layer_c_dry_run(cases_dir: Path) -> int:
             if "transcript" not in data or not data["transcript"]:
                 errors.append(f"{case_path.name}: judge_calibration case missing 'transcript'")
             judge_calibration_count += 1
+        elif kind == "rubric_live":
+            if not isinstance(data.get("rubrics"), dict) or not data.get("rubrics"):
+                errors.append(f"{case_path.name}: rubric_live case missing non-empty 'rubrics' dict")
+            if not data.get("user_input"):
+                errors.append(f"{case_path.name}: rubric_live case missing 'user_input'")
         else:
             errors.append(f"{case_path.name}: unknown kind {kind!r}")
 
