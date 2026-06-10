@@ -45,4 +45,7 @@ jobs:
         run: uv run python scripts/regen_subagent_policy.py --check
 
       - name: Validate MCP servers (skip cred-dependent ones)
+        # github stays allow-unreachable here only because the Homebrew
+        # github-mcp-server binary isn't installed on runners; local gates
+        # enforce it (see CLAUDE.md Ship profile).
         run: uv run python scripts/validate_mcp_servers.py --skip apple_events,google_workspace,notion --allow-unreachable github,playwright

@@ -522,7 +522,7 @@ uv run pytest tests/persona/ -q                   # persona regression suite
 uv run pytest tests/test_link_shelf_ssrf.py -q    # security regression sweep
 uv run ruff check .
 uv run python scripts/validate_tool_registry.py
-uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
+uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable playwright
 uv run python scripts/regen_mcp_json.py --check
 ```
 

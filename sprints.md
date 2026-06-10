@@ -21,7 +21,7 @@ Three **file-isolated** sprints — no two sprints edit the same file, so all th
 ```
 uv run pytest -q                  # background it (~6.5 min); read the summary line, never pipe to tail
 uv run python scripts/validate_tool_registry.py
-uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
+uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable playwright
 ```
 Any schema-changing merge → `launchctl` restart + tail the err log (test DBs are always fresh, so migration-ordering bugs only show in prod).
 

@@ -51,6 +51,11 @@ _INIT_MSG = {
 
 _LIST_MSG = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
+# Single-line JSON-RPC stream limit. asyncio's default readline() limit is
+# 64 KiB; github-mcp-server's tools/list response (~100 tools with schemas)
+# is one line well past that and raised "chunk is longer than limit".
+_STREAM_LIMIT = 8 * 1024 * 1024
+
 
 async def list_server_tools(
     command: str,
@@ -73,6 +78,7 @@ async def list_server_tools(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=full_env,
+        limit=_STREAM_LIMIT,
     )
     try:
         async def _io() -> set[str]:

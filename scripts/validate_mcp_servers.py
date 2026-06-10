@@ -8,7 +8,7 @@ SOFT pass (expected for credential-gated servers in CI). Any other exception
 is a HARD fail — it indicates a broken server or introspection bug.
 
 Run from CI:
-    uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
+    uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable playwright
 """
 from __future__ import annotations
 

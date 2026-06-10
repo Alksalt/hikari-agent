@@ -29,6 +29,6 @@ ship_method: push
 quality_gates:
   - uv run pytest -q
   - uv run python scripts/validate_tool_registry.py
-  - uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable github,playwright
+  - uv run python scripts/validate_mcp_servers.py --skip apple_events --allow-unreachable playwright
 wiki_path: /Users/ol/Library/Mobile Documents/iCloud~md~obsidian/Documents/alt-wiki
 ```
