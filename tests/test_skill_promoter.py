@@ -72,7 +72,7 @@ class TestOversizedThoughtCap:
 
         captured_prompts: list[str] = []
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm(captured_prompts),
         )
         # Disable cooldown.
@@ -107,7 +107,7 @@ class TestOversizedThoughtCap:
 
         captured_prompts: list[str] = []
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm(captured_prompts),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
@@ -159,7 +159,7 @@ class TestOversizedThoughtCap:
 
         captured_prompts: list[str] = []
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm(captured_prompts),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
@@ -222,7 +222,7 @@ class TestSkillPromoterLlmParsing:
             "content": "# test-skill\nDo the thing.",
         })
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm([], response),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
@@ -253,7 +253,7 @@ class TestSkillPromoterLlmParsing:
                 )
 
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm([], '{"found": false}'),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
@@ -286,7 +286,7 @@ class TestSkillPromoterLlmParsing:
             "content": "# evil\nDo bad.",
         })
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm([], response),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)
@@ -328,12 +328,12 @@ class TestSkillPromoterLlmParsing:
 
         # First draft.
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm", _make_fake_aux_llm([], _resp("# draft v1")),
+            "agents.runtime.run_internal_text", _make_fake_aux_llm([], _resp("# draft v1")),
         )
         await skill_promoter.maybe_promote_skill()
         # Second draft for the same id (re-run).
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm", _make_fake_aux_llm([], _resp("# draft v2")),
+            "agents.runtime.run_internal_text", _make_fake_aux_llm([], _resp("# draft v2")),
         )
         await skill_promoter.maybe_promote_skill()
 
@@ -359,7 +359,7 @@ class TestSkillPromoterLlmParsing:
                 )
 
         monkeypatch.setattr(
-            "agents.runtime._call_aux_llm",
+            "agents.runtime.run_internal_text",
             _make_fake_aux_llm([], "[1, 2, 3]"),
         )
         monkeypatch.setattr("agents.skill_promoter._is_on_cooldown", lambda: False)

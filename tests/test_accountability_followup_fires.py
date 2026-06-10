@@ -93,7 +93,7 @@ async def test_followup_falls_back_when_aux_llm_raises(monkeypatch):
     import agents.runtime as _rt
     async def exploding_aux_llm(*a, **kw):
         raise RuntimeError("openrouter down")
-    monkeypatch.setattr(_rt, "_call_aux_llm", exploding_aux_llm)
+    monkeypatch.setattr(_rt, "run_internal_text", exploding_aux_llm)
 
     from agents import proactive as _p
     await _p.fire_due_reminders(fake_send)

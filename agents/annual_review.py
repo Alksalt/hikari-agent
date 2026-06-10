@@ -167,19 +167,21 @@ def _build_review_prompt(data: dict) -> str:
 
 
 async def compose_annual_review(year: int) -> str | None:
-    """Compose the review text via aux LLM. Returns None on failure."""
-    from agents import config as cfg
-    from agents.runtime import _call_aux_llm
+    """Compose the review text via the SDK aux path. Returns None on failure.
+
+    Sonnet, not Haiku: fires once a year and the output is a voice piece —
+    quality wins, cost is $0 marginal on subscription.
+    """
+    from agents.runtime import MODEL_PRIMARY, run_internal_text
 
     data = _gather_year_data(year)
     prompt = _build_review_prompt(data)
 
-    model = str(cfg.get("annual_review.model", cfg.get("aux_model.openrouter_model", "deepseek/deepseek-v4-flash")))
     try:
-        out = await _call_aux_llm(
+        out = await run_internal_text(
             prompt,
             system="You are Hikari Tsukino. Follow the voice rules in the user message exactly.",
-            model=model,
+            model=MODEL_PRIMARY,
             max_tokens=600,
         )
     except Exception:

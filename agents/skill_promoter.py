@@ -73,7 +73,7 @@ async def maybe_promote_skill() -> None:
         logger.debug("skill_promoter: too few thoughts (%d) — skip", len(thoughts))
         return
 
-    from agents.runtime import _call_aux_llm
+    from agents.runtime import run_internal_text
     from storage import db as _db
 
     def _set_cooldown(reason: str) -> None:
@@ -95,9 +95,9 @@ async def maybe_promote_skill() -> None:
     sample = "\n---\n".join(capped)
     prompt = f"Diary entries (recent {_THOUGHT_WINDOW_DAYS} days):\n\n{sample}"
     try:
-        raw = await _call_aux_llm(prompt, system=_SCAN_SYSTEM)
+        raw = await run_internal_text(prompt, system=_SCAN_SYSTEM)
     except Exception:
-        logger.exception("skill_promoter: run_reflection_call failed")
+        logger.exception("skill_promoter: aux SDK call failed")
         _set_cooldown("aux_llm_failed")
         return
 

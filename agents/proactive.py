@@ -139,9 +139,10 @@ def _next_occurrence(fire_at_iso: str, repeat: str) -> str | None:
 
 
 async def _generate_accountability_followup_text(task_text: str) -> str:
-    """Generate a dry, varied follow-up question via aux-LLM. Falls back to a
-    template if the LLM call fails or OPENROUTER_API_KEY is unset."""
-    from agents.runtime import _call_aux_llm
+    """Generate a dry, varied follow-up question via the SDK aux path
+    (run_internal_text, Haiku). Falls back to a template when the call
+    fails or returns empty — background job, latency irrelevant."""
+    from agents.runtime import run_internal_text
 
     system = (
         "You are Hikari. One sentence, lowercase, dry, no exclamation marks, "
@@ -150,7 +151,7 @@ async def _generate_accountability_followup_text(task_text: str) -> str:
         "'the water thing. yes or no.'"
     )
     try:
-        out = await _call_aux_llm(
+        out = await run_internal_text(
             f"Task: {task_text}",
             system=system,
             max_tokens=40,

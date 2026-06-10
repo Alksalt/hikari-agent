@@ -165,7 +165,7 @@ async def test_run_annual_review_force_bypasses_window():
 
     sender = AsyncMock(return_value=None)
     with (
-        patch("agents.runtime._call_aux_llm", new=AsyncMock(return_value=canned)),
+        patch("agents.runtime.run_internal_text", new=AsyncMock(return_value=canned)),
     ):
         # Patch _is_review_window to False to confirm force bypasses it.
         with patch.object(annual_review, "_is_review_window", return_value=False):
@@ -185,7 +185,7 @@ async def test_run_annual_review_marks_idempotent():
 
     sender = AsyncMock(return_value=None)
     with (
-        patch("agents.runtime._call_aux_llm", new=AsyncMock(return_value=canned)),
+        patch("agents.runtime.run_internal_text", new=AsyncMock(return_value=canned)),
     ):
         with patch.object(annual_review, "_is_review_window", return_value=True):
             with patch.object(annual_review, "_already_run_this_year", return_value=False):
