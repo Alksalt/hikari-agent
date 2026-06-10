@@ -10,7 +10,7 @@ from claude_agent_sdk import tool
 from storage import db
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
-from tools.reminders._shared import _parse_iso
+from tools.reminders._shared import _parse_when
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ async def accountability_create(args: dict[str, Any]) -> dict[str, Any]:
     if not task_text:
         return _ok("refused: task_text must not be empty")
 
-    when = _parse_iso(when_iso)
+    when = _parse_when(when_iso)
     if when is None:
         return _ok(f"refused: cannot parse when_iso={when_iso!r}")
 

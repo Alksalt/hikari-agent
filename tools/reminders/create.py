@@ -18,7 +18,7 @@ from agents import config as _cfg
 from storage import db
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
-from tools.reminders._shared import _VALID_REPEAT, _parse_iso
+from tools.reminders._shared import _VALID_REPEAT, _parse_when
 from tools.reminders.recurrence import validate_rule as _validate_recurrence_rule
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,9 @@ _DEFAULT_TOTAL_BUDGET_CAP_USD = 5.0
         "offset) — the parser refuses anything else. If the user gives a "
         "relative time, YOU compute the ISO from the `# now` block injected "
         "at the top of your context. Do not call this tool with natural-"
-        "language time strings like 'in 1h' or 'tomorrow'. "
+        "language time strings like 'in 1h' or 'tomorrow'. (If you truly "
+        "cannot resolve a precise ISO, the user's phrase verbatim is "
+        "attempted as a last-resort fallback — but always prefer ISO.) "
         "Examples: "
         "(EN) user 'remind me in 5 min to stretch', `# now` utc 2026-05-20T18:00:00+00:00 "
         "→ when_iso='2026-05-20T18:05:00+00:00', text='stretch'. "
@@ -106,7 +108,7 @@ async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
 
     if not text:
         return _ok("refused: empty text")
-    when = _parse_iso(when_iso)
+    when = _parse_when(when_iso)
     if when is None:
         return _ok(f"refused: cannot parse when_iso={when_iso!r}")
     if when - timedelta(minutes=lead_minutes) <= datetime.now(UTC):
