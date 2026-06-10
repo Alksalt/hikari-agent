@@ -4,11 +4,14 @@ No live LLM — judge_voice_drift is mocked via unittest.mock.AsyncMock.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
+
+from evals.conversation.judge import JudgeVerdict
 
 LAYER_C_DIR = pathlib.Path(__file__).resolve().parent.parent / "evals" / "conversation" / "cases" / "layer_c"
 GOLDEN_DIR = LAYER_C_DIR / "golden"
@@ -126,6 +129,13 @@ def test_transcript_load(case_path: pathlib.Path):
         assert data["rubrics"], f"{case_path.name}: rubrics dict must be non-empty"
         assert "transcript" in data, f"{case_path.name}: judge_calibration case missing 'transcript'"
         assert data["transcript"], f"{case_path.name}: transcript must be non-empty"
+    elif kind == "rubric_live":
+        assert isinstance(data.get("rubrics"), dict) and data["rubrics"], (
+            f"{case_path.name}: rubric_live case must have a non-empty 'rubrics' dict"
+        )
+        assert data.get("user_input"), (
+            f"{case_path.name}: rubric_live case must have a non-empty 'user_input'"
+        )
     else:
         pytest.fail(f"{case_path.name}: unknown kind {kind!r}")
 
@@ -181,6 +191,119 @@ async def test_cost_cap_aborts():
     assert len(skipped_errors) >= 1, (
         f"Expected at least one SKIPPED error after cost cap exceeded; got: {errors}"
     )
+
+
+# ---------------------------------------------------------------------------
+# rubric_live: opt-in gate, count cap, DB isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rubric_live_skips_without_env_flag(monkeypatch):
+    """With HIKARI_EVAL_LIVE unset, rubric_live cases skip with ZERO llm calls
+    (no live Sonnet turn, no judge call)."""
+    from evals.conversation.runner import run_layer_c
+
+    monkeypatch.delenv("HIKARI_EVAL_LIVE", raising=False)
+
+    live_calls = []
+    with (
+        patch(
+            "evals.conversation.runner_layer_c.run_layer_c_rubric_live",
+            new=AsyncMock(side_effect=lambda p: live_calls.append(p)),
+        ),
+        # Keep the rest of the dir network-free.
+        patch(
+            "evals.conversation.judge.judge_voice_drift",
+            new=AsyncMock(return_value=JudgeVerdict(
+                passed=True, reasons={}, usd_cost=0.0,
+                input_tokens=0, output_tokens=0)),
+        ),
+        patch(
+            "evals.conversation.scorer.score_response",
+            new=AsyncMock(return_value={
+                "scores": {}, "weighted_avg": 3.5, "passed": True,
+                "usd_cost": 0.0, "reasons": {}}),
+        ),
+    ):
+        await run_layer_c(LAYER_C_DIR, cost_cap_usd=1.0)
+
+    assert live_calls == [], "rubric_live must not execute without HIKARI_EVAL_LIVE=1"
+
+
+@pytest.mark.asyncio
+async def test_rubric_live_count_cap(monkeypatch):
+    """With the flag on but max_live_cases=0, every live case skips."""
+    from evals.conversation.runner import run_layer_c
+
+    monkeypatch.setenv("HIKARI_EVAL_LIVE", "1")
+
+    live_calls = []
+    with (
+        patch(
+            "evals.conversation.runner_layer_c.run_layer_c_rubric_live",
+            new=AsyncMock(side_effect=lambda p: live_calls.append(p)),
+        ),
+        patch(
+            "evals.conversation.judge.judge_voice_drift",
+            new=AsyncMock(return_value=JudgeVerdict(
+                passed=True, reasons={}, usd_cost=0.0,
+                input_tokens=0, output_tokens=0)),
+        ),
+        patch(
+            "evals.conversation.scorer.score_response",
+            new=AsyncMock(return_value={
+                "scores": {}, "weighted_avg": 3.5, "passed": True,
+                "usd_cost": 0.0, "reasons": {}}),
+        ),
+    ):
+        await run_layer_c(LAYER_C_DIR, cost_cap_usd=1.0, max_live_cases=0)
+
+    assert live_calls == [], "max_live_cases=0 must skip every live case"
+
+
+@pytest.mark.asyncio
+async def test_rubric_live_isolated_db(monkeypatch, tmp_path):
+    """The live turn must run against a temp HIKARI_DB_PATH — never the
+    production DB. Proven with mocked run_user_turn + score_response so the
+    test spends nothing."""
+    from evals.conversation.runner_layer_c import run_layer_c_rubric_live
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake-key-for-test")
+    prod_db = "/tmp/definitely-not-used-prod.db"
+    monkeypatch.setenv("HIKARI_DB_PATH", prod_db)
+
+    seen_db_paths = []
+
+    async def fake_run_user_turn(user_input):
+        seen_db_paths.append(os.environ.get("HIKARI_DB_PATH", ""))
+        return "you have one thing today. go lie down."
+
+    case = tmp_path / "rubric_warmth_live_test.yaml"
+    case.write_text(
+        "name: rubric_live_isolation_probe\n"
+        "kind: rubric_live\n"
+        "rubrics:\n  warmth: 1.0\n"
+        'pass_rule: "weighted_avg >= 3.0"\n'
+        'user_input: "long day. what matters."\n',
+        encoding="utf-8",
+    )
+
+    with (
+        patch("agents.runtime.run_user_turn", new=fake_run_user_turn),
+        patch(
+            "evals.conversation.scorer.score_response",
+            new=AsyncMock(return_value={
+                "scores": {"warmth": 4}, "weighted_avg": 4.0, "passed": True,
+                "usd_cost": 0.001, "reasons": {"warmth": "fine"}}),
+        ),
+    ):
+        result = await run_layer_c_rubric_live(case)
+
+    assert result.passed, result.reason
+    assert seen_db_paths, "run_user_turn was never invoked"
+    assert seen_db_paths[0] != prod_db, "live eval ran against the production DB path"
+    assert "hikari_live_eval.db" in seen_db_paths[0]
 
 
 # ---------------------------------------------------------------------------

@@ -178,17 +178,25 @@ async def run_layer_c(  # type: ignore[override]
     cases_dir: Path,
     *,
     cost_cap_usd: float = 0.25,
+    max_live_cases: int = 3,
 ) -> tuple[int, int, list[str], float]:
-    """Dispatch Layer C cases: golden (LLM judge) + cadence (deterministic) + trajectory.
+    """Dispatch Layer C cases: golden (LLM judge) + cadence (deterministic) +
+    trajectory + rubric_live (real Sonnet turn, judge-scored).
 
     Returns (passed, total, errors, total_usd_cost).
-    Cost cap aborts golden cases mid-run if exceeded; cadence + trajectory are free.
+    Cost cap aborts golden cases mid-run if exceeded; cadence + trajectory are
+    free. rubric_live runs behind THREE gates: the HIKARI_EVAL_LIVE opt-in
+    (each case spawns a real subscription Sonnet turn), the hard
+    ``max_live_cases`` count cap, and the shared dollar cap (judge calls).
     """
     from evals.conversation.runner_layer_c import (
+        LayerCResult,
         discover_cases,
+        live_rubric_enabled,
         run_layer_c_cadence,
         run_layer_c_golden,
         run_layer_c_rubric,
+        run_layer_c_rubric_live,
         run_layer_c_trajectory,
     )
 
@@ -197,6 +205,7 @@ async def run_layer_c(  # type: ignore[override]
     skipped = 0
     errors: list[str] = []
     total_cost = 0.0
+    live_count = 0
 
     for case_path in cases:
         case_data = yaml.safe_load(case_path.read_text(encoding="utf-8"))
@@ -216,6 +225,24 @@ async def run_layer_c(  # type: ignore[override]
         # judge_calibration: scores a fixed author-written transcript to calibrate the judge — NOT live model output (see run_layer_c_rubric).
         elif kind == "judge_calibration":
             result = await run_layer_c_rubric(case_path)
+        elif kind == "rubric_live":
+            case_name = case_data.get("name", case_path.stem)
+            if not live_rubric_enabled():
+                result = LayerCResult(
+                    case_name, "skipped", False,
+                    "rubric_live disabled (set HIKARI_EVAL_LIVE=1)", 0.0)
+            elif live_count >= max_live_cases:
+                result = LayerCResult(
+                    case_name, "skipped", False,
+                    f"live case cap reached ({max_live_cases})", 0.0)
+            elif total_cost > cost_cap_usd:
+                result = LayerCResult(
+                    case_name, "skipped", False,
+                    f"cost cap ${cost_cap_usd:.2f} exceeded", 0.0)
+            else:
+                result = await run_layer_c_rubric_live(case_path)
+                total_cost += result.usd_cost
+                live_count += 1
         else:
             result = run_layer_c_cadence(case_path)
 

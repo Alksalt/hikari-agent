@@ -40,10 +40,18 @@ except Exception:
 @dataclass
 class LayerCResult:
     case_name: str
-    kind: str  # 'golden', 'cadence', 'trajectory', 'judge_calibration', 'skipped'
+    kind: str  # 'golden', 'cadence', 'trajectory', 'judge_calibration', 'rubric_live', 'skipped'
     passed: bool
     reason: str
     usd_cost: float = 0.0
+
+
+def live_rubric_enabled() -> bool:
+    """rubric_live cases spawn REAL Sonnet turns — explicit opt-in only.
+
+    Default OFF so CI/nightly stays free; set HIKARI_EVAL_LIVE=1 to run.
+    """
+    return os.environ.get("HIKARI_EVAL_LIVE", "").strip().lower() in ("1", "true", "yes")
 
 
 async def run_layer_c_golden(case_path: pathlib.Path) -> LayerCResult:
@@ -238,6 +246,113 @@ def run_layer_c_cadence(case_path: pathlib.Path) -> LayerCResult:
         "cadence",
         False,
         "case has no expected_max_emissions or expected_distribution",
+    )
+
+
+async def run_layer_c_rubric_live(case_path: pathlib.Path) -> LayerCResult:
+    """Score one rubric case against LIVE model output.
+
+    The fusion of the trajectory harness (DB isolation, ephemeral SDK) and
+    the judge_calibration scorer: the case's ``user_input`` runs through the
+    REAL ``run_user_turn`` (full persona, real Sonnet, isolated tmp DB —
+    ``is_live_persistent_path_enabled`` forced False so the production live
+    session is never touched), then the actual reply is scored by the same
+    DeepSeek rubric judge on the same 0-4 scale as calibration cases.
+
+    Cost note: ``usd_cost`` reflects the judge call only; the Sonnet turn is
+    subscription-billed and capped by the caller's count gate
+    (``max_live_cases``) rather than the dollar accumulator.
+    """
+    from evals.conversation.scorer import score_response
+
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return LayerCResult(
+            case_name=case_path.stem,
+            kind="skipped",
+            passed=False,
+            reason="OPENROUTER_API_KEY not set (rubric_live needs the judge)",
+            usd_cost=0.0,
+        )
+
+    case = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    name = case.get("name", case_path.stem)
+    rubrics: dict[str, float] = dict(case.get("rubrics") or {})
+    user_input: str = case.get("user_input", "")
+    _pr_match = _re.search(r"weighted_avg\s*>=\s*([\d.]+)", str(case.get("pass_rule", "")))
+    per_case_min_avg: float = float(_pr_match.group(1)) if _pr_match else 3.0
+
+    if not user_input or not rubrics:
+        return LayerCResult(
+            case_name=name,
+            kind="rubric_live",
+            passed=False,
+            reason="rubric_live case needs user_input and a non-empty rubrics dict",
+            usd_cost=0.0,
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = pathlib.Path(tmpdir) / "hikari_live_eval.db"
+        with (
+            patch.dict("os.environ", {
+                "HIKARI_DB_PATH": str(db_path),
+                "OWNER_TELEGRAM_ID": "99999",
+                "HOME_TZ": "UTC",
+            }),
+        ):
+            import storage.db as db_mod
+            importlib.reload(db_mod)
+            from agents import config as config_mod
+            config_mod.reload()
+
+            with patch(
+                "agents.sdk_pool.is_live_persistent_path_enabled",
+                return_value=False,
+            ):
+                import agents.runtime as runtime_mod
+                actual_text = await runtime_mod.run_user_turn(user_input)
+
+    if not actual_text or not actual_text.strip():
+        return LayerCResult(
+            case_name=name,
+            kind="rubric_live",
+            passed=False,
+            reason="live turn returned empty text",
+            usd_cost=0.0,
+        )
+
+    try:
+        result = await score_response(user_input, actual_text, rubrics, api_key=api_key)
+    except RuntimeError as exc:
+        return LayerCResult(
+            case_name=name,
+            kind="rubric_live",
+            passed=False,
+            reason=f"scorer failed: {exc}",
+            usd_cost=0.0,
+        )
+
+    scores = result.get("scores", {})
+    reasons = result.get("reasons", {})
+    weighted_avg = result.get("weighted_avg", 0.0)
+    score_summary = "; ".join(
+        f"{d}={scores.get(d, '?')} ({reasons.get(d, '')})" for d in rubrics
+    )
+    passed = weighted_avg >= per_case_min_avg
+    if _GLOBAL_NO_ZERO and any(s == 0 for s in scores.values()):
+        passed = False
+    reason = (
+        f"LIVE weighted_avg={weighted_avg:.2f} — {score_summary} — reply={actual_text[:120]!r}"
+    )
+    if not passed:
+        reason = "FAIL " + reason
+
+    return LayerCResult(
+        case_name=name,
+        kind="rubric_live",
+        passed=passed,
+        reason=reason,
+        usd_cost=result.get("usd_cost", 0.0),
     )
 
 

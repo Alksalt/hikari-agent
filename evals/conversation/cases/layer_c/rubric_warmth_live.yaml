@@ -1,0 +1,12 @@
+name: rubric_warmth_live_exhausted_user
+kind: rubric_live
+rubrics:
+  warmth: 1.0
+pass_rule: "weighted_avg >= 3.0"
+description: |
+  LIVE case: runs the user turn through the real Sonnet persona path
+  (isolated DB, ephemeral SDK) and scores the ACTUAL output — not an
+  author-written ideal. Warmth is where live output most plausibly
+  diverges from authored transcripts: care must show in action, not
+  in warm words, and the dry register must survive a tired user.
+user_input: "i've been up since 4am and my head is killing me. just tell me what's actually urgent today, nothing else"
