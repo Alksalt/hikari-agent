@@ -86,7 +86,7 @@ def test_recent_empty():
 
 @pytest.mark.asyncio
 async def test_maybe_judge_fires_correction_on_drift(monkeypatch):
-    """monkeypatch _call_aux_llm: first call returns drift YAML, second returns a sentence."""
+    """monkeypatch run_internal_text: first call returns drift YAML, second returns a sentence."""
     import agents.drift_judge as dj
 
     drift_yaml = "score: 0.3\nclass: drifting\nreason: too much warmth"
@@ -101,7 +101,7 @@ async def test_maybe_judge_fires_correction_on_drift(monkeypatch):
             return drift_yaml
         return correction_text
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux_llm)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux_llm)
     # Ensure sampling gates pass
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
 
@@ -114,14 +114,12 @@ async def test_maybe_judge_fires_correction_on_drift(monkeypatch):
 
     monkeypatch.setattr(db, "voice_corrections_insert", tracking_insert)
 
-    log_aux_calls = []
-    monkeypatch.setattr(dj, "_log_aux_cost", lambda **kw: log_aux_calls.append(kw))
-
     await dj.maybe_judge_and_log("this is a warm helpful reply", outbound_counter=10)
 
     assert len(insert_calls) == 1
     assert insert_calls[0]["correction_text"] == correction_text
-    assert len(log_aux_calls) == 1
+    # Cost accounting moved inside run_internal_text (path="aux_sdk") —
+    # the old _log_aux_cost char-estimate hook is gone with OpenRouter.
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +133,7 @@ async def test_no_correction_on_hikari_verdict(monkeypatch):
     async def mock_aux_llm(prompt, *, system, model, max_tokens):
         return "score: 0.85\nclass: hikari\nreason: dry and in-voice"
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux_llm)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux_llm)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
 
     insert_calls = []
@@ -157,7 +155,7 @@ async def test_no_correction_on_unclear(monkeypatch):
     async def mock_aux_llm(prompt, *, system, model, max_tokens):
         return "score: 0.6\nclass: unclear\nreason: borderline"
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux_llm)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux_llm)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
 
     insert_calls = []
@@ -180,7 +178,7 @@ async def test_correction_above_threshold_skipped(monkeypatch):
     async def mock_aux_llm(prompt, *, system, model, max_tokens):
         return "score: 0.52\nclass: drifting\nreason: barely"
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux_llm)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux_llm)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
     # Ensure threshold is 0.5
     monkeypatch.setattr(config, "get", lambda key, default=None: 0.5 if key == "drift_telemetry.drift_threshold" else config._cfg.get(key, default) if hasattr(config, "_cfg") else default)
@@ -210,7 +208,7 @@ async def test_correction_aux_failure_swallowed(monkeypatch):
             return "score: 0.3\nclass: drifting\nreason: too warm"
         raise RuntimeError("OpenRouter timeout")
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux_llm)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux_llm)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
 
     # Must not raise

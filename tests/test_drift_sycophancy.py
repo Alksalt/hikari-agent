@@ -78,7 +78,7 @@ async def test_judge_outbound_extracts_sycophancy_fields(monkeypatch):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
 
     result = await dj.judge_outbound("ugh. fine. i'll look at it.")
     assert result is not None
@@ -106,7 +106,7 @@ async def test_capitulation_trips_warn_path(monkeypatch, caplog):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
     monkeypatch.setattr(dj, "_rubric", lambda: "a rubric")
     # Disable reflexion to avoid a second aux call; keep sycophancy path live.
@@ -144,7 +144,7 @@ async def test_asymmetric_concession_no_warn(monkeypatch, caplog):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
     monkeypatch.setattr(dj, "_rubric", lambda: "a rubric")
     monkeypatch.setattr(dj, "_sycophancy_enabled", lambda: True)
@@ -175,7 +175,7 @@ async def test_missing_sycophancy_fields_default_safely(monkeypatch):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
 
     result = await dj.judge_outbound("some message")
     assert result is not None
@@ -202,7 +202,7 @@ async def test_bad_sycophancy_score_does_not_crash(monkeypatch):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
 
     result = await dj.judge_outbound("some message")
     assert result is not None
@@ -228,7 +228,7 @@ async def test_sycophancy_score_persisted_to_db(monkeypatch):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
     # Patch module-level helpers so rubric/reflexion/sycophancy all work cleanly.
     monkeypatch.setattr(dj, "_rubric", lambda: "a rubric")
@@ -264,7 +264,7 @@ async def test_sycophancy_disabled_suppresses_warn(monkeypatch, caplog):
     async def mock_aux(prompt, *, system, model, max_tokens):
         return yaml_response
 
-    monkeypatch.setattr(dj, "_call_aux_llm", mock_aux)
+    monkeypatch.setattr(dj, "run_internal_text", mock_aux)
     monkeypatch.setattr(dj, "should_sample", lambda _: True)
     monkeypatch.setattr(dj, "_rubric", lambda: "a rubric")
     monkeypatch.setattr(dj, "_sycophancy_enabled", lambda: False)

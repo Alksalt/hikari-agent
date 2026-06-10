@@ -666,16 +666,14 @@ mcp_external:
     passphrase_window_seconds: 300
 
 drift_telemetry:
-  # Per-outbound persona-drift judge. Spins up a bare ClaudeSDKClient (Sonnet,
-  # 1 turn, no session resume, no log_to_memory) to score how Hikari-like
+  # Per-outbound persona-drift judge. Runs run_internal_text (SDK, Haiku,
+  # 1 turn, no tools, no persona, no session resume) to score how Hikari-like
   # the reply is. Logs to persona_drift_scores; daily reflection reads
   # window averages. Anthropic Apr-2026 "assistant axis" research: drift
   # toward generic-helpful is a measurable telemetry signal, not a vibe check.
   enabled: true
   probability_per_outbound: 0.20
   cooldown_min_messages: 4
-  model: "deepseek/deepseek-v4-flash"
-  max_budget_usd: 0.01
   # Defense against runaway sampling — caps total judge calls per UTC day.
   max_calls_per_day: 30
   # Score threshold below which a reply counts as "drifting" in the

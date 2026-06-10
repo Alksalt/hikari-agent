@@ -5,17 +5,14 @@ generic-helpful is a measurable activation-space direction, and the
 literature-supported pattern is to make it a telemetry signal rather than
 a hand-tuned vibe check.
 
-Routing: ``agents.runtime._call_aux_llm`` → OpenRouter → DeepSeek V4 Flash
-(same path as every other aux LLM op: entity extraction, summarisers,
-classifiers). No SDK subprocess, no session resume, no shared _RUN_LOCK.
-Fire-and-forget from inside ``_send_with_choreography`` after the reply has
-shipped — user-facing send latency is zero.
+Routing: ``agents.runtime.run_internal_text`` → SDK → Haiku (OAuth
+subscription; migrated off OpenRouter 2026-06-10). No tools, no persona, no
+session resume, no shared _RUN_LOCK. Fire-and-forget from inside
+``_send_with_choreography`` after the reply has shipped — user-facing send
+latency is zero, so the SDK subprocess spawn cost is invisible.
 
-Model override: ``config/engagement.yaml -> drift_telemetry.model`` — must be
-an OpenRouter model ID. Defaults to ``deepseek/deepseek-v4-flash``.
-
-All other knobs in ``config/engagement.yaml -> drift_telemetry``. Best-effort:
-any failure (HTTP error, malformed YAML, timeout) returns ``None`` and is
+All knobs in ``config/engagement.yaml -> drift_telemetry``. Best-effort:
+any failure (SDK error, malformed YAML, timeout) returns ``None`` and is
 silently logged — drift judging never breaks the user-facing flow.
 """
 
@@ -30,7 +27,7 @@ import yaml
 from storage import db
 
 from . import config as cfg
-from .runtime import _call_aux_llm, _log_aux_cost
+from .runtime import MODEL_HAIKU, run_internal_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +45,7 @@ _CORRECTION_SYSTEM = (
     "Output the sentence only. No quotes, no bullets, no headers."
 )
 
-_CORRECTION_MAX_TOKENS = 48   # ~$0.00015/call at DeepSeek v4 Flash rates
+_CORRECTION_MAX_TOKENS = 48   # one sentence; $0 marginal on subscription
 
 
 def _enabled() -> bool:
@@ -73,16 +70,6 @@ def _cooldown() -> int:
 
 def _daily_cap() -> int:
     return int(cfg.get("drift_telemetry.max_calls_per_day", 30))
-
-
-def _drift_model() -> str:
-    """OpenRouter model ID for drift judging.
-
-    Reads ``drift_telemetry.model`` from config; defaults to
-    ``deepseek/deepseek-v4-flash`` (the standard cheap aux-LLM path).
-    The config value must be an OpenRouter model ID, not a Claude model name.
-    """
-    return str(cfg.get("drift_telemetry.model", "deepseek/deepseek-v4-flash"))
 
 
 def _rubric() -> str:
@@ -123,9 +110,9 @@ async def judge_outbound(text: str) -> dict[str, Any] | None:
     """Score one outbound message for voice integrity. Returns parsed dict or
     None on any failure. **Never re-raises** — best-effort by design.
 
-    Routes via ``_call_aux_llm`` → OpenRouter → DeepSeek V4 Flash (same path
-    as entity extraction, summarisers, and all other aux LLM ops). No SDK
-    subprocess, no session resume, no shared _RUN_LOCK.
+    Routes via ``run_internal_text`` → SDK → Haiku (no tools, no persona,
+    no session resume, no shared _RUN_LOCK). Runs post-send in a background
+    task, so the subprocess spawn never blocks a reply.
     """
     if not text or not text.strip():
         return None
@@ -133,10 +120,10 @@ async def judge_outbound(text: str) -> dict[str, Any] | None:
     if not rubric:
         return None
     try:
-        raw = await _call_aux_llm(
+        raw = await run_internal_text(
             f"Score this Hikari reply:\n\n{text[:1000]}",
             system=rubric,
-            model=_drift_model(),
+            model=MODEL_HAIKU,
             max_tokens=256,
         )
     except Exception:  # noqa: BLE001
@@ -183,10 +170,10 @@ async def generate_correction(text: str, reason: str | None) -> str | None:
         return None
     prompt = f"Drifted reply:\n{text[:600]}\n\nJudge reason: {reason or '(none)'}"
     try:
-        raw = await _call_aux_llm(
+        raw = await run_internal_text(
             prompt,
             system=_CORRECTION_SYSTEM,
-            model=_drift_model(),
+            model=MODEL_HAIKU,
             max_tokens=_CORRECTION_MAX_TOKENS,
         )
     except Exception:
@@ -261,11 +248,7 @@ async def maybe_judge_and_log(text: str, outbound_counter: int) -> None:
                     correction_text=correction,
                     source_outbound_id=None,  # outbound id not threaded here today
                 )
-                _log_aux_cost(
-                    model=_drift_model(),
-                    prompt_chars=len(_CORRECTION_SYSTEM) + 600 + 40,
-                    completion_chars=len(correction),
-                    path="drift_reflexion",
-                )
+                # Cost is recorded inside run_internal_text (path="aux_sdk") —
+                # the old char-estimate _log_aux_cost call is gone with OpenRouter.
         except Exception:  # noqa: BLE001
             logger.exception("drift_judge: reflexion path failed (non-fatal)")
