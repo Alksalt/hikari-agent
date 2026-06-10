@@ -937,7 +937,7 @@ def _migrate_facts_attribution(conn: sqlite3.Connection) -> None:
     Documented values (not enforced at DB level):
       user_stated         — user told Hikari directly
       user_observed       — inferred from user's actions, not stated
-      user_corrected      — user replaced a prior fact (correct_fact path)
+      user_corrected      — user replaced a prior fact via /memory correct
       hikari_inferred     — Hikari's own reflection extracted from chat
       subagent_extracted  — an explorer/research subagent surfaced it
       external_source     — came from a tool result (email, wiki, MCP)
