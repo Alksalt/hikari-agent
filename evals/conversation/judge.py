@@ -93,7 +93,12 @@ async def judge_voice_drift(
         resp.raise_for_status()
         data = resp.json()
 
-    content = data["choices"][0]["message"]["content"].strip()
+    # OpenRouter can return content: null (provider blip / reasoning-only
+    # reply) — guard so one bad response fails the case, not the whole run.
+    raw_content = data["choices"][0]["message"].get("content")
+    if not raw_content:
+        raise RuntimeError(f"judge returned empty content: {data['choices'][0]!r:.200}")
+    content = raw_content.strip()
     # Strip optional markdown fences
     if content.startswith("```"):
         content = content.split("```", 2)[1]
