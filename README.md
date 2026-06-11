@@ -5,6 +5,11 @@ subscription's $200/mo Agent SDK quota (no API-key billing). Sprint 6B
 made the README the operator runbook: install, monitor, recover without
 reading source.
 
+> **Relevans for helseteknologi / relevance for health tech (NO):** Mønstrene i dette systemet —
+> minne- og kontekststyring, verktøysorkestrering, tilgangsstyring (capability-gating), audit-logg og
+> automatiserte tester — er de samme som trengs i trygge helseinformasjonssystemer. Bygget og driftet som
+> et én-persons produksjonssystem av en som til daglig jobber klinisk i norsk kommunehelsetjeneste.
+
 ---
 
 ## Quick start (1 min)
