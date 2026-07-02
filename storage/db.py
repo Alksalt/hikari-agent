@@ -3546,6 +3546,51 @@ def proactive_event_record_silence_window(
     return int(cur.rowcount or 0)
 
 
+def proactive_events_recent_sent(source: str, limit: int = 5) -> list[dict]:
+    """Newest-first sent proactive events for *source*: [{'id', 'sent_at'}].
+
+    Sprint 1 ignore-driven backoff (agents/proactive_backoff.py) — walks
+    these newest-first to count consecutive unanswered sends."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, sent_at FROM proactive_events "
+            "WHERE source = ? AND status = 'sent' "
+            "ORDER BY sent_at DESC LIMIT ?",
+            (source, int(limit)),
+        ).fetchall()
+    return [{"id": r[0], "sent_at": r[1]} for r in rows]
+
+
+def user_message_after(ts_iso: str, within_hours: float) -> bool:
+    """True iff any role='user' message landed in (ts_iso, ts_iso + within_hours].
+
+    Sprint 1 ignore-driven backoff — the "did the user answer this send"
+    check behind agents.proactive_backoff.consecutive_ignores.
+
+    The window bound is computed in Python (not via SQLite's ``datetime()``)
+    because that function renders a space-separated, microsecond-truncated,
+    offset-free string ("2026-06-29 21:16:46") which sorts incorrectly
+    against the 'T'-separated, offset-suffixed values ``_now()`` stores
+    ("2026-06-29T16:16:46.175790+00:00") whenever the two share a calendar
+    day — 'T' (0x54) lexicographically outranks ' ' (0x20), so same-day
+    comparisons silently flip. Comparing two Python-formatted isoformat()
+    strings keeps both sides in the same format, so the plain TEXT
+    comparison SQLite does is correct."""
+    from datetime import timedelta
+    try:
+        start = datetime.fromisoformat(ts_iso)
+    except (ValueError, TypeError):
+        return False
+    until_iso = (start + timedelta(hours=float(within_hours))).isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM messages WHERE role = 'user' "
+            "AND ts > ? AND ts <= ? LIMIT 1",
+            (ts_iso, until_iso),
+        ).fetchone()
+    return row is not None
+
+
 # ---------- proactive engagement analytics ----------
 
 def proactive_source_response_rates(days: int = 30) -> dict[str, float]:

@@ -150,6 +150,19 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=120,
     )
 
+    # Ignore-driven backoff sweep (Sprint 1) — suppresses proactive sources
+    # the user consistently ignores. See agents/proactive_backoff.py.
+    if bool(cfg.get("proactive_backoff.enabled", True)):
+        from .proactive_backoff import run_backoff_sweep
+        sweep_min = int(cfg.get("proactive_backoff.sweep_interval_minutes", 60))
+        async def _backoff_sweep_job(): return await run_backoff_sweep(send_text)
+        scheduler.add_job(
+            _backoff_sweep_job,
+            IntervalTrigger(minutes=sweep_min),
+            id="proactive_backoff_sweep",
+            coalesce=True, max_instances=1, misfire_grace_time=120,
+        )
+
     import sys
     if sys.platform == "darwin":
         from .proactive import sync_pending_apple_reminders

@@ -62,6 +62,27 @@ gap_awareness:
   soft_threshold_hours: 2
   long_threshold_hours: 24
 
+# --- Ignore-driven backoff (Sprint 1) ---
+# A proactive source ignored `consecutive_ignore_threshold` times running
+# ("ignored" = no user message within response_window_hours of the send)
+# is snoozed for snooze_days via the existing proactive_snooze_until map,
+# with ONE plain stand-down notice. Un-snooze via the existing
+# set_proactive_source tool. Digest/reminder sources are exempt —
+# reading-without-replying is their normal consumption mode.
+proactive_backoff:
+  enabled: true
+  consecutive_ignore_threshold: 3
+  response_window_hours: 6
+  snooze_days: 14
+  sweep_interval_minutes: 60
+  exempt_sources:
+    - reminder
+    - reminder_fire
+    - daily_brief
+    - backoff_notice
+    - morning_brief      # legacy; disabled in Task 3 but keep exempt for safety
+    - daily_checkin      # legacy; disabled in Task 3
+
 daily_checkin:
   enabled: true
   default_time: "07:00"          # HH:MM 24h, local clock
