@@ -104,6 +104,12 @@ daily_brief:
   weather_temp_delta_threshold_c: 5
   weather_wind_threshold_kmh: 40
 
+health:
+  # Startup-digest checks that are the OWNER'S to fix (auth family) get a
+  # chat message; pure infra noise (graphiti timeout, outbox depth) is
+  # logged only — ops telemetry stays out of the persona channel (Sprint 1).
+  startup_digest_chat_checks: [oauth_google, google_scopes, google_account]
+
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
   # phrase. Tier-1 (y/yes/ok/go) is gone — too loose a match for irreversible

@@ -2530,13 +2530,18 @@ def main() -> None:
             )
 
         # Sprint 6D: structured startup health report. Logs full dict at INFO;
-        # DMs owner only on degradation (or 'always' / 'never' via env). Wrapped
-        # in try so a probe failure cannot block post_init. Reuses the OAuth
-        # result already fetched above so Google's token endpoint isn't hit twice.
+        # DMs owner only on degradation (or 'always' / 'never' via env), and —
+        # Sprint 1 — a degraded DM fires only for owner-actionable auth checks
+        # (health.startup_digest_chat_checks); other degraded checks log only.
+        # Wrapped in try so a probe failure cannot block post_init. Reuses the
+        # OAuth result already fetched above so Google's token endpoint isn't
+        # hit twice.
         try:
             from agents.health import (  # noqa: PLC0415
+                chat_worthy_failures,
                 collect_startup_report,
                 format_startup_digest,
+                is_degraded,
                 should_send_digest,
             )
             _health_report = await collect_startup_report(
@@ -2544,8 +2549,13 @@ def main() -> None:
                 oauth_google_prefetched=_oauth_probe_result,
             )
             logger.info("startup_health: %s", _health_report)
-            if should_send_digest(_health_report):
-                await send_text(format_startup_digest(_health_report))
+            digest = format_startup_digest(_health_report)
+            if is_degraded(_health_report):
+                logger.warning("startup health: %s", digest)
+            if should_send_digest(_health_report) and (
+                not is_degraded(_health_report) or chat_worthy_failures(_health_report)
+            ):
+                await send_text(digest)
         except Exception:
             logger.exception("startup health probe failed (non-fatal)")
 

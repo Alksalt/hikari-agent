@@ -375,6 +375,20 @@ def format_startup_digest(report: dict[str, dict[str, Any]]) -> str:
     return body
 
 
+def chat_worthy_failures(report: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Failed checks the OWNER can act on — the only ones worth a chat ping.
+
+    Everything else still lands in the log via format_startup_digest.
+    """
+    from agents import config as cfg  # noqa: PLC0415
+    chat_checks = set(cfg.get("health.startup_digest_chat_checks",
+                              ["oauth_google", "google_scopes", "google_account"]) or [])
+    return {
+        name: check for name, check in report.items()
+        if name in chat_checks and not check.get("ok", False)
+    }
+
+
 def should_send_digest(report: dict[str, dict[str, Any]], mode: str | None = None) -> bool:
     """Apply HIKARI_STARTUP_DIGEST gating. Default 'on_degrade'."""
     mode = (mode or os.environ.get("HIKARI_STARTUP_DIGEST") or "on_degrade").lower()
