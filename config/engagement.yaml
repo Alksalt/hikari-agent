@@ -93,6 +93,19 @@ daily_checkin:
   deletable_top_senders_cap: 3
   voice_max_budget_usd: 0.04     # per-topic composition cap
 
+# --- Consolidated daily brief (Sprint 1) — replaces morning_brief (06:00
+# weather) + daily_checkin (07:00 permission-ask). One payload-carrying
+# digest; empty sections omitted; fully-empty brief unsent.
+daily_brief:
+  enabled: true
+  default_time: "07:00"          # HH:MM 24h, local clock
+  poll_interval_minutes: 5
+  voice_max_budget_usd: 0.06
+  # Weather appears only when notable:
+  weather_rain_prob_threshold_pct: 40
+  weather_temp_delta_threshold_c: 5
+  weather_wind_threshold_kmh: 40
+
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
   # phrase. Tier-1 (y/yes/ok/go) is gone — too loose a match for irreversible
