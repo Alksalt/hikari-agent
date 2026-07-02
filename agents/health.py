@@ -398,3 +398,15 @@ def should_send_digest(report: dict[str, dict[str, Any]], mode: str | None = Non
         return True
     # on_degrade (default) and anything else
     return is_degraded(report)
+
+
+def should_ping_chat(report: dict[str, dict[str, Any]], mode: str | None = None) -> bool:
+    """Single source of truth for the startup-digest chat gate.
+
+    Env-mode semantics (should_send_digest) preserved; a degraded report
+    additionally requires an owner-actionable auth failure. All-green under
+    mode=always keeps its heartbeat ping.
+    """
+    return should_send_digest(report, mode=mode) and (
+        not is_degraded(report) or bool(chat_worthy_failures(report))
+    )

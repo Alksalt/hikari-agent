@@ -2537,11 +2537,10 @@ def main() -> None:
         # hit twice.
         try:
             from agents.health import (  # noqa: PLC0415
-                chat_worthy_failures,
                 collect_startup_report,
                 format_startup_digest,
                 is_degraded,
-                should_send_digest,
+                should_ping_chat,
             )
             _health_report = await collect_startup_report(
                 scheduler=scheduler,
@@ -2551,9 +2550,7 @@ def main() -> None:
             digest = format_startup_digest(_health_report)
             if is_degraded(_health_report):
                 logger.warning("startup health: %s", digest)
-            if should_send_digest(_health_report) and (
-                not is_degraded(_health_report) or chat_worthy_failures(_health_report)
-            ):
+            if should_ping_chat(_health_report):
                 await send_text(digest)
         except Exception:
             logger.exception("startup health probe failed (non-fatal)")
