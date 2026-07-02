@@ -82,4 +82,5 @@ timeout = 120
 markers = [
     "slow: tests that hit live models — skipped by default, run via pytest -m slow",
     "uses_real_graph: tests that manage their own graph patches; opt out of conftest _block_graphiti",
+    "uses_real_mcp: tests that manage their own MCP access; opt out of conftest _block_live_mcp_calls",
 ]

@@ -25,6 +25,8 @@ from agents.injection_guard import wrap_untrusted
 from agents.morning_brief import _resolve_location
 from agents.runtime import looks_like_sdk_error, run_visible_proactive
 from storage import db
+from tools.jobhunt import readers as jobhunt_readers
+from tools.jobhunt import reply_radar
 from tools.weather import fetch_forecast
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,43 @@ async def _collect_weather() -> dict[str, Any] | None:
     return {"forecast": forecast, "label": label, "reasons": reasons}
 
 
+async def _collect_jobhunt() -> dict[str, Any] | None:
+    """Job-hunt radar section: due outreach touches, application deadlines,
+    upcoming interviews, and NEW Gmail replies from known contacts.
+
+    Config-gated on ``jobhunt.enabled`` (checked FIRST, before any reader or
+    the reply-radar Gmail query run — an owner who disables job-hunt tracking
+    gets zero extra DB reads / MCP calls, not just an omitted section).
+    Readers never raise (see ``tools/jobhunt/readers.py`` docstring); missing
+    roots simply yield empty lists, which — like an empty reply scan —
+    collapse this whole section to ``None``.
+    """
+    if not bool(cfg.get("jobhunt.enabled", True)):
+        return None
+
+    today = datetime.now(_resolve_local_tz()).date()
+    top_n = int(_c("jobhunt_top_n", 3))
+
+    due = jobhunt_readers.outreach_due(today)
+    deadlines = jobhunt_readers.application_deadlines(today)
+    interviews = jobhunt_readers.interviews_upcoming(today)
+    try:
+        replies = await reply_radar.scan(today)
+    except Exception:
+        logger.exception("daily_brief: jobhunt reply radar failed")
+        replies = []
+
+    if not (due or deadlines or interviews or replies):
+        return None
+
+    return {
+        "due_touches": due[:top_n],
+        "deadlines": deadlines[:top_n],
+        "interviews": interviews[:top_n],
+        "replies": replies[:top_n],
+    }
+
+
 async def collect_sections() -> dict[str, Any]:
     """Gather all sections. None = no signal = omitted from the brief."""
     weather = await _collect_weather()
@@ -114,7 +153,8 @@ async def collect_sections() -> dict[str, Any]:
     calendar = await fetch_calendar_events()
     if not calendar:
         calendar = None
-    return {"weather": weather, "email": email, "calendar": calendar}
+    jobhunt = await _collect_jobhunt()
+    return {"weather": weather, "email": email, "calendar": calendar, "jobhunt": jobhunt}
 
 
 # ---------- fire-window (mirrors daily_checkin's poll pattern) ----------
@@ -210,6 +250,41 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
             for e in calendar[:8]
         ]
         blocks.append("calendar today:\n" + "\n".join(ev_lines))
+
+    jobhunt = sections.get("jobhunt")
+    if jobhunt:
+        jt = "mcp__hikari_utility__jobhunt_radar"
+        jh_lines: list[str] = []
+        for e in jobhunt.get("due_touches") or []:
+            org = wrap_untrusted(jt, e.get("org", ""))
+            contact = f" [{wrap_untrusted(jt, e['kontakt'])}]" if e.get("kontakt") else ""
+            touch = e.get("touch", "")
+            jh_lines.append(
+                "  - {org}{contact} — touch {touch} due {due} ({over}d overdue) "
+                "— draft touch {touch} for {org}?".format(
+                    org=org, contact=contact, touch=touch,
+                    due=e.get("due", ""), over=e.get("days_overdue", 0),
+                )
+            )
+        for e in jobhunt.get("deadlines") or []:
+            org = wrap_untrusted(jt, e.get("org", ""))
+            role = wrap_untrusted(jt, e["stilling"]) if e.get("stilling") else ""
+            jh_lines.append(
+                "  - {org}{role} — deadline {frist} — apply?".format(
+                    org=org, role=f" ({role})" if role else "",
+                    frist=e.get("frist", ""),
+                )
+            )
+        for e in jobhunt.get("interviews") or []:
+            org = wrap_untrusted(jt, e.get("org", ""))
+            when = e.get("date") or "date TBD"
+            jh_lines.append(f"  - {org} — {when} — want the prep brief?")
+        for r in jobhunt.get("replies") or []:
+            frm = wrap_untrusted(jt, r.get("from", ""))
+            org = wrap_untrusted(jt, r.get("org_or_employer", ""))
+            subj = wrap_untrusted(jt, r.get("subject", ""))
+            jh_lines.append(f"  - reply from {frm} ({org}) — {subj} — want a draft reply?")
+        blocks.append("jobhunt:\n" + "\n".join(jh_lines))
 
     if not blocks:
         return None

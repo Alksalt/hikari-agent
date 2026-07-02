@@ -14,6 +14,11 @@ from mcp.types import CallToolResult, TextContent
 
 from agents.mcp_manager import McpCallError, McpManager, _result_to_dict
 
+# These are McpManager.call's OWN unit tests — they need the real method
+# body (conftest's _block_live_mcp_calls patches it out for everyone else)
+# and stay safe by mocking _spawn_session, one layer below.
+pytestmark = pytest.mark.uses_real_mcp
+
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
