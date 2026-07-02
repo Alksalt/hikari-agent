@@ -163,6 +163,8 @@ def test_scheduler_builds(monkeypatch):
         "interests_refresh",
         # Phase S: annual review ceremony (Dec 26-31, 11:00).
         "annual_review",
+        # Sprint 1: ignore-driven backoff sweep (hourly).
+        "proactive_backoff_sweep",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

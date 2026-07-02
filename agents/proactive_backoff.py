@@ -79,28 +79,32 @@ def _already_snoozed(source: str) -> bool:
 
 
 async def run_backoff_sweep(send_text) -> list[str]:
-    """Scheduler entry. Returns newly suppressed source ids."""
+    """Scheduler entry. Returns newly suppressed source ids.
+
+    Notice-marker is written only after a CONFIRMED send (result.status ==
+    "sent"). A source that's already snoozed but whose notice never landed
+    (e.g. aborted by quiet hours) is not re-snoozed on later sweeps, but the
+    notice attempt IS retried — otherwise a quiet-hours abort on the
+    triggering sweep would permanently swallow the stand-down notice.
+    """
     if not bool(_cfg("enabled", True)):
         return []
     threshold = int(_cfg("consecutive_ignore_threshold", 3))
     newly: list[str] = []
     for source in _tracked_sources():
-        if _already_snoozed(source):
-            continue
-        if consecutive_ignores(source) < threshold:
-            continue
-        snooze = _load_map(_SNOOZE_KEY)
-        until = datetime.now(UTC) + timedelta(days=float(_cfg("snooze_days", 14)))
-        snooze[source] = until.isoformat()
-        db.runtime_set(_SNOOZE_KEY, json.dumps(snooze))
-        newly.append(source)
-        logger.info("proactive_backoff: suppressed %r until %s", source, until)
+        if not _already_snoozed(source):
+            if consecutive_ignores(source) < threshold:
+                continue
+            snooze = _load_map(_SNOOZE_KEY)
+            until = datetime.now(UTC) + timedelta(days=float(_cfg("snooze_days", 14)))
+            snooze[source] = until.isoformat()
+            db.runtime_set(_SNOOZE_KEY, json.dumps(snooze))
+            newly.append(source)
+            logger.info("proactive_backoff: suppressed %r until %s", source, until)
 
         notices = _load_map(_NOTICE_KEY)
         if source in notices:
-            continue  # suppressed before, notice already sent once
-        notices[source] = datetime.now(UTC).isoformat()
-        db.runtime_set(_NOTICE_KEY, json.dumps(notices))
+            continue  # notice already delivered once
         text = _STANDDOWN_TEMPLATE.format(label=source.replace("_", " "))
         from agents.proactive_gate import reserve_and_send
         result = await reserve_and_send(
@@ -117,10 +121,14 @@ async def run_backoff_sweep(send_text) -> list[str]:
                 "data_checked": ["proactive_events", "messages"],
             },
         )
-        if result.status != "sent":
+        if result.status == "sent":
+            notices[source] = datetime.now(UTC).isoformat()
+            db.runtime_set(_NOTICE_KEY, json.dumps(notices))
+        else:
             logger.info(
                 "proactive_backoff: notice for %r aborted (%s) — "
-                "suppression stands, notice not retried",
+                "suppression stands, notice not retried this sweep "
+                "(will retry next sweep)",
                 source, result.reason,
             )
     return newly

@@ -440,8 +440,11 @@ async def test_checkin_control_run_now_sets_force_flag():
     from tools.controls import checkin_control
     from tools.controls.checkin import _FORCE_KEY
 
-    # Pre-populate last_fired_date to simulate "already fired today"
-    db.runtime_set("daily_checkin_last_fired_date", "2026-06-09")
+    # Pre-populate last_fired_date to simulate "already fired today".
+    # M4: run_now clears the BRIEF's dedup key (daily_brief_last_fired_date),
+    # not the vestigial daily_checkin_last_fired_date — the brief never reads
+    # the latter, so clearing it was a no-op bug.
+    db.runtime_set("daily_brief_last_fired_date", "2026-06-09")
 
     out = await checkin_control.handler({"action": "run_now"})
     body = out["content"][0]["text"]
@@ -449,7 +452,7 @@ async def test_checkin_control_run_now_sets_force_flag():
     assert out["data"]["queued"] is True
 
     # The dedup guard should be cleared
-    assert db.runtime_get("daily_checkin_last_fired_date") is None
+    assert db.runtime_get("daily_brief_last_fired_date") is None
     # The force flag should be set
     assert db.runtime_get(_FORCE_KEY) == "1"
 

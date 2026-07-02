@@ -71,6 +71,12 @@ proactive_backoff:
   enabled: true
   consecutive_ignore_threshold: 3
   response_window_hours: 6
+  # RE-EVALUATION interval, not an auto-resume cooldown. A snoozed source
+  # does NOT come back on its own after snooze_days — the sweep only checks
+  # whether the snooze has expired; if the user still hasn't replied, the
+  # source's ignore-streak is still >= threshold and it re-suppresses
+  # silently for another snooze_days. The only real exit is the user
+  # re-enabling it (or replying) — via set_proactive_source.
   snooze_days: 14
   sweep_interval_minutes: 60
   exempt_sources:
@@ -613,11 +619,11 @@ cadence_governor:
       max_per_7d: 14
       allowed_sources:
         - daily_brief
-        - daily_checkin
+        - daily_checkin      # disabled 2026-07-02, retained for historical-log lookups
         - decision_log
         - future_letter
         - future_letter_send
-        - morning_brief
+        - morning_brief      # disabled 2026-07-02, retained for historical-log lookups
         - evening_diary
     user_anchored:
       max_per_7d: 30

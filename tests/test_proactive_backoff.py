@@ -92,6 +92,48 @@ async def test_sweep_snoozes_and_notifies_once(fresh_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sweep_notice_not_marked_on_failed_send_retries_next_sweep(fresh_db, monkeypatch):
+    """M2: the notice marker is written only after a CONFIRMED send. If the
+    send fails (send_text_fn returns not-ok), the source is still snoozed —
+    but the notice must stay unmarked so the next sweep retries it."""
+    from agents import proactive_gate
+    monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
+
+    now = datetime.now(UTC)
+    for days_ago in (3, 2, 1):
+        _insert_sent("wiki_new_file", now - timedelta(days=days_ago))
+
+    async def failing_send(text):
+        return (text, None, False)
+
+    suppressed = await proactive_backoff.run_backoff_sweep(failing_send)
+    assert suppressed == ["wiki_new_file"]
+    snooze = json.loads(db.runtime_get("proactive_snooze_until"))
+    assert "wiki_new_file" in snooze
+    notices = json.loads(db.runtime_get("backoff_notice_sent_v1") or "{}")
+    assert "wiki_new_file" not in notices
+
+    sent: list[str] = []
+
+    async def working_send(text):
+        sent.append(text)
+        return (text, 456, True)
+
+    # second sweep: source already snoozed (not "newly" suppressed again),
+    # but the notice retries and lands this time.
+    suppressed2 = await proactive_backoff.run_backoff_sweep(working_send)
+    assert suppressed2 == []
+    assert len(sent) == 1 and "wiki new file" in sent[0]
+    notices2 = json.loads(db.runtime_get("backoff_notice_sent_v1"))
+    assert "wiki_new_file" in notices2
+
+    # third sweep: notice already marked delivered, no duplicate.
+    suppressed3 = await proactive_backoff.run_backoff_sweep(working_send)
+    assert suppressed3 == []
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
 async def test_exempt_sources_never_suppressed(fresh_db):
     now = datetime.now(UTC)
     for days_ago in (3, 2, 1):

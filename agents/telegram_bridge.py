@@ -1873,20 +1873,19 @@ async def _cb_approvals(bot, chat_id: int, action: str, row_id: int) -> None:
 async def _cb_checkin(bot, chat_id: int, action: str) -> None:
     from datetime import date, timedelta
 
-    async def _send(text: str) -> tuple[str, int | None, bool]:
-        from agents.messaging import send_and_persist
-        result = await send_and_persist(
-            bot=bot, chat_id=chat_id, text=text,
-            source="daily_checkin", persist=True,
-            run_hooks=False, skip_choreography=True,
-        )
-        return result.final_text, result.telegram_message_id, result.ok
-
     if action == "runnow":
+        # Sprint 1: daily_checkin is retired (maybe_run_daily_checkin is now
+        # a silent no-op). Repoint runnow to the daily brief's force flag —
+        # same key checkin_control(action='run_now') sets.
         try:
-            await daily_checkin_mod.maybe_run_daily_checkin(_send)
-        except Exception:
-            logger.exception("cb_checkin: maybe_run_daily_checkin failed")
+            db.runtime_set("daily_brief_force_run", "1")
+            await bot.send_message(
+                chat_id=chat_id,
+                text="daily brief queued — will fire within a few minutes.",
+            )
+        except Exception as exc:
+            logger.exception("cb_checkin: runnow failed")
+            await bot.send_message(chat_id=chat_id, text=f"queue failed: {exc}")
     elif action == "skiptomorrow":
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
         try:
