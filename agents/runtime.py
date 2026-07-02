@@ -139,7 +139,7 @@ def looks_like_sdk_error(text: str) -> bool:
 
 
 MODEL_PRIMARY = (
-    os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-4-6"
+    os.environ.get("HIKARI_MODEL") or cfg.get("runtime.model_primary") or "claude-sonnet-5"
 )
 
 # Fallback must differ from MODEL_PRIMARY (SDK refuses identical model+fallback).

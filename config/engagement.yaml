@@ -975,8 +975,8 @@ compound_turn:
 runtime:
   # Defaults previously hardcoded as module-level constants in agents/runtime.py.
   # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
-  model_primary: "claude-sonnet-4-6"
-  model_fallback: "claude-sonnet-4-5"  # MUST differ from primary — SDK refuses identical model+fallback
+  model_primary: "claude-sonnet-5"
+  model_fallback: "claude-sonnet-4-6"  # MUST differ from primary — SDK refuses identical model+fallback
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into assets/PERSONA.md via {max_turns}
   # Wall-clock budget for the SDK turn loop. Chat default fits a single
   # quick MCP roundtrip + reply; scheduled actions get headroom for
