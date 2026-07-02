@@ -133,6 +133,13 @@ jobhunt:
   interview_brief_hour: 17     # evening-before prep briefing (local)
   notater_tail_chars: 240
   prep_file_char_cap: 4000     # per-file read cap in prep_files()
+  # Source-file read cap for the weekly jobhunt_context distillation
+  # (agents/jobhunt_context.py) — module-local, higher than
+  # prep_file_char_cap because candidate_profile.md is ~6.8K chars and its
+  # verified-public section runs past char 4000; the public repo list must
+  # reach the distiller intact. The NEVER CITE section is NOT distilled —
+  # it's appended deterministically from private_repo_names below.
+  context_source_char_cap: 12000
   handoff_file: "hikari_inbox.md"   # created under roots.outreach
   # Do-not-cite private repos for the touch-email rails lint
   # (tools/jobhunt/lint.py). Fallback only — the authoritative list is

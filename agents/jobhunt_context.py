@@ -8,10 +8,21 @@ block rides the existing always-on core_blocks injection (see
 ``agents.hooks._format_core_blocks``) — no further wiring is required for
 the model to see it once written.
 
+The safety-critical NEVER CITE section is DETERMINISTIC (fix pass 2): the
+LLM distills only PITCH / LANES / PUBLIC REPOS OK TO CITE / NON-GOALS, and
+Python appends ``NEVER CITE: <cfg jobhunt.private_repo_names>`` afterwards —
+the same authoritative list the touch-email lint uses. The LLM is never
+trusted to reproduce the do-not-cite list (fix pass 1 tripped live on
+exactly that: a truncated source produced "NEVER CITE: none" and the guard
+kept a nonexistent old block forever).
+
 Both source files are owner-authored (trusted, unlike the other jobhunt
 tools' data whose free-text fields flow through ``wrap_untrusted`` because
 they can carry counterparty-facing content) — no untrusted wrapping here.
-Still capped via ``jobhunt.prep_file_char_cap`` to bound prompt size.
+Reads are capped via the module-local ``jobhunt.context_source_char_cap``
+(default 12000): the shared ``prep_file_char_cap`` (4000) truncated the
+real ~6.8K-char candidate_profile.md mid-way through its verified-public
+section, starving the distiller of exactly the content it needed.
 
 Guard contract, never blanks the existing block:
   - ``jobhunt.enabled`` false -> return immediately (live kill switch —
@@ -19,13 +30,21 @@ Guard contract, never blanks the existing block:
     scheduler-registration gate alone would not cover direct callers).
   - either source file missing/unreadable AND both empty after stripping
     -> no-op, log INFO (keeps whatever core_block value already exists).
-  - distillation call raises, or returns empty / >1600 chars / missing the
-    literal "NEVER CITE" heading -> keep the previous block, log WARNING.
-  - structural verification, not just the heading: every name in cfg
-    ``jobhunt.private_repo_names`` must appear in the NEVER CITE section
-    (case-insensitive substring, mirroring ``tools/jobhunt/lint.py``'s
-    convention), and none may appear in the PUBLIC REPOS OK TO CITE
-    section -> either miss keeps the previous block, log WARNING.
+  - distillation call raises, or returns empty -> keep previous block,
+    log WARNING.
+  - a cfg private-repo name under the LLM's PUBLIC REPOS OK TO CITE
+    section (case-insensitive substring, mirroring
+    ``tools/jobhunt/lint.py``'s convention) -> keep previous block, log
+    WARNING — a private repo presented as public is the exact failure mode
+    the block exists to prevent.
+  - a model-emitted NEVER CITE section is excised before assembly (the
+    section is Python's job now); if nothing remains after excision ->
+    keep previous block, log WARNING.
+  - final ASSEMBLED block (LLM part + appended NEVER CITE) > 1600 chars ->
+    keep previous block, log WARNING.
+  - belt-and-braces on the assembled block (verifying a string Python
+    itself wrote — cheap): literal "NEVER CITE" heading present, and every
+    cfg private-repo name in its section.
 
 Scheduling lives in ``agents/scheduler.py`` (weekly Monday 05:30 local,
 plus a startup one-shot when the block is currently absent).
@@ -46,10 +65,12 @@ _MAX_OUTPUT_CHARS = 1600
 _REQUIRED_HEADING = "NEVER CITE"
 _PUBLIC_HEADING = "PUBLIC REPOS OK TO CITE"
 _DISTILL_MAX_TOKENS = 800
+_DEFAULT_SOURCE_CHAR_CAP = 12000
 
-# All five headings the distillation prompt mandates — used as section
-# boundaries by _section(). Order here is documentation only; extraction
-# finds the nearest following heading regardless of order.
+# All five headings the final block carries (four LLM-produced + the
+# deterministic NEVER CITE) — used as section boundaries by _section() /
+# _excise_section(). Order here is documentation only; extraction finds
+# the nearest following heading regardless of order.
 _SECTION_HEADINGS = ("PITCH", "LANES", _PUBLIC_HEADING, _REQUIRED_HEADING, "NON-GOALS")
 
 # Last-resort fallback when cfg ``jobhunt.private_repo_names`` is missing.
@@ -84,9 +105,9 @@ def _read_capped(path: Path, char_cap: int) -> str:
 def _section(text: str, heading: str) -> str:
     """Content after the first occurrence of ``heading`` up to the nearest
     following known heading (or EOF). Empty string when the heading is
-    absent. Heading match is case-sensitive (the guard requires the literal
-    uppercase headings); callers lowercase the returned content for the
-    case-insensitive repo-name checks."""
+    absent. Heading match is case-sensitive (the block format mandates the
+    literal uppercase headings); callers lowercase the returned content for
+    the case-insensitive repo-name checks."""
     idx = text.find(heading)
     if idx < 0:
         return ""
@@ -101,12 +122,28 @@ def _section(text: str, heading: str) -> str:
     return text[start:end].strip()
 
 
+def _excise_section(text: str, heading: str) -> str:
+    """Remove the first occurrence of ``heading`` and its section content
+    (same boundary rule as ``_section``). Returns ``text`` unchanged when
+    the heading is absent."""
+    idx = text.find(heading)
+    if idx < 0:
+        return text
+    end = len(text)
+    for other in _SECTION_HEADINGS:
+        if other == heading:
+            continue
+        j = text.find(other, idx + len(heading))
+        if 0 <= j < end:
+            end = j
+    return (text[:idx] + text[end:]).strip()
+
+
 def _private_repo_names() -> list[str]:
-    """cfg ``jobhunt.private_repo_names`` with the hardcoded fallback —
-    same resolution the lint uses when candidate_profile.md's do-not-cite
-    section isn't available (this module verifies the *distilled* block, so
-    the cfg list is the right independent reference, not the same source
-    text the distillation already saw)."""
+    """cfg ``jobhunt.private_repo_names`` with the hardcoded fallback — the
+    authoritative do-not-cite list, same source the touch-email lint falls
+    back to. This module builds the block's NEVER CITE section from it
+    directly (deterministic), never from LLM output."""
     raw = cfg.get("jobhunt.private_repo_names") or _DEFAULT_PRIVATE_REPO_NAMES
     return [str(n).strip() for n in raw if str(n).strip()]
 
@@ -114,20 +151,22 @@ def _private_repo_names() -> list[str]:
 def _build_prompt(profile_text: str, goals_text: str) -> str:
     return (
         "Distill the two source documents below into ONE plain-text block, "
-        "target under 1200 characters total, with EXACTLY these five "
+        "target under 1200 characters total, with EXACTLY these four "
         "sections in this order, each starting with the EXACT heading text "
         "shown (including punctuation):\n\n"
         "PITCH: <two sentences — the candidate's core pitch>\n"
         "LANES: <one line — target role lanes>\n"
-        "PUBLIC REPOS OK TO CITE: <comma-separated repo names only, no descriptions>\n"
-        "NEVER CITE: <comma-separated repo names only — private repos that must "
-        "never be cited as public>\n"
+        "PUBLIC REPOS OK TO CITE: <comma-separated repo names only, no "
+        "descriptions — ONLY repos the source text explicitly marks as "
+        "verified public; never a repo the source text calls private>\n"
         "NON-GOALS: <one line — roles/paths explicitly out of scope>\n\n"
+        "Do NOT output a NEVER CITE section — the private-repo do-not-cite "
+        "list is appended deterministically by the caller, never by you.\n"
         "If a section has nothing to draw on in the source text, write "
         "'none' after its heading — never fabricate. Output ONLY the "
-        "five-section block, nothing else (no preamble, no markdown "
+        "four-section block, nothing else (no preamble, no markdown "
         "fences).\n\n"
-        "=== candidate_profile.md (core pitch, lanes, repo lists) ===\n"
+        "=== candidate_profile.md (core pitch, lanes, public repo list) ===\n"
         f"{profile_text}\n\n"
         "=== goals.md (target taxonomy, non-goals) ===\n"
         f"{goals_text}\n"
@@ -144,7 +183,9 @@ async def refresh_jobhunt_context() -> None:
 
     job_search_root = cfg.get("jobhunt.roots.job_search")
     prep_root = cfg.get("jobhunt.roots.prep")
-    char_cap = int(cfg.get("jobhunt.prep_file_char_cap", 4000))
+    char_cap = int(
+        cfg.get("jobhunt.context_source_char_cap", _DEFAULT_SOURCE_CHAR_CAP)
+    )
 
     profile_text = (
         _read_capped(Path(str(job_search_root)) / "candidate_profile.md", char_cap)
@@ -181,36 +222,11 @@ async def refresh_jobhunt_context() -> None:
             "previous block"
         )
         return
-    if len(text) > _MAX_OUTPUT_CHARS:
-        logger.warning(
-            "jobhunt_context: distillation result too long (%d > %d chars) "
-            "— keeping previous block",
-            len(text), _MAX_OUTPUT_CHARS,
-        )
-        return
-    if _REQUIRED_HEADING not in text:
-        logger.warning(
-            "jobhunt_context: distillation result missing %r heading — "
-            "keeping previous block",
-            _REQUIRED_HEADING,
-        )
-        return
 
-    # Structural verification (fix pass 1): the heading alone doesn't prove
-    # the do-not-cite list survived distillation. Every configured private
-    # repo must be named in the NEVER CITE section, and none may leak into
-    # the PUBLIC REPOS OK TO CITE section — that leak is the exact failure
-    # mode the block exists to prevent.
     private_names = _private_repo_names()
-    never_cite_lower = _section(text, _REQUIRED_HEADING).lower()
-    missing_names = [n for n in private_names if n.lower() not in never_cite_lower]
-    if missing_names:
-        logger.warning(
-            "jobhunt_context: distillation result's NEVER CITE section is "
-            "missing private repo(s) %s — keeping previous block",
-            missing_names,
-        )
-        return
+
+    # Leak check on the LLM part: a private repo presented as public is the
+    # exact failure mode the block exists to prevent.
     public_lower = _section(text, _PUBLIC_HEADING).lower()
     leaked_names = [n for n in private_names if n.lower() in public_lower]
     if leaked_names:
@@ -221,5 +237,49 @@ async def refresh_jobhunt_context() -> None:
         )
         return
 
-    db.upsert_core_block(_LABEL, text)
-    logger.info("jobhunt_context: refreshed core_block (%d chars)", len(text))
+    # NEVER CITE is Python's job — excise any model-emitted section so the
+    # deterministic one appended below is the block's only NEVER CITE.
+    if _REQUIRED_HEADING in text:
+        logger.warning(
+            "jobhunt_context: model emitted its own NEVER CITE section "
+            "despite the prompt — excising it"
+        )
+        text = _excise_section(text, _REQUIRED_HEADING)
+        if not text:
+            logger.warning(
+                "jobhunt_context: nothing left after excising the "
+                "model-emitted NEVER CITE section — keeping previous block"
+            )
+            return
+
+    final = f"{text}\n{_REQUIRED_HEADING}: " + ", ".join(private_names)
+
+    if len(final) > _MAX_OUTPUT_CHARS:
+        logger.warning(
+            "jobhunt_context: assembled block too long (%d > %d chars) — "
+            "keeping previous block",
+            len(final), _MAX_OUTPUT_CHARS,
+        )
+        return
+
+    # Belt-and-braces on the assembled block — verifying a string Python
+    # itself just wrote (cheap, and future-proofs against assembly edits).
+    if _REQUIRED_HEADING not in final:
+        logger.warning(
+            "jobhunt_context: assembled block missing %r heading — keeping "
+            "previous block",
+            _REQUIRED_HEADING,
+        )
+        return
+    never_cite_lower = _section(final, _REQUIRED_HEADING).lower()
+    missing_names = [n for n in private_names if n.lower() not in never_cite_lower]
+    if missing_names:
+        logger.warning(
+            "jobhunt_context: assembled block's NEVER CITE section is "
+            "missing private repo(s) %s — keeping previous block",
+            missing_names,
+        )
+        return
+
+    db.upsert_core_block(_LABEL, final)
+    logger.info("jobhunt_context: refreshed core_block (%d chars)", len(final))

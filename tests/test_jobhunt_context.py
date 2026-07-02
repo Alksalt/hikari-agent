@@ -3,6 +3,10 @@ refresh (Sprint 2, Task 6): distills ``candidate_profile.md`` (job_search
 root) + ``goals.md`` (prep root) into the always-on ``jobhunt_context``
 core_block via a mocked ``run_internal_text``.
 
+Fix pass 2: the NEVER CITE section is deterministic — Python appends it
+from cfg ``jobhunt.private_repo_names`` after the LLM produces the other
+four sections. The LLM is never trusted to reproduce the do-not-cite list.
+
 Mirrors the ``fresh_db`` / ``_patch_cfg`` fixture patterns from
 tests/test_daily_checkin_schedule.py and tests/test_jobhunt_readers.py.
 """
@@ -17,13 +21,18 @@ import pytest
 
 from agents import config as cfg
 
-_VALID_BLOCK = (
+# What the (mocked) LLM produces — four sections, NO NEVER CITE.
+_LLM_BLOCK = (
     "PITCH: clinician who builds agentic AI systems. two sentences here.\n"
     "LANES: e-helse, helsedata, kvalitet\n"
     "PUBLIC REPOS OK TO CITE: hikari-agent, omsorgsradar, medspacy-no\n"
-    "NEVER CITE: normedbench, fhir-safety-harness\n"
     "NON-GOALS: not a lege/LIS role\n"
 )
+
+# What refresh_jobhunt_context() assembles from _LLM_BLOCK: the LLM part
+# plus the deterministic NEVER CITE section built from the
+# _patch_cfg-pinned private-repo list below.
+_FINAL_BLOCK = _LLM_BLOCK.strip() + "\nNEVER CITE: NorMedBench, fhir-safety-harness"
 
 
 @pytest.fixture()
@@ -37,9 +46,9 @@ def fresh_db(tmp_path, monkeypatch):
 def _patch_cfg(monkeypatch, roots: dict[str, Path], **overrides):
     orig_get = cfg.get
     data: dict = {f"jobhunt.roots.{k}": str(v) for k, v in roots.items()}
-    # Deterministic private-repo list for the structural NEVER CITE /
-    # PUBLIC REPOS guards — keeps these tests independent of the real
-    # config/engagement.yaml list. Overridable via **overrides.
+    # Deterministic private-repo list for the appended NEVER CITE section
+    # and the PUBLIC REPOS leak guard — keeps these tests independent of
+    # the real config/engagement.yaml list. Overridable via **overrides.
     data["jobhunt.private_repo_names"] = ["NorMedBench", "fhir-safety-harness"]
     data.update(overrides)
 
@@ -84,12 +93,12 @@ async def test_distill_writes_block(fresh_db, monkeypatch, sources):
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
 
-    assert fresh_db.get_core_block("jobhunt_context") == _VALID_BLOCK.strip()
+    assert fresh_db.get_core_block("jobhunt_context") == _FINAL_BLOCK
     mock.assert_awaited_once()
     _, kwargs = mock.call_args
     assert kwargs["model"] == jobhunt_context.MODEL_HAIKU
@@ -101,7 +110,7 @@ async def test_distill_prompt_embeds_both_source_texts(fresh_db, monkeypatch, so
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
@@ -111,8 +120,116 @@ async def test_distill_prompt_embeds_both_source_texts(fresh_db, monkeypatch, so
     assert "not a lege role" in prompt
 
 
+async def test_public_list_beyond_old_cap_reaches_prompt(fresh_db, monkeypatch, tmp_path):
+    """The real candidate_profile.md is ~6.8K chars with its verified-public
+    section running past char 4000 — the old prep_file_char_cap starved the
+    distiller of exactly the content it needed. The module-local
+    ``jobhunt.context_source_char_cap`` (default 12000) must let a public
+    repo name sitting beyond char 4000 reach the prompt."""
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "prep-missing"
+    profile = (
+        "## Kjerne-pitch\n"
+        + ("x" * 4200)
+        + "\n## VERIFISERTE OFFENTLIGE prosjekter\n"
+        "hikari-agent, omsorgsradar, gevinstkompass\n"
+    )
+    assert profile.find("gevinstkompass") > 4000
+    _write(job_search_dir / "candidate_profile.md", profile)
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    prompt = mock.call_args[0][0]
+    assert "gevinstkompass" in prompt
+
+
 # ---------------------------------------------------------------------------
-# guard: malformed/empty/oversized result keeps the old block
+# deterministic NEVER CITE assembly (fix pass 2)
+# ---------------------------------------------------------------------------
+
+async def test_llm_omits_never_cite_python_appends_it(fresh_db, monkeypatch, sources):
+    """The LLM's job is only the four sections — a NEVER-CITE-less LLM
+    output SUCCEEDS, with Python appending the section from cfg. This was
+    the live failure mode of fix pass 1 (truncated source -> 'NEVER CITE:
+    none' -> guard trip -> no block ever written)."""
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    four_sections = (
+        "PITCH: x\nLANES: y\nPUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z\n"
+    )
+    assert "NEVER CITE" not in four_sections
+    monkeypatch.setattr(
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=four_sections)
+    )
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    block = fresh_db.get_core_block("jobhunt_context")
+    assert block is not None
+    assert block.endswith("NEVER CITE: NorMedBench, fhir-safety-harness")
+
+
+async def test_llm_emitted_never_cite_is_excised_and_replaced(fresh_db, monkeypatch, sources):
+    """A model that disobeys and emits its own NEVER CITE section (e.g. the
+    live 'NEVER CITE: none') gets that section excised — the final block
+    carries ONLY the deterministic Python-built section."""
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    disobedient = (
+        "PITCH: x\n"
+        "LANES: y\n"
+        "PUBLIC REPOS OK TO CITE: hikari-agent\n"
+        "NEVER CITE: none\n"
+        "NON-GOALS: z\n"
+    )
+    monkeypatch.setattr(
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=disobedient)
+    )
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    block = fresh_db.get_core_block("jobhunt_context")
+    assert block is not None
+    assert "NEVER CITE: none" not in block
+    assert block.count("NEVER CITE") == 1
+    assert block.endswith("NEVER CITE: NorMedBench, fhir-safety-harness")
+
+
+async def test_final_block_contains_all_four_default_names(fresh_db, monkeypatch, sources):
+    """With the real four-name private list, all four names land in the
+    final block's NEVER CITE section."""
+    job_search_dir, prep_dir = sources
+    four = ["NorMedBench", "fhir-safety-harness", "tg-bot-logger", "llm-social-agent"]
+    _patch_cfg(
+        monkeypatch, {"job_search": job_search_dir, "prep": prep_dir},
+        **{"jobhunt.private_repo_names": four},
+    )
+
+    from agents import jobhunt_context
+    monkeypatch.setattr(
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=_LLM_BLOCK)
+    )
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    block = fresh_db.get_core_block("jobhunt_context")
+    assert block is not None
+    never_cite_part = block[block.index("NEVER CITE"):]
+    for name in four:
+        assert name in never_cite_part
+
+
+# ---------------------------------------------------------------------------
+# guard: malformed/empty/oversized/leaky result keeps the old block
 # ---------------------------------------------------------------------------
 
 async def test_empty_result_keeps_old_block(fresh_db, monkeypatch, sources):
@@ -131,12 +248,14 @@ async def test_empty_result_keeps_old_block(fresh_db, monkeypatch, sources):
 
 
 async def test_oversized_result_keeps_old_block(fresh_db, monkeypatch, sources):
+    """Length guard runs on the FINAL assembled block (LLM part + appended
+    NEVER CITE section)."""
     job_search_dir, prep_dir = sources
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    too_long = "PITCH: x\nNEVER CITE: y\n" + ("z" * 1700)
+    too_long = "PITCH: x\nLANES: " + ("z" * 1700)
     monkeypatch.setattr(
         jobhunt_context, "run_internal_text", AsyncMock(return_value=too_long)
     )
@@ -146,16 +265,43 @@ async def test_oversized_result_keeps_old_block(fresh_db, monkeypatch, sources):
     assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
 
 
-async def test_missing_never_cite_heading_keeps_old_block(fresh_db, monkeypatch, sources):
+async def test_borderline_llm_part_fails_after_assembly(fresh_db, monkeypatch, sources):
+    """An LLM part just under the cap that crosses it once the NEVER CITE
+    section is appended is rejected — proves the guard measures the final
+    assembled block, not the raw LLM output."""
     job_search_dir, prep_dir = sources
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    malformed = "PITCH: x\nLANES: y\nPUBLIC REPOS OK TO CITE: z\nNON-GOALS: w\n"
-    assert "NEVER CITE" not in malformed
+    # 1590 chars raw (< 1600); + "\nNEVER CITE: ..." (45 chars) -> > 1600.
+    borderline = "PITCH: x\nLANES: " + ("z" * 1574)
+    assert len(borderline) == 1590
     monkeypatch.setattr(
-        jobhunt_context, "run_internal_text", AsyncMock(return_value=malformed)
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=borderline)
+    )
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+
+
+async def test_private_repo_under_public_heading_keeps_old_block(fresh_db, monkeypatch, sources):
+    """A private repo leaking into PUBLIC REPOS OK TO CITE is the exact
+    failure mode the block exists to prevent — previous block kept."""
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
+
+    from agents import jobhunt_context
+    leaked = (
+        "PITCH: x\n"
+        "LANES: y\n"
+        "PUBLIC REPOS OK TO CITE: hikari-agent, NorMedBench\n"
+        "NON-GOALS: z\n"
+    )
+    monkeypatch.setattr(
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=leaked)
     )
 
     await jobhunt_context.refresh_jobhunt_context()
@@ -181,80 +327,6 @@ async def test_distill_exception_keeps_old_block(fresh_db, monkeypatch, sources)
 
 
 # ---------------------------------------------------------------------------
-# structural guard: private-repo names verified per section, not just the
-# NEVER CITE heading (fix pass 1)
-# ---------------------------------------------------------------------------
-
-async def test_never_cite_missing_private_repo_keeps_old_block(fresh_db, monkeypatch, sources):
-    """cfg lists two private repos; the distilled NEVER CITE section only
-    names one -> structurally invalid, previous block kept."""
-    job_search_dir, prep_dir = sources
-    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
-    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
-
-    from agents import jobhunt_context
-    incomplete = (
-        "PITCH: x\n"
-        "LANES: y\n"
-        "PUBLIC REPOS OK TO CITE: hikari-agent\n"
-        "NEVER CITE: normedbench\n"  # fhir-safety-harness missing
-        "NON-GOALS: z\n"
-    )
-    monkeypatch.setattr(
-        jobhunt_context, "run_internal_text", AsyncMock(return_value=incomplete)
-    )
-
-    await jobhunt_context.refresh_jobhunt_context()
-
-    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
-
-
-async def test_private_repo_under_public_heading_keeps_old_block(fresh_db, monkeypatch, sources):
-    """A private repo leaking into PUBLIC REPOS OK TO CITE is the exact
-    failure mode the block exists to prevent — even with a complete NEVER
-    CITE section, the previous block is kept."""
-    job_search_dir, prep_dir = sources
-    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
-    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
-
-    from agents import jobhunt_context
-    leaked = (
-        "PITCH: x\n"
-        "LANES: y\n"
-        "PUBLIC REPOS OK TO CITE: hikari-agent, NorMedBench\n"
-        "NEVER CITE: normedbench, fhir-safety-harness\n"
-        "NON-GOALS: z\n"
-    )
-    monkeypatch.setattr(
-        jobhunt_context, "run_internal_text", AsyncMock(return_value=leaked)
-    )
-
-    await jobhunt_context.refresh_jobhunt_context()
-
-    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
-
-
-async def test_structurally_correct_block_passes(fresh_db, monkeypatch, sources):
-    """Both structural checks pass on a block whose NEVER CITE section
-    names every cfg private repo (case-insensitively) and whose PUBLIC
-    REPOS section names none of them — the write goes through.
-    (test_distill_writes_block also covers this; kept explicit so the
-    structural-guard suite has its own positive case.)"""
-    job_search_dir, prep_dir = sources
-    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
-    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
-
-    from agents import jobhunt_context
-    monkeypatch.setattr(
-        jobhunt_context, "run_internal_text", AsyncMock(return_value=_VALID_BLOCK)
-    )
-
-    await jobhunt_context.refresh_jobhunt_context()
-
-    assert fresh_db.get_core_block("jobhunt_context") == _VALID_BLOCK.strip()
-
-
-# ---------------------------------------------------------------------------
 # jobhunt.enabled is a live kill switch (fix pass 1)
 # ---------------------------------------------------------------------------
 
@@ -270,7 +342,7 @@ async def test_disabled_flag_skips_before_any_work(fresh_db, monkeypatch, source
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
@@ -290,7 +362,7 @@ async def test_both_sources_missing_is_noop(fresh_db, monkeypatch, tmp_path):
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
@@ -308,7 +380,7 @@ async def test_both_sources_empty_file_is_noop(fresh_db, monkeypatch, tmp_path):
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
@@ -326,13 +398,13 @@ async def test_one_source_present_still_distills(fresh_db, monkeypatch, tmp_path
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
 
     from agents import jobhunt_context
-    mock = AsyncMock(return_value=_VALID_BLOCK)
+    mock = AsyncMock(return_value=_LLM_BLOCK)
     monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
 
     await jobhunt_context.refresh_jobhunt_context()
 
     mock.assert_awaited_once()
-    assert fresh_db.get_core_block("jobhunt_context") == _VALID_BLOCK.strip()
+    assert fresh_db.get_core_block("jobhunt_context") == _FINAL_BLOCK
 
 
 # ---------------------------------------------------------------------------
