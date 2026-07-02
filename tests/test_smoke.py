@@ -165,6 +165,9 @@ def test_scheduler_builds(monkeypatch):
         "annual_review",
         # Sprint 1: ignore-driven backoff sweep (hourly).
         "proactive_backoff_sweep",
+        # Sprint 2 Task 5: evening-before interview-prep briefing (daily cron
+        # at jobhunt.interview_brief_hour).
+        "interview_brief",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")

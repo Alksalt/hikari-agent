@@ -28,3 +28,13 @@ def test_atmospheric_sources_demoted():
 def test_wiki_template_reads_instead_of_asking():
     assert "h1" in COMPOSER  # template grounds the message in the page's h1
     assert "want me to read it back at you" not in COMPOSER
+
+
+def test_persona_routes_jobhunt_radar():
+    assert "jobhunt_radar" in PERSONA
+
+
+def test_persona_bans_application_followup_nudges():
+    # Sprint 2 Task 5: owner decision 2026-06-25 — submitted applications
+    # never get a follow-up nudge; only outreach touches have cadence.
+    assert "applications get no nudges" in PERSONA

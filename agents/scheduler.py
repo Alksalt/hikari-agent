@@ -219,6 +219,23 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
         )
 
+    # Sprint 2 (Task 5): evening-before interview-prep briefing. Daily cron at
+    # jobhunt.interview_brief_hour local — fires only when interviews_upcoming
+    # contains an entry dated tomorrow; per-(slug, date) dedup lives in
+    # runtime_state (see agents/interview_brief.py). Gated on jobhunt.enabled
+    # like the daily brief's jobhunt section.
+    if bool(cfg.get("jobhunt.enabled", True)):
+        from agents.interview_brief import maybe_send_interview_brief
+        ib_hour = int(cfg.get("jobhunt.interview_brief_hour", 17))
+        async def _interview_brief_job():
+            return await maybe_send_interview_brief(send_text)
+        scheduler.add_job(
+            _interview_brief_job,
+            CronTrigger(hour=ib_hour, minute=0),
+            id="interview_brief",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
     # Phase 8: monthly memory prune. Episodes older than the configured
     # retention window get dropped (their embeddings + FTS rows too). Runs
     # at 04:00 on the 1st of each month. Backup launchd (03:00 daily) has
