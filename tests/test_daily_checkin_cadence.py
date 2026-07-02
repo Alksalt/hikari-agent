@@ -1,4 +1,4 @@
-"""Cadence governor: daily_checkin source must bypass the 7d cap."""
+"""Cadence governor: ceremony-pool sources must bypass the spontaneous 7d cap."""
 from __future__ import annotations
 
 import importlib
@@ -45,12 +45,12 @@ def test_cap_blocks_normal_source_at_max():
     assert "cap_reached" in reason
 
 
-def test_daily_checkin_source_uses_its_own_pool_and_bypasses_spontaneous_cap():
-    """daily_checkin is in the ceremony pool (cap=14). Filling the spontaneous
-    pool (cap=8) should NOT block daily_checkin — they are independent."""
+def test_ceremony_source_uses_its_own_pool_and_bypasses_spontaneous_cap():
+    """daily_brief is in the ceremony pool (cap=14). Filling the spontaneous
+    pool (cap=8) should NOT block daily_brief — they are independent."""
     from agents import cadence
     _fill_proactive_log(10)  # fill spontaneous pool past its cap
-    allowed, reason = cadence.can_send("daily_checkin", cadence.Pool.SCHEDULED_CEREMONY)
+    allowed, reason = cadence.can_send("daily_brief", cadence.Pool.SCHEDULED_CEREMONY)
     assert allowed is True
     assert reason == "ok"
 
@@ -66,10 +66,10 @@ def test_daily_checkin_passes_when_governor_disabled(monkeypatch):
     assert reason == "governor_disabled"
 
 
-def test_daily_checkin_blocked_when_ceremony_pool_full():
-    """daily_checkin IS blocked when the ceremony pool (cap=14) is full."""
+def test_ceremony_source_blocked_when_ceremony_pool_full():
+    """daily_brief IS blocked when the ceremony pool (cap=14) is full."""
     from agents import cadence
     _fill_ceremony_log(14)
-    allowed, reason = cadence.can_send("daily_checkin", cadence.Pool.SCHEDULED_CEREMONY)
+    allowed, reason = cadence.can_send("daily_brief", cadence.Pool.SCHEDULED_CEREMONY)
     assert allowed is False
     assert "cap_reached" in reason

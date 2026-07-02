@@ -41,6 +41,10 @@ def _force_morning_brief_enabled(monkeypatch) -> None:
         config, "get",
         lambda k, d=None: True if k == "morning_brief.enabled" else orig_get(k, d),
     )
+    # morning_brief left the ceremony pool 2026-07-03; these tests force-enable
+    # retired machinery, so bypass the incidental cadence check.
+    import agents.cadence as cadence_mod
+    monkeypatch.setattr(cadence_mod, "can_send", lambda source, pool=None: (True, "ok"))
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,10 @@ async def test_fires_at_default_time_sends_question(monkeypatch):
     # Sprint 1 disabled daily_checkin by default (replaced by daily_brief);
     # this test exercises the orchestrator directly, so force it back on.
     monkeypatch.setattr(daily_checkin, "_is_enabled", lambda: True)
+    # daily_checkin left the ceremony pool 2026-07-03; this test force-enables
+    # retired machinery, so bypass the incidental cadence check.
+    import agents.cadence as cadence_mod
+    monkeypatch.setattr(cadence_mod, "can_send", lambda source, pool=None: (True, "ok"))
     monkeypatch.setattr(daily_checkin, "_now_local", lambda: _at_target())
     monkeypatch.setattr(daily_checkin, "compose_checkin_question",
                         AsyncMock(return_value="morning. emails? calendar?"))
