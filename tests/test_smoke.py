@@ -168,6 +168,9 @@ def test_scheduler_builds(monkeypatch):
         # Sprint 2 Task 5: evening-before interview-prep briefing (daily cron
         # at jobhunt.interview_brief_hour).
         "interview_brief",
+        # Sprint 2 Task 6: weekly job-hunt context-pack refresh (Monday 05:30,
+        # plus a startup one-shot when the core_block is absent).
+        "jobhunt_context_refresh",
     }
     if sys.platform == "darwin":
         expected.add("reminders_apple_sync")
