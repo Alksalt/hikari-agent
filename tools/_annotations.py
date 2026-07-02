@@ -101,6 +101,10 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "decision_log_resolve": ANN_WRITE_LOCAL,
     # --- diary (DB read) ---
     "diary_read": ANN_READ_LOCAL,
+    # --- jobhunt (Sprint 2; local sqlite/markdown reads) ---
+    "jobhunt_radar": ANN_READ_LOCAL,
+    "jobhunt_org": ANN_READ_LOCAL,
+    "jobhunt_prep": ANN_READ_LOCAL,
     # --- controls: runtime-state switches ---
     # set_silence writes silence_until — local state, not destructive.
     "set_silence": ANN_WRITE_LOCAL,

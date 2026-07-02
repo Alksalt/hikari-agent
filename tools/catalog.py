@@ -315,6 +315,12 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "delete remove bookmark link shelf",
     "mcp__hikari_utility__link_search":
         "search saved bookmarks links shelf",
+    "mcp__hikari_utility__jobhunt_radar":
+        "job hunt outreach follow-up due touches deadlines interviews pipeline status",
+    "mcp__hikari_utility__jobhunt_org":
+        "job hunt company organisation context contact follow-up email employer",
+    "mcp__hikari_utility__jobhunt_prep":
+        "job hunt interview prep tier dossier positioning stories confirmed ready",
     "mcp__hikari_utility__note_create":
         "create apple notes icloud note",
     "mcp__hikari_utility__note_search":

@@ -834,6 +834,55 @@ tools:
     example: "link_search(query='llm papers')"
     presentation_hint: null
 
+  # Job-hunt copilot (Sprint 2). Read-only radar over outreach.db /
+  # job_search.db / get_hired_prep. Org names, contact names, warm-hook
+  # notes, and prep-doc text are attacker-controllable (typed by outside
+  # parties or scraped off company pages), so untrusted_output + a
+  # self-matching wrap_pattern mirror query_inbox's exact syntax below —
+  # a defense-in-depth PostToolUse backstop on top of the handler-level
+  # selective field wrapping in tools/jobhunt/handlers.py.
+  - id: "mcp__hikari_utility__jobhunt_radar"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__jobhunt_radar$"]
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "jobhunt_radar()"
+    presentation_hint: list_of_records
+
+  - id: "mcp__hikari_utility__jobhunt_org"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__jobhunt_org$"]
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "jobhunt_org(name='DNB')"
+    presentation_hint: scalar
+
+  - id: "mcp__hikari_utility__jobhunt_prep"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__jobhunt_prep$"]
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    example: "jobhunt_prep(slug='dnb-radical-ai')"
+    presentation_hint: scalar
+
   - id: "mcp__hikari_utility__receipt_read"
     bucket: 1
     server: hikari_utility
