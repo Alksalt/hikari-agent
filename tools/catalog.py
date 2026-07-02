@@ -321,6 +321,8 @@ _ID_DESCRIPTIONS: dict[str, str] = {
         "job hunt company organisation context contact follow-up email employer",
     "mcp__hikari_utility__jobhunt_prep":
         "job hunt interview prep tier dossier positioning stories confirmed ready",
+    "mcp__hikari_utility__jobhunt_draft_touch":
+        "draft compose outreach follow-up touch email gmail bokmal norwegian rails lint",
     "mcp__hikari_utility__note_create":
         "create apple notes icloud note",
     "mcp__hikari_utility__note_search":

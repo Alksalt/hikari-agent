@@ -370,11 +370,12 @@ async def test_prep_wraps_dossier_and_story_text(prep_fixture):
 # ALL_TOOLS manifest
 # --------------------------------------------------------------------------
 
-def test_all_tools_has_exactly_three_entries():
+def test_all_tools_has_exactly_four_entries():
+    # Task 4 added jobhunt_draft_touch — the package's one write tool.
     from tools.jobhunt import ALL_TOOLS
-    assert len(ALL_TOOLS) == 3
+    assert len(ALL_TOOLS) == 4
     names = {t.name for t in ALL_TOOLS}
-    assert names == {"jobhunt_radar", "jobhunt_org", "jobhunt_prep"}
+    assert names == {"jobhunt_radar", "jobhunt_org", "jobhunt_prep", "jobhunt_draft_touch"}
 
 
 # --------------------------------------------------------------------------

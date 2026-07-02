@@ -134,6 +134,11 @@ jobhunt:
   notater_tail_chars: 240
   prep_file_char_cap: 4000     # per-file read cap in prep_files()
   handoff_file: "hikari_inbox.md"   # created under roots.outreach
+  # Do-not-cite private repos for the touch-email rails lint
+  # (tools/jobhunt/lint.py). Fallback only — the authoritative list is
+  # parsed fresh from candidate_profile.md's do-not-cite section at call
+  # time; this is what the lint uses when that file/section is missing.
+  private_repo_names: ["NorMedBench", "fhir-safety-harness", "tg-bot-logger", "llm-social-agent"]
 
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation

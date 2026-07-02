@@ -1,9 +1,12 @@
 """Job-hunt tool handlers — invoked lazily on first call.
 
 Three read-only views over ``tools/jobhunt/readers.py`` (the typed
-SQLite/markdown adapters from Task 1). No handler here ever writes to
-outreach.db / job_search.db / Notion — same hard read-only contract as
-the readers module.
+SQLite/markdown adapters from Task 1) — ``radar``/``org``/``prep``. No
+handler here ever writes to outreach.db / job_search.db / Notion — same
+hard read-only contract as the readers module. A fourth handler,
+``draft_touch`` (Task 4), is the one exception: it creates a Gmail
+**draft** (never sends) via ``tools/jobhunt/drafter.py`` — outreach.db /
+job_search.db / Notion themselves are still never written.
 
 Wrapping policy (mirrors ``tools/link_shelf/handlers.py``'s selective
 field-level wrapping, NOT the whole-payload PostToolUse hook pattern
@@ -15,7 +18,7 @@ slugs, and status/stage strings are short structured values the owner
 picked from a closed vocabulary (or wrote about themselves) and are left
 unwrapped so the model can reason about scheduling without fighting
 through delimiter noise. ``config/tools.yaml`` ALSO sets
-``wrap_patterns`` on all three ids (mirroring ``query_inbox``'s exact
+``wrap_patterns`` on all four ids (mirroring ``query_inbox``'s exact
 syntax, per the task brief) — that's a second, coarser defense-in-depth
 layer applied by the PostToolUse hook at the real MCP boundary; it has
 no effect on the direct handler-level unit tests in this repo, which
@@ -29,7 +32,7 @@ from typing import Any
 
 from agents.injection_guard import wrap_untrusted
 from tools._response import ok as _ok
-from tools.jobhunt import readers
+from tools.jobhunt import drafter, readers
 
 logger = logging.getLogger(__name__)
 
@@ -244,3 +247,23 @@ async def prep(args: dict[str, Any]) -> dict[str, Any]:
         safe_data["confirmed_stories"] = safe_stories
 
     return _ok("\n".join(lines), data=safe_data, presentation_hint="scalar")
+
+
+# ---------- jobhunt_draft_touch ----------
+#
+# The one write in this file: composes a touch email, gates it through
+# tools/jobhunt/lint.py's deterministic rails, and — only on a clean pass —
+# creates a Gmail draft (never sends). Wrapping is done inside
+# tools/jobhunt/drafter.py itself (org name / notater tail are wrapped
+# before they land in either the narrative text or `data`, same
+# data-must-already-be-wrapped contract as the three renderers above)
+# because drafter.draft_touch() is also unit-tested directly in
+# tests/test_jobhunt_drafter.py and must return already-safe text on its
+# own, independent of this thin handler wrapper.
+
+
+async def draft_touch(args: dict[str, Any]) -> dict[str, Any]:
+    org = (args.get("org") or "").strip()
+    touch = (args.get("touch") or "").strip()
+    result = await drafter.draft_touch(org, touch)
+    return _ok(result["text"], data=result.get("data"))

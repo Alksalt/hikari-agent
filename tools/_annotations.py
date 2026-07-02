@@ -105,6 +105,9 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     "jobhunt_radar": ANN_READ_LOCAL,
     "jobhunt_org": ANN_READ_LOCAL,
     "jobhunt_prep": ANN_READ_LOCAL,
+    # jobhunt_draft_touch composes via LLM then creates a Gmail draft
+    # (external network write, never sends) — same profile as link_save.
+    "jobhunt_draft_touch": ANN_WRITE_EXTERNAL,
     # --- controls: runtime-state switches ---
     # set_silence writes silence_until — local state, not destructive.
     "set_silence": ANN_WRITE_LOCAL,
