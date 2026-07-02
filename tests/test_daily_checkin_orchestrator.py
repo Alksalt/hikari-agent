@@ -52,6 +52,9 @@ async def test_does_not_fire_outside_window(monkeypatch):
 async def test_fires_at_default_time_sends_question(monkeypatch):
     from agents import daily_checkin
     from storage import db
+    # Sprint 1 disabled daily_checkin by default (replaced by daily_brief);
+    # this test exercises the orchestrator directly, so force it back on.
+    monkeypatch.setattr(daily_checkin, "_is_enabled", lambda: True)
     monkeypatch.setattr(daily_checkin, "_now_local", lambda: _at_target())
     monkeypatch.setattr(daily_checkin, "compose_checkin_question",
                         AsyncMock(return_value="morning. emails? calendar?"))

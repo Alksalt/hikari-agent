@@ -457,10 +457,14 @@ async def test_checkin_control_run_now_sets_force_flag():
 @pytest.mark.asyncio
 async def test_checkin_control_force_flag_peeked_by_should_fire_now():
     """should_fire_now returns True when force flag is set but does NOT clear it
-    (peek semantics — clearing happens only on successful send)."""
+    (peek semantics — clearing happens only on successful send).
+
+    Sprint 1: run_now's force flag now belongs to daily_brief, not the
+    retired daily_checkin ceremony (agents/daily_checkin.py is unchanged,
+    but its should_fire_now no longer participates in this flow)."""
     from zoneinfo import ZoneInfo
 
-    from agents.daily_checkin import should_fire_now
+    from agents.daily_brief import should_fire_now
     from storage import db
     from tools.controls import checkin_control
     from tools.controls.checkin import _FORCE_KEY
@@ -478,8 +482,11 @@ async def test_checkin_control_force_flag_peeked_by_should_fire_now():
 
 @pytest.mark.asyncio
 async def test_checkin_control_run_now_while_disabled_refuses():
-    """run_now while daily_checkin is disabled returns a clear message and
-    does NOT set the force flag (prevent a zombie flag firing on re-enable)."""
+    """run_now while daily_brief is disabled returns a clear message and
+    does NOT set the force flag (prevent a zombie flag firing on re-enable).
+
+    Sprint 1: run_now queues the daily brief (not the retired daily_checkin
+    ceremony), so the gate — and this test — key off daily_brief.enabled."""
     # Patch config to report disabled
     from agents import config as _cfg
     from storage import db
@@ -487,7 +494,7 @@ async def test_checkin_control_run_now_while_disabled_refuses():
     from tools.controls.checkin import _FORCE_KEY
     original = _cfg.get
     def _patched_get(key, default=None):
-        if key == "daily_checkin.enabled":
+        if key == "daily_brief.enabled":
             return False
         return original(key, default)
     import unittest.mock as _mock
@@ -503,7 +510,10 @@ async def test_checkin_control_run_now_while_disabled_refuses():
 @pytest.mark.asyncio
 async def test_force_flag_survives_cadence_abort(monkeypatch):
     """Force flag stays set when cadence governor vetoes the run, so the next
-    tick retries automatically."""
+    tick retries automatically.
+
+    Sprint 1: run_now's force flag now belongs to daily_brief, not the
+    retired daily_checkin ceremony."""
     from storage import db
     from tools.controls import checkin_control
     from tools.controls.checkin import _FORCE_KEY
@@ -515,10 +525,10 @@ async def test_force_flag_survives_cadence_abort(monkeypatch):
     import agents.cadence as _cadence
     monkeypatch.setattr(_cadence, "can_send", lambda *a, **kw: (False, "test veto"))
 
-    from agents.daily_checkin import maybe_run_daily_checkin
+    from agents.daily_brief import maybe_send_daily_brief
     async def _no_send(text):
         return True
-    result = await maybe_run_daily_checkin(_no_send)
+    result = await maybe_send_daily_brief(_no_send)
     assert result is False
     # Flag must still be set — abort path leaves it for retry
     assert db.runtime_get(_FORCE_KEY) == "1"
@@ -526,7 +536,10 @@ async def test_force_flag_survives_cadence_abort(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_force_flag_cleared_on_successful_send(monkeypatch):
-    """Force flag is cleared only after a successful send."""
+    """Force flag is cleared only after a successful send.
+
+    Sprint 1: run_now's force flag now belongs to daily_brief, not the
+    retired daily_checkin ceremony."""
     from storage import db
     from tools.controls import checkin_control
     from tools.controls.checkin import _FORCE_KEY
@@ -539,22 +552,28 @@ async def test_force_flag_cleared_on_successful_send(monkeypatch):
     monkeypatch.setattr(_cadence, "can_send", lambda *a, **kw: (True, "ok"))
     monkeypatch.setattr(_cadence, "record_ceremony_sent", lambda *a, **kw: None)
 
-    # Return a composed message without hitting the LLM
-    import agents.daily_checkin as _dc
-    async def _fake_compose():
-        return "morning. check emails?"
-    monkeypatch.setattr(_dc, "compose_checkin_question", _fake_compose)
+    # Sections with signal + a composed message without hitting the LLM
+    import agents.daily_brief as _db_mod
+    async def _fake_sections():
+        return {"weather": None, "email": {
+            "unread_personal": [{"from": "a@b.c", "subject": "hi", "id": "abc12345"}],
+            "calendar_invites": [], "deletable": {"count": 0, "top_senders": []}},
+            "calendar": None}
+    monkeypatch.setattr(_db_mod, "collect_sections", _fake_sections)
+    async def _fake_run_visible_proactive(prompt):
+        return "morning. one email worth a look."
+    monkeypatch.setattr(_db_mod, "run_visible_proactive", _fake_run_visible_proactive)
 
     # Gate passes immediately — patch on the proactive_gate module (local import)
     import agents.proactive_gate as _pg
     from agents.proactive_gate import ReservationResult
     async def _fake_reserve_and_send(**kw):
-        return ReservationResult("sent", None, None, 1, "morning. check emails?")
+        return ReservationResult("sent", None, None, 1, "morning. one email worth a look.")
     monkeypatch.setattr(_pg, "reserve_and_send", _fake_reserve_and_send)
 
     async def _send(text):
         return True
-    result = await _dc.maybe_run_daily_checkin(_send)
+    result = await _db_mod.maybe_send_daily_brief(_send)
     assert result is True
     # Flag must now be cleared
     assert db.runtime_get(_FORCE_KEY) is None

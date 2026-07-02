@@ -23,6 +23,17 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _force_daily_checkin_enabled(monkeypatch):
+    """Sprint 1 disabled daily_checkin by default (replaced by daily_brief,
+    which reuses this module's should_fire_now/_load_schedule for schedule
+    resolution). These tests exercise that pure resolution logic directly,
+    so force the ceremony's own enabled gate back on — test_disabled_via_config
+    overrides this back to False explicitly to test the gate itself."""
+    from agents import daily_checkin
+    monkeypatch.setattr(daily_checkin, "_is_enabled", lambda: True)
+
+
 def _set_schedule(yaml_body: str) -> None:
     from storage import db
     db.upsert_core_block("daily_checkin_schedule", yaml_body)

@@ -32,8 +32,20 @@ async def test_morning_brief_skips_when_toggled_off(monkeypatch):
     assert fired is False
     assert sent == []
 
+def _force_morning_brief_enabled(monkeypatch) -> None:
+    """Sprint 1 disabled morning_brief by default (replaced by daily_brief) —
+    these tests exercise morning_brief's pure location-resolution logic
+    directly, so force the ceremony's own enabled gate back on."""
+    orig_get = config.get
+    monkeypatch.setattr(
+        config, "get",
+        lambda k, d=None: True if k == "morning_brief.enabled" else orig_get(k, d),
+    )
+
+
 @pytest.mark.asyncio
 async def test_morning_brief_uses_home_when_no_share(monkeypatch):
+    _force_morning_brief_enabled(monkeypatch)
     monkeypatch.setenv("HOME_LAT", "59.91")
     monkeypatch.setenv("HOME_LON", "10.75")
     captured = {}
@@ -54,6 +66,7 @@ async def test_morning_brief_uses_home_when_no_share(monkeypatch):
 @pytest.mark.asyncio
 async def test_morning_brief_ignores_stale_location(monkeypatch):
     """Location older than max_stale_location_hours should be ignored."""
+    _force_morning_brief_enabled(monkeypatch)
     import json
     from datetime import UTC, datetime, timedelta
     stale = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
@@ -79,6 +92,7 @@ async def test_morning_brief_ignores_stale_location(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_morning_brief_prefers_recent_share(monkeypatch):
+    _force_morning_brief_enabled(monkeypatch)
     import json
     from datetime import UTC, datetime
     state = {"lat": 35.68, "lon": 139.69, "label": "Tokyo",

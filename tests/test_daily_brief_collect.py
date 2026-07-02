@@ -77,3 +77,22 @@ async def test_collect_sections_empty_everything(monkeypatch, fresh_db):
     assert sections["email"] is None
     assert sections["calendar"] is None
     assert sections["weather"] is None
+
+
+@pytest.mark.asyncio
+async def test_collect_sections_email_present_when_only_deletable_nonzero(monkeypatch, fresh_db):
+    """A deletable-only inbox (no unread personal, no invites) still earns an
+    email section — deletable.count > 0 alone is signal."""
+    async def deletable_only_email():
+        return {"unread_personal": [], "calendar_invites": [],
+                "deletable": {"count": 3, "top_senders": ["promo@x.com"], "sample_ids": []}}
+    async def no_events():
+        return []
+    monkeypatch.setattr(daily_brief, "fetch_email_buckets", deletable_only_email)
+    monkeypatch.setattr(daily_brief, "fetch_calendar_events", no_events)
+    monkeypatch.setattr(daily_brief, "_resolve_location", lambda: None)
+    sections = await daily_brief.collect_sections()
+    assert sections["email"] is not None
+    assert sections["email"]["deletable"]["count"] == 3
+    assert sections["calendar"] is None
+    assert sections["weather"] is None

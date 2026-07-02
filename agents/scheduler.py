@@ -204,16 +204,19 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
 
-    if bool(cfg.get("morning_brief.enabled", True)):
-        from .morning_brief import maybe_send_morning_brief
-        mb_hour = int(cfg.get("morning_brief.hour", 6))
-        mb_minute = int(cfg.get("morning_brief.minute", 0))
-        async def _morning_brief_job(): return await maybe_send_morning_brief(send_text)
+    # Sprint 1: consolidated daily brief — replaces morning_brief + daily_checkin.
+    if bool(cfg.get("daily_brief.enabled", True)):
+        from agents.daily_brief import maybe_send_daily_brief
+        db_poll = int(cfg.get("daily_brief.poll_interval_minutes", 5))
+        async def _daily_brief_job():
+            return await maybe_send_daily_brief(send_text)
         scheduler.add_job(
-            _morning_brief_job,
-            CronTrigger(hour=mb_hour, minute=mb_minute),
-            id="morning_brief",
-            coalesce=True, max_instances=1, misfire_grace_time=3600,
+            _daily_brief_job,
+            IntervalTrigger(minutes=db_poll),
+            id="daily_brief",
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
         )
 
     # Phase 8: monthly memory prune. Episodes older than the configured
@@ -228,18 +231,6 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         id="memory_prune",
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
-
-    if bool(cfg.get("daily_checkin.enabled", True)):
-        from .daily_checkin import maybe_run_daily_checkin
-        poll = int(cfg.get("daily_checkin.poll_interval_minutes", 5))
-        async def _daily_checkin_job():
-            return await maybe_run_daily_checkin(send_text)
-        scheduler.add_job(
-            _daily_checkin_job,
-            IntervalTrigger(minutes=poll),
-            id="daily_checkin",
-            coalesce=True, max_instances=1, misfire_grace_time=_DEFAULT_MISFIRE_GRACE_SEC,
-        )
 
     # Daily evening diary: 22:00 local. Composes a private diary entry from
     # the day's receipts, fired reminders, today's episodes, and active facts

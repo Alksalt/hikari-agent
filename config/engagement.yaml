@@ -84,7 +84,7 @@ proactive_backoff:
     - daily_checkin      # legacy; disabled in Task 3
 
 daily_checkin:
-  enabled: true
+  enabled: false                 # replaced by daily_brief (Sprint 1)
   default_time: "07:00"          # HH:MM 24h, local clock
   poll_interval_minutes: 5
   pending_reply_window_minutes: 30
@@ -608,6 +608,7 @@ cadence_governor:
     scheduled_ceremony:
       max_per_7d: 14
       allowed_sources:
+        - daily_brief
         - daily_checkin
         - decision_log
         - future_letter
@@ -919,7 +920,7 @@ scheduler:
 
 morning_brief:
   # Master toggle. Hikari can flip this in core_blocks via update_core_block.
-  enabled: true
+  enabled: false                 # replaced by daily_brief (Sprint 1)
   # 06:00 local time per scheduler.timezone.
   hour: 6
   minute: 0

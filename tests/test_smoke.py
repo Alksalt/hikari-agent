@@ -136,11 +136,11 @@ def test_scheduler_builds(monkeypatch):
         "consolidation",
         "daily_reflection", "memory_prune",
         "reminders_fire", "reminders_gcal_sync",
-        "morning_brief",
+        # Sprint 1: consolidated daily brief (5-min poll) replaces the old
+        # morning_brief (06:00 cron) + daily_checkin (5-min poll) jobs.
+        "daily_brief",
         # Phase 11: weekly sleep-time consolidation (Sunday 04:30).
         "weekly_consolidation",
-        # daily_checkin: 5-min poll for the morning check-in window.
-        "daily_checkin",
         # 2026-05-20 five-feature batch:
         "evening_diary",     # daily 22:00 — composes data/diary/YYYY-MM-DD.md
         "drift_canary",      # weekly Sunday 20:00 — three hard-opinion probes
