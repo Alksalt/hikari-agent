@@ -1,0 +1,30 @@
+from pathlib import Path
+
+import yaml
+
+PERSONA = Path("assets/PERSONA.md").read_text(encoding="utf-8")
+ENGAGEMENT = yaml.safe_load(Path("config/engagement.yaml").read_text(encoding="utf-8"))
+COMPOSER = Path("agents/engagement/composer.py").read_text(encoding="utf-8")
+
+
+def test_persona_has_usefulness_inversion_rule():
+    assert "reluctance is words only" in PERSONA
+
+
+def test_persona_bans_contentless_mystery():
+    assert "don't ask." not in PERSONA  # the old leak template is gone
+    assert "name its referent" in PERSONA
+
+
+def test_atmospheric_sources_demoted():
+    sources = ENGAGEMENT["proactive"]["default_enabled_sources"]
+    assert "weirdly_good_mood_leak" not in sources
+    assert "irritation_event" not in sources
+    # referent-bearing callbacks stay
+    assert "callback_episode" in sources
+    assert "research_callback" in sources
+
+
+def test_wiki_template_reads_instead_of_asking():
+    assert "h1" in COMPOSER  # template grounds the message in the page's h1
+    assert "want me to read it back at you" not in COMPOSER

@@ -37,12 +37,10 @@ proactive:
     - decision_resolve_due
     - book_just_finished
     - just_got_home
-    - irritation_event
     - weather_mood_shift
-    # Warmth producers — were authored but never collected (absent
-    # from this list). Turned on 2026-06-03 so the relationship has
-    # something to surface at low session counts.
-    - weirdly_good_mood_leak
+    # Sprint 1 (2026-07-02): standalone atmospherics (weirdly_good_mood_leak,
+    # irritation_event) removed — no payload, failed the send-iff rule.
+    # Referent-bearing callbacks below stay: they carry real content.
     - anniversary_callback
     - belief_resurface
     - research_callback

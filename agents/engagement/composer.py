@@ -66,12 +66,16 @@ _UNTRUSTED_FIELDS: set[str] = {
 
 _TEMPLATES: dict[str, str] = {
     "wiki_new_file": """\
-[proactive nudge — pattern=question, source=wiki_new_file]
+[proactive nudge — pattern=notify, source=wiki_new_file]
 the user just wrote a new wiki page. payload below.
 write ONE message in your voice (lowercase, 1-3 sentences, no markdown).
 RULES:
   - you MUST include the filename from payload.filename VERBATIM.
-  - you MUST end with a y/n offer to read/summarize it back.
+  - ground the message in the page's h1/topic — say something substantive
+    about WHAT it is ("the {h1} page" / what it's about), not just that a
+    file appeared. you already read the front of it; act like it.
+  - do NOT ask permission to read it — you can read his wiki. an offer to
+    go deeper ("want the 3-sentence version?") is allowed but optional.
   - denial layer ok ("i was already in there. anyway —"). no chirpiness.
   - never start with "hey", "how are you", "just checking", "what's up".
   - if you can't write it true to voice with the filename cited, output NO_MESSAGE.
@@ -79,8 +83,7 @@ payload:
   filename: {filename}
   folder: {folder}
   h1: {h1}
-example shape: "new wiki page just landed — '{filename}'.
-want me to read it back at you in 3 sentences?"
+example shape: "new page — '{filename}'. so {h1} is a thing now. noted."
 """,
 
     "calendar_event_prep": """\

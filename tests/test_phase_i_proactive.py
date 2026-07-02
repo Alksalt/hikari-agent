@@ -5,7 +5,8 @@ Coverage:
   - Selector: highest-score wins, disabled sources excluded, pool cap respected.
   - Guard: generic opener, missing anchor, well-formed, question-pattern.
   - proactive status formatter: active-source listing, default count.
-  - Config: default_enabled_sources has exactly 13 entries.
+  - Config: default_enabled_sources has exactly 11 entries (Sprint 1, 2026-07-02:
+    weirdly_good_mood_leak / irritation_event demoted — no payload, contentless).
 """
 from __future__ import annotations
 
@@ -417,10 +418,22 @@ class TestGuard:
 
     def test_accepts_well_formed_wiki(self):
         from agents.engagement.guard import passes
-        c = _make_candidate("wiki_new_file", pattern="question",
+        c = _make_candidate("wiki_new_file", pattern="notify",
                             payload={"filename": "oslo-notes.md"})
-        ok, reason = passes("new page just landed — 'oslo-notes.md'. want me to read it? y/n.", c)
+        ok, reason = passes("new page — 'oslo-notes.md'. so oslo trip notes is a thing now. noted.", c)
         assert ok
+
+    def test_accepts_wiki_composer_template_example_shape(self):
+        """Regression: the wiki_new_file composer template's own literal
+        example ('example shape: "new page — ... noted."' in composer.py)
+        must pass the guard for pattern=notify. This is what broke when the
+        producer still emitted pattern=question against a notify-shaped
+        template — the guard rejected the template's own example."""
+        from agents.engagement.guard import passes
+        c = _make_candidate("wiki_new_file", pattern="notify",
+                            payload={"filename": "notes.md"})
+        ok, reason = passes("new page — 'notes.md'. so kuzu-graph-memory is a thing now. noted.", c)
+        assert ok, f"expected ok, got {reason}"
 
     def test_rejects_question_pattern_no_question_mark(self):
         from agents.engagement.guard import passes
@@ -499,17 +512,20 @@ class TestConfig:
         sources = cfg.get("proactive.default_enabled_sources")
         assert sources is not None, "proactive.default_enabled_sources missing from config"
         source_list = list(sources)
-        # 7 baseline (3 core + 4 world-delta) + 5 warmth producers
+        # 7 baseline (3 core + 4 world-delta) + 4 warmth producers
         # (reengage_silence + late_night_dissolution removed 2026-06-09)
-        # + reminder_fire (silent awareness, 2026-06-10).
-        assert len(source_list) == 13
+        # + reminder_fire (silent awareness, 2026-06-10)
+        # - weirdly_good_mood_leak / irritation_event (demoted, Sprint 1 2026-07-02:
+        #   no payload, failed the send-iff rule — contentless atmospherics).
+        assert len(source_list) == 11
         assert "reminder_fire" in source_list
         assert "book_just_finished" in source_list
         assert "just_got_home" in source_list
-        assert "irritation_event" in source_list
         assert "weather_mood_shift" in source_list
+        assert "weirdly_good_mood_leak" not in source_list
+        assert "irritation_event" not in source_list
         for warm in (
-            "weirdly_good_mood_leak", "anniversary_callback",
-            "belief_resurface", "research_callback", "callback_episode",
+            "anniversary_callback", "belief_resurface",
+            "research_callback", "callback_episode",
         ):
             assert warm in source_list

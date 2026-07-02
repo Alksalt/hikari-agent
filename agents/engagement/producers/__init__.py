@@ -9,13 +9,18 @@ All 18 producers:
   Default-on (3):
     calendar_event_prep, wiki_new_file, decision_resolve_due
 
-  Default-on world-delta producers (4):
-    book_just_finished, just_got_home, irritation_event, weather_mood_shift
+  Default-on world-delta producers (3):
+    book_just_finished, just_got_home, weather_mood_shift
 
-  Opt-in (11):
-    anniversary_callback, belief_resurface, calendar_new_invite, callback_episode,
-    drive_starred_new, notion_recent_edit, reminder_fire, weather_alert,
-    weirdly_good_mood_leak, location_arrived_recurring, research_callback
+  Default-on warmth + awareness producers (5):
+    anniversary_callback, belief_resurface, research_callback, callback_episode,
+    reminder_fire (silent awareness only)
+
+  Opt-in (7):
+    calendar_new_invite, drive_starred_new, notion_recent_edit, weather_alert,
+    weirdly_good_mood_leak, irritation_event, location_arrived_recurring
+    (weirdly_good_mood_leak / irritation_event demoted from default-on Sprint 1,
+    2026-07-02 — contentless atmospherics, failed the send-iff rule)
 """
 from agents.engagement.producers import (  # noqa: F401
     anniversary_callback,
@@ -67,12 +72,12 @@ DEFAULT_ENABLED_SOURCES: frozenset[str] = frozenset({
     "decision_resolve_due",
     "book_just_finished",
     "just_got_home",
-    "irritation_event",
     "weather_mood_shift",
     # Warmth producers enabled 2026-06-03 (kept in sync with
     # config/engagement.yaml proactive.default_enabled_sources — the yaml list
     # is the live source of truth; this set is the fallback + /proactive display).
-    "weirdly_good_mood_leak",
+    # weirdly_good_mood_leak / irritation_event demoted Sprint 1 (2026-07-02):
+    # no payload, failed the send-iff rule — contentless atmospherics.
     "anniversary_callback",
     "belief_resurface",
     "research_callback",

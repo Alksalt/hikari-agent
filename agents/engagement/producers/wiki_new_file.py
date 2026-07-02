@@ -193,7 +193,7 @@ def collect() -> list[TriggerCandidate]:
             candidates.append(TriggerCandidate(
                 source="wiki_new_file",
                 pool="user_anchored",
-                pattern="question",
+                pattern="notify",
                 novelty=0.8,
                 actionability=0.6,
                 confidence=0.9,
