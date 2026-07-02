@@ -250,7 +250,7 @@ def test_compose_prompt_jobhunt_next_actions_present():
     assert "draft touch" in prompt
     assert "apply?" in prompt
     assert "want the prep brief?" in prompt
-    assert "want a draft reply?" in prompt
+    assert "want me to pull up the thread?" in prompt
 
 
 def test_compose_prompt_jobhunt_wraps_untrusted_content():

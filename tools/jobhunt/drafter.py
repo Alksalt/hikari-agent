@@ -296,7 +296,7 @@ async def _verify_draft_exists(message_id: str) -> bool:
     try:
         result = await MANAGER.call(
             "google_workspace", "query_gmail_emails",
-            {"query": "in:drafts", "max_results": _VERIFY_MAX_RESULTS},
+            {"query": "in:drafts newer_than:1h", "max_results": _VERIFY_MAX_RESULTS},
         )
     except Exception:
         logger.exception("jobhunt drafter: verify-after-write query failed")

@@ -283,7 +283,7 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
             frm = wrap_untrusted(jt, r.get("from", ""))
             org = wrap_untrusted(jt, r.get("org_or_employer", ""))
             subj = wrap_untrusted(jt, r.get("subject", ""))
-            jh_lines.append(f"  - reply from {frm} ({org}) — {subj} — want a draft reply?")
+            jh_lines.append(f"  - reply from {frm} ({org}) — {subj} — want me to pull up the thread?")
         blocks.append("jobhunt:\n" + "\n".join(jh_lines))
 
     if not blocks:

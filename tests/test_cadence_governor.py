@@ -64,8 +64,8 @@ def test_can_send_resolves_pool_from_source():
 
 def test_can_send_resolves_ceremony_source():
     from agents.cadence import can_send
-    # daily_checkin -> scheduled_ceremony
-    allowed, reason = can_send("daily_checkin")
+    # decision_log -> scheduled_ceremony
+    allowed, reason = can_send("decision_log")
     assert allowed is True
     assert reason == "ok"
 
@@ -105,7 +105,7 @@ def test_spontaneous_cap_does_not_block_ceremony():
     """Filling spontaneous pool doesn't block ceremony pool."""
     from agents.cadence import Pool, can_send
     _fill_pool_log("proactive_log_v1", 8)  # fill spontaneous to max
-    allowed, reason = can_send("daily_checkin", Pool.SCHEDULED_CEREMONY)
+    allowed, reason = can_send("decision_log", Pool.SCHEDULED_CEREMONY)
     assert allowed is True
     assert reason == "ok"
 
@@ -122,9 +122,9 @@ def test_user_anchored_has_its_own_cap():
 # ---------- source-in-wrong-pool rejection ----------
 
 def test_source_in_wrong_pool_is_rejected():
-    """daily_checkin is ceremony — passing it to spontaneous pool rejects it."""
+    """decision_log is ceremony — passing it to spontaneous pool rejects it."""
     from agents.cadence import Pool, can_send
-    allowed, reason = can_send("daily_checkin", Pool.AGENT_SPONTANEOUS)
+    allowed, reason = can_send("decision_log", Pool.AGENT_SPONTANEOUS)
     assert allowed is False
     assert "source_not_in_pool" in reason
 

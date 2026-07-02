@@ -643,12 +643,10 @@ cadence_governor:
       max_per_7d: 14
       allowed_sources:
         - daily_brief
-        - daily_checkin      # disabled 2026-07-02, retained for historical-log lookups
         - decision_log
         - future_letter
         - future_letter_send
         - interview_brief    # Sprint 2 Task 5: evening-before interview-prep briefing
-        - morning_brief      # disabled 2026-07-02, retained for historical-log lookups
         - evening_diary
     user_anchored:
       max_per_7d: 30
