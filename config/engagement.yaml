@@ -116,6 +116,25 @@ health:
   # logged only — ops telemetry stays out of the persona channel (Sprint 1).
   startup_digest_chat_checks: [oauth_google, google_scopes, google_account]
 
+# --- Job-hunt copilot (Sprint 2) — read-only radar over the owner's three
+# job-hunt repos. Hikari NEVER writes their DBs/Notion (sync contracts);
+# writes are limited to Gmail drafts, calendar events, and the append-only
+# handoff file below.
+jobhunt:
+  enabled: true
+  roots:
+    outreach: "/Users/ol/agents/outreach"
+    job_search: "/Users/ol/agents/job-search"
+    prep: "/Users/ol/agents/get_hired_prep"
+  deadline_window_days: 7      # surface application deadlines this far out
+  touch_lookahead_days: 1      # outreach touches due through tomorrow
+  overdue_grace_days: 14       # ...and up to this many days overdue
+  reply_lookback_days: 2       # gmail reply-radar window
+  interview_brief_hour: 17     # evening-before prep briefing (local)
+  notater_tail_chars: 240
+  prep_file_char_cap: 4000     # per-file read cap in prep_files()
+  handoff_file: "hikari_inbox.md"   # created under roots.outreach
+
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
   # phrase. Tier-1 (y/yes/ok/go) is gone — too loose a match for irreversible
