@@ -190,3 +190,18 @@ def test_select_offer_recent_tool_use_marks_discovered():
     _isolate_translate_candidate()
     _seed_tool_call("mcp__hikari_utility__translate", ago_days=2)
     assert capability_offers.select_offer(turn_elapsed_sec=10.0) is None
+
+
+@pytest.mark.asyncio
+async def test_cb_offer_marks_tapped_and_runs_phrase(monkeypatch):
+    from agents import telegram_bridge
+
+    rid = db.capability_offer_insert(offer_id="translate", telegram_message_id=7)
+    respond = AsyncMock(return_value="done.")
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bridge, "respond", respond)
+    monkeypatch.setattr(telegram_bridge, "_send_text_with_choreography", send)
+    await telegram_bridge._cb_offer(AsyncMock(), 1, rid, "translate")
+    assert db.capability_offer_recent_outcomes("translate") == ["tapped"]
+    respond.assert_awaited_once()
+    send.assert_awaited_once()

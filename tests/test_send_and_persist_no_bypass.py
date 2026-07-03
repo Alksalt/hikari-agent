@@ -185,6 +185,7 @@ def test_no_direct_bot_send_message_in_telegram_bridge():
         "_cb_checkin",
         "_cb_reminder",
         "_cb_proactive",
+        "_cb_offer",
     }
     violations: list[str] = []
 

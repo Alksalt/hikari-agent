@@ -586,6 +586,17 @@ async def _send_with_choreography(
     if not sent_ok:
         return
 
+    # Sprint 3: one-tap capability offer (deterministic, rationed, config-gated).
+    try:
+        from agents import capability_offers as _offers_mod  # noqa: PLC0415
+        await _offers_mod.maybe_offer(
+            chat_id=chat_id,
+            turn_elapsed_sec=float(elapsed_real or 0.0),
+            telegram_message_id=result.telegram_message_id,
+        )
+    except Exception:
+        logger.exception("capability_offers: attach failed (non-fatal)")
+
     # Step 4: write handoff snapshot AFTER the final assistant row is committed,
     # so cold-open replay shows what the user actually saw.
     try:
@@ -1972,6 +1983,20 @@ async def _cb_proactive(bot, chat_id: int, action: str, parts: list[str]) -> Non
         await bot.send_message(chat_id=chat_id, text=f"unknown proactive action: {action!r}")
 
 
+async def _cb_offer(bot, chat_id: int, row_id: int, offer_id: str) -> None:
+    """One-tap capability offer accepted — run its phrase as a normal turn."""
+    from agents import capability_offers as _offers_mod
+
+    db.capability_offer_mark_tapped(row_id)
+    entry = _offers_mod.catalog_entry(offer_id)
+    if entry is None:
+        await bot.send_message(chat_id=chat_id, text="that button expired. ask me directly.")
+        return
+    reply = await respond(str(entry["phrase"]))
+    if reply:
+        await _send_text_with_choreography(bot, chat_id, reply, source="chat")
+
+
 async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route all inline-keyboard callbacks. Owner-gated."""
     query = update.callback_query
@@ -2002,6 +2027,10 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif namespace == "pro":
             action = parts[1] if len(parts) > 1 else ""
             await _cb_proactive(bot, chat_id, action, parts)
+        elif namespace == "offer":
+            row_id = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+            offer_id = parts[3] if len(parts) > 3 else ""
+            await _cb_offer(bot, chat_id, row_id, offer_id)
         else:
             logger.warning("_handle_callback: unknown namespace %r in data %r", namespace, data)
     except Exception:
