@@ -47,7 +47,13 @@ async def capabilities_overview(args: dict[str, Any]) -> dict[str, Any]:
     menu = cfg.get("telegram.command_menu") or []
     data = {
         "areas": areas,
-        "try": [str(m["phrase"]) for m in menu if isinstance(m, dict) and m.get("phrase")],
+        # Skip the /help entry itself — the answer to "what can you do"
+        # shouldn't suggest asking "what can you do?" again.
+        "try": [
+            str(m["phrase"])
+            for m in menu
+            if isinstance(m, dict) and m.get("phrase") and m.get("command") != "help"
+        ],
     }
     return _ok(
         f"{len(areas)} capability areas, {sum(a['tool_count'] for a in areas)} tools.",

@@ -120,6 +120,7 @@ async def maybe_offer(
 
         attached = await attach_keyboard_to_sent_message(telegram_message_id, kb)
         if not attached:
+            db.capability_offer_delete(row_id)
             return None
         logger.info("capability_offers: shown %r (row %d)", offer_id, row_id)
         return offer_id

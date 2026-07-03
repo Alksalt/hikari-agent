@@ -1183,7 +1183,7 @@ capability_offers:
     - id: places
       label: "places nearby →"
       phrase: "find a place near me that's open now"
-      domains: [weather, calendar, places]
+      domains: [calendar, utility]
       tool_ids: [mcp__hikari_utility__places_search]
     - id: arxiv
       label: "arxiv search →"

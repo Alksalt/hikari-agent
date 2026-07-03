@@ -121,6 +121,26 @@ async def test_maybe_offer_attaches_button_and_records(monkeypatch):
     assert db.capability_offer_recent_outcomes(out) == ["shown"]
 
 
+@pytest.mark.asyncio
+async def test_maybe_offer_deletes_row_when_attach_fails(monkeypatch):
+    # If the keyboard never attaches, the offer was never actually shown to
+    # the owner — the row must not survive (it would otherwise burn the
+    # daily quota and start the min-gap clock for something unseen).
+    _seed_tool_call("mcp__hikari_utility__query_inbox")
+    attach = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "agents.telegram_bridge.attach_keyboard_to_sent_message", attach
+    )
+    out = await capability_offers.maybe_offer(
+        chat_id=1, turn_elapsed_sec=10.0, telegram_message_id=42
+    )
+    assert out is None
+    attach.assert_awaited_once()
+    assert db.capability_offers_today_count() == 0
+    for entry in capability_offers._catalog():
+        assert db.capability_offer_recent_outcomes(str(entry["id"])) == []
+
+
 def _seed_offer_row(offer_id: str, shown_ago_days: float, outcome: str) -> None:
     """Insert a capability_offers row with a backdated shown_at (the db helper
     always stamps now(), so history seeding goes through _conn directly)."""

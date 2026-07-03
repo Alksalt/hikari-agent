@@ -3995,6 +3995,11 @@ def capability_offer_insert(*, offer_id: str, telegram_message_id: int | None) -
     return int(cur.lastrowid or 0)
 
 
+def capability_offer_delete(row_id: int) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM capability_offers WHERE id = ?", (row_id,))
+
+
 def capability_offer_mark_tapped(row_id: int) -> None:
     with _conn() as c:
         c.execute(

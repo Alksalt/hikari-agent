@@ -21,7 +21,13 @@ async def test_overview_returns_grouped_areas():
 @pytest.mark.asyncio
 async def test_overview_includes_try_phrases_from_menu():
     res = await capabilities_overview.handler({})
-    assert "what can you do?" in res["data"]["try"]
+    # The /help command's own phrase is excluded — the answer to "what can
+    # you do" shouldn't suggest asking "what can you do?" again.
+    assert "what can you do?" not in res["data"]["try"]
+    assert (
+        "give me a brief: check my inbox, calendar and weather, and "
+        "summarize what actually matters" in res["data"]["try"]
+    )
 
 
 @pytest.mark.asyncio
