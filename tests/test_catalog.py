@@ -212,3 +212,20 @@ def test_reset_clears_singleton():
     _reset_catalog()
     b = get_catalog()
     assert a is not b, "get_catalog() should return a new Catalog after reset"
+
+
+# ---------------------------------------------------------------------------
+# tools.yaml `example:` (singular) must reach ToolEntry.examples
+# ---------------------------------------------------------------------------
+
+def test_yaml_singular_example_reaches_entries():
+    """tools.yaml uses `example:` (singular str); the catalog must pick it up
+    AND keep the synthesized natural-language asks for BM25 recall."""
+    from tools.catalog import _entries_from_registry
+    entries = {e.name: e for e in _entries_from_registry()}
+    entry = entries["mcp__hikari_utility__reminder_list"]
+    assert "reminder_list()" in entry.examples          # yaml example: value
+    # NL default must survive the merge (description mentions reminders → no
+    # keyword hit in _default_examples, so just assert yaml value is present
+    # and examples is a list)
+    assert isinstance(entry.examples, list)

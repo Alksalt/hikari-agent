@@ -603,8 +603,16 @@ def _entries_from_registry(path: Path | None = None) -> list[ToolEntry]:
         if isinstance(credentials, str):
             credentials = [credentials]
 
+        # tools.yaml uses `example:` (singular str); accept `examples:` (list)
+        # too. Merge with the synthesized NL asks — yaml examples are
+        # code-usage strings, the NL defaults carry BM25 recall.
         raw_examples = raw.get("examples") or []
-        examples = list(raw_examples) if raw_examples else _default_examples(tid, description)
+        if isinstance(raw_examples, str):
+            raw_examples = [raw_examples]
+        single = raw.get("example")
+        if single and single not in raw_examples:
+            raw_examples = [single, *raw_examples]
+        examples = list(raw_examples) + _default_examples(tid, description)
 
         presentation_hint = raw.get("presentation_hint") or ""
 
