@@ -544,6 +544,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_drop_facts_legacy_superseded_by",
     "migrate_drift_sycophancy_column",
     "migrate_media_outbox_status_sending",
+    "migrate_capability_offers",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -694,6 +695,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by)
     run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column)
     run_once(conn, "migrate_media_outbox_status_sending", _migrate_media_outbox_status_sending)
+    run_once(conn, "migrate_capability_offers", _migrate_capability_offers)
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -1117,6 +1119,27 @@ def _migrate_media_outbox_status_sending(conn: sqlite3.Connection) -> None:
         conn.execute("ROLLBACK TO sp_media_outbox_sending")
         conn.execute("RELEASE sp_media_outbox_sending")
         raise
+
+
+def _migrate_capability_offers(conn: sqlite3.Connection) -> None:
+    """Sprint 3 (discoverability): one-tap capability offers attached after
+    task turns. outcome lifecycle: 'shown' → 'tapped' (button pressed) or
+    'ignored' (lazily marked when the next offer is selected)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS capability_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            offer_id TEXT NOT NULL,
+            shown_at TEXT NOT NULL,
+            telegram_message_id INTEGER,
+            outcome TEXT NOT NULL DEFAULT 'shown'
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS capability_offers_offer "
+        "ON capability_offers(offer_id, shown_at)"
+    )
 
 
 def _migrate_messages_source_index(conn: sqlite3.Connection) -> None:
@@ -3958,6 +3981,85 @@ def tool_calls_recent(limit: int = 20) -> list[dict]:
             (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------- capability_offers (Sprint 3: discoverability) ----------
+
+def capability_offer_insert(*, offer_id: str, telegram_message_id: int | None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO capability_offers (offer_id, shown_at, telegram_message_id) "
+            "VALUES (?, ?, ?)",
+            (offer_id, _now(), telegram_message_id),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def capability_offer_mark_tapped(row_id: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE capability_offers SET outcome = 'tapped' WHERE id = ?",
+            (row_id,),
+        )
+
+
+def capability_offer_mark_stale_ignored() -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE capability_offers SET outcome = 'ignored' WHERE outcome = 'shown'"
+        )
+    return int(cur.rowcount or 0)
+
+
+def capability_offer_recent_outcomes(offer_id: str, limit: int = 5) -> list[str]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT outcome FROM capability_offers WHERE offer_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (offer_id, int(limit)),
+        ).fetchall()
+    return [r["outcome"] for r in rows]
+
+
+def capability_offer_last_shown(offer_id: str) -> str | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT MAX(shown_at) AS ts FROM capability_offers WHERE offer_id = ?",
+            (offer_id,),
+        ).fetchone()
+    return row["ts"] if row and row["ts"] else None
+
+
+def capability_offers_today_count() -> int:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM capability_offers "
+            "WHERE substr(shown_at, 1, 10) = substr(?, 1, 10)",
+            (_now(),),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def tool_calls_used_since(ts_iso: str) -> list[str]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT DISTINCT tool_id FROM tool_calls WHERE started_at >= ?",
+            (ts_iso,),
+        ).fetchall()
+    return [r["tool_id"] for r in rows]
+
+
+def tool_calls_last_used(tool_ids: list[str]) -> dict[str, str]:
+    if not tool_ids:
+        return {}
+    ph = ",".join("?" for _ in tool_ids)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT tool_id, MAX(started_at) AS ts FROM tool_calls "
+            f"WHERE tool_id IN ({ph}) GROUP BY tool_id",
+            tuple(tool_ids),
+        ).fetchall()
+    return {r["tool_id"]: r["ts"] for r in rows}
 
 
 def audit_by_id(row_id: int) -> dict | None:
