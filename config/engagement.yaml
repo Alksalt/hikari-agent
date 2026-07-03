@@ -1091,6 +1091,44 @@ retrieval:
 
 telegram:
   http_timeout_sec: 10.0          # httpx client timeout in agents/telegram_bridge.py
+  # Bot identity — pushed at boot by agents/command_menu.py. In voice.
+  bot_short_description: "personal agent. reluctantly effective."
+  bot_description: >-
+    hikari. i handle his inbox, calendar, reminders, job hunt, links, and
+    whatever else lands on my desk. try: "check my email" · "remind me at
+    18:00 to call back" · "job hunt status" · "what can you do"
+  # Curated command MENU — discoverability UI only, NO CommandHandlers
+  # (DECISIONS.md 2026-07-03). A tap or typed /cmd is rewritten to `phrase`
+  # and routed through the normal stateful agent turn. {args} in
+  # phrase_with_args receives any text typed after the command; commands
+  # without phrase_with_args append args after an em dash.
+  command_menu:
+    - command: brief
+      menu_text: "morning brief — inbox, calendar, weather"
+      phrase: "give me a brief: check my inbox, calendar and weather, and summarize what actually matters"
+    - command: email
+      menu_text: "check inbox"
+      phrase: "check my inbox — anything important?"
+    - command: remind
+      menu_text: "reminders — list, or /remind <what & when>"
+      phrase: "what are my reminders?"
+      phrase_with_args: "set a reminder: {args}"
+    - command: jobs
+      menu_text: "job hunt status"
+      phrase: "job hunt status — what's due and what's next?"
+    - command: prep
+      menu_text: "interview prep"
+      phrase: "interview prep — what's confirmed and what should i be ready for?"
+    - command: links
+      menu_text: "saved links"
+      phrase: "show my saved links"
+    - command: silence
+      menu_text: "go quiet — 2h, or /silence <duration>"
+      phrase: "go quiet for 2 hours"
+      phrase_with_args: "go quiet for {args}"
+    - command: help
+      menu_text: "what can you do"
+      phrase: "what can you do?"
 
 evening_diary:
   enabled: true
