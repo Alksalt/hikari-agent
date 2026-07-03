@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -225,3 +226,34 @@ class TestReactionIsolation:
         assert reengage_score is not None and abs(reengage_score - 0.3) < 1e-6, (
             f"reengage score should be unchanged at 0.3, got {reengage_score}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. react_ack — unconditional functional acknowledgment
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_react_ack_fires_unconditionally(monkeypatch):
+    from agents import reactions
+    bot = AsyncMock()
+    # Force the flavor gate closed to prove ack ignores it.
+    monkeypatch.setattr(reactions, "_probability", lambda: 0.0)
+    ok = await reactions.react_ack(bot, chat_id=1, message_id=99)
+    assert ok is True
+    bot.set_message_reaction.assert_awaited_once()
+    kwargs = bot.set_message_reaction.await_args.kwargs
+    assert kwargs["message_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_react_ack_disabled_by_config(monkeypatch):
+    from agents import config as cfg
+    from agents import reactions
+    monkeypatch.setattr(
+        cfg, "get",
+        lambda key, default=None: False if key == "reactions.ack_enabled" else default,
+    )
+    bot = AsyncMock()
+    ok = await reactions.react_ack(bot, chat_id=1, message_id=99)
+    assert ok is False
+    bot.set_message_reaction.assert_not_awaited()

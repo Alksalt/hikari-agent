@@ -104,3 +104,25 @@ async def maybe_react(bot: Bot, chat_id: int, message_id: int) -> str | None:
         return None
     _record_reaction(n)
     return emoji
+
+
+async def react_ack(bot: Bot, chat_id: int, message_id: int) -> bool:
+    """Functional acknowledgment — no probability/cooldown roll.
+
+    Fired when a long multi-task turn starts so the owner knows work is
+    underway without an ack text. Overwrites any flavor reaction already on
+    the message (same-actor reactions replace). Never raises."""
+    try:
+        if not bool(cfg.get("reactions.ack_enabled", True)):
+            return False
+        emoji = str(cfg.get("reactions.ack_emoji", "👀"))
+        from telegram import ReactionTypeEmoji
+        await bot.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)],
+        )
+        return True
+    except Exception:
+        logger.exception("reactions: react_ack failed (non-fatal)")
+        return False

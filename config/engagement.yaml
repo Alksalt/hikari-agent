@@ -842,6 +842,11 @@ reactions:
   cooldown_min_messages: 8
   pool: ["👀", "💭", "🙄", "🤔", "🌙"]
   # (solo reaction-only reply mode removed — was never wired to a reader)
+  # Functional ack: fired when a long multi-task (compound) turn starts, so
+  # the owner knows work is underway without an ack text. Bypasses the
+  # probability/cooldown roll — acks are information, not flavor.
+  ack_enabled: true
+  ack_emoji: "👀"
 
 reactions_as_turns:
   # Phase 9: when the owner reacts to one of Hikari's messages with an emoji

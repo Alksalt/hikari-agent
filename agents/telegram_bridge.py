@@ -912,6 +912,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # Set the ContextVar so the progress tool + i_keep_thinking
                 # writer see the correct turn id for this compound turn.
                 _ctv.set(user_turn_id)
+                # Sprint 3: functional ack — multi-task turns run long; the
+                # 👀 says "received, working" without an ack text.
+                await reactions_mod.react_ack(
+                    context.bot, chat.id, message.message_id
+                )
                 # Fast-path typing refresh so the indicator stays alive
                 # across sub-2s inter-wave gaps.
                 try:
