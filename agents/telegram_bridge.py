@@ -45,11 +45,11 @@ from tools.photos import OUTBOX as PHOTO_OUTBOX  # media_outbox drain path
 
 from . import affect as affect_mod
 from . import belief_frame as belief_mod
+from . import command_menu, injection_guard, post_filter
 from . import config as cfg
 from . import daily_checkin as daily_checkin_mod
 from . import drift_judge as drift_mod
 from . import handoff as handoff_mod
-from . import injection_guard, post_filter
 from . import postsend as postsend_mod
 from . import reactions as reactions_mod
 from . import sdk_pool as _sdk_pool
@@ -824,6 +824,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # set and the user hasn't changed topic, skip the LLM entirely. Topic-change
     # heuristic: enough new vocabulary or 4h+ gap since silence was set.
     user_text = message.text
+    # Command menu: /cmd → canonical phrase. Discoverability UI only — the
+    # rewritten phrase enters the same stateful turn as typed text
+    # (DECISIONS.md 2026-07-03). Unknown /foo passes through unchanged.
+    _cmd_phrase = command_menu.resolve_command_phrase(user_text)
+    if _cmd_phrase is not None:
+        logger.info("command_menu: %r → %r", user_text, _cmd_phrase)
+        user_text = _cmd_phrase
     try:
         _sil_until_mid = db.runtime_get("silenced_until_msg_id")
         if _sil_until_mid:
@@ -2557,13 +2564,9 @@ def main() -> None:
 
         # Phase E: wire the gatekeeper send_text BEFORE recovery so nudge
         # messages during restart_recovery can actually reach Telegram.
-        # Phase 5b: zero slash-commands — push an empty list so stale command
-        # menus cached on Telegram clients get cleared.
-        try:
-            await application.bot.set_my_commands([])
-            logger.info("set_my_commands: cleared command menu (zero slash-commands)")
-        except Exception:
-            logger.exception("set_my_commands failed (non-fatal)")
+        # Sprint 3: curated command menu + bot description — discoverability
+        # UI, zero CommandHandlers (DECISIONS.md 2026-07-03).
+        await command_menu.push_command_menu(application.bot)
 
         from tools.gatekeeper import GATEKEEPER as _gatekeeper  # noqa: PLC0415
         _bot_ref = application.bot
