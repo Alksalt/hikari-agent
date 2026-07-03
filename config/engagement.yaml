@@ -1135,6 +1135,67 @@ capabilities:
   # internal plumbing, not capabilities the owner would ask for.
   hidden_domains: [meta, router, dispatch, orchestration, tooling, runtime, skills]
 
+capability_offers:
+  # One-tap "i can also—" buttons attached to task replies. Deterministic
+  # bridge-side selection — the model never generates offers. Research rule:
+  # ONE adjacent capability, drop if declined (2026-07-02 review).
+  enabled: true
+  max_per_day: 1
+  min_days_between_same_offer: 7
+  drop_after_ignored: 2          # consecutive ignores → never offer again
+  unused_window_days: 30         # capability is 'undiscovered' if unused this long
+  catalog:
+    - id: jobhunt_radar
+      label: "job-hunt radar →"
+      phrase: "job hunt status — what's due and what's next?"
+      domains: [gmail, calendar]
+      tool_ids: [mcp__hikari_utility__jobhunt_radar]
+    - id: link_shelf
+      label: "save links for later →"
+      phrase: "show my saved links and remind me how the link shelf works"
+      domains: [web, wiki, research]
+      tool_ids: [mcp__hikari_utility__link_save, mcp__hikari_utility__link_list]
+    - id: day_receipt
+      label: "day receipt →"
+      phrase: "read me today's receipt"
+      domains: [scheduling, memory, calendar]
+      tool_ids: [mcp__hikari_utility__receipt_read, mcp__hikari_utility__receipt_add]
+    - id: reminders
+      label: "set a reminder →"
+      phrase: "what are my reminders?"
+      domains: [gmail, calendar]
+      tool_ids: [mcp__hikari_utility__reminder_create, mcp__hikari_utility__reminder_list]
+    - id: translate
+      label: "translate →"
+      phrase: "translate something for me — show me how that works"
+      domains: [gmail, wiki]
+      tool_ids: [mcp__hikari_utility__translate]
+    - id: decision_log
+      label: "log a prediction →"
+      phrase: "explain the decision log and log my last prediction"
+      domains: [memory, wiki]
+      tool_ids: [mcp__hikari_utility__decision_log_capture]
+    - id: places
+      label: "places nearby →"
+      phrase: "find a place near me that's open now"
+      domains: [weather, calendar, places]
+      tool_ids: [mcp__hikari_utility__places_search]
+    - id: arxiv
+      label: "arxiv search →"
+      phrase: "search arxiv for something i care about"
+      domains: [wiki, research, web]
+      tool_ids: [mcp__hikari_utility__arxiv_search]
+    - id: apple_notes
+      label: "apple notes →"
+      phrase: "search my apple notes"
+      domains: [wiki, memory]
+      tool_ids: [mcp__hikari_utility__note_search]
+    - id: python_run
+      label: "run the numbers →"
+      phrase: "run a quick calculation in python for me"
+      domains: [utility, research, sheets]
+      tool_ids: [mcp__hikari_utility__python_run]
+
 evening_diary:
   enabled: true
   hour: 22                        # local hour for the daily diary composition
