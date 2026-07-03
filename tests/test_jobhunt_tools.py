@@ -383,7 +383,6 @@ def test_all_tools_has_exactly_four_entries():
 # --------------------------------------------------------------------------
 
 _TOOLS_YAML = yaml.safe_load(Path("config/tools.yaml").read_text(encoding="utf-8"))
-_CATALOG_SRC = Path("tools/catalog.py").read_text(encoding="utf-8")
 
 _JOBHUNT_IDS = (
     "mcp__hikari_utility__jobhunt_radar",
@@ -404,5 +403,9 @@ def test_tools_yaml_has_all_three_jobhunt_ids_untrusted():
 
 
 def test_catalog_has_keyword_lines_for_all_three():
+    # Descriptions moved from catalog.py _ID_DESCRIPTIONS into tools.yaml
+    # (sprint 3): the curated BM25 keyword line now lives on the yaml entry.
+    by_id = {t["id"]: t for t in _TOOLS_YAML["tools"]}
     for tid in _JOBHUNT_IDS:
-        assert f'"{tid}"' in _CATALOG_SRC, f"{tid} missing a catalog.py keyword line"
+        desc = str(by_id[tid].get("description") or "")
+        assert "job" in desc, f"{tid} missing a curated description keyword line"

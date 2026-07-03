@@ -154,6 +154,7 @@ tools:
     operation: dispatch
     risk_tier: medium
     credentials: null
+    description: "dispatch background subagent task parallel agent"
     example: "dispatch parallel subagent tasks"
     presentation_hint: null
 
@@ -167,6 +168,7 @@ tools:
     operation: read
     risk_tier: medium
     credentials: null
+    description: "fetch web page url http content scrape"
     example: "fetch https://example.com"
     presentation_hint: search_hits
 
@@ -180,6 +182,7 @@ tools:
     operation: read
     risk_tier: medium
     credentials: null
+    description: "web search internet query google results"
     example: "search for 'python asyncio tutorial'"
     presentation_hint: search_hits
 
@@ -196,6 +199,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search toolbelt find tool by topic capability"
     example: "tool_search('weather')"
     presentation_hint: list_of_records
 
@@ -212,6 +216,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "recall retrieve memory facts about user past conversation history"
     example: "recall('birthday')"
     presentation_hint: search_hits
 
@@ -225,6 +230,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "save store new memory fact about user"
     example: "remember('prefers dark coffee')"
     presentation_hint: null
 
@@ -239,6 +245,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "invalidate mark fact wrong incorrect memory"
     example: "mark_fact_invalid(fact_id='abc')"
     presentation_hint: null
 
@@ -253,6 +260,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "update core memory block mood preoccupation"
     example: "update_core_block('mood_today', 'tired')"
     presentation_hint: null
 
@@ -266,6 +274,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create track open loop task todo fuzzy reminder"
     example: "task_create('follow up about the demo')"
     presentation_hint: null
 
@@ -279,6 +288,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "update close task todo open loop"
     example: "task_update(id='x', status='done')"
     presentation_hint: null
 
@@ -292,6 +302,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search past sessions conversation history what did we talk about"
     example: "session_search('that convo about the thesis')"
     presentation_hint: search_hits
 
@@ -308,6 +319,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search personal wiki notes pages knowledge base"
     example: "wiki_search('graphiti')"
     presentation_hint: search_hits
 
@@ -321,6 +333,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "read personal wiki page note content"
     example: "wiki_read('projects/hikari/hikari.md')"
     presentation_hint: wiki_note
 
@@ -334,6 +347,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "append write update personal wiki page note"
     example: "wiki_append('log.md', '## entry')"
     presentation_hint: null
 
@@ -347,6 +361,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "find wiki backlinks pages that reference a note"
     example: "wiki_backlinks('projects/hikari/hikari.md')"
     presentation_hint: list_of_records
 
@@ -360,6 +375,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "list files in wiki folder directory"
     example: "wiki_list('projects/hikari/')"
     presentation_hint: wiki_tree
 
@@ -373,6 +389,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "tree recursive list wiki folder structure"
     example: "wiki_tree('projects/hikari/', depth=2)"
     presentation_hint: wiki_tree
 
@@ -386,6 +403,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "morning brief daily digest ai news briefing"
     example: "morning_brief('ai')"
     presentation_hint: morning_brief_digest
 
@@ -402,6 +420,7 @@ tools:
     operation: dispatch
     risk_tier: high
     credentials: null
+    description: "dispatch subagent claude session background task"
     example: "dispatch_claude_session(prompt='summarize...')"
     presentation_hint: null
 
@@ -418,6 +437,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: DEEPL_API_KEY
+    description: "translate text language russian english ukrainian japanese"
     example: "translate('как дела', target='en')"
     presentation_hint: scalar
 
@@ -431,6 +451,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "fetch current weather forecast temperature rain umbrella clothing today conditions"
     example: "weather_fetch(lat=59.9, lon=10.7)"
     presentation_hint: weather_three_window
 
@@ -447,6 +468,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read fetch gmail inbox unread emails messages personal mail invites deletable typed adapter"
     example: "query_inbox(query='is:unread from:boss@x.com')"
     presentation_hint: list_of_records
 
@@ -460,6 +482,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search arxiv machine learning papers research"
     example: "arxiv_search('diffusion models', days=14)"
     presentation_hint: list_of_records
 
@@ -473,6 +496,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search places nearby restaurants openstreetmap osm"
     example: "places_search('ramen', lat=59.9, lon=10.7)"
     presentation_hint: list_of_records
 
@@ -486,6 +510,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "check place is open now hours openstreetmap"
     example: "place_open_now(osm_id='...', lat=59.9, lon=10.7)"
     presentation_hint: scalar
 
@@ -499,6 +524,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: YTMUSIC_BROWSER_JSON_PATH
+    description: "list recent youtube music played history tracks songs"
     example: "ytmusic_recent(limit=5)"
     presentation_hint: list_of_records
 
@@ -512,6 +538,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: YTMUSIC_BROWSER_JSON_PATH
+    description: "search youtube music library songs artists albums"
     example: "ytmusic_search('Daughter Youth')"
     presentation_hint: list_of_records
 
@@ -525,6 +552,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: YTMUSIC_BROWSER_JSON_PATH
+    description: "browse youtube music library playlists"
     example: "ytmusic_library()"
     presentation_hint: list_of_records
 
@@ -538,6 +566,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "convert currency exchange rate eur uah usd"
     example: "currency_convert(50, 'EUR', 'UAH')"
     presentation_hint: scalar
 
@@ -551,6 +580,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search apple notes icloud find note"
     example: "note_search('thesis draft')"
     presentation_hint: search_hits
 
@@ -564,6 +594,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "read apple notes icloud note content"
     example: "note_read('thesis ideas')"
     presentation_hint: wiki_note
 
@@ -578,6 +609,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create apple notes icloud note"
     example: "note_create('New note', 'content here')"
     presentation_hint: null
 
@@ -591,6 +623,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: ELEVENLABS_API_KEY
+    description: "send outbound voice call message speak elevenlabs telegram call user"
     example: "voice_outbound_send(text='hey. sleep.', force=False)"
     presentation_hint: null
 
@@ -607,6 +640,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "any other places search location tool fallback"
     example: "places_* wildcard"
     presentation_hint: list_of_records
 
@@ -621,6 +655,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: YTMUSIC_BROWSER_JSON_PATH
+    description: "any other youtube music tool fallback"
     example: "ytmusic_* wildcard"
     presentation_hint: list_of_records
 
@@ -634,6 +669,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "read file attachment photo pdf text user uploaded"
     example: "read_attachment('data/user_documents/report.pdf')"
     presentation_hint: file_preview
 
@@ -648,6 +684,7 @@ tools:
     operation: execute
     risk_tier: high
     credentials: null
+    description: "run execute python code sandbox pandas numpy"
     example: "python_run('import pandas as pd')"
     presentation_hint: scalar
 
@@ -662,6 +699,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "log day receipt made moved learned avoided track activity"
     example: "receipt_add(category='made', text='shipped the prototype')"
     presentation_hint: null
 
@@ -676,6 +714,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "set note on receipt entry"
     example: "receipt_set_note(id='x', note='context')"
     presentation_hint: null
 
@@ -690,6 +729,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete remove receipt entry log"
     example: "receipt_delete(id='x')"
     presentation_hint: null
 
@@ -704,6 +744,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "log prediction decision probability calibration brier score"
     example: "decision_log_capture('ships friday', predicted_p=0.8, resolve_by='2026-05-30')"
     presentation_hint: null
 
@@ -718,6 +759,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "resolve decision log prediction outcome brier"
     example: "decision_log_resolve(id='x', outcome=1)"
     presentation_hint: null
 
@@ -732,6 +774,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "save bookmark url link shelf later"
     example: "link_save('https://...', kind='later')"
     presentation_hint: null
 
@@ -746,6 +789,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "update bookmark link shelf"
     example: "link_update(id='x', kind='useful')"
     presentation_hint: null
 
@@ -760,6 +804,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete remove bookmark link shelf"
     example: "link_delete(id='x')"
     presentation_hint: null
 
@@ -774,6 +819,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create timed push notification reminder alert telegram"
     example: "reminder_create('call dentist', at='2026-05-26T10:00:00')"
     presentation_hint: null
 
@@ -788,6 +834,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "cancel delete reminder notification"
     example: "reminder_cancel(id='x')"
     presentation_hint: null
 
@@ -802,6 +849,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "snooze delay reminder notification"
     example: "reminder_snooze(id='x', minutes=30)"
     presentation_hint: null
 
@@ -817,6 +865,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "list active pending reminders what reminders do i have"
     example: "reminder_list()"
     presentation_hint: null
 
@@ -831,6 +880,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "search saved bookmarks links shelf"
     example: "link_search(query='llm papers')"
     presentation_hint: null
 
@@ -852,6 +902,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "job hunt outreach follow-up due touches deadlines interviews pipeline status"
     example: "jobhunt_radar()"
     presentation_hint: list_of_records
 
@@ -866,6 +917,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "job hunt company organisation context contact follow-up email employer"
     example: "jobhunt_org(name='DNB')"
     presentation_hint: scalar
 
@@ -880,6 +932,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "job hunt interview prep tier dossier positioning stories confirmed ready"
     example: "jobhunt_prep(slug='dnb-radical-ai')"
     presentation_hint: scalar
 
@@ -902,6 +955,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "draft compose outreach follow-up touch email gmail bokmal norwegian rails lint"
     example: "jobhunt_draft_touch(org='DNB', touch='1')"
     presentation_hint: null
 
@@ -916,6 +970,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "read day receipt what did i do today this week made moved learned avoided"
     example: "receipt_read(period='today')"
     presentation_hint: null
 
@@ -930,6 +985,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "read hikari diary entries recent journal thoughts"
     example: "diary_read(days=7)"
     presentation_hint: null
 
@@ -944,6 +1000,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "silence proactive messages mute stop pinging quiet"
     example: "set_silence(minutes=120)"
     presentation_hint: null
 
@@ -958,6 +1015,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "enable disable snooze proactive source morning brief weather"
     example: "set_proactive_source(source='weather_mood_shift', action='off')"
     presentation_hint: null
 
@@ -972,6 +1030,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "run skip morning checkin daily check-in"
     example: "checkin_control(action='skip_tomorrow')"
     presentation_hint: null
 
@@ -986,6 +1045,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create accountability check-in reminder follow-up nudge schedule did you do it"
     example: "accountability_create(when_iso='2026-05-27T18:00:00+02:00', task_text='drink water')"
     presentation_hint: null
 
@@ -1000,6 +1060,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "resolve close accountability check-in outcome did you do it"
     example: "accountability_resolve(id=3, outcome=1)"
     presentation_hint: null
 
@@ -1015,6 +1076,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create new skill automation capability"
     example: "skill_create(name='morning-checkin')"
     presentation_hint: null
 
@@ -1029,6 +1091,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "approve promote skill to production"
     example: "skill_approve(name='morning-checkin')"
     presentation_hint: null
 
@@ -1043,6 +1106,7 @@ tools:
     operation: execute
     risk_tier: medium
     credentials: null
+    description: "run execute skill automation"
     example: "run_skill('morning-checkin')"
     presentation_hint: null
 
@@ -1075,6 +1139,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "any other hikari utility tool fallback catch-all"
     example: "calc('2**32')"
     presentation_hint: scalar
 
@@ -1097,6 +1162,7 @@ tools:
     operation: write
     risk_tier: critical
     credentials: GOOGLE_WORKSPACE_*
+    description: "send compose write new email gmail message"
     example: "gmail_send_email(to='...', subject='...', body='...')"
     presentation_hint: null
 
@@ -1114,6 +1180,7 @@ tools:
     operation: write
     risk_tier: critical
     credentials: GOOGLE_WORKSPACE_*
+    description: "reply respond answer email thread gmail message"
     example: "gmail_reply_to_email(thread_id='...', body='...')"
     presentation_hint: null
 
@@ -1131,6 +1198,7 @@ tools:
     operation: write
     risk_tier: critical
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete bulk remove archive email messages gmail inbox"
     example: "gmail_bulk_delete_messages(query='from:spam@...')"
     presentation_hint: null
 
@@ -1148,6 +1216,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete remove cancel google calendar event appointment"
     example: "delete_calendar_event(event_id='...')"
     presentation_hint: null
 
@@ -1165,6 +1234,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete file from google drive"
     example: "drive_delete_file(file_id='...')"
     presentation_hint: null
 
@@ -1182,6 +1252,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "create add schedule new google calendar event appointment meeting"
     example: "create_calendar_event(title='...', start='...', end='...')"
     presentation_hint: null
 
@@ -1199,6 +1270,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete remove folder from google drive"
     example: "drive_delete_folder(folder_id='...')"
     presentation_hint: null
 
@@ -1216,6 +1288,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "upload file to google drive"
     example: "drive_upload_file(name='report.pdf', content='...')"
     presentation_hint: null
 
@@ -1233,6 +1306,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create save draft email gmail unsent"
     example: "create_gmail_draft(to='...', subject='...', body='...')"
     presentation_hint: null
 
@@ -1250,6 +1324,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete remove draft email gmail unsent"
     example: "delete_gmail_draft(draft_id='...')"
     presentation_hint: null
 
@@ -1267,6 +1342,7 @@ tools:
     operation: write
     risk_tier: critical
     credentials: GOOGLE_WORKSPACE_*
+    description: "send existing draft email gmail message"
     example: "gmail_send_draft(draft_id='...')"
     presentation_hint: null
 
@@ -1284,6 +1360,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create folder in google drive"
     example: "drive_create_folder(name='Projects/2026')"
     presentation_hint: null
 
@@ -1301,6 +1378,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create new google docs document"
     example: "docs_create_document(title='Sprint A Notes')"
     presentation_hint: null
 
@@ -1318,6 +1396,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "append text to google docs document"
     example: "docs_append_text(doc_id='...', text='new section')"
     presentation_hint: null
 
@@ -1335,6 +1414,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "insert text into google docs document"
     example: "docs_insert_text(doc_id='...', text='...')"
     presentation_hint: null
 
@@ -1352,6 +1432,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "prepend text to google docs document"
     example: "docs_prepend_text(doc_id='...', text='...')"
     presentation_hint: null
 
@@ -1369,6 +1450,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "insert image picture into google docs document"
     example: "docs_insert_image(doc_id='...', url='...')"
     presentation_hint: null
 
@@ -1386,6 +1468,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "batch update google docs document"
     example: "docs_batch_update(doc_id='...', requests=[...])"
     presentation_hint: null
 
@@ -1403,6 +1486,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create new google sheets spreadsheet"
     example: "sheets_create_spreadsheet(title='Budget 2026')"
     presentation_hint: null
 
@@ -1420,6 +1504,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add new sheet tab to google sheets spreadsheet"
     example: "sheets_add_sheet(spreadsheet_id='...', title='Q2')"
     presentation_hint: null
 
@@ -1437,6 +1522,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete remove sheet tab from google sheets spreadsheet"
     example: "sheets_delete_sheet(spreadsheet_id='...', sheet_id=0)"
     presentation_hint: null
 
@@ -1454,6 +1540,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "append rows to google sheets spreadsheet"
     example: "sheets_append_rows(spreadsheet_id='...', values=[['a','b']])"
     presentation_hint: null
 
@@ -1471,6 +1558,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "write google sheets spreadsheet range cells"
     example: "sheets_write_range(spreadsheet_id='...', range='A1:B2', values=[['x']])"
     presentation_hint: null
 
@@ -1488,6 +1576,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "clear google sheets range cells"
     example: "sheets_clear_range(spreadsheet_id='...', range='A1:Z100')"
     presentation_hint: null
 
@@ -1505,6 +1594,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create new google slides presentation deck"
     example: "create_presentation(title='Q1 Review')"
     presentation_hint: null
 
@@ -1522,6 +1612,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "create new google slides presentation deck from markdown outline"
     example: "create_presentation_from_markdown(title='...', markdown='...')"
     presentation_hint: null
 
@@ -1539,6 +1630,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add new blank slide to google slides presentation deck"
     example: "create_slide(presentation_id='...', layout='BLANK')"
     presentation_hint: null
 
@@ -1556,6 +1648,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GOOGLE_WORKSPACE_*
+    description: "delete remove slide from google slides presentation deck"
     example: "delete_slide(presentation_id='...', slide_id='...')"
     presentation_hint: null
 
@@ -1573,6 +1666,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "duplicate copy slide in google slides presentation deck"
     example: "duplicate_slide(presentation_id='...', slide_id='...')"
     presentation_hint: null
 
@@ -1590,6 +1684,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add text box content to google slides slide deck"
     example: "add_text_to_slide(presentation_id='...', slide_id='...', text='...')"
     presentation_hint: null
 
@@ -1607,6 +1702,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add formatted styled text to google slides slide deck"
     example: "add_formatted_text_to_slide(presentation_id='...', slide_id='...', text='...')"
     presentation_hint: null
 
@@ -1624,6 +1720,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add bulleted list items to google slides slide deck"
     example: "add_bulleted_list_to_slide(presentation_id='...', slide_id='...', items=['a','b'])"
     presentation_hint: null
 
@@ -1641,6 +1738,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add table rows columns to google slides slide deck"
     example: "add_table_to_slide(presentation_id='...', slide_id='...', rows=3, cols=3)"
     presentation_hint: null
 
@@ -1658,6 +1756,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GOOGLE_WORKSPACE_*
+    description: "add speaker notes to google slides slide deck"
     example: "add_slide_notes(presentation_id='...', slide_id='...', notes='...')"
     presentation_hint: null
 
@@ -1679,6 +1778,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "query search list gmail email messages inbox unread emails check email"
     example: "query_gmail_emails(query='is:unread from:boss@...')"
     presentation_hint: list_of_records
 
@@ -1697,6 +1797,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read full email message body sender subject gmail inbox"
     example: "gmail_get_message_details(message_id='...')"
     presentation_hint: wiki_note
 
@@ -1715,6 +1816,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "download email attachment file gmail inbox"
     example: "gmail_get_attachment_content(message_id='...', attachment_id='...')"
     presentation_hint: file_preview
 
@@ -1733,6 +1835,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "list view google calendar events schedule appointments meetings today"
     example: "calendar_get_events(days_ahead=7)"
     presentation_hint: list_of_records
 
@@ -1751,6 +1854,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google calendar event details time location description"
     example: "calendar_get_event_details(event_id='...')"
     presentation_hint: wiki_note
 
@@ -1769,6 +1873,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "search google drive files documents"
     example: "drive_search_files(query='thesis draft')"
     presentation_hint: list_of_records
 
@@ -1787,6 +1892,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google drive file content document"
     example: "drive_read_file_content(file_id='...')"
     presentation_hint: file_preview
 
@@ -1805,6 +1911,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "list google drive shared drives"
     example: "drive_list_shared_drives()"
     presentation_hint: list_of_records
 
@@ -1823,6 +1930,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google docs document metadata properties"
     example: "docs_get_document_metadata(doc_id='...')"
     presentation_hint: wiki_note
 
@@ -1841,6 +1949,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google docs document content text"
     example: "docs_get_content_as_markdown(doc_id='...')"
     presentation_hint: wiki_note
 
@@ -1859,6 +1968,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google sheets spreadsheet range cells data"
     example: "sheets_read_range(spreadsheet_id='...', range='A1:Z100')"
     presentation_hint: list_of_records
 
@@ -1877,6 +1987,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "read google slides presentation deck metadata"
     example: "get_presentation(presentation_id='...')"
     presentation_hint: wiki_note
 
@@ -1895,6 +2006,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "list read slides in google slides presentation deck"
     example: "get_slides(presentation_id='...')"
     presentation_hint: list_of_records
 
@@ -1912,6 +2024,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GOOGLE_WORKSPACE_*
+    description: "any other google workspace tool fallback gmail calendar drive docs sheets slides"
     example: "* wildcard for GW tools"
     presentation_hint: null
 
@@ -1930,6 +2043,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "update notion block children content"
     example: "API-patch-block-children(block_id='...', children=[...])"
     presentation_hint: null
 
@@ -1947,6 +2061,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "update edit notion block"
     example: "API-update-a-block(block_id='...')"
     presentation_hint: null
 
@@ -1964,6 +2079,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: NOTION_TOKEN
+    description: "delete notion block"
     example: "API-delete-a-block(block_id='...')"
     presentation_hint: null
 
@@ -1981,6 +2097,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "update edit notion page properties"
     example: "API-patch-page(page_id='...', properties={...})"
     presentation_hint: null
 
@@ -1998,6 +2115,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "create new notion page"
     example: "API-post-page(parent={...}, properties={...})"
     presentation_hint: null
 
@@ -2015,6 +2133,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "create new notion data source database"
     example: "API-create-a-data-source(...)"
     presentation_hint: null
 
@@ -2032,6 +2151,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "update edit notion data source database schema"
     example: "API-update-a-data-source(...)"
     presentation_hint: null
 
@@ -2049,6 +2169,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: NOTION_TOKEN
+    description: "move relocate notion page to new parent"
     example: "API-move-page(page_id='...', parent_id='...')"
     presentation_hint: null
 
@@ -2066,6 +2187,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "add comment to notion page"
     example: "API-create-a-comment(parent={...}, rich_text=[...])"
     presentation_hint: null
 
@@ -2086,6 +2208,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "get notion integration identity user"
     example: "API-get-self()"
     presentation_hint: wiki_note
 
@@ -2104,6 +2227,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "list notion workspace users members"
     example: "API-get-users()"
     presentation_hint: list_of_records
 
@@ -2122,6 +2246,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read notion user info"
     example: "API-get-user(user_id='...')"
     presentation_hint: wiki_note
 
@@ -2140,6 +2265,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read retrieve notion page"
     example: "API-retrieve-a-page(page_id='...')"
     presentation_hint: wiki_note
 
@@ -2158,6 +2284,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read retrieve notion page property field"
     example: "API-retrieve-a-page-property(page_id='...', property_id='...')"
     presentation_hint: wiki_note
 
@@ -2176,6 +2303,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read notion database schema"
     example: "API-retrieve-a-database(database_id='...')"
     presentation_hint: wiki_note
 
@@ -2194,6 +2322,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read notion block content"
     example: "API-retrieve-a-block(block_id='...')"
     presentation_hint: wiki_note
 
@@ -2212,6 +2341,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read notion block children"
     example: "API-get-block-children(block_id='...')"
     presentation_hint: list_of_records
 
@@ -2230,6 +2360,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "search notion pages databases content"
     example: "API-post-search(query='sprint plan')"
     presentation_hint: search_hits
 
@@ -2248,6 +2379,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read notion comment"
     example: "API-retrieve-a-comment(comment_id='...')"
     presentation_hint: wiki_note
 
@@ -2266,6 +2398,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "read retrieve notion data source database schema"
     example: "API-retrieve-a-data-source(...)"
     presentation_hint: wiki_note
 
@@ -2284,6 +2417,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "list notion data source database page templates"
     example: "API-list-data-source-templates()"
     presentation_hint: list_of_records
 
@@ -2302,6 +2436,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "query search notion data source database rows"
     example: "API-query-data-source(...)"
     presentation_hint: list_of_records
 
@@ -2319,6 +2454,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: NOTION_TOKEN
+    description: "any other notion tool fallback"
     example: "* wildcard for Notion tools"
     presentation_hint: null
 
@@ -2337,6 +2473,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "create github issue"
     example: "create_issue(repo='owner/repo', title='Bug: ...')"
     presentation_hint: null
 
@@ -2354,6 +2491,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "create github pull request pr"
     example: "create_pull_request(repo='...', title='...', head='feat/x', base='main')"
     presentation_hint: null
 
@@ -2371,6 +2509,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "merge github pull request pr"
     example: "merge_pull_request(repo='...', pull_number=42)"
     presentation_hint: null
 
@@ -2388,6 +2527,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "delete remove file from github repository commit"
     example: "delete_file(repo='...', path='old.txt', message='remove')"
     presentation_hint: null
 
@@ -2406,6 +2546,7 @@ tools:
     operation: write
     risk_tier: critical
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "delete remove github repository permanently"
     example: "delete_repository(repo='owner/old-repo')"
     presentation_hint: null
 
@@ -2423,6 +2564,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "post comment on github issue"
     example: "add_issue_comment(repo='...', issue_number=7, body='...')"
     presentation_hint: null
 
@@ -2440,6 +2582,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "create github branch"
     example: "create_branch(repo='...', branch='feat/x', from_branch='main')"
     presentation_hint: null
 
@@ -2457,6 +2600,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "create update file in github repository commit"
     example: "create_or_update_file(repo='...', path='...', content='...', message='...')"
     presentation_hint: null
 
@@ -2474,6 +2618,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "submit github pull request pr review approve request changes"
     example: "create_pull_request_review(repo='...', pull_number=42, event='APPROVE')"
     presentation_hint: null
 
@@ -2491,6 +2636,7 @@ tools:
     operation: write
     risk_tier: high
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "create new github repository"
     example: "create_repository(name='new-repo', private=True)"
     presentation_hint: null
 
@@ -2508,6 +2654,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "fork github repository"
     example: "fork_repository(repo='upstream/lib')"
     presentation_hint: null
 
@@ -2525,6 +2672,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "push files to github repository"
     example: "push_files(repo='...', branch='feat/x', files=[...], message='...')"
     presentation_hint: null
 
@@ -2542,6 +2690,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "update github issue status labels"
     example: "update_issue(repo='...', issue_number=7, state='closed')"
     presentation_hint: null
 
@@ -2559,6 +2708,7 @@ tools:
     operation: write
     risk_tier: medium
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "update sync github pull request pr branch with base"
     example: "update_pull_request_branch(repo='...', pull_number=42)"
     presentation_hint: null
 
@@ -2578,6 +2728,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github file content repository code"
     example: "get_file_contents(repo='...', path='src/main.py')"
     presentation_hint: wiki_note
 
@@ -2596,6 +2747,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "list github commits history"
     example: "list_commits(repo='...', sha='main')"
     presentation_hint: list_of_records
 
@@ -2614,6 +2766,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github issue details"
     example: "get_issue(repo='...', issue_number=7)"
     presentation_hint: wiki_note
 
@@ -2632,6 +2785,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "list github issues"
     example: "list_issues(repo='...', state='open')"
     presentation_hint: list_of_records
 
@@ -2650,6 +2804,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "search github issues"
     example: "search_issues(query='is:open label:bug')"
     presentation_hint: list_of_records
 
@@ -2668,6 +2823,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github pull request pr"
     example: "get_pull_request(repo='...', pull_number=42)"
     presentation_hint: wiki_note
 
@@ -2686,6 +2842,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "list github pull requests prs"
     example: "list_pull_requests(repo='...', state='open')"
     presentation_hint: list_of_records
 
@@ -2704,6 +2861,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github pr pull request comments reviews"
     example: "get_pull_request_comments(repo='...', pull_number=42)"
     presentation_hint: list_of_records
 
@@ -2722,6 +2880,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "list github pr pull request changed files"
     example: "get_pull_request_files(repo='...', pull_number=42)"
     presentation_hint: list_of_records
 
@@ -2740,6 +2899,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github pr pull request reviews"
     example: "get_pull_request_reviews(repo='...', pull_number=42)"
     presentation_hint: list_of_records
 
@@ -2758,6 +2918,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "read github pr pull request checks status ci"
     example: "get_pull_request_status(repo='...', pull_number=42)"
     presentation_hint: wiki_note
 
@@ -2776,6 +2937,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "search github code repository"
     example: "search_code(query='def recall language:python')"
     presentation_hint: search_hits
 
@@ -2794,6 +2956,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "search github repositories repos"
     example: "search_repositories(query='mcp server stars:>100')"
     presentation_hint: list_of_records
 
@@ -2812,6 +2975,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "search github users"
     example: "search_users(query='jkawamoto')"
     presentation_hint: list_of_records
 
@@ -2829,6 +2993,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: GITHUB_PERSONAL_ACCESS_TOKEN
+    description: "any other github repository tool fallback"
     example: "* wildcard for GitHub tools"
     presentation_hint: null
 
@@ -2849,6 +3014,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create add apple reminder alert notification"
     example: "create_reminder(title='call dentist', due='2026-05-26T10:00:00')"
     presentation_hint: null
 
@@ -2863,6 +3029,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete remove apple reminder alert"
     example: "delete_reminder(reminder_id='...')"
     presentation_hint: null
 
@@ -2877,6 +3044,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create add apple calendar event appointment schedule"
     example: "create_calendar_event(title='dentist', start='...', end='...')"
     presentation_hint: null
 
@@ -2891,6 +3059,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete remove apple calendar event appointment"
     example: "delete_calendar_event(event_id='...')"
     presentation_hint: null
 
@@ -2905,6 +3074,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "list view apple reminders tasks due"
     example: "reminders_tasks(list='Hikari')"
     presentation_hint: list_of_records
 
@@ -2923,6 +3093,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create apple reminder alert scheduler-internal unsafe variant"
     example: "create_reminder_unsafe(...) scheduler-internal"
     presentation_hint: null
 
@@ -2937,6 +3108,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete apple reminder alert scheduler-internal unsafe variant"
     example: "delete_reminder_unsafe(...) scheduler-internal"
     presentation_hint: null
 
@@ -2951,6 +3123,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "create apple calendar event appointment scheduler-internal unsafe variant"
     example: "create_calendar_event_unsafe(...) scheduler-internal"
     presentation_hint: null
 
@@ -2965,6 +3138,7 @@ tools:
     operation: write
     risk_tier: low
     credentials: null
+    description: "delete apple calendar event appointment scheduler-internal unsafe variant"
     example: "delete_calendar_event_unsafe(...) scheduler-internal"
     presentation_hint: null
 
@@ -2979,6 +3153,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "list apple reminders tasks due scheduler-internal unsafe variant"
     example: "reminders_tasks_unsafe(...) scheduler-internal"
     presentation_hint: list_of_records
 
@@ -2997,6 +3172,7 @@ tools:
     operation: read
     risk_tier: low
     credentials: null
+    description: "any other apple events tool fallback calendar reminders"
     example: "* wildcard for Apple Events tools"
     presentation_hint: null
 
@@ -3014,6 +3190,7 @@ tools:
     operation: read
     risk_tier: medium
     credentials: null
+    description: "any other playwright browser tool fallback"
     example: "playwright navigate to 'https://...'"
     presentation_hint: null
 

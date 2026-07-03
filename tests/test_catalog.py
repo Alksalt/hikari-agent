@@ -229,3 +229,19 @@ def test_yaml_singular_example_reaches_entries():
     # keyword hit in _default_examples, so just assert yaml value is present
     # and examples is a list)
     assert isinstance(entry.examples, list)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3 (discoverability): tools.yaml is the single source of descriptions
+# ---------------------------------------------------------------------------
+
+def test_no_entry_falls_through_to_synthesis(caplog):
+    """Every catalog entry must get its description from tools.yaml."""
+    import logging
+
+    from tools.catalog import _entries_from_registry
+    with caplog.at_level(logging.WARNING, logger="tools.catalog"):
+        entries = _entries_from_registry()
+    synth = [r.message for r in caplog.records if "synthesising" in r.message]
+    assert synth == []
+    assert all(e.description.strip() for e in entries)

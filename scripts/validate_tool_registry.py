@@ -108,6 +108,20 @@ def run() -> list[str]:
     else:
         errors.append(".mcp.json not found — run scripts/regen_mcp_json.py")
 
+    # Sprint 3 (discoverability): the catalog is the single source of
+    # capability truth — every yaml entry must carry curated description
+    # + example so nothing falls through to token-split synthesis.
+    import yaml as _yaml
+    raw_cfg = _yaml.safe_load(
+        (REPO_ROOT / "config" / "tools.yaml").read_text(encoding="utf-8")
+    )
+    for t in raw_cfg.get("tools") or []:
+        tid = str(t.get("id", "?"))
+        if not str(t.get("description") or "").strip():
+            errors.append(f"tool {tid!r}: missing description")
+        if not str(t.get("example") or "").strip():
+            errors.append(f"tool {tid!r}: missing example")
+
     return errors
 
 
