@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 # through ``ja`` then transliterating; it doesn't need a DeepL code.
 _DEEPL_LANG_MAP = {"ru": "RU", "en": "EN-US", "uk": "UK", "no": "NB", "ja": "JA"}
 
-_SUPPORTED = {"ru", "en", "uk", "no", "ja", "ja_romaji"}
+_SUPPORTED_DEFAULT = {"ru", "en", "uk", "no", "ja", "ja_romaji"}
+_SUPPORTED = set(cfg.get("translate.supported_targets") or _SUPPORTED_DEFAULT)
 
 
 async def _deepl_translate(text: str, target: str) -> tuple[str, str] | None:

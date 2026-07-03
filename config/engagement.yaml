@@ -160,6 +160,11 @@ approvals:
   # Defer-gate config removed in Sprint 6C — defer path is dead. All destructive
   # tools route through `gate: gatekeeper` in config/tools.yaml.
 
+gatekeeper:
+  # Global approval-wait timeout when a tool's tools.yaml entry doesn't set
+  # gate_timeout_sec (tools/gatekeeper_can_use_tool.py _deadline_for tier 2).
+  default_timeout_s: 300
+
 voice:
   enabled: true
   # STT provider — OpenAI Whisper API only. Local faster-whisper removed 2026-05-30 (unreliable).
@@ -182,8 +187,6 @@ voice:
   graceful_failure_reply: "(can't transcribe right now. type it instead.)"
 
 budget:
-  call_window_sec: 300
-  call_window_max: 30
   daily_cap_usd_env: HIKARI_DAILY_CAP_USD
   daily_cap_usd_default: 5.0
 
@@ -1263,6 +1266,10 @@ decision_log:
 auth:
   precheck: enforce              # was shadow in Sprint 2; set AUTH_PRECHECK_OVERRIDE=shadow to revert at runtime
 
+google_health:
+  # Periodic Google-token probe interval for the health-check scheduler job.
+  probe_interval_minutes: 45
+
 retention:
   messages_days: 365
   oauth_audit_log_days: 365
@@ -1377,7 +1384,7 @@ engagement:
     priority_tier: 1
     min_interval_minutes: 60
     send_mode: proactive
-    min_value_score: 0.8
+    min_value_score: 0.7
     interruption_right: high
   weirdly_good_mood_leak:
     enabled: true
@@ -1446,6 +1453,9 @@ aux_model:
   # cockpit validator (no Haiku per project rules).
   provider: openrouter
   model: deepseek/deepseek-v4-flash
+  # SDK aux path model (agents/runtime.py MODEL_HAIKU) — run_internal_text's
+  # default model for stateless single-shot calls via claude-agent-sdk.
+  sdk_model: claude-haiku-4-5
 
 graph:
   # Primary + fallback chain for Graphiti entity extraction (cheap LLM).

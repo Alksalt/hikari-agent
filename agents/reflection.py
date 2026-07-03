@@ -320,32 +320,33 @@ async def run_daily_reflection() -> bool:
         raw = await run_reflection_call(prompt)
     except Exception:
         logger.exception("reflection LLM call failed")
-        return False
-
-    data = _parse_yaml_mapping(raw, context="reflection")
-    if data is None:
-        # The cheap reflection model intermittently returns prose instead of a
-        # YAML mapping. Retry once with a strict reinforcement before giving up.
-        strict_prompt = (
-            prompt
-            + "\n\nIMPORTANT: Output ONLY a single valid YAML mapping. No prose, "
-            "no commentary, no code fences. Begin directly with a top-level key."
-        )
-        try:
-            raw = await run_reflection_call(strict_prompt)
-            data = _parse_yaml_mapping(raw, context="reflection-retry")
-        except Exception:
-            logger.exception("reflection retry LLM call failed (non-fatal)")
+        db.runtime_set("last_reflection_skipped", datetime.now(UTC).isoformat())
+        data = {}
+    else:
+        data = _parse_yaml_mapping(raw, context="reflection")
         if data is None:
-            # Don't lose the whole cycle on a bad LLM reply: skip ONLY the
-            # LLM-derived extraction (an empty mapping makes that block a no-op)
-            # and still run the mechanical maintenance + stage/seeder below.
-            logger.warning(
-                "reflection: YAML parse failed twice — running maintenance only, "
-                "skipping LLM extraction this cycle"
+            # The cheap reflection model intermittently returns prose instead of a
+            # YAML mapping. Retry once with a strict reinforcement before giving up.
+            strict_prompt = (
+                prompt
+                + "\n\nIMPORTANT: Output ONLY a single valid YAML mapping. No prose, "
+                "no commentary, no code fences. Begin directly with a top-level key."
             )
-            db.runtime_set("last_reflection_skipped", datetime.now(UTC).isoformat())
-            data = {}
+            try:
+                raw = await run_reflection_call(strict_prompt)
+                data = _parse_yaml_mapping(raw, context="reflection-retry")
+            except Exception:
+                logger.exception("reflection retry LLM call failed (non-fatal)")
+            if data is None:
+                # Don't lose the whole cycle on a bad LLM reply: skip ONLY the
+                # LLM-derived extraction (an empty mapping makes that block a no-op)
+                # and still run the mechanical maintenance + stage/seeder below.
+                logger.warning(
+                    "reflection: YAML parse failed twice — running maintenance only, "
+                    "skipping LLM extraction this cycle"
+                )
+                db.runtime_set("last_reflection_skipped", datetime.now(UTC).isoformat())
+                data = {}
 
     entity_block = data.get("entities") or []
     applied = 0
@@ -623,11 +624,11 @@ async def run_daily_reflection() -> bool:
     # model's system prompt, so we deliberately skip sanitization here —
     # attacker-touchable but blast-radius is contained. Core_blocks below are
     # always-on context and MUST be sanitized.
-    thought = (data.get("thought") or "").strip()
+    thought = str(data.get("thought") or "").strip()
     if thought:
         db.append_thought(thought)
 
-    preoc = (data.get("preoccupation") or "").strip()
+    preoc = str(data.get("preoccupation") or "").strip()
     if preoc:
         safe_preoc = sanitize_core_block_value("preoccupation", preoc)
         if safe_preoc is not None:
@@ -1161,10 +1162,14 @@ async def reflection_after_task(task_id: str) -> None:
 
 # ---------- T3.3: daily consolidation ----------
 
-# Cosine threshold for near-dup fact dedup. BGE-small returns L2-normalized
-# embeddings, so cos = 1 - (L2_dist ** 2) / 2 and cos >= 0.92 ⇔ L2 <= ~0.4.
-# Tighter than 0.92 over-merges; looser keeps too many paraphrases.
-NEAR_DUP_COSINE_THRESHOLD = cfg.get("reflection.near_dup_cosine_threshold") or 0.92
+def _near_dup_cosine_threshold() -> float:
+    """Cosine threshold for near-dup fact dedup. BGE-small returns
+    L2-normalized embeddings, so cos = 1 - (L2_dist ** 2) / 2 and
+    cos >= 0.92 ⇔ L2 <= ~0.4. Tighter than 0.92 over-merges; looser keeps
+    too many paraphrases. Read lazily (not module-level) so a cockpit config
+    reload takes effect without a process restart."""
+    return cfg.get("reflection.near_dup_cosine_threshold") or 0.92
+
 
 def _episodes_in_window(window_hours: int = 24) -> list[dict]:
     """Return episode rows created in the last ``window_hours`` (UTC)."""
@@ -1286,12 +1291,13 @@ async def _summarize_topic(topic: str, episodes: list[dict]) -> str:
 
 def _dedup_near_duplicates(new_facts: list[dict]) -> int:
     """For each new fact, find its nearest neighbor in ``vec_facts``. If
-    cosine similarity ≥ NEAR_DUP_COSINE_THRESHOLD AND the neighbor is an
+    cosine similarity ≥ ``_near_dup_cosine_threshold()`` AND the neighbor is an
     older active fact, mark the older one ``superseded_by`` the new one.
 
     Returns the count of facts deduped. Best-effort — embedding failures
     skip the row silently.
     """
+    threshold = _near_dup_cosine_threshold()
     deduped = 0
     for new in new_facts:
         new_id = int(new["id"])
@@ -1336,7 +1342,7 @@ def _dedup_near_duplicates(new_facts: list[dict]) -> int:
             #   cos = 1 - (L2² / 2)
             l2 = float(h["distance"])
             cos_sim = 1.0 - (l2 * l2) / 2.0
-            if cos_sim >= NEAR_DUP_COSINE_THRESHOLD:
+            if cos_sim >= threshold:
                 try:
                     db.mark_fact_invalid(
                         cand_id, superseded_by=new_id,
@@ -1733,20 +1739,28 @@ def interests_refresh() -> None:
 # already serves online; the sleep agent runs once per week, synthesizes a
 # 200-word "what i noticed about him this week" doc, and parks it in
 # core_blocks so it flows into every system-prompt build for the next week.
-WEEKLY_WINDOW_DAYS = cfg.get("reflection.weekly_window_days") or 7
-# ~200 target + small overrun tolerance
-WEEKLY_SUMMARY_WORD_CAP = cfg.get("reflection.weekly_summary_word_cap") or 220
+def _weekly_window_days() -> int:
+    """Read lazily (not module-level) so a cockpit config reload takes
+    effect without a process restart."""
+    return int(cfg.get("reflection.weekly_window_days") or 7)
+
+
+def _weekly_summary_word_cap() -> int:
+    """~200 target + small overrun tolerance. Read lazily — see
+    ``_weekly_window_days``."""
+    return int(cfg.get("reflection.weekly_summary_word_cap") or 220)
 
 
 def _read_week_window() -> dict[str, list[dict]]:
-    """Read the last WEEKLY_WINDOW_DAYS from each source table the weekly
-    consolidation cares about. Returns ``{thoughts, episodes, observations,
-    noticings}``. Empty lists for tables with no activity in the window.
+    """Read the last ``_weekly_window_days()`` days from each source table
+    the weekly consolidation cares about. Returns ``{thoughts, episodes,
+    observations, noticings}``. Empty lists for tables with no activity in
+    the window.
 
     Kept as a single helper so the test suite can monkeypatch one function
     instead of four.
     """
-    cutoff = (datetime.now(UTC) - timedelta(days=WEEKLY_WINDOW_DAYS)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=_weekly_window_days())).isoformat()
     out: dict[str, list[dict]] = {
         "thoughts": [], "episodes": [], "observations": [], "noticings": [],
     }
@@ -1865,7 +1879,7 @@ async def run_weekly_consolidation() -> bool:
             logger.info(
                 "weekly_consolidation: empty week (no thoughts/episodes/"
                 "observations/noticings in last %dd) — skipping",
-                WEEKLY_WINDOW_DAYS,
+                _weekly_window_days(),
             )
             return False
 
@@ -1880,7 +1894,7 @@ async def run_weekly_consolidation() -> bool:
             logger.warning("weekly_consolidation: LLM returned empty body")
             return False
         # Cap if the model ignored the word ceiling.
-        summary = " ".join(summary.split()[:WEEKLY_SUMMARY_WORD_CAP])
+        summary = " ".join(summary.split()[:_weekly_summary_word_cap()])
 
         # Archive the previous week's block before overwriting.
         try:

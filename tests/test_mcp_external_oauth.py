@@ -446,6 +446,52 @@ def test_oauth_cleanup_sweeper_removes_expired_and_revoked():
     assert db._oauth2_token_validate(keep_token) is not None
 
 
+def _cap_clients_at(monkeypatch, maxc: int) -> None:
+    monkeypatch.setattr(
+        db, "_cfg_get",
+        lambda key, default=None, _orig=db._cfg_get: (
+            maxc if key == "oauth.max_registered_clients" else _orig(key, default)
+        ),
+    )
+
+
+def test_oauth_register_evicts_dead_client_on_ceiling(monkeypatch):
+    """DCR is public; on a ceiling hit the oldest client with no tokens and no
+    codes is evicted so the owner can still add a connector."""
+    _cap_clients_at(monkeypatch, 2)
+    reg1 = db.oauth_client_register("first", ["http://localhost/cb"])
+    reg2 = db.oauth_client_register("second", ["http://localhost/cb"])
+    # Make reg1 unambiguously the oldest so the eviction target is deterministic.
+    with db._conn() as c:
+        c.execute(
+            "UPDATE oauth_clients SET created_at = '2000-01-01 00:00:00' "
+            "WHERE client_id = ?",
+            (reg1["client_id"],),
+        )
+    reg3 = db.oauth_client_register("third", ["http://localhost/cb"])
+    assert reg3["client_id"]
+    with db._conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
+    assert n == 2
+    assert db.oauth_client_get(reg1["client_id"]) is None      # oldest evicted
+    assert db.oauth_client_get(reg2["client_id"]) is not None
+    assert db.oauth_client_get(reg3["client_id"]) is not None
+
+
+def test_oauth_register_fails_when_all_clients_have_tokens(monkeypatch):
+    """When every client at the ceiling holds a token, none is evictable — the
+    registration fails rather than deleting a live connector."""
+    _cap_clients_at(monkeypatch, 2)
+    reg1 = db.oauth_client_register("live1", ["http://localhost/cb"])
+    reg2 = db.oauth_client_register("live2", ["http://localhost/cb"])
+    db.oauth_token_mint(reg1["client_id"], "access", ttl_seconds=600)
+    db.oauth_token_mint(reg2["client_id"], "access", ttl_seconds=600)
+    with pytest.raises(ValueError, match="ceiling"):
+        db.oauth_client_register("third", ["http://localhost/cb"])
+    assert db.oauth_client_get(reg1["client_id"]) is not None
+    assert db.oauth_client_get(reg2["client_id"]) is not None
+
+
 def test_oauth_token_consume_refresh_atomic():
     """Two concurrent rotation calls on the same refresh — only one wins."""
     reg = db.oauth_client_register("atomic", ["http://localhost/cb"])

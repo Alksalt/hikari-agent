@@ -202,8 +202,7 @@ async def ask_hikari(probe_key: str) -> str | None:
     prompt = (
         "You are using your normal persona. Someone is asking you a short, "
         "direct question. Answer in your voice — 1-4 sentences, your normal "
-        "deflection rules apply. Do NOT explain that this is a probe, do NOT "
-        "step outside character.\n\n"
+        "deflection rules apply.\n\n"
         f"the question is:\n{seed}\n\n"
         "Output ONLY her reply text — no preamble, no quotes."
     )

@@ -317,6 +317,33 @@ def _check_graph_recall() -> CheckResult:
         return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
 
 
+def _check_google_fetch_errors() -> CheckResult:
+    """Nonzero gmail_fetch_error / calendar_fetch_error counters mean
+    daily_checkin's fetchers hit McpCallError — most commonly the OAuth
+    refresh token dying mid-uptime (7-day Testing-mode expiry) — and every
+    brief since has silently looked like a quiet day instead of a broken one.
+
+    Same raw-counter read as ``_check_graph_recall`` (no reset/aging — the
+    counters are cumulative since boot, same as ``graph_search_error``).
+    """
+    try:
+        gmail_err = db.runtime_get_int("gmail_fetch_error", 0)
+        calendar_err = db.runtime_get_int("calendar_fetch_error", 0)
+        ok = gmail_err == 0 and calendar_err == 0
+        reason = None
+        if gmail_err > 0:
+            reason = f"gmail_fetch_error={gmail_err}"
+        if calendar_err > 0:
+            reason = (f"{reason}; " if reason else "") + f"calendar_fetch_error={calendar_err}"
+        return CheckResult(
+            ok=ok,
+            value={"gmail_fetch_error": gmail_err, "calendar_fetch_error": calendar_err},
+            reason=reason,
+        )
+    except Exception as e:
+        return CheckResult(ok=False, value=None, reason=f"exception:{type(e).__name__}")
+
+
 async def collect_startup_report(
     scheduler: Any = None,
     oauth_google_prefetched: tuple[bool, str] | None = None,
@@ -343,6 +370,7 @@ async def collect_startup_report(
         "last_backup_age_h": _check_last_backup().to_dict(),
         "log_recent_errors": _check_recent_log_errors().to_dict(),
         "graph_recall": _check_graph_recall().to_dict(),
+        "google_fetch_errors": _check_google_fetch_errors().to_dict(),
     }
     return report
 
@@ -382,7 +410,8 @@ def chat_worthy_failures(report: dict[str, dict[str, Any]]) -> dict[str, dict[st
     """
     from agents import config as cfg  # noqa: PLC0415
     chat_checks = set(cfg.get("health.startup_digest_chat_checks",
-                              ["oauth_google", "google_scopes", "google_account"]) or [])
+                              ["oauth_google", "google_scopes", "google_account",
+                               "google_fetch_errors"]) or [])
     return {
         name: check for name, check in report.items()
         if name in chat_checks and not check.get("ok", False)

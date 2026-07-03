@@ -88,6 +88,21 @@ def run() -> list[str]:
     for n in uncovered:
         errors.append(f"handler {n!r} has no yaml registration (no explicit id or wildcard)")
 
+    # Wildcard-only coverage of a discovered first-party tool silently
+    # refuses every call: the gatekeeper unconditionally denies any
+    # gate=null wildcard match whose access_mode is write/destructive, and
+    # the hikari_utility wildcard is access_mode:write. Every discovered
+    # tool needs its own explicit id row, not mere wildcard coverage.
+    wildcard_only = [
+        n for n in sorted(utility_names)
+        if n not in explicit_ids and _covered(n)
+    ]
+    for n in wildcard_only:
+        errors.append(
+            f"handler {n!r} is only covered by a wildcard entry — "
+            f"add an explicit yaml id (wildcard-only tools are silently denied)"
+        )
+
     # (d) .mcp.json matches projection from yaml
     import json
     mcp_path = REPO_ROOT / ".mcp.json"

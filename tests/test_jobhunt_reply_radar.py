@@ -174,6 +174,53 @@ async def test_scan_query_uses_configured_lookback_days(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# truncation visibility — no page_token on this MCP tool, so hitting the
+# cap is the only signal available; it must be logged, not silent.
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_query_recent_warns_when_result_hits_max_results_cap(monkeypatch, caplog):
+    capped = {"count": reply_radar._MAX_RESULTS,
+              "emails": [{"id": f"m{i}", "threadId": f"t{i}", "from": "x@y.com",
+                          "subject": "s"} for i in range(reply_radar._MAX_RESULTS)]}
+    with caplog.at_level(logging.WARNING):
+        with patch("tools.jobhunt.reply_radar.MANAGER") as mgr:
+            mgr.call = AsyncMock(return_value=capped)
+            out = await reply_radar._query_recent(2)
+    assert len(out) == reply_radar._MAX_RESULTS
+    assert any("max_results cap" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_query_recent_no_warning_when_under_cap(monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING):
+        with patch("tools.jobhunt.reply_radar.MANAGER") as mgr:
+            mgr.call = AsyncMock(return_value=_sample_response())
+            await reply_radar._query_recent(2)
+    assert not any("max_results cap" in r.message for r in caplog.records)
+
+
+def test_max_results_raised_above_prior_50_cap():
+    """P1 fix: 50 silently truncated a busy inbox window. There is no
+    page_token on query_gmail_emails to loop on (see the _MAX_RESULTS
+    comment in reply_radar.py), so the cap itself must be raised
+    meaningfully rather than left at the old low value."""
+    assert reply_radar._MAX_RESULTS > 50
+
+
+@pytest.mark.asyncio
+async def test_scan_passes_max_results_cap_to_gmail_query(monkeypatch):
+    monkeypatch.setattr(readers, "contact_emails", lambda: {"kari@firma-a.no"})
+    _patch_cfg(monkeypatch, **{"jobhunt.roots.outreach": ""})
+    with patch("tools.jobhunt.reply_radar.MANAGER") as mgr:
+        mgr.call = AsyncMock(return_value=_sample_response())
+        await reply_radar.scan(TODAY)
+    args, kwargs = mgr.call.call_args
+    call_args = args[2] if len(args) > 2 else kwargs["arguments"]
+    assert call_args["max_results"] == reply_radar._MAX_RESULTS
+
+
+# --------------------------------------------------------------------------
 # dedup
 # --------------------------------------------------------------------------
 

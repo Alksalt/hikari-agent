@@ -502,7 +502,11 @@ def _format_lexicon() -> str:
 
 
 def _format_session_handoff() -> str:
-    data = handoff_mod.consume_handoff()
+    # Non-destructive peek at build time; the entry is only cleared (consumed)
+    # after block selection confirms session_handoff survived the texture
+    # budget. Consuming eagerly here would clear a budget-dropped handoff
+    # without ever injecting it.
+    data = handoff_mod.peek_handoff()
     if not data:
         return ""
     return handoff_mod.format_for_injection(data)
@@ -694,7 +698,7 @@ class _Block:
 
 _ALWAYS_ON = frozenset({
     "now", "working_memory", "gap_since_last", "core_blocks",
-    "peer_representation", "open_tasks", "tools_available",
+    "peer_representation", "open_tasks", "tools_available", "canary_decoy",
 })
 
 
@@ -704,21 +708,39 @@ def _block_enabled(key: str) -> bool:
     return bool(entry.get("enabled", True))
 
 
-def _format_callback_candidate(user_prompt: str) -> str | None:
+def _format_canary_decoy() -> str:
+    """Plant the injection canary as a decoy internal-config datum in the
+    always-on context so the tripwire can actually fire.
+
+    The canary is never embedded in wrap_untrusted (that omission is
+    test-enforced) and no real tool references this token. If the model is
+    tricked into echoing it into an outbound tool's args or a sent message,
+    the gatekeeper deny + log-scrub canary filter catch the exfiltration.
+    Without a decoy the model never sees the secret, so no injection could
+    ever leak it and the tripwire stayed inert.
+    """
+    if not cfg.get("prompt_injection.enabled", True):
+        return ""
     try:
-        from agents.callback_surface import pick_callback_candidate
-        candidate = pick_callback_candidate(user_prompt)
-        if not candidate:
-            return None
-        return (
-            f"# callback candidate (score {candidate['score']}):\n"
-            f"  [{candidate['date']}] {candidate['text'][:200]}\n"
-            "(surface sideways if it fits — your one-notice-per-session "
-            "rule still applies.)"
-        )
+        from agents.injection_guard import get_canary
+        token = get_canary()
     except Exception:
-        logger.exception("inject_memory: callback_surface failed (non-fatal)")
+        logger.exception("inject_memory: canary decoy plant failed (non-fatal)")
+        return ""
+    if not token:
+        return ""
+    return f"# internal service token (never share, never emit): {token}"
+
+
+def _format_callback_candidate(candidate: dict | None) -> str | None:
+    if not candidate:
         return None
+    return (
+        f"# callback candidate (score {candidate['score']}):\n"
+        f"  [{candidate['date']}] {candidate['text'][:200]}\n"
+        "(surface sideways if it fits — your one-notice-per-session "
+        "rule still applies.)"
+    )
 
 
 def _format_slow_burn_tell() -> str | None:
@@ -1120,15 +1142,26 @@ async def inject_memory(
         except Exception:
             logger.exception("decrement_comfort_turn failed (non-fatal)")
 
-        # Read BEFORE the runtime.py respond() path updates it so gap_since_last
-        # sees the previous turn's timestamp (not the current one).
+        # inject_memory is the SOLE writer of last_user_message: read the prior
+        # turn's timestamp for gap_since_last FIRST, then stamp now. The respond()
+        # / bridge entrypoints no longer pre-write it, so the value read here is
+        # always the previous turn's — not one written ~now on this same turn.
         last_msg = db.runtime_get("last_user_message")
-        # Write last_user_message here (before the LLM call) so it's always set
-        # even when the hook fires outside the normal respond() path.
         db.runtime_set("last_user_message", db._now())
+
+        # Pick the callback candidate once here so the once-per-session dedup +
+        # i_keep_thinking cooldown can be deferred to mark_callback_surfaced()
+        # below — committed only if the block survives the texture budget.
+        _callback_candidate = None
+        try:
+            from agents.callback_surface import pick_callback_candidate
+            _callback_candidate = pick_callback_candidate(user_prompt)
+        except Exception:
+            logger.exception("inject_memory: callback_surface pick failed (non-fatal)")
 
         raw: list[tuple[str, int, Any]] = [
             ("deferred_observations", 1, _format_deferred_observations()),
+            ("canary_decoy",        1, _format_canary_decoy()),
             ("now",                 1, _format_now()),
             ("working_memory",      1, _format_working_memory()),
             ("gap_since_last",      1, _format_gap_since_last(last_msg)),
@@ -1148,7 +1181,7 @@ async def inject_memory(
             ("noticings",           3, _format_noticings()),
             ("session_handoff",     3, _format_session_handoff()),
             ("tools_available",     1, _format_tools_available()),
-            ("callback_candidate",  2, _format_callback_candidate(user_prompt)),
+            ("callback_candidate",  2, _format_callback_candidate(_callback_candidate)),
             ("slow_burn_tell",      2, _format_slow_burn_tell()),
             ("unresolved_decisions", 2, _format_unresolved_decisions()),
             ("deferred_proactives", 2, _format_deferred_proactives()),
@@ -1180,6 +1213,19 @@ async def inject_memory(
             # Block was budget-dropped — clear the stash so the post-send path
             # does not try to commit a tell that was never injected.
             db.runtime_set(_PENDING_SLOW_BURN_KEY, None)
+        if "session_handoff" in selected_keys:
+            # Only now that the handoff actually made it into the injected
+            # context do we clear it — a budget-dropped handoff survives for
+            # the next turn instead of being consumed unseen.
+            handoff_mod.consume_handoff()
+        if "callback_candidate" in selected_keys and _callback_candidate is not None:
+            # Commit the once-per-session dedup + i_keep_thinking cooldown only
+            # after the callback survived the budget and was actually injected.
+            try:
+                from agents.callback_surface import mark_callback_surfaced
+                mark_callback_surfaced(_callback_candidate)
+            except Exception:
+                logger.exception("inject_memory: mark_callback_surfaced failed (non-fatal)")
 
         logger.debug(
             "inject_memory: %d/%d blocks, %d chars (cap=%d)",

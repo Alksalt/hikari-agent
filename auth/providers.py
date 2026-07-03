@@ -34,8 +34,8 @@ class Provider(ABC):
         """Refresh tokens; return new access token."""
 
     @abstractmethod
-    def revoke(self) -> None:
-        """Revoke stored tokens (best-effort)."""
+    def revoke(self) -> bool:
+        """Revoke stored tokens. Returns True only if the underlying store operation succeeded."""
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +168,9 @@ class NotionProvider(Provider):
     async def refresh(self) -> str:
         return self._token
 
-    def revoke(self) -> None:
+    def revoke(self) -> bool:
         self._token = ""
+        return True
 
 
 class GitHubProvider(Provider):
@@ -192,5 +193,6 @@ class GitHubProvider(Provider):
     async def refresh(self) -> str:
         return self._token
 
-    def revoke(self) -> None:
+    def revoke(self) -> bool:
         self._token = ""
+        return True

@@ -319,6 +319,7 @@ async def fetch_email_buckets() -> dict[str, Any]:
     try:
         return await _fetch_inbox_buckets()
     except McpCallError as exc:
+        db.runtime_increment("gmail_fetch_error")
         logger.warning("daily_checkin email fetch failed: %s", exc)
         return _empty_email_result()
     except Exception:
@@ -351,6 +352,7 @@ async def fetch_calendar_events() -> list[dict[str, Any]]:
             calendar_id="primary",
         )
     except McpCallError as exc:
+        db.runtime_increment("calendar_fetch_error")
         logger.warning("daily_checkin calendar fetch failed: %s", exc)
         return []
     except Exception:
@@ -391,10 +393,15 @@ async def fetch_calendar_events() -> list[dict[str, Any]]:
 # ---------- internal helpers ----------
 
 def _resolve_local_tz():
-    """Resolve the user's local TZ via HOME_TZ env, falling back to UTC."""
+    """Resolve the user's local TZ: HOME_TZ env > scheduler.timezone config >
+    UTC. Matches agents.hooks._resolve_local_tz_name's fallback chain (same
+    two primary steps; that one falls to Europe/Oslo last, this stays UTC)."""
     import os
     import zoneinfo
-    name = os.environ.get("HOME_TZ", "UTC")
+    name = (os.environ.get("HOME_TZ") or "").strip()
+    if not name:
+        cfg_tz = cfg.get("scheduler.timezone")
+        name = str(cfg_tz) if cfg_tz else "UTC"
     try:
         return zoneinfo.ZoneInfo(name)
     except Exception:  # noqa: BLE001

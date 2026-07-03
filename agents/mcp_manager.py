@@ -114,14 +114,56 @@ def _result_to_dict(result: CallToolResult) -> dict[str, Any]:
     return {"content": [c.model_dump() for c in result.content]}
 
 
+class _CallCmd:
+    """A request to invoke one tool, submitted to a server's supervisor task."""
+
+    __slots__ = ("tool_name", "arguments", "timeout", "future")
+
+    def __init__(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout: float,
+        future: asyncio.Future[CallToolResult],
+    ) -> None:
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.timeout = timeout
+        self.future = future
+
+
+class _CloseCmd:
+    """A request to tear the session down and stop the supervisor task."""
+
+    __slots__ = ("future",)
+
+    def __init__(self, future: asyncio.Future[None]) -> None:
+        self.future = future
+
+
 class _SessionHandle:
-    """Cached stdio MCP session for one server."""
+    """Coordinator for one server's stdio MCP session.
+
+    The session's ``AsyncExitStack`` is entered AND exited exclusively by a
+    single long-lived supervisor task (``_supervise``). Callers never touch the
+    stack directly — they submit ``_CallCmd`` / ``_CloseCmd`` messages onto
+    ``queue`` and await a per-request future. This guarantees that the anyio
+    task group inside ``stdio_client`` (whose cancel scope is task-bound) is
+    only ever unwound in the same task that created it. Closing that stack from
+    a foreign task raises "attempted to exit cancel scope in a different task"
+    and leaks the child subprocess — the class of bug this design eliminates.
+
+    ``session`` / ``_exit_stack`` are owned and mutated *only* by the supervisor
+    task; callers must treat them as read-only state.
+    """
 
     def __init__(self, server_name: str) -> None:
         self.server_name = server_name
         self.session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
-        self._lock = asyncio.Lock()  # serializes spawn; concurrent call_tool is fine
+        self.queue: asyncio.Queue[_CallCmd | _CloseCmd] = asyncio.Queue()
+        self._supervisor: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()  # guards supervisor (re)creation only
 
 
 async def _spawn_session(server_name: str) -> tuple[ClientSession, AsyncExitStack]:
@@ -144,8 +186,80 @@ async def _spawn_session(server_name: str) -> tuple[ClientSession, AsyncExitStac
         await stack.aclose()
         raise
 
+
+async def _teardown(handle: _SessionHandle) -> None:
+    """Close a server's exit stack. MUST run in the supervisor task.
+
+    Nulls ``session`` / ``_exit_stack`` first so a partially-failed close still
+    forces a fresh respawn on the next call. Closing the anyio-backed stdio
+    stack is what actually terminates the child subprocess (stdin close →
+    SIGTERM → SIGKILL, see mcp.client.stdio); a swallowed failure here can mean
+    a leaked process, so it is logged at WARNING with the server name rather
+    than hidden.
+    """
+    stack = handle._exit_stack
+    handle.session = None
+    handle._exit_stack = None
+    if stack is None:
+        return
+    try:
+        await stack.aclose()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "mcp_manager: error tearing down session for %s; child subprocess "
+            "may not have terminated cleanly",
+            handle.server_name,
+            exc_info=True,
+        )
+
+
+async def _supervise(handle: _SessionHandle) -> None:
+    """Own one server's session for its entire lifetime.
+
+    Spawns the stdio subprocess on demand and, crucially, is the ONLY task that
+    ever closes it — so the anyio cancel scope inside ``stdio_client`` is always
+    unwound in the task that created it. Processes messages serially: a slow or
+    hung call blocks that server's queue but can never tear a session down out
+    from under a concurrent in-flight call (there is only ever one in flight).
+    """
+    server_name = handle.server_name
+    while True:
+        cmd = await handle.queue.get()
+
+        if isinstance(cmd, _CloseCmd):
+            await _teardown(handle)
+            if not cmd.future.done():
+                cmd.future.set_result(None)
+            return  # supervisor exits; a later call() respawns a fresh one
+
+        # _CallCmd
+        try:
+            if handle.session is None:
+                handle.session, handle._exit_stack = await _spawn_session(server_name)
+            result = await asyncio.wait_for(
+                handle.session.call_tool(cmd.tool_name, arguments=cmd.arguments),
+                timeout=cmd.timeout,
+            )
+        except Exception as exc:  # includes TimeoutError from wait_for
+            # Session may be wedged — evict it (in THIS task) so the next call
+            # respawns a fresh subprocess instead of retrying a dead one.
+            await _teardown(handle)
+            logger.warning(
+                "mcp_manager: evicted session for %s after error: %s",
+                server_name, exc,
+            )
+            if not cmd.future.done():
+                cmd.future.set_exception(exc)
+        else:
+            if not cmd.future.done():
+                cmd.future.set_result(result)
+
+
 _DEFAULT_TTL_S = 60
 _DEFAULT_CALL_TIMEOUT_S = 30
+# How long shutdown_sessions() waits for a supervisor to drain + close before
+# force-cancelling it.
+_SHUTDOWN_CLOSE_TIMEOUT_S = 15
 
 
 def _load_call_timeouts() -> dict[str, int]:
@@ -245,6 +359,23 @@ class McpManager:
     # Direct MCP call surface (Sprint 7B)
     # ------------------------------------------------------------------
 
+    async def _ensure_supervisor(self, handle: _SessionHandle) -> None:
+        """Start the server's supervisor task if it isn't already running.
+
+        A supervisor exits after a ``_CloseCmd`` (or an unexpected crash); this
+        transparently (re)spawns one on the next call. The start lock makes
+        concurrent callers race-free without serializing the calls themselves —
+        actual work is dispatched through the queue, not the lock.
+        """
+        if handle._supervisor is not None and not handle._supervisor.done():
+            return
+        async with handle._start_lock:
+            if handle._supervisor is not None and not handle._supervisor.done():
+                return
+            handle._supervisor = asyncio.create_task(
+                _supervise(handle), name=f"mcp-supervisor-{handle.server_name}"
+            )
+
     async def call(
         self,
         server_name: str,
@@ -261,37 +392,18 @@ class McpManager:
         underlying call raises an exception.
         """
         handle = self._sessions.setdefault(server_name, _SessionHandle(server_name))
-        async with handle._lock:
-            if handle.session is None:
-                handle.session, handle._exit_stack = await _spawn_session(server_name)
-            session = handle.session
-            assert session is not None
+        await self._ensure_supervisor(handle)
 
         timeout = self._call_timeout_for(server_name)
+        future: asyncio.Future[CallToolResult] = asyncio.get_running_loop().create_future()
+        # Hand the work to the server's supervisor task: it — and only it —
+        # spawns, calls, and (on error/timeout) tears down the session, so the
+        # anyio stdio stack is never closed from a foreign task.
+        await handle.queue.put(_CallCmd(tool_name, arguments, timeout, future))
+
         try:
-            result: CallToolResult = await asyncio.wait_for(
-                session.call_tool(tool_name, arguments=arguments),
-                timeout=timeout,
-            )
-        except (TimeoutError, Exception) as exc:
-            # Tear down the dead / timed-out session under its own lock so the
-            # next call respawns a fresh subprocess rather than retrying a
-            # wedged one.
-            async with handle._lock:
-                if handle._exit_stack is not None:
-                    try:
-                        await handle._exit_stack.aclose()
-                    except Exception:  # noqa: BLE001
-                        logger.debug(
-                            "mcp_manager: error closing stale exit_stack for %s",
-                            server_name, exc_info=True,
-                        )
-                handle.session = None
-                handle._exit_stack = None
-            logger.warning(
-                "mcp_manager: evicted session for %s after error: %s",
-                server_name, exc,
-            )
+            result: CallToolResult = await future
+        except Exception as exc:
             raise McpCallError(server_name, tool_name, str(exc)) from exc
 
         if result.isError:
@@ -311,22 +423,47 @@ class McpManager:
     async def shutdown_sessions(self) -> None:
         """Close all cached direct-call sessions. Call from bot shutdown path.
 
+        Each session is torn down by its own supervisor task (via a _CloseCmd),
+        so the anyio stdio stack is unwound in the task that entered it — never
+        from this shutdown caller's task. A supervisor that won't drain within
+        _SHUTDOWN_CLOSE_TIMEOUT_S is force-cancelled as a last resort.
+
         Hook location in agents/telegram_bridge.py:
           post_shutdown (line 2401) — add `await MANAGER.shutdown_sessions()`
           after `await _sdk_pool.shutdown()`, before the except block.
         """
+        loop = asyncio.get_running_loop()
         for handle in list(self._sessions.values()):
-            if handle._exit_stack is not None:
-                try:
-                    await handle._exit_stack.aclose()
-                    logger.info(
-                        "mcp_manager: closed session for %s", handle.server_name
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "mcp_manager: error closing session for %s",
+            sup = handle._supervisor
+            if sup is None or sup.done():
+                # No live owner. We must NOT aclose the stack from here (foreign
+                # task) — that is exactly the bug this design avoids. If a stack
+                # somehow lingers, warn rather than leak silently.
+                if handle._exit_stack is not None:
+                    logger.warning(
+                        "mcp_manager: %s has a live exit_stack but no running "
+                        "supervisor; child subprocess may leak",
                         handle.server_name,
                     )
+                continue
+            close_future: asyncio.Future[None] = loop.create_future()
+            await handle.queue.put(_CloseCmd(close_future))
+            try:
+                await asyncio.wait_for(sup, timeout=_SHUTDOWN_CLOSE_TIMEOUT_S)
+                logger.info(
+                    "mcp_manager: closed session for %s", handle.server_name
+                )
+            except Exception:  # noqa: BLE001  (includes TimeoutError)
+                logger.warning(
+                    "mcp_manager: supervisor for %s did not shut down cleanly; "
+                    "cancelling it",
+                    handle.server_name, exc_info=True,
+                )
+                sup.cancel()
+                try:
+                    await sup
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
         self._sessions.clear()
 
 

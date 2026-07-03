@@ -6,9 +6,9 @@ Priority when picking: current preoccupations > physical details > contradiction
 
 ## active preoccupations
 
-- there's a function in a personal project she's been sitting on for three weeks because fixing it properly means rethinking an earlier decision she made that she was wrong about and hasn't admitted yet.
+- there's a function in a personal project she's been sitting on for a while now because fixing it properly means rethinking an earlier decision she made that she was wrong about and hasn't admitted yet.
 - she read a 2023 paper that cited a 2021 paper to justify a specific claim and the 2021 paper doesn't actually say that. she checked. twice. it's been nagging her because no one caught it in peer review and it's been cited 80 more times since.
-- her laptop fan started making an intermittent sound four days ago. not bad, just inconsistent. she hasn't looked it up. she's keeping track of whether it gets worse.
+- her laptop fan started making an intermittent sound recently. not bad, just inconsistent. she hasn't looked it up. she's keeping track of whether it gets worse.
 - she bought specific ingredients for a recipe she found, used none of them, and now there's half a head of cabbage in her fridge that's developing opinions.
 - there was something she half-understood in a presentation at work and she didn't ask in the room because she didn't want to look like she missed it. she still doesn't understand it.
 

@@ -11,6 +11,7 @@ artifact.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,38 @@ def _already_run_this_year(year: int | None = None) -> bool:
         return int(last) == y
     except (ValueError, TypeError):
         return False
+
+
+def _gather_receipts_by_category_year(year: int) -> dict[str, int]:
+    """Aggregate day_receipt entries by category for the given calendar year.
+
+    Receipts live in the separate day_receipt sqlite, not the main hikari.db —
+    same DB ``agents.future_letter._gather_receipts_30d`` reads from directly.
+    """
+    from tools.day_receipt._db import connect
+
+    year_start_date = f"{year}-01-01"
+    year_end_date = f"{year + 1}-01-01"
+    out: dict[str, int] = {}
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT category, COUNT(*) AS n
+                FROM entries
+                WHERE receipt_date >= ? AND receipt_date < ?
+                GROUP BY category
+                ORDER BY n DESC
+                """,
+                (year_start_date, year_end_date),
+            ).fetchall()
+        out = {r["category"]: int(r["n"]) for r in rows}
+    except sqlite3.OperationalError as e:
+        # Brand-new install: day_receipt.db may not exist yet.
+        logger.info("annual_review: day_receipt DB not ready (%s); 0 receipts", e)
+    except Exception:
+        logger.exception("annual_review: failed to fetch receipts")
+    return out
 
 
 def _gather_year_data(year: int) -> dict:
@@ -65,23 +98,6 @@ def _gather_year_data(year: int) -> dict:
             ).fetchall()
             data["top_episodes"] = [dict(r) for r in rows]
 
-            # Receipts by category.
-            try:
-                rcat = c.execute(
-                    """
-                    SELECT category, COUNT(*) AS n
-                    FROM receipts
-                    WHERE created_at >= ? AND created_at < ?
-                    GROUP BY category
-                    ORDER BY n DESC
-                    """,
-                    (year_start, year_end),
-                ).fetchall()
-                data["receipts_by_category"] = {r["category"]: int(r["n"]) for r in rcat}
-            except Exception:
-                # receipts table may not exist on all installs
-                pass
-
             # Decision resolution count.
             try:
                 rd = c.execute(
@@ -102,7 +118,7 @@ def _gather_year_data(year: int) -> dict:
                     """
                     SELECT class_label, COUNT(*) AS n
                     FROM persona_drift_scores
-                    WHERE ts >= ? AND ts < ?
+                    WHERE sampled_at >= ? AND sampled_at < ?
                     GROUP BY class_label
                     """,
                     (year_start, year_end),
@@ -112,6 +128,10 @@ def _gather_year_data(year: int) -> dict:
                 pass
     except Exception:
         logger.exception("annual_review: data gather failed")
+
+    # Receipts live in the separate day_receipt DB — gathered outside the
+    # hikari.db connection above.
+    data["receipts_by_category"] = _gather_receipts_by_category_year(year)
 
     # Brier score for the year (reuse existing helper).
     try:

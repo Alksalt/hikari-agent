@@ -81,3 +81,34 @@ async def test_persistent_live_reconnects_after_cli_connection_error_without_cle
     # internal function no longer writes directly to db. Check the pending
     # value is correct; the db entry stays unchanged until the caller commits.
     assert runtime._PENDING_SESSION_ID.get() == "session-after-retry"
+
+
+@pytest.mark.asyncio
+async def test_persistent_live_poisons_client_on_second_failure(monkeypatch):
+    """FIX 13: when the single retry ALSO fails, the cached live client is reset
+    to None so the next turn forces a fresh reconnect via get_live_client()
+    instead of reusing the broken transport for every subsequent turn."""
+    import agents.runtime as runtime
+    import agents.sdk_pool as pool
+
+    db.set_session_id("session-both-dead")
+    clients = [_DeadClient(), _DeadClient()]  # first attempt AND retry both die
+
+    async def fake_get_live_client():
+        return clients.pop(0)
+
+    async def fake_reconnect(reason: str, *, lock_run: bool = True):
+        return None
+
+    monkeypatch.setattr(pool, "get_live_client", fake_get_live_client)
+    monkeypatch.setattr(pool, "_reconnect_live", fake_reconnect)
+    monkeypatch.setattr(pool, "_maybe_schedule_live_recycle", lambda: None)
+    # Seed a live client so we can prove the second failure poisons it.
+    monkeypatch.setattr(pool._live, "client", object())
+
+    with pytest.raises(CLIConnectionError):
+        await runtime._invoke_sdk_persistent_live("ping", log_session_id=True)
+
+    assert pool._live.client is None, (
+        "second retry failure must reset the cached live client to None"
+    )

@@ -7,7 +7,6 @@ a single tonal token. Writes the result to session.emotional_register.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from agents.runtime import run_aux_composition
 from storage import db
@@ -31,15 +30,16 @@ _SYSTEM_PROMPT = (
 _MAX_MESSAGES = 40
 
 
-def _fetch_today_messages() -> list[dict]:
-    """Return messages from today (UTC), most recent first then reversed."""
-    today_iso = datetime.now(UTC).date().isoformat()
-    with db._conn() as conn:
-        rows = conn.execute(
-            "SELECT role, content FROM messages WHERE date(ts) = date(?) ORDER BY ts ASC",
-            (today_iso,),
-        ).fetchall()
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+def _fetch_recent_messages() -> list[dict]:
+    """Return the most recent messages for the just-ended session, oldest first.
+
+    A UTC calendar-date filter (``date(ts) = date('now')``) doesn't work here:
+    ``ts`` is stored in UTC but the only caller is the 09:00-LOCAL daily
+    reflection, so an evening session in a timezone behind UTC lands on UTC
+    date D-1 and would return zero rows. Grabbing the last ``_MAX_MESSAGES``
+    messages sidesteps the boundary entirely.
+    """
+    return db.recent_messages(limit=_MAX_MESSAGES, exclude_ephemeral=True)
 
 
 def _build_prompt(messages: list[dict]) -> str:
@@ -61,7 +61,7 @@ async def compute_session_register(session_id: str) -> str:
     Returns the register token, or 'neutral' as a safe fallback.
     """
     try:
-        messages = _fetch_today_messages()
+        messages = _fetch_recent_messages()
     except Exception:
         logger.exception("tonal_recall: failed to fetch messages for session %s", session_id)
         return "neutral"

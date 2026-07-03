@@ -109,11 +109,14 @@ def test_checksum_mismatch_raises(tmp_db_path: Path):
         conn.close()
         db._reset_schema_sentinel()
 
-        # Tamper: overwrite a real migration's checksum with a bogus value.
+        # Tamper: overwrite a real migration's checksum with a DIFFERENT tag
+        # value. Under the tag scheme, drift = the recorded tag no longer matches
+        # the call's tag (a plain hex16 would instead be treated as a legacy
+        # source-hash and silently migrated — see the upgrade-path test below).
         target_name = "migrate_facts_bitemporal"
         raw = sqlite3.connect(str(tmp_db_path))
         raw.execute(
-            "UPDATE schema_migrations SET checksum = 'deadbeef00000000' WHERE name = ?",
+            "UPDATE schema_migrations SET checksum = 'tag:tampered_body' WHERE name = ?",
             (target_name,),
         )
         raw.commit()
@@ -125,6 +128,75 @@ def test_checksum_mismatch_raises(tmp_db_path: Path):
             db._get_pooled_conn()
 
         db._reset_schema_sentinel()
+
+
+def test_legacy_hex_checksum_migrates_to_tag(tmp_db_path: Path):
+    """Upgrade path: a live DB whose ledger holds the pre-tag 16-hex source-hash
+    for a migration must, on the first boot after tag= is added at the call site,
+    rewrite that row to ``tag:<name>`` WITHOUT re-running the migration body and
+    WITHOUT raising drift."""
+    import storage.db as db
+
+    with patch.dict(os.environ, {"HIKARI_DB_PATH": str(tmp_db_path)}):
+        db._DB_PATH = tmp_db_path
+
+        # First boot: records tag:<name> for every migration.
+        db._reset_schema_sentinel()
+        conn = db._get_pooled_conn()
+        conn.close()
+        db._reset_schema_sentinel()
+
+        # Simulate a pre-FIX-6 ledger row: overwrite one migration's checksum
+        # with a plausible legacy 16-hex source-hash.
+        target_name = "migrate_facts_bitemporal"
+        raw = sqlite3.connect(str(tmp_db_path))
+        raw.execute(
+            "UPDATE schema_migrations SET checksum = '1234567890abcdef' WHERE name = ?",
+            (target_name,),
+        )
+        raw.commit()
+        raw.close()
+
+        # Next boot must NOT raise and must rewrite the row to the tag-checksum.
+        db._reset_schema_sentinel()
+        conn2 = db._get_pooled_conn()
+        try:
+            recorded = conn2.execute(
+                "SELECT checksum FROM schema_migrations WHERE name = ?",
+                (target_name,),
+            ).fetchone()[0]
+        finally:
+            conn2.close()
+            db._reset_schema_sentinel()
+
+    assert recorded == f"tag:{target_name}", (
+        f"legacy hex checksum should migrate to tag:<name>, got {recorded!r}"
+    )
+
+
+def test_fresh_db_records_tag_checksums(tmp_db_path: Path):
+    """Fresh boot records ``tag:<name>`` (not a source-hash) for each migration,
+    so later docstring/body edits no longer brick boot with checksum drift."""
+    import storage.db as db
+
+    with patch.dict(os.environ, {"HIKARI_DB_PATH": str(tmp_db_path)}):
+        db._DB_PATH = tmp_db_path
+        db._reset_schema_sentinel()
+        conn = db._get_pooled_conn()
+        try:
+            rows = conn.execute(
+                "SELECT name, checksum FROM schema_migrations"
+            ).fetchall()
+        finally:
+            conn.close()
+            db._reset_schema_sentinel()
+
+    known = set(db.KNOWN_MIGRATIONS)
+    for name, checksum in rows:
+        if name in known:
+            assert checksum == f"tag:{name}", (
+                f"{name} recorded {checksum!r}, expected tag:{name}"
+            )
 
 
 # ---------------------------------------------------------------------------

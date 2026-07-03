@@ -99,3 +99,44 @@ async def test_reflection_non_dict_yaml_skips_extraction(monkeypatch):
     # reuse run_reflection_call for consolidation, hence not an exact count).
     assert len(calls) >= 2, "reflection should retry the LLM once on a non-mapping reply"
     assert db.runtime_get("last_reflection_skipped") is not None
+
+
+@pytest.mark.asyncio
+async def test_reflection_first_call_exception_still_runs_maintenance(monkeypatch):
+    """If the initial run_reflection_call raises (SDK error, timeout, etc.)
+    reflection must not bail out before maintenance — it should log, stamp
+    the skip breadcrumb, and fall through to the mechanical maintenance block
+    exactly like the YAML-parse-failure path does."""
+    db.insert_episode("2026-05-19", "stand-up")
+
+    async def raising_run_reflection_call(_prompt):
+        raise RuntimeError("SDK call failed")
+
+    monkeypatch.setattr(reflection, "run_reflection_call", raising_run_reflection_call)
+
+    # Skip morning dispatch (touches the wiki path which doesn't exist in tests).
+    monkeypatch.setattr(reflection, "_write_morning_dispatch",
+                        lambda *a, **k: None)
+
+    result = await reflection.run_daily_reflection()
+    # Maintenance ran (nothing raised) and the skip breadcrumb was stamped.
+    assert result is False  # no facts/thought/preoc/etc. were produced this cycle
+    assert db.runtime_get("last_reflection_skipped") is not None
+    # Mechanical maintenance still executed — episode pruning ran without error,
+    # proven by the function returning normally instead of raising/bailing early.
+
+
+def test_near_dup_cosine_threshold_reads_config_live(monkeypatch):
+    """Must not be frozen at import time — a cockpit config reload should be
+    reflected on the next read without a process restart."""
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 0.5 if key == "reflection.near_dup_cosine_threshold" else default,
+    )
+    assert reflection._near_dup_cosine_threshold() == 0.5
+
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 0.99 if key == "reflection.near_dup_cosine_threshold" else default,
+    )
+    assert reflection._near_dup_cosine_threshold() == 0.99

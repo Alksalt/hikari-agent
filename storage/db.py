@@ -16,6 +16,7 @@ Schema covers everything memory- and runtime-related:
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import logging
@@ -25,7 +26,7 @@ import threading
 import time
 from collections.abc import Iterable
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -323,8 +324,7 @@ CREATE INDEX IF NOT EXISTS idx_weekly_consolidations_week
 
 -- Phase 11: per-session scratch memory shared by subagents (recall + wiki etc.).
 -- Hindsight pattern (May 2026). 24h TTL enforced by scratch_cleanup_old (daily
--- reflection). 100-row cap per session enforced by scratch_put.
--- Session-scoped: entries from one session never bleed into another.
+-- reflection). Session-scoped: entries from one session never bleed into another.
 CREATE TABLE IF NOT EXISTS session_scratch (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
@@ -630,13 +630,27 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     with _SCHEMA_LOCK:
         if _SCHEMA_INITIALIZED:
             return
-        for stmt in _SCHEMA.strip().split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                conn.execute(stmt)
-        backfill_if_needed(conn, KNOWN_MIGRATIONS)
-        _migrate_tasks_decay_columns(conn)
-        _SCHEMA_INITIALIZED = True
+        # Cross-process migration lock. _SCHEMA_LOCK only serializes threads
+        # within one process; two processes first-booting a stale DB could both
+        # pass a column-missing check and both ALTER, crashing the second. An OS
+        # advisory lock serializes the whole cascade across processes — and,
+        # unlike BEGIN IMMEDIATE, it survives the internal conn.commit()s several
+        # migrations perform (which would otherwise release a SQLite write lock
+        # mid-cascade).
+        lock_path = _DB_PATH.parent / f"{_DB_PATH.name}.migrate.lock"
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            for stmt in _SCHEMA.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            backfill_if_needed(conn, KNOWN_MIGRATIONS)
+            _migrate_tasks_decay_columns(conn)
+            _SCHEMA_INITIALIZED = True
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
 
 def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
@@ -652,50 +666,51 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
         if "last_mention_at" not in existing:
             c.execute("ALTER TABLE tasks ADD COLUMN last_mention_at TEXT")
 
-    run_once(conn, "migrate_tasks_decay_columns", _body)
-    run_once(conn, "migrate_approvals_defer_columns", _migrate_approvals_defer_columns)
+    run_once(conn, "migrate_tasks_decay_columns", _body, tag="migrate_tasks_decay_columns")
+    run_once(conn, "migrate_approvals_defer_columns", _migrate_approvals_defer_columns, tag="migrate_approvals_defer_columns")
     # Not wrapped in run_once: this is a data-conditional seeding op that must
     # run on every boot to seed peer_representation from a legacy user_profile
     # core_block when one exists.  Its own early-return guard makes it idempotent.
     _migrate_user_profile_to_peer_representation(conn)
-    run_once(conn, "migrate_messages_telegram_message_id", _migrate_messages_telegram_message_id)
-    run_once(conn, "migrate_facts_bitemporal", _migrate_facts_bitemporal)
-    run_once(conn, "migrate_facts_recall_decay", _migrate_facts_recall_decay)
-    run_once(conn, "migrate_facts_attribution", _migrate_facts_attribution)
-    run_once(conn, "migrate_reminders_apple_columns", _migrate_reminders_apple_columns)
-    run_once(conn, "migrate_drift_canary_indexes", _migrate_drift_canary_indexes)
-    run_once(conn, "migrate_fact_relations_validity", _migrate_fact_relations_validity)
-    run_once(conn, "migrate_tool_calls", _migrate_tool_calls)
-    run_once(conn, "migrate_proactive_events", _migrate_proactive_events)
-    run_once(conn, "migrate_proactive_events_feedback", _migrate_proactive_events_feedback)
-    run_once(conn, "migrate_proactive_events_chat_id", _migrate_proactive_events_chat_id)
-    run_once(conn, "migrate_proactive_events_status", _migrate_proactive_events_status)
-    run_once(conn, "migrate_approvals_gatekeeper", _migrate_approvals_gatekeeper)
-    run_once(conn, "migrate_calendar_notifications", _migrate_calendar_notifications)
-    run_once(conn, "migrate_entities_and_provenance", _migrate_entities_and_provenance)
-    run_once(conn, "migrate_messages_fts", _migrate_messages_fts)
-    run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox)
-    run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash)
-    run_once(conn, "migrate_oauth_tokens_add_hash_columns", _migrate_oauth_tokens_add_hash_columns)
-    run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel)
-    run_once(conn, "migrate_media_events", _migrate_media_events)
-    run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes)
+    run_once(conn, "migrate_messages_telegram_message_id", _migrate_messages_telegram_message_id, tag="migrate_messages_telegram_message_id")
+    run_once(conn, "migrate_facts_bitemporal", _migrate_facts_bitemporal, tag="migrate_facts_bitemporal")
+    run_once(conn, "migrate_facts_recall_decay", _migrate_facts_recall_decay, tag="migrate_facts_recall_decay")
+    run_once(conn, "migrate_facts_attribution", _migrate_facts_attribution, tag="migrate_facts_attribution")
+    run_once(conn, "migrate_reminders_apple_columns", _migrate_reminders_apple_columns, tag="migrate_reminders_apple_columns")
+    run_once(conn, "migrate_drift_canary_indexes", _migrate_drift_canary_indexes, tag="migrate_drift_canary_indexes")
+    run_once(conn, "migrate_fact_relations_validity", _migrate_fact_relations_validity, tag="migrate_fact_relations_validity")
+    run_once(conn, "migrate_tool_calls", _migrate_tool_calls, tag="migrate_tool_calls")
+    run_once(conn, "migrate_proactive_events", _migrate_proactive_events, tag="migrate_proactive_events")
+    run_once(conn, "migrate_proactive_events_feedback", _migrate_proactive_events_feedback, tag="migrate_proactive_events_feedback")
+    run_once(conn, "migrate_proactive_events_chat_id", _migrate_proactive_events_chat_id, tag="migrate_proactive_events_chat_id")
+    run_once(conn, "migrate_proactive_events_status", _migrate_proactive_events_status, tag="migrate_proactive_events_status")
+    run_once(conn, "migrate_approvals_gatekeeper", _migrate_approvals_gatekeeper, tag="migrate_approvals_gatekeeper")
+    run_once(conn, "migrate_calendar_notifications", _migrate_calendar_notifications, tag="migrate_calendar_notifications")
+    run_once(conn, "migrate_entities_and_provenance", _migrate_entities_and_provenance, tag="migrate_entities_and_provenance")
+    run_once(conn, "migrate_messages_fts", _migrate_messages_fts, tag="migrate_messages_fts")
+    run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox, tag="migrate_graph_outbox")
+    run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash, tag="migrate_oauth_tokens_to_hash")
+    run_once(conn, "migrate_oauth_tokens_add_hash_columns", _migrate_oauth_tokens_add_hash_columns, tag="migrate_oauth_tokens_add_hash_columns")
+    run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel, tag="migrate_background_tasks_cancel")
+    run_once(conn, "migrate_media_events", _migrate_media_events, tag="migrate_media_events")
+    run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes, tag="migrate_drop_persona_drift_probes")
     run_once(conn, "migrate_drop_episode_summaries_and_fact_relations",
-             _migrate_drop_episode_summaries_and_fact_relations)
-    run_once(conn, "migrate_graph_outbox_drained_status", _migrate_graph_outbox_drained_status)
-    run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables)
-    run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer)
-    run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract)
-    run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables)
-    run_once(conn, "migrate_phase_l_self_representation", _migrate_phase_l_self_representation)
-    run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill)
-    run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns)
-    run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode)
-    run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index)
-    run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by)
-    run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column)
-    run_once(conn, "migrate_media_outbox_status_sending", _migrate_media_outbox_status_sending)
-    run_once(conn, "migrate_capability_offers", _migrate_capability_offers)
+             _migrate_drop_episode_summaries_and_fact_relations,
+             tag="migrate_drop_episode_summaries_and_fact_relations")
+    run_once(conn, "migrate_graph_outbox_drained_status", _migrate_graph_outbox_drained_status, tag="migrate_graph_outbox_drained_status")
+    run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables, tag="migrate_sprint_a_tables")
+    run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer, tag="migrate_fts_porter_tokenizer")
+    run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract, tag="migrate_proactive_events_reason_contract")
+    run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables, tag="migrate_phase_b_schema_tables")
+    run_once(conn, "migrate_phase_l_self_representation", _migrate_phase_l_self_representation, tag="migrate_phase_l_self_representation")
+    run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill, tag="migrate_phase_n_facts_source_backfill")
+    run_once(conn, "migrate_phase_o_research_columns", _migrate_phase_o_research_columns, tag="migrate_phase_o_research_columns")
+    run_once(conn, "migrate_reminders_action_mode", _migrate_reminders_action_mode, tag="migrate_reminders_action_mode")
+    run_once(conn, "migrate_messages_source_index", _migrate_messages_source_index, tag="migrate_messages_source_index")
+    run_once(conn, "migrate_drop_facts_legacy_superseded_by", _migrate_drop_facts_legacy_superseded_by, tag="migrate_drop_facts_legacy_superseded_by")
+    run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column, tag="migrate_drift_sycophancy_column")
+    run_once(conn, "migrate_media_outbox_status_sending", _migrate_media_outbox_status_sending, tag="migrate_media_outbox_status_sending")
+    run_once(conn, "migrate_capability_offers", _migrate_capability_offers, tag="migrate_capability_offers")
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -3510,12 +3525,15 @@ def proactive_event_dedup_hit(
 ) -> bool:
     """Return True if a status='sent' proactive_events row exists for this
     source with the exact dedup_key within the window."""
+    # Cutoff computed in Python (see user_message_after) — sent_at is _now()
+    # ISO-T; a space-separated datetime('now',...) mis-sorts same-UTC-day rows.
+    cutoff = (datetime.now(UTC) - timedelta(minutes=int(window_minutes))).isoformat()
     with _conn() as c:
         row = c.execute(
             "SELECT 1 FROM proactive_events "
             "WHERE source = ? AND dedup_key = ? AND status = 'sent' "
-            "AND sent_at >= datetime('now', ?) LIMIT 1",
-            (source, dedup_key, f"-{window_minutes} minutes"),
+            "AND sent_at >= ? LIMIT 1",
+            (source, dedup_key, cutoff),
         ).fetchone()
     return row is not None
 
@@ -3651,11 +3669,12 @@ def proactive_last_send_per_source() -> dict[str, str]:
 
 def proactive_send_count_7d(source: str) -> int:
     """Return the number of sends for a given source in the last 7 days."""
+    cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with _conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS n FROM proactive_events "
-            "WHERE source = ? AND status = 'sent' AND sent_at >= datetime('now', '-7 days')",
-            (str(source),),
+            "WHERE source = ? AND status = 'sent' AND sent_at >= ?",
+            (str(source), cutoff),
         ).fetchone()
     return int(row["n"] or 0) if row else 0
 
@@ -3664,10 +3683,14 @@ def proactive_send_count_7d(source: str) -> int:
 
 def prune_messages_older_than_days(days: int) -> int:
     """Delete messages older than `days` from now. Returns rows deleted."""
+    # messages.ts is _now() ISO-T; compute the cutoff in Python so the TEXT
+    # comparison stays in one format (space-separated datetime('now',...)
+    # mis-sorts same-UTC-day rows at the 'T'/' ' boundary).
+    cutoff = (datetime.now(UTC) - timedelta(days=int(days))).isoformat()
     with _conn() as c:
         cur = c.execute(
-            "DELETE FROM messages WHERE ts < datetime('now', '-' || ? || ' days')",
-            (int(days),),
+            "DELETE FROM messages WHERE ts < ?",
+            (cutoff,),
         )
     return int(cur.rowcount or 0)
 
@@ -4081,12 +4104,14 @@ def audit_by_id(row_id: int) -> dict | None:
 
 def audit_tool_counts_7d() -> list[dict]:
     """Return (tool, count, last_ts) grouped by tool for the last 7 days, ordered by count desc."""
+    cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with _conn() as c:
         rows = c.execute(
             "SELECT tool, COUNT(*) AS cnt, MAX(ts) AS last_ts "
             "FROM audit_log "
-            "WHERE ts >= datetime('now', '-7 days') "
+            "WHERE ts >= ? "
             "GROUP BY tool ORDER BY cnt DESC",
+            (cutoff,),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -4643,7 +4668,20 @@ def oauth_client_register(client_name: str | None,
         n = c.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
         maxc = int(_cfg_get("oauth.max_registered_clients", 50))
         if n >= maxc:
-            raise ValueError(f"oauth_client_register: client ceiling {maxc} reached")
+            # DCR is public: an anonymous flood would otherwise lock the owner
+            # out of adding connectors until the 30-day stale-prune runs. Evict
+            # the oldest dead client (no tokens, no codes — safe under the
+            # RESTRICT FKs) and re-check; fail only if all `maxc` are real.
+            c.execute(
+                "DELETE FROM oauth_clients WHERE client_id = ("
+                " SELECT client_id FROM oauth_clients"
+                " WHERE client_id NOT IN (SELECT client_id FROM oauth_tokens)"
+                " AND client_id NOT IN (SELECT client_id FROM oauth_codes)"
+                " ORDER BY COALESCE(last_used_at, created_at) LIMIT 1)"
+            )
+            n = c.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
+            if n >= maxc:
+                raise ValueError(f"oauth_client_register: client ceiling {maxc} reached")
         c.execute(
             "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) "
             "VALUES (?, ?, ?)",
@@ -5099,30 +5137,32 @@ def decisions_unresolved_due(limit: int = 5,
                              cooldown_days: int = 14) -> list[dict[str, Any]]:
     """Decisions whose resolve_by has passed and outcome is still null,
     oldest first. Skips rows asked about within the cooldown window."""
+    # asked_at is _now() ISO-T; bind a Python cutoff so it doesn't mis-sort
+    # against a space-separated datetime('now',...) on the boundary UTC day.
+    cutoff = (datetime.now(UTC) - timedelta(days=int(cooldown_days))).isoformat()
     with _conn() as c:
         rows = c.execute(
             "SELECT id, statement, predicted_p, resolve_by, asked_at "
             "FROM decisions "
             "WHERE outcome IS NULL "
             "AND resolve_by <= date('now') "
-            "AND (asked_at IS NULL "
-            "     OR asked_at < datetime('now', '-' || ? || ' days')) "
+            "AND (asked_at IS NULL OR asked_at < ?) "
             "ORDER BY resolve_by ASC LIMIT ?",
-            (int(cooldown_days), int(limit)),
+            (cutoff, int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def decisions_unresolved_overdue_count(cooldown_days: int = 14) -> int:
     """Count of overdue-unresolved decisions, for the inject_memory mirror."""
+    cutoff = (datetime.now(UTC) - timedelta(days=int(cooldown_days))).isoformat()
     with _conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS n FROM decisions "
             "WHERE outcome IS NULL "
             "AND resolve_by <= date('now') "
-            "AND (asked_at IS NULL "
-            "     OR asked_at < datetime('now', '-' || ? || ' days'))",
-            (int(cooldown_days),),
+            "AND (asked_at IS NULL OR asked_at < ?)",
+            (cutoff,),
         ).fetchone()
     return int(row["n"] or 0)
 
@@ -5138,12 +5178,15 @@ def decision_mark_asked(decision_id: int) -> None:
 def decision_brier_score(window_days: int = 90) -> dict[str, Any]:
     """Return ``{n, brier, mean_predicted, mean_outcome}`` over decisions
     resolved in the last window_days, or ``{n: 0}`` if none."""
+    # resolved_at is _now() ISO-T; bind a Python cutoff to keep the TEXT
+    # comparison single-format across the boundary UTC day.
+    cutoff = (datetime.now(UTC) - timedelta(days=int(window_days))).isoformat()
     with _conn() as c:
         rows = c.execute(
             "SELECT predicted_p, outcome FROM decisions "
             "WHERE outcome IS NOT NULL "
-            "AND resolved_at >= datetime('now', '-' || ? || ' days')",
-            (int(window_days),),
+            "AND resolved_at >= ?",
+            (cutoff,),
         ).fetchall()
     n = len(rows)
     if n == 0:

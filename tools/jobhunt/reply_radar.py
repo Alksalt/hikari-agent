@@ -46,7 +46,19 @@ logger = logging.getLogger(__name__)
 # Gmail search — relative window, always "as of now" regardless of the
 # `today` argument (which exists for signature parity with the readers.*
 # functions and so callers/tests can reason about a fixed reference date).
-_MAX_RESULTS = 50
+#
+# ``query_gmail_emails`` (google-workspace-mcp 2.0.1) exposes no page_token
+# / cursor to the caller — GmailService.query_emails paginates internally
+# (up to its own absolute_max=1000) but we only get to ask for a single
+# "top N newest" cut. There is nothing to loop on from this side, so
+# truncation is avoided by asking for a meaningfully large N up front
+# (200 — same order of magnitude as daily_checkin's own
+# ``max_delete_ids`` gmail-paging cap in config/engagement.yaml) rather
+# than a small window that a single busy inbox day silently overflows.
+# ``_query_recent`` still logs a WARNING whenever the response comes back
+# exactly at this cap, since that's the one observable sign a reply could
+# have been pushed out of the window.
+_MAX_RESULTS = 200
 
 _ALIASES = ("emails", "messages", "results", "items", "data")
 
@@ -97,7 +109,20 @@ async def _query_recent(days: int) -> list[Any]:
         "query_gmail_emails",
         {"query": f"newer_than:{days}d in:inbox", "max_results": _MAX_RESULTS},
     )
-    return _extract_messages(result)
+    messages = _extract_messages(result)
+    if len(messages) == _MAX_RESULTS:
+        # No page_token to loop on (see _MAX_RESULTS comment) — hitting the
+        # cap exactly is the only signal we get that the inbox had MORE
+        # than _MAX_RESULTS messages in the lookback window, meaning older
+        # messages (possibly a real contact reply) were silently excluded.
+        logger.warning(
+            "reply_radar: gmail query returned the max_results cap (%d) for "
+            "a %dd window — the inbox may hold more messages than that; "
+            "older replies in this window may be missed until the next "
+            "scan's window shifts",
+            _MAX_RESULTS, days,
+        )
+    return messages
 
 
 def _coerce_reply(raw: dict[str, Any]) -> dict[str, str]:

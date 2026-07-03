@@ -190,3 +190,38 @@ def test_weekly_consolidation_insert_rejects_empty():
         db.weekly_consolidation_insert(
             week_ending="2026-05-17", summary_text="", episode_count=1
         )
+
+
+def test_weekly_window_days_reads_config_live(monkeypatch):
+    """Must not be frozen at import time — a cockpit config reload should be
+    reflected on the next read without a process restart."""
+    from agents import reflection
+
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 14 if key == "reflection.weekly_window_days" else default,
+    )
+    assert reflection._weekly_window_days() == 14
+
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 3 if key == "reflection.weekly_window_days" else default,
+    )
+    assert reflection._weekly_window_days() == 3
+
+
+def test_weekly_summary_word_cap_reads_config_live(monkeypatch):
+    """Same lazy-read requirement as the window-days constant."""
+    from agents import reflection
+
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 50 if key == "reflection.weekly_summary_word_cap" else default,
+    )
+    assert reflection._weekly_summary_word_cap() == 50
+
+    monkeypatch.setattr(
+        reflection.cfg, "get",
+        lambda key, default=None: 300 if key == "reflection.weekly_summary_word_cap" else default,
+    )
+    assert reflection._weekly_summary_word_cap() == 300

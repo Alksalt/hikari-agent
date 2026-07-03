@@ -476,8 +476,21 @@ def summarize(tool_name: str, tool_input: dict) -> str:
         )
 
     if tool_name == "mcp__hikari_utility__python_run":
-        code_preview = (tool_input.get("code") or "")[:120]
-        return f"run python: {code_preview!r}"
+        # Show the whole snippet up to the summary cap, or refuse — a 120-char
+        # preview let a malicious tail hide, and a silent truncation would too.
+        # Mirrors _summarize()'s full-or-refuse rule for critical fields.
+        code = tool_input.get("code") or ""
+        input_files = tool_input.get("input_files") or []
+        if len(code) > 1800:
+            return (
+                f"run python: ⚠ code is {len(code)} chars — over the 1800-char "
+                f"preview cap; reject and ask Hikari to split it.\n"
+                f"input_files: {input_files!r}"
+            )
+        parts = [f"run python: {code!r}"]
+        if input_files:
+            parts.append(f"input_files: {input_files!r}")
+        return "\n".join(parts)
 
     # Server-prefix fallbacks — raise NotImplementedError so the caller's
     # except-NotImplementedError branch falls through to _summarize()'s

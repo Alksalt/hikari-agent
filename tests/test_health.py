@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.health import (
+    _check_google_fetch_errors,
     _check_graph_outbox,
     _check_graph_recall,
     _check_graphiti_reachable,
@@ -274,6 +275,7 @@ async def test_collect_startup_report_returns_all_keys():
         "last_backup_age_h",
         "log_recent_errors",
         "graph_recall",
+        "google_fetch_errors",
     }
     for check in report.values():
         assert "ok" in check
@@ -458,5 +460,57 @@ def test_graph_recall_value_dict_shape():
 def test_graph_recall_db_exception_returns_degraded():
     with patch("storage.db.runtime_get_int", side_effect=RuntimeError("db gone")):
         result = _check_graph_recall()
+    assert result.ok is False
+    assert "exception:RuntimeError" in (result.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# _check_google_fetch_errors
+# ---------------------------------------------------------------------------
+
+def test_google_fetch_errors_zero_ok():
+    with patch("storage.db.runtime_get_int", return_value=0):
+        result = _check_google_fetch_errors()
+    assert result.ok is True
+    assert result.value == {"gmail_fetch_error": 0, "calendar_fetch_error": 0}
+    assert result.reason is None
+
+
+def test_google_fetch_errors_gmail_nonzero_degraded():
+    def _get(key: str, default: int = 0) -> int:
+        return {"gmail_fetch_error": 2, "calendar_fetch_error": 0}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_google_fetch_errors()
+    assert result.ok is False
+    assert result.value["gmail_fetch_error"] == 2
+    assert "gmail_fetch_error=2" in (result.reason or "")
+
+
+def test_google_fetch_errors_calendar_nonzero_degraded():
+    def _get(key: str, default: int = 0) -> int:
+        return {"gmail_fetch_error": 0, "calendar_fetch_error": 5}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_google_fetch_errors()
+    assert result.ok is False
+    assert result.value["calendar_fetch_error"] == 5
+    assert "calendar_fetch_error=5" in (result.reason or "")
+
+
+def test_google_fetch_errors_both_nonzero_reason_combines():
+    def _get(key: str, default: int = 0) -> int:
+        return {"gmail_fetch_error": 1, "calendar_fetch_error": 1}.get(key, default)
+
+    with patch("storage.db.runtime_get_int", side_effect=_get):
+        result = _check_google_fetch_errors()
+    assert result.ok is False
+    assert "gmail_fetch_error=1" in result.reason
+    assert "calendar_fetch_error=1" in result.reason
+
+
+def test_google_fetch_errors_db_exception_returns_degraded():
+    with patch("storage.db.runtime_get_int", side_effect=RuntimeError("db gone")):
+        result = _check_google_fetch_errors()
     assert result.ok is False
     assert "exception:RuntimeError" in (result.reason or "")

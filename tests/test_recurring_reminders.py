@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 import importlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -413,6 +413,96 @@ async def test_fire_due_reminders_updates_due_at_across_two_firings(_isolated_db
     assert second_due == first_due, (
         "Both fires advance from the same anchor, so the new due_at should be identical"
     )
+
+
+@pytest.mark.asyncio
+async def test_recurrence_reschedule_clamps_to_now_after_downtime(_isolated_db, monkeypatch):
+    """A recurrence reminder that missed many intervals while the bot was
+    down (or the process was asleep) must catch up to a single future
+    fire_at in one pass — not merely advance by one interval past the stale
+    fire_at, which would leave it immediately due again on the next poll and
+    fire once per poll until it finally catches up (the multi-fire bug)."""
+    db = _isolated_db
+
+    # 9 missed 20-min intervals plus a remainder, so the catch-up loop must
+    # iterate more than once and land on a genuinely future timestamp.
+    long_ago = datetime.now(UTC) - timedelta(minutes=185)
+    rid = db.reminder_insert(
+        fire_at=long_ago.isoformat(),
+        text="hydrate",
+        recurrence_rule="every_n_minutes:20",
+    )
+
+    import agents.proactive as _proactive
+    mock_reserve = AsyncMock()
+    mock_reserve.return_value = MagicMock(status="sent", reason=None)
+    monkeypatch.setattr(_proactive, "reserve_and_send", mock_reserve)
+
+    async def fake_send(s: str):
+        return None
+
+    from agents.proactive import fire_due_reminders
+    count = await fire_due_reminders(fake_send)
+    assert count == 1
+
+    row = next(r for r in db.reminder_list(active_only=True) if r["id"] == rid)
+    new_due = datetime.fromisoformat(row["fire_at"])
+    now = datetime.now(UTC)
+    assert new_due > now, (
+        f"next fire_at {new_due} must be in the future — a still-past fire_at "
+        "means the row stays due and refires on the very next poll"
+    )
+    assert (new_due - now).total_seconds() <= 20 * 60 + 5, (
+        f"next fire_at {new_due} should be within one interval of now, not further"
+    )
+
+    # Confirm the row is no longer due — proves the catch-up actually
+    # prevents the immediate-next-poll re-fire the bug produced.
+    count2 = await fire_due_reminders(fake_send)
+    assert count2 == 0, "reminder must not still be due immediately after catch-up"
+
+
+@pytest.mark.asyncio
+async def test_recurrence_dedup_key_is_occurrence_scoped(_isolated_db, monkeypatch):
+    """Before the fix, dedup_key was constant (id only) checked against a
+    60-min window, so a sub-60-min recurrence's second occurrence was
+    silently swallowed as a 'duplicate' of the first send. The key must be
+    scoped by fire_at so each occurrence gets its own dedup identity —
+    exercised here against the REAL reserve_and_send/proactive_gate dedup
+    logic, not a mock."""
+    db = _isolated_db
+
+    import agents.proactive_gate as _gate
+    monkeypatch.setattr(_gate, "_is_quiet_now", lambda _db=None: False)
+    monkeypatch.setattr(_gate, "_silence_active", lambda _db: False)
+
+    sent: list[str] = []
+
+    async def fake_send(s: str):
+        sent.append(s)
+
+    first_due = datetime.now(UTC) - timedelta(seconds=5)
+    rid = db.reminder_insert(
+        fire_at=first_due.isoformat(),
+        text="drink water",
+        recurrence_rule="every_n_minutes:20",
+    )
+
+    from agents.proactive import fire_due_reminders
+    count1 = await fire_due_reminders(fake_send)
+    assert count1 == 1
+    assert len(sent) == 1
+
+    # Simulate the SECOND occurrence becoming due shortly after — well inside
+    # the old 60-min dedup window, but a genuinely distinct occurrence.
+    second_due = datetime.now(UTC) - timedelta(seconds=1)
+    db.reminder_update_fire_at(rid, second_due.isoformat())
+
+    count2 = await fire_due_reminders(fake_send)
+    assert count2 == 1, (
+        "second occurrence must NOT be swallowed by the first send's dedup window"
+    )
+    assert len(sent) == 2
 
 
 @pytest.mark.asyncio

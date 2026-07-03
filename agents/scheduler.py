@@ -196,6 +196,39 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         coalesce=True, max_instances=1, misfire_grace_time=600,
     )
 
+    # Bug 1 fix follow-up: the Google Workspace refresh token was only ever
+    # probed once, at startup (telegram_bridge.post_init). With the OAuth app
+    # in Testing mode, Google force-expires the token every 7 days — a token
+    # that dies mid-uptime went undetected until restart, silently emptying
+    # every gmail/calendar fetch. Re-probe periodically and write the same
+    # runtime_state row post_init writes so _calendar_creds_healthy() (and any
+    # future caller) sees a fresh verdict without a restart.
+    async def _google_health_probe_job():
+        from agents.google_health import probe_google_token  # noqa: PLC0415
+        from storage import db  # noqa: PLC0415
+        try:
+            healthy, reason = await probe_google_token()
+        except Exception:
+            logger.exception("google_health_probe (periodic): probe raised")
+            return
+        if healthy:
+            db.runtime_set("calendar_heartbeat_healthy", "1")
+        else:
+            db.runtime_set("calendar_heartbeat_healthy", f"0:{reason}")
+            logger.warning(
+                "google_workspace: refresh token UNHEALTHY (periodic probe) "
+                "(%s). calendar/gmail/drive tools will 401.",
+                reason,
+            )
+
+    google_health_interval_min = int(cfg.get("google_health.probe_interval_minutes", 45))
+    scheduler.add_job(
+        _google_health_probe_job,
+        IntervalTrigger(minutes=google_health_interval_min),
+        id="google_health_probe",
+        coalesce=True, max_instances=1, misfire_grace_time=600,
+    )
+
     # Daily reflection: 09:00 local (use OS-local TZ via cron trigger without tz)
     scheduler.add_job(
         run_daily_reflection,

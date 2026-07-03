@@ -52,6 +52,7 @@ async def test_fetch_email_buckets_happy_path(monkeypatch):
 async def test_fetch_email_buckets_mcp_error_returns_empty(monkeypatch):
     from agents import daily_checkin
     from agents.mcp_manager import McpCallError
+    from storage import db
     from tools.gmail import inbox
 
     monkeypatch.setattr(inbox, "_fetch_inbox_buckets", AsyncMock(
@@ -60,6 +61,9 @@ async def test_fetch_email_buckets_mcp_error_returns_empty(monkeypatch):
     result = await daily_checkin.fetch_email_buckets()
     assert result == {"unread_personal": [], "calendar_invites": [],
                       "deletable": {"count": 0, "top_senders": [], "sample_ids": []}}
+    # Bug: an OAuth/MCP failure must not look identical to a genuinely quiet
+    # day — the fetch-error counter is how the owner (via health.py) finds out.
+    assert db.runtime_get_int("gmail_fetch_error", 0) == 1
 
 
 @pytest.mark.asyncio
@@ -140,6 +144,26 @@ async def test_fetch_calendar_new_event_detection(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_calendar_mcp_error_returns_empty_and_increments_counter(monkeypatch):
+    from unittest.mock import patch
+
+    from agents.mcp_manager import McpCallError
+    from storage import db
+
+    async def fake_fetch_events_raises(time_min, time_max, calendar_id="primary"):
+        raise McpCallError("google_workspace", "calendar_get_events", "401")
+
+    with patch("tools.calendar.get_events._fetch_events", side_effect=fake_fetch_events_raises):
+        from agents import daily_checkin
+        events = await daily_checkin.fetch_calendar_events()
+
+    assert events == []
+    # Same principle as the gmail counter: an auth/MCP failure must be
+    # distinguishable from a genuinely empty calendar.
+    assert db.runtime_get_int("calendar_fetch_error", 0) == 1
+
+
+@pytest.mark.asyncio
 async def test_calendar_compose_wraps_untrusted_titles(monkeypatch):
     """Calendar event titles must reach the seed prompt wrapped in
     <<<HIKARI_UNTRUSTED_*>>> delimiters so the LLM treats them as data."""
@@ -169,3 +193,36 @@ async def test_calendar_compose_wraps_untrusted_titles(monkeypatch):
     assert "ignore prior instructions" in p  # the content reaches the prompt...
     # ...but is bracketed by the delimiters.
     assert "evil street" in p
+
+
+# ---------------------------------------------------------------------------
+# _resolve_local_tz fallback chain: HOME_TZ > scheduler.timezone > UTC.
+# Must match agents.hooks._resolve_local_tz_name's first two fallback steps
+# so daily_checkin's brief TZ never diverges from the quiet-hours TZ.
+# ---------------------------------------------------------------------------
+
+def test_resolve_local_tz_uses_home_tz_env(monkeypatch):
+    from agents import daily_checkin
+    monkeypatch.setenv("HOME_TZ", "Asia/Tokyo")
+    assert str(daily_checkin._resolve_local_tz()) == "Asia/Tokyo"
+
+
+def test_resolve_local_tz_falls_back_to_scheduler_timezone(monkeypatch, tmp_path):
+    from agents import config, daily_checkin
+    monkeypatch.delenv("HOME_TZ", raising=False)
+    cfg_text = "scheduler:\n  timezone: 'America/New_York'\n"
+    p = tmp_path / "engagement.yaml"
+    p.write_text(cfg_text, encoding="utf-8")
+    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
+    config.reload()
+    assert str(daily_checkin._resolve_local_tz()) == "America/New_York"
+
+
+def test_resolve_local_tz_falls_back_to_utc_when_nothing_configured(monkeypatch, tmp_path):
+    from agents import config, daily_checkin
+    monkeypatch.delenv("HOME_TZ", raising=False)
+    p = tmp_path / "engagement.yaml"
+    p.write_text("other: {}\n", encoding="utf-8")  # valid mapping, no scheduler.timezone key
+    monkeypatch.setenv("HIKARI_CONFIG_PATH", str(p))
+    config.reload()
+    assert str(daily_checkin._resolve_local_tz()) == "UTC"

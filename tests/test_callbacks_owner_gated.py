@@ -50,7 +50,9 @@ def _make_context(bot=None):
 
 @pytest.mark.asyncio
 async def test_non_owner_callback_is_ignored():
-    """A callback from a non-owner user must answer() but not route."""
+    """A callback from a non-owner user must be dropped BEFORE answer() — the
+    owner gate now runs first so a stranger's tap gets neither an ack nor a
+    route."""
     from agents.telegram_bridge import _handle_callback
 
     update = _make_update(user_id=11111, callback_data="appr:confirm:1")
@@ -61,7 +63,7 @@ async def test_non_owner_callback_is_ignored():
         gk_mock.resolve = resolve_mock
         await _handle_callback(update, ctx)
 
-    update.callback_query.answer.assert_awaited_once()
+    update.callback_query.answer.assert_not_awaited()
     resolve_mock.assert_not_awaited()
 
 

@@ -76,11 +76,23 @@ class KeychainStore(TokenStore):
 
     def clear(self, provider: str) -> None:
         # 'grant' is the keychain item written by write_grant_to_keychain() via _GRANT_KEY.
+        from keyring.errors import PasswordDeleteError
+
+        first_failure: Exception | None = None
         for key in ("client_id", "client_secret", "refresh_token", "access_token", "grant"):
             try:
                 self._keyring.delete_password(self._service(provider), key)
-            except Exception:
-                pass  # key may not exist; best-effort
+            except PasswordDeleteError:
+                continue  # key doesn't exist — nothing to delete
+            except Exception as exc:
+                logger.warning(
+                    "auth.store: keychain delete failed for %s/%s: %r",
+                    provider, key, exc,
+                )
+                if first_failure is None:
+                    first_failure = exc
+        if first_failure is not None:
+            raise first_failure
 
 
 # Module-level singleton — created once.

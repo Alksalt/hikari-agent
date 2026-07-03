@@ -92,6 +92,50 @@ async def test_drain_text_kind(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_drain_text_persists_to_messages(tmp_path):
+    """FIX 10: a re-sent chat text row (carrying a source) is written to the
+    messages table so the reply lands in history. send_and_persist only
+    persists AFTER a confirmed inline send, so a re-drained row would otherwise
+    never appear in history (reflection/handoff missed it)."""
+    payload = {"chat_id": 7, "source": "chat", "text": "resent reply", "photo_path": None}
+    _insert_pending("text", payload)
+
+    from agents.telegram_bridge import _drain_media_outbox
+
+    bot = _FakeBot()
+    await _drain_media_outbox(bot, 7, kinds=("text",))
+
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT content, source, telegram_message_id FROM messages "
+            "WHERE role='assistant'"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "resent reply"
+    assert rows[0]["source"] == "chat"
+    assert rows[0]["telegram_message_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_drain_text_without_source_not_persisted(tmp_path):
+    """A text row with no source is delivered but NOT persisted to messages —
+    the guard keeps non-send_and_persist producers out of chat history."""
+    _insert_pending("text", {"chat_id": 7, "text": "no source row"})
+
+    from agents.telegram_bridge import _drain_media_outbox
+
+    bot = _FakeBot()
+    await _drain_media_outbox(bot, 7, kinds=("text",))
+
+    with db._conn() as c:
+        n = c.execute(
+            "SELECT COUNT(*) AS n FROM messages WHERE role='assistant'"
+        ).fetchone()["n"]
+    assert n == 0
+    assert len(bot.sent_messages) == 1  # still delivered
+
+
+@pytest.mark.asyncio
 async def test_drain_returns_per_kind_counts(tmp_path):
     """drain with multiple kinds returns count for each."""
     _insert_pending("text", {"chat_id": 7, "source": "chat", "text": "t1", "photo_path": None})

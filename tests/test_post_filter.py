@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agents import config
+from agents import config, post_filter
 from storage import db
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,9 @@ def _isolated_db(tmp_path: Path, monkeypatch):
     importlib.reload(_db_mod)
     monkeypatch.setattr(db, "_DB_PATH", db_path)
     config.reload()
+    post_filter.reload_patterns()
     yield
+    post_filter.reload_patterns()
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +300,9 @@ def _with_task_solicit_config(monkeypatch):
         return original_get(key, default)
 
     monkeypatch.setattr(cfg_mod, "get", _patched_get)
+    # task_solicit_cues are compiled into post_filter's pattern cache — drop it
+    # so this test's patched cues take effect instead of a stale prior compile.
+    post_filter.reload_patterns()
 
 
 def test_detect_task_solicit_question_trailing_emoji(monkeypatch):

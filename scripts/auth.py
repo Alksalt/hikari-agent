@@ -149,9 +149,11 @@ def _google_revoke() -> int:
     from auth.store import default_store
     store = default_store()
     provider = GoogleProvider(store)
-    provider.revoke()
-    _ok("google revoke: keychain item 'hikari-google' deleted.")
-    return 0
+    if provider.revoke():
+        _ok("google revoke: keychain item 'hikari-google' deleted.")
+        return 0
+    _err("google revoke: keychain item 'hikari-google' delete failed.")
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +195,11 @@ def _notion_status() -> int:
 def _notion_revoke() -> int:
     from auth.notion import NotionOAuthProvider
     provider = NotionOAuthProvider()
-    provider.revoke()
-    _ok("notion revoke: keychain items 'hikari-notion' and 'hikari-notion-client' deleted.")
-    return 0
+    if provider.revoke():
+        _ok("notion revoke: keychain items 'hikari-notion' and 'hikari-notion-client' deleted.")
+        return 0
+    _err("notion revoke: keychain items 'hikari-notion' / 'hikari-notion-client' delete failed.")
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +239,11 @@ def _github_status() -> int:
 def _github_revoke() -> int:
     from auth.github import GitHubPATProvider
     provider = GitHubPATProvider()
-    provider.revoke()
-    _ok("github revoke: keychain item 'hikari-github' deleted.")
-    return 0
+    if provider.revoke():
+        _ok("github revoke: keychain item 'hikari-github' deleted.")
+        return 0
+    _err("github revoke: keychain item 'hikari-github' delete failed.")
+    return 1
 
 
 # ---------------------------------------------------------------------------

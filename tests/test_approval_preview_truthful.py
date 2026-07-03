@@ -287,3 +287,28 @@ def test_non_critical_value_101_chars_truncated():
     result = _summarize("some_tool", {"description": "D" * 101})
     assert "D" * 101 not in result
     assert "…" in result
+
+
+# ---------------------------------------------------------------------------
+# python_run preview (FIX 4): full-or-refuse, not a 120-char cut
+# ---------------------------------------------------------------------------
+
+def test_python_run_preview_shows_code_past_old_cap_and_input_files():
+    """A python_run snippet longer than the old 120-char cut is shown in full,
+    and input_files (sandbox read grants) are surfaced."""
+    from tools.gatekeeper import summarize
+    code = "MARKER_" + "a" * 300  # 307 chars, no quotes/newlines to survive repr
+    out = summarize("mcp__hikari_utility__python_run", {
+        "code": code,
+        "input_files": ["/data/user_photos/a.png"],
+    })
+    assert "MARKER_" in out and ("a" * 300) in out, "code past 120 chars must show"
+    assert "/data/user_photos/a.png" in out, "input_files must be surfaced"
+
+
+def test_python_run_preview_refuses_oversized_code():
+    """Code over the 1800-char cap is refused, never silently truncated."""
+    from tools.gatekeeper import summarize
+    out = summarize("mcp__hikari_utility__python_run", {"code": "y" * 5000})
+    assert "reject" in out.lower()
+    assert "y" * 1801 not in out, "oversized code must not be shown truncated"

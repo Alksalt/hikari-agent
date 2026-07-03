@@ -376,6 +376,65 @@ async def test_already_filtered_skips_internal_filter(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_long_reply_is_chunked(monkeypatch, tmp_path):
+    """A reply over the Telegram limit is split; each chunk is sent + persisted
+    and only the LAST chunk carries the reply-quote (FIX 5)."""
+    _patch_filter(monkeypatch)
+    from agents.messaging import _TG_CHUNK_MAX, send_and_persist
+
+    bot = _FakeBot()
+    msg = _FakeMessage()
+    para = "x" * (_TG_CHUNK_MAX - 100)
+    long_text = "\n\n".join([para, para, para])  # → 3 chunks
+
+    result = await send_and_persist(
+        bot=bot, chat_id=7, text=long_text, source="chat",
+        reply_to=msg, skip_choreography=True,
+    )
+
+    assert result.ok is True
+    # First two chunks are plain sends; only the final one is a reply.
+    assert len(bot.sent_messages) == 2
+    assert len(msg.replied) == 1
+    rows = _rows()
+    assert len(rows) == 3, "every delivered chunk must be persisted"
+    for r in rows:
+        assert len(r["content"]) <= _TG_CHUNK_MAX
+
+
+@pytest.mark.asyncio
+async def test_send_failure_sends_fallback_ack(monkeypatch, tmp_path):
+    """When a chat send fails outright, a short in-voice fallback ack goes out
+    so the turn is never fully silent (FIX 5)."""
+    _patch_filter(monkeypatch)
+    from agents import messaging
+    from agents.messaging import send_and_persist
+
+    class _RecordingFailBot:
+        def __init__(self):
+            self.attempts: list[str] = []
+
+        async def send_message(self, chat_id: int, text: str):
+            self.attempts.append(text)
+            raise RuntimeError("boom")
+
+        async def send_chat_action(self, chat_id: int, action: str):
+            pass
+
+    bot = _RecordingFailBot()
+    result = await send_and_persist(
+        bot=bot, chat_id=7, text="hi there", source="chat",
+        skip_choreography=True,
+    )
+
+    assert result.ok is False
+    # Two send attempts: the real reply, then the fallback ack.
+    assert messaging._SEND_FAIL_ACK in bot.attempts
+    # Fallback is ephemeral — no persisted rows.
+    assert len(_rows()) == 0
+
+
+@pytest.mark.asyncio
 async def test_crash_mid_send_leaves_recoverable_row(monkeypatch, tmp_path):
     """When the Telegram send raises, a RECOVERABLE media_outbox row is left.
 

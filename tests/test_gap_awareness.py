@@ -94,3 +94,29 @@ def test_inject_memory_omits_gap_block_when_fresh(_isolated_db):
     out = asyncio.run(hooks.inject_memory({"prompt": "test"}, None, None))
     text = out.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "# gap_since_last:" not in text
+
+
+def test_respond_does_not_pre_write_last_user_message(_isolated_db):
+    """FIX 2: respond() must NOT pre-write last_user_message — only the
+    inject_memory hook stamps it (read-then-write). A pre-turn write made the
+    hook read ~now, killing the gap signal on every interactive turn.
+
+    With run_user_turn stubbed (no hook fires), the sentinel must survive.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    db = _isolated_db
+    sentinel = _iso(datetime(2020, 1, 1, tzinfo=UTC))
+    db.runtime_set("last_user_message", sentinel)
+
+    async def _fake_run_user_turn(prompt: str) -> str:
+        return ""
+
+    from agents import runtime
+    with patch.object(runtime, "run_user_turn", side_effect=_fake_run_user_turn):
+        asyncio.run(runtime.respond("hello"))
+
+    assert db.runtime_get("last_user_message") == sentinel, (
+        "respond() must not touch last_user_message; the hook is the sole writer"
+    )

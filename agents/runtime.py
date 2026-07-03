@@ -974,7 +974,14 @@ async def _invoke_sdk_persistent_live(
                     reason,
                 )
         await sdk_pool._reconnect_live(f"{reason} on user turn", lock_run=False)
-        result = await _run_one()   # one retry; re-raises on second failure
+        try:
+            result = await _run_one()   # one retry; re-raises on second failure
+        except Exception:
+            # Second failure — poison the cached live client so the next turn
+            # forces a fresh reconnect via get_live_client() instead of reusing
+            # the broken transport for every subsequent turn.
+            sdk_pool._live.client = None
+            raise
 
     sdk_pool._maybe_schedule_live_recycle()
     if tool_names_sink is not None:
@@ -1354,7 +1361,10 @@ async def respond(
     clean. Reply context leads, then belief context, then the raw user text.
     """
     mid = db.append_message("user", user_text)
-    db.runtime_set("last_user_message", db._now())
+    # last_user_message is written solely by the inject_memory hook (read-then-
+    # stamp) so gap_since_last sees the *previous* turn's timestamp. Writing it
+    # here — before the SDK turn — made the hook always read ~now, killing the
+    # gap signal on every interactive turn.
     db.runtime_set("last_user_message_id", str(mid))
     prefixes = [p for p in (internal_reply_context, internal_belief_context) if p]
     if prefixes:

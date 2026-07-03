@@ -302,6 +302,7 @@ async def _send_outbox_text(bot, chat_id: int, row: dict) -> int | None:  # noqa
     if not text:
         db.media_outbox_mark_aborted(row["id"], "empty_text")
         return None
+    source = payload.get("source")
     try:
         tg_msg = await bot.send_message(chat_id=chat_id, text=text)  # noqa: HIKARI001
         tg_msg_id = getattr(tg_msg, "message_id", None)
@@ -310,6 +311,24 @@ async def _send_outbox_text(bot, chat_id: int, row: dict) -> int | None:  # noqa
             db.media_events_insert("text", telegram_message_id=tg_msg_id)
         except Exception:
             logger.exception("media_events_insert failed for text row %s (non-fatal)", row["id"])
+        # send_and_persist writes the assistant `messages` row only AFTER a
+        # confirmed inline send, so a re-drained text row means that inline send
+        # failed and no history row exists yet. Persist it now so the delivered
+        # reply lands in history (reflection/handoff never saw re-sent replies).
+        # No double-persist: 'sent' rows are never re-drained. Guard on source
+        # (every send_and_persist text row carries it).
+        if source:
+            try:
+                if tg_msg_id is not None:
+                    db.append_message_with_telegram_id(
+                        "assistant", text, tg_msg_id, source=source,
+                    )
+                else:
+                    db.append_message("assistant", text, source=source)
+            except Exception:
+                logger.exception(
+                    "append_message failed for re-sent text row %s (non-fatal)", row["id"],
+                )
         return tg_msg_id
     except Exception:
         logger.exception("_drain_media_outbox: failed to send text row %s", row["id"])
@@ -558,7 +577,10 @@ async def _send_with_choreography(
         await asyncio.sleep(max(0.5, remaining / 2))
         # Telegram has no "stop typing" — the indicator decays after a few seconds.
         await asyncio.sleep(false_start_pause_sec())
-        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            logger.exception("false-start typing refresh failed (non-fatal)")
         await asyncio.sleep(false_start_resume_sec())
     elif remaining > 0:
         await asyncio.sleep(remaining)
@@ -906,6 +928,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             from tools.dispatch.task_extractor import should_extract
             if should_extract(user_text):
                 _mid = db.append_message("user", user_text)
+                # Compound turns run their sub-steps via run_internal_control
+                # (inject_memory disabled) and compose a deterministic receipt,
+                # so the hook never stamps last_user_message this turn — do it
+                # here. Non-compound turns (the respond() else-branch below) let
+                # the hook stamp it read-then-write, which is why those pre-turn
+                # writes were removed.
                 db.runtime_set("last_user_message", db._now())
                 db.runtime_set("last_user_message_id", str(_mid))
                 user_turn_id = f"turn_{_mid}"
@@ -1047,7 +1075,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if user_caption:
                 event_text += f" caption: {user_caption!r}"
             _photo_mid = db.append_message("user", event_text, source="event")
-            db.runtime_set("last_user_message", db._now())
+            # last_user_message is stamped solely by the inject_memory hook.
             db.runtime_set("last_user_message_id", str(_photo_mid))
         except Exception:
             logger.exception("photo event row write failed (non-fatal)")
@@ -1217,7 +1245,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"[voice note {duration_sec:.0f}s] transcript: {transcript!r}"
             )
             _voice_mid = db.append_message("user", event_text, source="event")
-            db.runtime_set("last_user_message", db._now())
             db.runtime_set("last_user_message_id", str(_voice_mid))
         except Exception:
             logger.exception("voice event row write failed (non-fatal)")
@@ -1226,6 +1253,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             from agents.runtime import _CURRENT_TURN_ID as _ctv
             from tools.dispatch.task_extractor import should_extract
             if should_extract(transcript) and _voice_mid is not None:
+                # Compound turns skip the inject_memory hook (run_internal_control
+                # + deterministic receipt), so stamp last_user_message here.
+                # The run_user_turn else-branch lets the hook stamp it.
+                db.runtime_set("last_user_message", db._now())
                 user_turn_id = f"turn_{_voice_mid}"
                 _ctv.set(user_turn_id)
                 reply = await run_compound_turn_typed(
@@ -1771,7 +1802,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if label:
                 event += f" exif_label: {label!r}"
             _doc_mid = db.append_message("user", event, source="event")
-            db.runtime_set("last_user_message", db._now())
+            # last_user_message is stamped solely by the inject_memory hook.
             db.runtime_set("last_user_message_id", str(_doc_mid))
         except Exception:
             logger.exception("document event row write failed (non-fatal)")
@@ -1929,6 +1960,16 @@ async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> 
         if not row:
             await send_ephemeral_ack(bot, chat_id, f"reminder {rid}: not found.", reason="cockpit_cmd")
             return
+        # fire_due_reminders flips the row to 'fired' before this keyboard is
+        # shown, and reminder_due() only re-selects 'active' rows. Accept
+        # 'active' (not yet fired) and 'fired' (this snooze button's row);
+        # refuse cancelled/dismissed. Re-activate below so it fires again.
+        if row["status"] not in ("active", "fired"):
+            await send_ephemeral_ack(
+                bot, chat_id, f"reminder {rid}: can't snooze ({row['status']}).",
+                reason="cockpit_cmd",
+            )
+            return
         from agents.cockpit import _parse_duration
         secs = _parse_duration(extra or "10m")
         if secs is None:
@@ -1939,6 +1980,7 @@ async def _cb_reminder(bot, chat_id: int, action: str, rid: int, extra: str) -> 
         fire_at = _dt.now(UTC) + _td(seconds=secs)
         try:
             db.reminder_update_fire_at(rid, fire_at.isoformat())
+            db.reminder_set_status(rid, "active")
             db.reminder_requeue_sync(rid)
             await send_ephemeral_ack(bot, chat_id, f"reminder {rid}: snoozed {extra or '10m'}.", reason="cockpit_cmd")
         except Exception as exc:
@@ -1997,7 +2039,12 @@ async def _cb_offer(bot, chat_id: int, row_id: int, offer_id: str) -> None:
     if entry is None:
         await bot.send_message(chat_id=chat_id, text="that button expired. ask me directly.")
         return
-    reply = await respond(str(entry["phrase"]))
+    try:
+        reply = await respond(str(entry["phrase"]))
+    except Exception:
+        logger.exception("_cb_offer: respond() failed for offer_id=%r", offer_id)
+        await bot.send_message(chat_id=chat_id, text="(brain hit a wall. try again.)")
+        return
     if reply:
         await _send_text_with_choreography(bot, chat_id, reply, source="chat")
 
@@ -2007,9 +2054,10 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     if not query:
         return
-    await query.answer()
+    # Owner gate BEFORE answering: a non-owner tap must not get an ack.
     if not query.from_user or query.from_user.id != owner_id():
         return
+    await query.answer()
     chat_id = query.message.chat_id if query.message else owner_id()
     bot = context.bot
     data = query.data or ""
@@ -2359,7 +2407,14 @@ def build_application() -> Application:
     # handle_message and get a normal in-character conversational turn.
     app.add_handler(CallbackQueryHandler(_handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    # Scope to non-edited messages: filters.LOCATION alone also matches
+    # edited_message (live-location ticks), and PTB runs only the first matching
+    # handler per group — so an unqualified LOCATION handler swallowed every edit
+    # (handle_location early-returns on update.message=None) and starved
+    # handle_edited_location. UpdateType.MESSAGE lets edits fall through.
+    app.add_handler(MessageHandler(
+        filters.UpdateType.MESSAGE & filters.LOCATION, handle_location,
+    ))
     # T7.2: live location updates arrive as edited_message events. Telegram
     # bot library exposes these via filters.UpdateType.EDITED_MESSAGE which we
     # intersect with LOCATION so we ignore plain text edits.

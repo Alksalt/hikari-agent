@@ -11,7 +11,7 @@ from agents.engagement.triggers import TriggerCandidate
 logger = logging.getLogger(__name__)
 
 
-def should_wake(source_id: str | None = None) -> bool:
+def should_wake() -> bool:
     """Return True if the engagement tick should proceed.
 
     Checks:
@@ -22,8 +22,10 @@ def should_wake(source_id: str | None = None) -> bool:
     - quiet hours (canonical _is_quiet_now from agents.proactive)
     - global silence window from runtime_state
 
-    Optional per-source min_interval check lives in selector._hard_interval_blocked;
-    this gate is the tick-level fast-path that skips the whole producer scan.
+    No per-source policy exists (or is configured) today — every caller gets
+    the same global noise floor. Optional per-source min_interval check lives
+    in selector._hard_interval_blocked; this gate is the tick-level fast-path
+    that skips the whole producer scan.
     """
     # Explicit dev-only env var that truly bypasses everything (including noise floor).
     # This is intentionally NOT the scheduler_gate_enabled config flag.

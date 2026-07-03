@@ -44,3 +44,65 @@ def test_daily_brief_job_can_be_disabled(monkeypatch):
     sched = build_scheduler(fake_send)
     job_ids = [j.id for j in sched.get_jobs()]
     assert "daily_brief" not in job_ids
+
+
+def test_google_health_probe_job_registered():
+    """Bug 1 follow-up: a periodic re-probe must exist so a token that dies
+    mid-uptime (7-day Testing-mode expiry) is caught without a restart —
+    post_init only probes once at startup."""
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from agents.scheduler import build_scheduler
+    async def fake_send(s): return None
+    sched = build_scheduler(fake_send)
+    job = sched.get_job("google_health_probe")
+    assert job is not None
+    assert isinstance(job.trigger, IntervalTrigger)
+
+
+def test_google_health_probe_interval_configurable(monkeypatch):
+    from agents import config as cfg
+    from agents.scheduler import build_scheduler
+    orig_get = cfg.get
+    monkeypatch.setattr(
+        cfg, "get",
+        lambda k, d=None: 7 if k == "google_health.probe_interval_minutes" else orig_get(k, d),
+    )
+    async def fake_send(s): return None
+    sched = build_scheduler(fake_send)
+    job = sched.get_job("google_health_probe")
+    assert job.trigger.interval.total_seconds() == 7 * 60
+
+
+@pytest.mark.asyncio
+async def test_google_health_probe_job_writes_healthy_state(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from agents.scheduler import build_scheduler
+    from storage import db
+
+    async def fake_send(s): return None
+    sched = build_scheduler(fake_send)
+    job = sched.get_job("google_health_probe")
+
+    import agents.google_health as _gh
+    monkeypatch.setattr(_gh, "probe_google_token", AsyncMock(return_value=(True, "")))
+    await job.func()
+    assert db.runtime_get("calendar_heartbeat_healthy") == "1"
+
+
+@pytest.mark.asyncio
+async def test_google_health_probe_job_writes_unhealthy_state(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from agents.scheduler import build_scheduler
+    from storage import db
+
+    async def fake_send(s): return None
+    sched = build_scheduler(fake_send)
+    job = sched.get_job("google_health_probe")
+
+    import agents.google_health as _gh
+    monkeypatch.setattr(_gh, "probe_google_token", AsyncMock(return_value=(False, "invalid_grant")))
+    await job.func()
+    assert db.runtime_get("calendar_heartbeat_healthy") == "0:invalid_grant"

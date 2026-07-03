@@ -205,6 +205,12 @@ def _reschedule_action_row(row: dict) -> None:
         if current_due.tzinfo is None:
             current_due = current_due.replace(tzinfo=UTC)
         new_due = _recurrence_next(recurrence_rule, current_due)
+        # Clamp to now: same catch-up as the recurrence_rule path in
+        # fire_due_reminders — a still-past new_due after downtime leaves the
+        # row immediately due again, re-running the action once per poll.
+        now = datetime.now(UTC)
+        while new_due <= now:
+            new_due = _recurrence_next(recurrence_rule, new_due)
         db.reminder_update_fire_at(row["id"], new_due.isoformat())
         db.reminder_requeue_sync(row["id"])
     except Exception:
@@ -232,7 +238,7 @@ async def _fire_action_reminder(row: dict, send_text_fn) -> int:
     # schedule but quiet-hours is the global noise gate for proactive sends.
     try:
         from agents.engagement.guard import should_wake
-        if not should_wake(source_id="reminder_action"):
+        if not should_wake():
             new_due = datetime.now(UTC) + timedelta(minutes=15)
             db.reminder_update_fire_at(rid, new_due.isoformat())
             logger.info(
@@ -370,7 +376,8 @@ async def fire_due_reminders(send_text) -> int:
             pattern="fire",
             text=text,
             payload_json=payload,
-            dedup_key=f"reminder:{row['id']}",
+            dedup_key=f"reminder:{row['id']}:{row['fire_at']}",
+            dedup_window_minutes=5,
             candidate={
                 "anchor": str(row["id"]),
                 "why_now": f"reminder fires at {row['fire_at']}",
@@ -410,6 +417,13 @@ async def fire_due_reminders(send_text) -> int:
                 if current_due.tzinfo is None:
                     current_due = current_due.replace(tzinfo=UTC)
                 next_due = _recurrence_next(recurrence_rule, current_due)
+                # Clamp to now: if the scheduler was delayed (downtime, missed
+                # polls), don't leave next_due in the past — that would make
+                # the row immediately due again and fire once per poll until
+                # it catches up. Mirrors the legacy repeat path's max(when, now).
+                now = datetime.now(UTC)
+                while next_due <= now:
+                    next_due = _recurrence_next(recurrence_rule, next_due)
                 db.reminder_update_fire_at(row["id"], next_due.isoformat())
                 db.reminder_requeue_sync(row["id"])
                 logger.debug(
@@ -489,6 +503,11 @@ async def _notify_gcal_sync_failed(row: dict[str, Any], exc: Exception) -> None:
     The reminder itself still fires via Telegram — only the optional Google
     Calendar event failed to save. Surfacing this is the whole point: a silent
     mirror failure is what let Hikari claim a calendar write that never landed.
+
+    Routed through reserve_and_send (producer_id="reminder", the same user-
+    reminder exemption fire_due_reminders uses) so this notice still honors
+    silence windows / quiet hours — sending it via a raw Bot call would
+    bypass every send-gate the rest of the proactive system respects.
     """
     rid = row["id"]
     title = (row.get("text") or "reminder").strip()
@@ -497,7 +516,8 @@ async def _notify_gcal_sync_failed(row: dict[str, Any], exc: Exception) -> None:
         f"{_GCAL_SYNC_MAX_RETRIES} tries — reminder #{rid}. the reminder still "
         f"fires, the calendar event didn't. last error: {type(exc).__name__}."
     )
-    try:
+
+    async def _send_text_fn(text: str) -> tuple[str, int | None, bool]:
         import os
 
         from telegram import Bot
@@ -512,20 +532,43 @@ async def _notify_gcal_sync_failed(row: dict[str, Any], exc: Exception) -> None:
                 "that reminder #%s failed to mirror to calendar",
                 rid,
             )
-            return
+            return text, None, False
         # Same direct-Bot path the media_outbox drain job uses: this runs from a
         # scheduler job with no send_text_fn in scope.
         result = await send_and_persist(
             bot=Bot(token=token),
             chat_id=owner_id(),
-            text=msg,
+            text=text,
             source="proactive",
             skip_choreography=True,
         )
-        if not result.ok:
+        final_text = getattr(result, "final_text", text)
+        tg_id = getattr(result, "telegram_message_id", None)
+        ok = bool(getattr(result, "ok", False))
+        return final_text, tg_id, ok
+
+    try:
+        import json as _json
+        result = await reserve_and_send(
+            send_text_fn=_send_text_fn,
+            producer_id="reminder",
+            pattern="gcal_mirror_failed",
+            text=msg,
+            payload_json=_json.dumps({"reminder_id": rid, "kind": "gcal_mirror_failed"}),
+            dedup_key=f"gcal_fail:{rid}",
+            candidate={
+                "anchor": str(rid),
+                "why_now": "google calendar mirror abandoned after retry cap",
+                "suggested_action": "none",
+                "confidence": 1.0,
+                "controls": {"snooze_hours": [], "mute_source": "reminder"},
+                "data_checked": ["reminders"],
+            },
+        )
+        if result.status != "sent":
             logger.error(
-                "gcal sync: could not deliver mirror-failure notice for reminder #%s",
-                rid,
+                "gcal sync: could not deliver mirror-failure notice for reminder #%s (%s)",
+                rid, result.reason,
             )
     except Exception:
         logger.exception(

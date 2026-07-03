@@ -94,6 +94,29 @@ def test_allowed_tool_names_no_duplicates():
     )
 
 
+def test_every_discovered_utility_tool_has_explicit_yaml_entry():
+    """Regression guard for the wildcard-deny P0: a discovered utility tool
+    covered only by the ``mcp__hikari_utility__*`` wildcard resolves with
+    match_kind='wildcard', and the gatekeeper unconditionally denies any
+    wildcard match whose access_mode is write/destructive (the wildcard's
+    own access_mode). Wildcard-only coverage silently refuses every call
+    to that tool, so every discovered tool needs its own explicit id row.
+    """
+    from tools._registry import discover_utility_tool_names
+    from tools._tools_yaml import load_registry
+
+    registry = load_registry()
+    explicit_ids = {spec.id for spec in registry.specs() if not spec.id.endswith("*")}
+
+    names = discover_utility_tool_names()
+    assert names, "expected at least one utility tool to be discovered"
+    missing = sorted(n for n in names if n not in explicit_ids)
+    assert not missing, (
+        f"discovered utility tools with no explicit yaml id (wildcard-only "
+        f"coverage refuses these via the wildcard-write deny path): {missing}"
+    )
+
+
 def test_dedicated_server_modules_not_in_utility():
     """The registry must NOT pull memory/photos/wiki/dispatch into
     hikari_utility — those have their own MCP servers."""

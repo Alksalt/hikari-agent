@@ -95,7 +95,7 @@ class GitHubPATProvider(Provider):
       - no keychain entry: falls back to GITHUB_PERSONAL_ACCESS_TOKEN env var.
 
     refresh(): returns the stored PAT (PATs don't expire on their own).
-    revoke(): deletes the keychain entry.
+    revoke(): deletes the keychain entry; returns True on success.
     """
 
     name = "github"
@@ -119,8 +119,10 @@ class GitHubPATProvider(Provider):
             return str(blob.get("token") or "")
         return os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or ""
 
-    def revoke(self) -> None:
+    def revoke(self) -> bool:
         try:
             self._store.clear("github")
+            return True
         except Exception as exc:
-            logger.debug("GitHubPATProvider.revoke: %r", exc)
+            logger.warning("GitHubPATProvider.revoke: %r", exc)
+            return False

@@ -40,6 +40,42 @@ EphemeralReason = Literal[
 
 _MAX_TYPING_SLEEP = 2.5  # seconds
 
+# Telegram silently rejects messages over 4096 chars (BadRequest). Keep
+# headroom so a reply is never dropped for length.
+_TG_CHUNK_MAX = 4000
+
+# Short in-voice ack sent when a chat reply cannot be delivered, so the turn
+# is never fully silent.
+_SEND_FAIL_ACK = "(couldn't get that through just now — say it again?)"
+
+
+def _chunk_for_telegram(body: str, max_chars: int = _TG_CHUNK_MAX) -> list[str]:
+    """Split ``body`` into chunks no larger than ``max_chars``, preferring
+    paragraph (``\\n\\n``), then line (``\\n``), then sentence (``". "``), then
+    word boundaries, with a hard cut as the last resort. Single chunk when the
+    body already fits. Adapted from ``agents.future_letter._chunk_for_telegram``.
+    """
+    if len(body) <= max_chars:
+        return [body]
+    chunks: list[str] = []
+    remaining = body
+    while len(remaining) > max_chars:
+        cut = remaining.rfind("\n\n", 0, max_chars)
+        if cut <= 0:
+            cut = remaining.rfind("\n", 0, max_chars)
+        if cut <= 0:
+            sentence = remaining.rfind(". ", 0, max_chars)
+            cut = sentence + 1 if sentence > 0 else -1
+        if cut <= 0:
+            cut = remaining.rfind(" ", 0, max_chars)
+        if cut <= 0:
+            cut = max_chars  # no boundary found — hard cut
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
 
 @dataclass(frozen=True)
 class SendResult:
@@ -120,34 +156,7 @@ async def send_and_persist(
         else:
             final_text = result.text
 
-    # Compute idempotency key from stable inputs BEFORE the Telegram call.
-    created_at_ms = int(time.time() * 1000)
-    kind_str = "photo" if photo_path is not None else "text"
-    _ikey_raw = f"{kind_str}{final_text or ''}{created_at_ms}"
-    idempotency_key = hashlib.sha256(_ikey_raw.encode()).hexdigest()[:32]
-
-    # Insert media_outbox row BEFORE the Telegram call (crash-safe durability).
-    _outbox_row_id: int | None = None
-    try:
-        _outbox_row_id = _db.media_outbox_insert(
-            kind_str,
-            idempotency_key,
-            {
-                "chat_id": chat_id,
-                "source": source,
-                "text": final_text,
-                "photo_path": str(photo_path) if photo_path is not None else None,
-            },
-            # Pre-claim: this row is sent IN-LINE just below, so the periodic
-            # media_outbox drain must never grab it (was double-sending every
-            # top-of-hour reminder). On crash before mark_sent the stale-sending
-            # reaper re-queues it. Covers kind='text' AND kind='photo'.
-            claim_inline=True,
-        )
-    except Exception:
-        logger.exception("send_and_persist: media_outbox pre-insert failed (non-fatal)")
-
-    # Typing choreography: best-effort, non-fatal.
+    # Typing choreography: best-effort, non-fatal. Once for the whole reply.
     if not skip_choreography and text and hasattr(bot, "send_chat_action"):
         try:
             await bot.send_chat_action(chat_id, "typing")
@@ -156,60 +165,120 @@ async def send_and_persist(
         except Exception:  # noqa: BLE001
             logger.debug("send_and_persist: typing action failed (non-fatal)")
 
-    # Send the message.
-    tg_msg = None
-    try:
-        if photo_path is not None:
-            with open(photo_path, "rb") as photo_fh:
-                tg_msg = await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo_fh,
-                    caption=final_text or None,
-                )
-        elif reply_to is not None:
-            tg_msg = await reply_to.reply_text(final_text)
-        else:
-            tg_msg = await bot.send_message(chat_id=chat_id, text=final_text)
-    except Exception as _exc:
-        logger.exception("send_and_persist: Telegram send failed")
+    # Split long text replies so Telegram's 4096-char hard limit never silently
+    # drops the message (BadRequest → outbox failed → reaper re-sends the same
+    # over-long text). Photo sends stay single (caption has its own limit).
+    if photo_path is None and final_text:
+        chunks = _chunk_for_telegram(final_text)
+    else:
+        chunks = [final_text]
+
+    created_at_ms = int(time.time() * 1000)
+    kind_str = "photo" if photo_path is not None else "text"
+    n_chunks = len(chunks)
+
+    sent_any = False
+    first_tg_id: int | None = None
+    last_tg_id: int | None = None
+
+    for idx, chunk in enumerate(chunks):
+        is_last = idx == n_chunks - 1
+
+        # Compute idempotency key per chunk BEFORE the Telegram call.
+        _ikey_raw = f"{kind_str}{chunk or ''}{created_at_ms}{idx}"
+        idempotency_key = hashlib.sha256(_ikey_raw.encode()).hexdigest()[:32]
+
+        # Insert media_outbox row BEFORE the Telegram call (crash-safe durability).
+        # Pre-claim: this row is sent IN-LINE just below, so the periodic
+        # media_outbox drain must never grab it. On crash before mark_sent the
+        # stale-sending reaper re-queues it. Covers kind='text' AND kind='photo'.
+        _outbox_row_id: int | None = None
+        try:
+            _outbox_row_id = _db.media_outbox_insert(
+                kind_str,
+                idempotency_key,
+                {
+                    "chat_id": chat_id,
+                    "source": source,
+                    "text": chunk,
+                    "photo_path": str(photo_path) if photo_path is not None else None,
+                },
+                claim_inline=True,
+            )
+        except Exception:
+            logger.exception("send_and_persist: media_outbox pre-insert failed (non-fatal)")
+
+        # Send. Only the final chunk carries the reply-quote.
+        tg_msg = None
+        try:
+            if photo_path is not None:
+                with open(photo_path, "rb") as photo_fh:
+                    tg_msg = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_fh,
+                        caption=chunk or None,
+                    )
+            elif reply_to is not None and is_last:
+                tg_msg = await reply_to.reply_text(chunk)
+            else:
+                tg_msg = await bot.send_message(chat_id=chat_id, text=chunk)
+        except Exception as _exc:
+            logger.exception("send_and_persist: Telegram send failed")
+            if _outbox_row_id is not None:
+                try:
+                    # max_attempts=3 matches the drain dispatcher's contract
+                    # (telegram_bridge._drain_media_outbox). Without it, a 'text'
+                    # row terminalized to 'failed' on the FIRST transient blip —
+                    # one ConnectError permanently dropped the message. With a
+                    # budget the row stays 'sending' → the stale-sending reaper
+                    # requeues it → the drain re-sends. Recovery in minutes.
+                    _db.media_outbox_mark_failed(_outbox_row_id, str(_exc), max_attempts=3)
+                except Exception:
+                    logger.exception("send_and_persist: media_outbox_mark_failed failed (non-fatal)")
+            # Never leave a chat turn fully silent: if nothing has gone out yet,
+            # try one short in-voice ack. Best-effort — if the transport itself
+            # is down this fails too, but the >4096 BadRequest case that used to
+            # drop replies is already handled by the chunking above.
+            if not sent_any and source == "chat":
+                try:
+                    if reply_to is not None:
+                        await reply_to.reply_text(_SEND_FAIL_ACK)
+                    else:
+                        await bot.send_message(chat_id=chat_id, text=_SEND_FAIL_ACK)
+                except Exception:
+                    logger.debug("send_and_persist: fallback ack also failed (non-fatal)")
+            return SendResult(final_text, first_tg_id, False)
+
+        tg_msg_id: int | None = getattr(tg_msg, "message_id", None)
+
+        # Mark outbox row sent.
         if _outbox_row_id is not None:
             try:
-                # max_attempts=3 matches the drain dispatcher's contract
-                # (telegram_bridge._drain_media_outbox). Without it, a 'text' row
-                # terminalized to 'failed' on the FIRST transient network blip —
-                # one ConnectError permanently dropped the message. With a budget,
-                # the row stays 'sending' → the stale-sending reaper requeues it →
-                # the drain re-sends. Recovery in minutes instead of never.
-                _db.media_outbox_mark_failed(_outbox_row_id, str(_exc), max_attempts=3)
+                _db.media_outbox_mark_sent(_outbox_row_id, tg_msg_id)
             except Exception:
-                logger.exception("send_and_persist: media_outbox_mark_failed failed (non-fatal)")
-        return SendResult(final_text, None, False)
+                logger.exception("send_and_persist: media_outbox_mark_sent failed (non-fatal)")
 
-    tg_msg_id: int | None = getattr(tg_msg, "message_id", None)
+        # Persist to DB after a confirmed send (one row per delivered chunk).
+        if persist and chunk:
+            try:
+                if tg_msg_id is not None:
+                    _db.append_message_with_telegram_id(
+                        "assistant", chunk, tg_msg_id, source=source
+                    )
+                else:
+                    _db.append_message("assistant", chunk, source=source)
+            except Exception:
+                logger.exception("send_and_persist: DB persist failed (send was ok)")
 
-    # Mark outbox row sent.
-    if _outbox_row_id is not None:
-        try:
-            _db.media_outbox_mark_sent(_outbox_row_id, tg_msg_id)
-        except Exception:
-            logger.exception("send_and_persist: media_outbox_mark_sent failed (non-fatal)")
-
-    # Persist to DB after a confirmed send.
-    if persist and final_text:
-        try:
-            if tg_msg_id is not None:
-                _db.append_message_with_telegram_id(
-                    "assistant", final_text, tg_msg_id, source=source
-                )
-            else:
-                _db.append_message("assistant", final_text, source=source)
-        except Exception:
-            logger.exception("send_and_persist: DB persist failed (send was ok)")
+        sent_any = True
+        if first_tg_id is None:
+            first_tg_id = tg_msg_id
+        last_tg_id = tg_msg_id
 
     # run_hooks is reserved — callers (bridge) invoke hooks themselves.
     _ = run_hooks
 
-    return SendResult(final_text, tg_msg_id, True)
+    return SendResult(final_text, last_tg_id, True)
 
 
 async def send_ephemeral_ack(  # noqa: HIKARI001

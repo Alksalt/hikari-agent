@@ -16,12 +16,18 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HIKARI_DB_PATH", str(tmp_path / "hikari.db"))
+    monkeypatch.setenv("DAY_RECEIPT_DB", str(tmp_path / "receipt.db"))
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "12345")
 
     import storage.db as _db_mod
     importlib.reload(_db_mod)
 
+    from tools.day_receipt import _db as _receipt_db
+    _receipt_db._reset_schema_sentinel()
+
     yield tmp_path
+
+    _receipt_db._reset_schema_sentinel()
 
 
 # ---------- _is_review_window ----------
@@ -93,6 +99,57 @@ def test_gather_year_data_empty_when_no_episodes():
     assert data["receipts_by_category"] == {}
     assert data["decisions_resolved_count"] == 0
     assert data["drift_class_counts"] == {}
+
+
+def test_gather_year_data_reads_receipts_from_day_receipt_db():
+    """Receipts live in the separate day_receipt sqlite, not a `receipts`
+    table in hikari.db. Aggregation must read entries by category for the
+    target year and ignore entries outside it."""
+    from datetime import date as _date
+
+    from agents.annual_review import _gather_year_data
+    from tools.day_receipt._db import add_entry
+
+    add_entry("made", "shipped the thing", _date(2025, 3, 1))
+    add_entry("made", "shipped another thing", _date(2025, 6, 1))
+    add_entry("learned", "picked up a new pattern", _date(2025, 9, 1))
+    # Outside the target year — must not be counted.
+    add_entry("avoided", "skipped the gym", _date(2024, 12, 31))
+    add_entry("avoided", "skipped again", _date(2026, 1, 1))
+
+    data = _gather_year_data(2025)
+    assert data["receipts_by_category"] == {"made": 2, "learned": 1}
+
+
+def test_gather_year_data_reads_drift_by_sampled_at_column():
+    """persona_drift_scores has no `ts` column — the real column is
+    `sampled_at`. A query against `ts` silently returns nothing (wrapped in
+    except: pass), so this must aggregate using `sampled_at`."""
+    from agents.annual_review import _gather_year_data
+    from storage import db
+
+    with db._conn() as c:
+        c.execute(
+            "INSERT INTO persona_drift_scores "
+            "(text_snippet, score, class_label, sampled_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("in year", 0.9, "hikari", "2025-05-01T00:00:00+00:00"),
+        )
+        c.execute(
+            "INSERT INTO persona_drift_scores "
+            "(text_snippet, score, class_label, sampled_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("in year drift", 0.2, "drifting", "2025-08-01T00:00:00+00:00"),
+        )
+        c.execute(
+            "INSERT INTO persona_drift_scores "
+            "(text_snippet, score, class_label, sampled_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("out of year", 0.9, "hikari", "2024-01-01T00:00:00+00:00"),
+        )
+
+    data = _gather_year_data(2025)
+    assert data["drift_class_counts"] == {"hikari": 1, "drifting": 1}
 
 
 # ---------- _build_review_prompt ----------

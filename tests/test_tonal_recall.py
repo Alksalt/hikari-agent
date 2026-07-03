@@ -59,6 +59,15 @@ def _insert_message(role: str, content: str):
         )
 
 
+def _insert_message_at(role: str, content: str, ts: str):
+    from storage import db
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO messages (role, content, ts) VALUES (?, ?, ?)",
+            (role, content, ts),
+        )
+
+
 # ---------------------------------------------------------------------------
 # 1. LLM returns 'warm' → emotional_register = 'warm'
 # ---------------------------------------------------------------------------
@@ -240,3 +249,34 @@ async def test_all_allowed_registers_persist(register, monkeypatch):
     result = await tonal_recall.compute_session_register("test-session-001")
     assert result == register
     assert _get_emotional_register() == register
+
+
+# ---------------------------------------------------------------------------
+# 8. Evening-local session lands on UTC date D-1 — must still be picked up
+#    (Wave fix: calendar-date keying dropped in favor of a recency window)
+# ---------------------------------------------------------------------------
+
+async def test_message_from_prior_utc_date_still_classified(monkeypatch):
+    """A message stamped with yesterday's UTC date (e.g. an evening-local
+    session in a timezone behind UTC) must still be included — the 09:00-LOCAL
+    daily reflection is the only caller, and a same-UTC-day filter would drop
+    it entirely, silently keeping the register at 'neutral' forever."""
+    from datetime import UTC, datetime, timedelta
+
+    from agents import tonal_recall
+
+    _seed_session_row()
+    yesterday_ts = (datetime.now(UTC) - timedelta(days=1, hours=1)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    _insert_message_at("user", "this was a rough one, need to talk", yesterday_ts)
+
+    async def _fake_aux(prompt, *, system=None, max_tokens=16):
+        assert "rough one" in prompt
+        return "significant"
+
+    monkeypatch.setattr("agents.tonal_recall.run_aux_composition", _fake_aux)
+
+    result = await tonal_recall.compute_session_register("test-session-001")
+    assert result == "significant"
+    assert _get_emotional_register() == "significant"

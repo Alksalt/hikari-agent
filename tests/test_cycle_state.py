@@ -301,7 +301,7 @@ def test_time_texture_job_writes_runtime_state(monkeypatch):
     with patch("datetime.datetime") as mock_dt_class:
         mock_dt_class.now.return_value = frozen
 
-        asyncio.get_event_loop().run_until_complete(_time_texture_job())
+        asyncio.run(_time_texture_job())
 
     val = db.runtime_get("time_texture")
     assert val == "late_night"

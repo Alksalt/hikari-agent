@@ -70,6 +70,32 @@ async def test_reminder_push_no_double_prefix():
 
 
 @pytest.mark.asyncio
+async def test_fire_due_reminders_dedup_key_is_occurrence_scoped(monkeypatch):
+    """dedup_key must include fire_at (not just the reminder id) and the
+    window must be short — a constant id-only key with the 60-min default
+    window swallows any sub-60-min recurrence's later occurrences as
+    'duplicates' of the first send."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import agents.proactive as _proactive
+    mock_reserve = AsyncMock()
+    mock_reserve.return_value = MagicMock(status="sent", reason=None, telegram_message_id=None)
+    monkeypatch.setattr(_proactive, "reserve_and_send", mock_reserve)
+
+    async def fake_send(s: str): return None
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    rid = db.reminder_insert(fire_at=past, text="ping", lead_minutes=0, repeat=None)
+
+    from agents import proactive
+    await proactive.fire_due_reminders(fake_send)
+
+    assert mock_reserve.await_count == 1
+    _, kwargs = mock_reserve.call_args
+    assert kwargs["dedup_key"] == f"reminder:{rid}:{past}"
+    assert kwargs["dedup_window_minutes"] == 5
+
+
+@pytest.mark.asyncio
 async def test_repeat_daily_reinserts_next_day():
     sent: list[str] = []
     async def fake_send(s: str): sent.append(s)
@@ -325,6 +351,50 @@ async def test_action_reminder_success_advances_fires_done(monkeypatch):
     assert row["status"] == "active"
     # No push to user during the inner work — only summary or failure surfaces.
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_reschedule_clamps_to_now_after_downtime(monkeypatch):
+    """Mirror of the fire_due_reminders recurrence clamp test for the
+    action-mode path: an action reminder that missed many intervals during
+    downtime must catch up to a single FUTURE fire_at — a still-past
+    fire_at would re-run the action once per poll until caught up."""
+    # 9 missed 20-min intervals plus a remainder → the catch-up loop must
+    # iterate more than once.
+    rid = _insert_action_row(max_fires=100, minutes_ago=185)
+
+    import agents.engagement.guard as _guard
+    from agents import proactive
+    from agents import runtime as _rt
+    monkeypatch.setattr(_guard, "should_wake", lambda source_id=None: True)
+
+    runs = {"n": 0}
+
+    async def fake_run(seed_prompt, **_kwargs):
+        runs["n"] += 1
+        return ""
+
+    monkeypatch.setattr(_rt, "run_scheduled_action", fake_run)
+
+    async def fake_send(s): pass
+
+    await proactive.fire_due_reminders(fake_send)
+    assert runs["n"] == 1
+
+    row = db.reminder_get(rid)
+    new_due = datetime.fromisoformat(row["fire_at"])
+    now = datetime.now(UTC)
+    assert new_due > now, (
+        f"next fire_at {new_due} must be in the future — a still-past fire_at "
+        "re-runs the action on the very next poll"
+    )
+    assert (new_due - now).total_seconds() <= 20 * 60 + 5, (
+        f"next fire_at {new_due} should be within one interval of now, not further"
+    )
+
+    # Second poll: nothing due — proves the multi-fire loop is gone.
+    await proactive.fire_due_reminders(fake_send)
+    assert runs["n"] == 1, "action must not re-run immediately after catch-up"
 
 
 @pytest.mark.asyncio

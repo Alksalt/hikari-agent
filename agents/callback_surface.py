@@ -64,6 +64,9 @@ _VULNERABILITY_KEYWORDS = frozenset({
 # runtime_state key tracked across turns to gate i_keep_thinking.
 _LAST_I_KEEP_THINKING_KEY = "last_i_keep_thinking_at"
 
+# session_scratch topic for the once-per-session callback dedup set.
+_CALLBACK_SURFACED_TOPIC = "callback_surfaced"
+
 # runtime_state key tracked across turns to gate slow_burn_tells.
 _LAST_SLOW_BURN_TELL_KEY = "last_slow_burn_tell_at"
 
@@ -230,33 +233,27 @@ def pick_callback_candidate(recent_user_text: str) -> dict | None:
         return None
 
     # Session dedup: skip if we've already surfaced this candidate id in
-    # this session.
+    # this session. This is a READ only — the write is deferred to
+    # mark_callback_surfaced(), called by inject_memory only once the block
+    # survives the texture budget. A budget-dropped candidate must not be
+    # suppressed for the whole session without ever being shown.
     session_id = db.get_session_id() or ""
     if session_id:
-        scratch_topic = "callback_surfaced"
         try:
             with db._conn() as conn:
                 row = conn.execute(
                     "SELECT payload_json FROM session_scratch "
                     "WHERE session_id = ? AND topic = ? "
                     "ORDER BY id DESC LIMIT 1",
-                    (session_id, scratch_topic),
+                    (session_id, _CALLBACK_SURFACED_TOPIC),
                 ).fetchone()
             already: set[str] = set()
             if row:
                 already = set(json.loads(row["payload_json"]).get("ids", []))
             if best["id"] in already:
                 return None
-            already.add(best["id"])
-            with db._conn() as conn:
-                conn.execute(
-                    "INSERT INTO session_scratch "
-                    "(session_id, topic, payload_json) VALUES (?, ?, ?)",
-                    (session_id, scratch_topic,
-                     json.dumps({"ids": sorted(already)})),
-                )
         except Exception:
-            logger.exception("callback_surface: dedup write failed")
+            logger.exception("callback_surface: dedup read failed")
 
     # Compute framing_hint.  turns_since_last is derived from the inbound-message
     # counter delta so the 30-turn throttle resets after each emission.
@@ -271,18 +268,9 @@ def pick_callback_candidate(recent_user_text: str) -> dict | None:
     # Re-compute base score (without multipliers) for framing decision.
     base_score = _score(best["text"], recent_user_text)
     framing_hint = _compute_framing_hint(base_score, age_days, turns_since_last)
-
-    # Record the inbound counter at which we emitted, so the next call
-    # sees `turns_since_last < 30` until 30 more inbound messages elapse.
-    if framing_hint == "i_keep_thinking":
-        try:
-            current_counter = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
-            db.runtime_set(_LAST_I_KEEP_THINKING_KEY, current_counter)
-        except Exception:
-            logger.debug(
-                "callback_surface: failed to write %s (non-fatal)",
-                _LAST_I_KEEP_THINKING_KEY,
-            )
+    # NOTE: the i_keep_thinking cooldown write (_LAST_I_KEEP_THINKING_KEY) is
+    # deferred to mark_callback_surfaced() alongside the dedup write, so a
+    # budget-dropped candidate does not consume the cooldown at pick time.
 
     # (approximate) annotation when score is low (below 0.5) so Hikari knows
     # to fuzz the recall — "wrong-but-close" tsundere rule.
@@ -294,6 +282,56 @@ def pick_callback_candidate(recent_user_text: str) -> dict | None:
     best["framing_hint"] = framing_hint
     best["text"] = text_out
     return best
+
+
+def mark_callback_surfaced(candidate: dict) -> None:
+    """Commit the once-per-session dedup row + i_keep_thinking cooldown for a
+    surfaced callback AFTER it is confirmed injected into context.
+
+    Deferred from pick_callback_candidate() (called by inject_memory only when
+    the callback_candidate block survives the texture budget) so a candidate
+    that was picked but dropped for budget is not suppressed for the rest of
+    the session without ever being shown.
+    """
+    if not candidate:
+        return
+    cand_id = candidate.get("id")
+
+    session_id = db.get_session_id() or ""
+    if session_id and cand_id:
+        try:
+            with db._conn() as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM session_scratch "
+                    "WHERE session_id = ? AND topic = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, _CALLBACK_SURFACED_TOPIC),
+                ).fetchone()
+            already: set[str] = set()
+            if row:
+                already = set(json.loads(row["payload_json"]).get("ids", []))
+            already.add(cand_id)
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO session_scratch "
+                    "(session_id, topic, payload_json) VALUES (?, ?, ?)",
+                    (session_id, _CALLBACK_SURFACED_TOPIC,
+                     json.dumps({"ids": sorted(already)})),
+                )
+        except Exception:
+            logger.exception("callback_surface: dedup write failed")
+
+    # Record the inbound counter at which we emitted so the next call sees
+    # `turns_since_last < 30` until 30 more inbound messages elapse.
+    if candidate.get("framing_hint") == "i_keep_thinking":
+        try:
+            current_counter = db.runtime_get_int(db.INBOUND_MSG_COUNTER_KEY, 0)
+            db.runtime_set(_LAST_I_KEEP_THINKING_KEY, current_counter)
+        except Exception:
+            logger.debug(
+                "callback_surface: failed to write %s (non-fatal)",
+                _LAST_I_KEEP_THINKING_KEY,
+            )
 
 
 def pick_slow_burn_tell() -> dict | None:

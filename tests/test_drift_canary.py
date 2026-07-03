@@ -51,6 +51,31 @@ def test_pick_probe_rotates_three():
     assert pick_probe(5) == "attention_mech"
 
 
+# ---------- ask_hikari ----------
+
+@pytest.mark.asyncio
+async def test_ask_hikari_prompt_has_no_self_revealing_meta_instruction(monkeypatch):
+    """The prompt sent to the live session must not tip off a self-aware
+    model that it's being probed — that's exactly the kind of tell that lets
+    drift hide instead of showing up in the answer."""
+    from agents import drift_canary
+
+    captured: dict[str, str] = {}
+
+    async def fake_visible(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "i don't need anyone."
+
+    monkeypatch.setattr(drift_canary, "run_visible_proactive", fake_visible)
+
+    answer = await drift_canary.ask_hikari("needs_no_one")
+
+    assert answer == "i don't need anyone."
+    assert "probe" not in captured["prompt"].lower()
+    assert "do not explain" not in captured["prompt"].lower()
+    assert "step outside character" not in captured["prompt"].lower()
+
+
 # ---------- judge_canary_answer ----------
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from agents import config as cfg
 from storage import db
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
@@ -52,10 +53,13 @@ async def set_silence(args: dict[str, Any]) -> dict[str, Any]:
         return _ok("ok. proactives back on.")
 
     minutes_raw = args.get("minutes")
-    try:
-        minutes = int(minutes_raw) if minutes_raw is not None else 0
-    except (ValueError, TypeError):
-        minutes = 0
+    if minutes_raw is None:
+        minutes = int(cfg.get("silence.default_minutes", 120))
+    else:
+        try:
+            minutes = int(minutes_raw)
+        except (ValueError, TypeError):
+            minutes = 0
 
     if minutes <= 0:
         return _ok(

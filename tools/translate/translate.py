@@ -52,11 +52,21 @@ async def translate(args: dict[str, Any]) -> dict[str, Any]:
         return _ok("refused: translation backend not configured (set DEEPL_API_KEY)")
 
     deepl_target = "ja" if target == "ja_romaji" else target
-    result = await _deepl_translate(text, deepl_target)
-    backend = "deepl"
-    if result is None:
-        result = await _libretranslate(text, deepl_target)
-        backend = "libretranslate"
+    preferred = str(cfg.get("translate.preferred_backend", "deepl")).strip().lower()
+    backend_order = (
+        ["libretranslate", "deepl"] if preferred == "libretranslate" else ["deepl", "libretranslate"]
+    )
+
+    result = None
+    backend = ""
+    for backend in backend_order:
+        result = (
+            await _deepl_translate(text, deepl_target)
+            if backend == "deepl"
+            else await _libretranslate(text, deepl_target)
+        )
+        if result is not None:
+            break
     if result is None:
         return _ok("translation failed: all backends exhausted")
 

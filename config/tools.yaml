@@ -472,6 +472,24 @@ tools:
     example: "query_inbox(query='is:unread from:boss@x.com')"
     presentation_hint: list_of_records
 
+  # Typed Google Calendar adapter. Event titles/locations are
+  # attacker-controllable, so its output MUST be wrapped untrusted — same
+  # as query_inbox above.
+  - id: "mcp__hikari_utility__calendar_get_events"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: true
+    wrap_patterns: ["^mcp__hikari_utility__calendar_get_events$"]
+    domain: calendar
+    operation: read
+    risk_tier: low
+    credentials: GOOGLE_WORKSPACE_*
+    description: "read fetch google calendar events between dates typed adapter"
+    example: "calendar_get_events(time_min='2026-07-03T00:00:00Z', time_max='2026-07-10T00:00:00Z')"
+    presentation_hint: list_of_records
+
   - id: "mcp__hikari_utility__arxiv_search"
     bucket: 1
     server: hikari_utility
@@ -884,6 +902,21 @@ tools:
     example: "link_search(query='llm papers')"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__link_list"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "list saved bookmarks links shelf by kind or tag"
+    example: "link_list(kind='later')"
+    presentation_hint: null
+
   # Job-hunt copilot (Sprint 2). Read-only radar over outreach.db /
   # job_search.db / get_hired_prep. Org names, contact names, warm-hook
   # notes, and prep-doc text are attacker-controllable (typed by outside
@@ -972,6 +1005,81 @@ tools:
     credentials: null
     description: "read day receipt what did i do today this week made moved learned avoided"
     example: "receipt_read(period='today')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_today"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "today's receipt structured data counts per band note entries no rendering"
+    example: "receipt_today()"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_get"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "get receipt for a specific date structured data counts note entries"
+    example: "receipt_get(date='today')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_print"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "render receipt as ascii thermal printer slip for a date"
+    example: "receipt_print(date='today')"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_week"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "render last n days of receipts as ascii week summary"
+    example: "receipt_week(days=7)"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__receipt_search"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tracking
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "full text search receipts across entries and tags"
+    example: "receipt_search(query='deploy')"
     presentation_hint: null
 
   - id: "mcp__hikari_utility__diary_read"
@@ -1077,6 +1185,36 @@ tools:
     example: "accountability_resolve(id=3, outcome=1)"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__skill_list"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tooling
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "list available hikari skills by id"
+    example: "skill_list()"
+    presentation_hint: null
+
+  - id: "mcp__hikari_utility__skill_read"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: tooling
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "read content of a hikari skill by skill id"
+    example: "skill_read(skill_id='morning-checkin')"
+    presentation_hint: null
+
   # Skill management tools — write/external access for create/approve/run.
   - id: "mcp__hikari_utility__skill_create"
     bucket: 1
@@ -1136,6 +1274,21 @@ tools:
     description: "chain-of-actions progress beat for multi-step turns; rate-limited; routes sub-2s through sendChatAction(\"typing\"), >2s through bot.send_message"
     example: "progress(message='...looking that up.', mode='auto')"
     presentation_hint: null
+
+  - id: "mcp__hikari_utility__calc"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: utility
+    operation: read
+    risk_tier: low
+    credentials: null
+    description: "evaluate python expression math date arithmetic calculator"
+    example: "calc(expr='17.5 * 2400 / 100')"
+    presentation_hint: scalar
 
   # Wildcard catch-all for any hikari_utility tool not explicitly listed above.
   # access_mode:write so unregistered write tools fail closed via the

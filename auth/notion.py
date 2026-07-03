@@ -259,15 +259,19 @@ class NotionOAuthProvider(Provider):
             return str(token.get("access_token") or "")
         return os.environ.get("NOTION_TOKEN") or ""
 
-    def revoke(self) -> None:
+    def revoke(self) -> bool:
         """Delete keychain items for Notion (client + token)."""
         store = default_store()
+        ok = True
         for key in (_CLIENT_KEY, _TOKEN_KEY):
             try:
                 store.set("notion", key, "")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("NotionOAuthProvider.revoke: clearing %s failed: %r", key, exc)
+                ok = False
         try:
             store.clear("notion")
         except Exception as exc:
-            logger.debug("NotionOAuthProvider.revoke: %r", exc)
+            logger.warning("NotionOAuthProvider.revoke: %r", exc)
+            ok = False
+        return ok

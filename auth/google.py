@@ -302,11 +302,12 @@ class GoogleProvider(Provider):
             logger.exception("GoogleProvider.refresh: failed")
             return ""
 
-    def revoke(self) -> None:
+    def revoke(self) -> bool:
         """Hit Google's revoke endpoint and clear stored credentials.
 
-        Also flushes the runtime scope cache so stale broad scopes cannot
-        survive a subsequent narrower re-grant within the 24-hour TTL window.
+        Returns True only if the keychain clear succeeded. Also flushes the
+        runtime scope cache so stale broad scopes cannot survive a subsequent
+        narrower re-grant within the 24-hour TTL window.
         """
         creds = self._creds()
         if creds:
@@ -320,10 +321,12 @@ class GoogleProvider(Provider):
                 )
             except Exception as exc:
                 logger.debug("GoogleProvider.revoke: revoke endpoint failed: %r", exc)
+        ok = True
         try:
             self._store.clear("google")
         except Exception as exc:
-            logger.debug("GoogleProvider.revoke: store clear failed: %r", exc)
+            logger.warning("GoogleProvider.revoke: store clear failed: %r", exc)
+            ok = False
         # Flush scope cache so the next current_scopes() call re-probes rather
         # than serving stale scopes for up to 24 h after revocation.
         try:
@@ -332,3 +335,4 @@ class GoogleProvider(Provider):
             db.runtime_set(_SCOPES_CHECKED_AT_KEY, None)
         except Exception as exc:
             logger.debug("GoogleProvider.revoke: scope cache flush failed: %r", exc)
+        return ok

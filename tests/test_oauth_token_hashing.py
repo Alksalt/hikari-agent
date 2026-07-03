@@ -161,18 +161,23 @@ class TestOauthTokenHashMigrationLedger:
         conn, db = isolated_db
         from storage.db import _migrate_oauth_tokens_to_hash
         from storage.migrations import run_once
-        # Re-running via run_once should return False (skipped — already ledgered)
+        # Re-running via run_once should return False (skipped — already ledgered).
+        # Must pass the same tag the production call site uses, else the recorded
+        # tag-checksum mismatches a freshly computed source-hash and reads as drift.
         result = run_once(conn, "migrate_oauth_tokens_to_hash",
-                          _migrate_oauth_tokens_to_hash)
+                          _migrate_oauth_tokens_to_hash,
+                          tag="migrate_oauth_tokens_to_hash")
         assert result is False
 
     def test_add_hash_columns_idempotent(self, isolated_db):
         conn, db = isolated_db
         from storage.db import _migrate_oauth_tokens_add_hash_columns
         from storage.migrations import run_once
-        # Re-running via run_once should return False (skipped — already ledgered)
+        # Re-running via run_once should return False (skipped — already ledgered).
+        # Pass the production tag so the recorded tag-checksum matches (see above).
         result = run_once(conn, "migrate_oauth_tokens_add_hash_columns",
-                          _migrate_oauth_tokens_add_hash_columns)
+                          _migrate_oauth_tokens_add_hash_columns,
+                          tag="migrate_oauth_tokens_add_hash_columns")
         assert result is False
 
     def test_add_hash_columns_in_known_migrations(self):

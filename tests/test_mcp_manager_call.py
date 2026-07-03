@@ -433,3 +433,86 @@ async def test_call_timeout_for_uses_per_server_config():
     assert manager._call_timeout_for("notion") == 45
     assert manager._call_timeout_for("playwright") == 10
     assert manager._call_timeout_for("unknown_server") == _DEFAULT_CALL_TIMEOUT_S
+
+
+# ---------------------------------------------------------------------------
+# Regression: concurrent two-caller teardown must run in the supervisor task
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_teardown_runs_in_supervisor_task():
+    """Two concurrent callers hit the same server; one caller's call_tool fails
+    and evicts the session.
+
+    The evicting ``aclose()`` MUST run in the single per-server supervisor task
+    that entered the stack — never in a foreign caller task. Closing the
+    anyio-backed stdio stack from a foreign task raises "attempted to exit
+    cancel scope in a different task" and leaks the child subprocess; the old
+    lock-release-then-teardown design tore the session down from whichever
+    caller's call happened to fail (a different task than the spawner).
+    """
+
+    class _FakeStack:
+        def __init__(self) -> None:
+            # Constructed inside _spawn_session, which the supervisor awaits, so
+            # enter_task is the supervisor task.
+            self.enter_task = asyncio.current_task()
+            self.close_task: object | None = None
+            self.closes = 0
+
+        async def aclose(self) -> None:
+            self.close_task = asyncio.current_task()
+            self.closes += 1
+
+    stacks: list[_FakeStack] = []
+    call_count = 0
+
+    async def fake_spawn(server_name: str):
+        stack = _FakeStack()
+        stacks.append(stack)
+        session = AsyncMock()
+
+        async def _call_tool(name, arguments=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("wedged pipe")
+            return _make_text_result("ok")
+
+        session.call_tool = _call_tool
+        return session, stack
+
+    caller_tasks: dict[str, object] = {}
+
+    async def _caller(tag: str):
+        caller_tasks[tag] = asyncio.current_task()
+        return await manager.call("google_workspace", "calendar_get_events", {})
+
+    manager = _make_manager()
+    with patch("agents.mcp_manager._spawn_session", side_effect=fake_spawn):
+        results = await asyncio.gather(
+            _caller("a"), _caller("b"), return_exceptions=True
+        )
+
+    # One caller failed (McpCallError from the wedged call), one succeeded on
+    # the respawned session.
+    errors = [r for r in results if isinstance(r, Exception)]
+    oks = [r for r in results if not isinstance(r, Exception)]
+    assert len(errors) == 1, f"expected exactly one failure, got {results}"
+    assert isinstance(errors[0], McpCallError)
+    assert oks == [{"text": "ok"}]
+
+    # The wedged session's stack was torn down exactly once, in the SAME task
+    # that entered it, and that task is the supervisor — not either caller.
+    torn = stacks[0]
+    supervisor = manager._sessions["google_workspace"]._supervisor
+    assert torn.closes == 1, "wedged session must be torn down exactly once"
+    assert torn.enter_task is torn.close_task, (
+        "aclose() ran in a different task than the one that entered the stack"
+    )
+    assert torn.close_task is supervisor, "teardown must run in the supervisor task"
+    assert torn.close_task not in (caller_tasks["a"], caller_tasks["b"]), (
+        "teardown must NOT run in a foreign caller task"
+    )
+
+    await manager.shutdown_sessions()

@@ -273,6 +273,13 @@ def main() -> int:
         return 0
 
     if failed:
+        if "agent" in failed:
+            restart_ok = restart_agent()
+            rc = 0 if restart_ok else 1
+            failed = [
+                f"agent down — kickstart rc={rc}" if name == "agent" else name
+                for name in failed
+            ]
         post_alert(failed)
 
     return 0

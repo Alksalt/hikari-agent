@@ -69,7 +69,12 @@ def test_pick_callback_candidate_skips_too_old_episodes():
 
 
 def test_pick_callback_candidate_respects_session_dedup():
-    """Same session, same candidate → second call returns None."""
+    """Same session, same candidate → once committed, second call returns None.
+
+    The dedup write is deferred to mark_callback_surfaced() (called by
+    inject_memory only when the block survives the budget), so the commit is
+    explicit here — pick alone no longer suppresses.
+    """
     from agents import callback_surface
     from storage import db
     today = _date.today()
@@ -79,9 +84,29 @@ def test_pick_callback_candidate_respects_session_dedup():
 
     first = callback_surface.pick_callback_candidate("where are my keys")
     assert first is not None
+    # Commit the surfaced candidate (deferred from pick to inject_memory).
+    callback_surface.mark_callback_surfaced(first)
     # Same session, related topic → must dedup the already-surfaced candidate.
     second = callback_surface.pick_callback_candidate("found the keys")
     assert second is None
+
+
+def test_pick_callback_candidate_not_deduped_until_committed():
+    """A picked-but-not-committed candidate (e.g. budget-dropped) must stay
+    eligible for a later turn — the whole point of deferring the dedup write."""
+    from agents import callback_surface
+    from storage import db
+    today = _date.today()
+    db.insert_episode((today - timedelta(days=3)).isoformat(),
+                      "lost the kyiv keys.", 8)
+    db.set_session_id("test-session-deferred")
+
+    first = callback_surface.pick_callback_candidate("where are my keys")
+    assert first is not None
+    # No mark_callback_surfaced() → the candidate was never injected, so a
+    # subsequent pick must NOT be suppressed.
+    second = callback_surface.pick_callback_candidate("found the keys")
+    assert second is not None
 
 
 def test_pick_callback_candidate_respects_min_score():

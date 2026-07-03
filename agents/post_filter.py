@@ -500,12 +500,12 @@ def _strip_fabricated_external_data(
 _PATTERN_CACHE: dict[str, list[re.Pattern[str]]] = {}
 
 
-def _compiled(key: str, source_path: str) -> list[re.Pattern[str]]:
+def _compiled(key: str, source_path: str, *, flags: int = 0) -> list[re.Pattern[str]]:
     """Compile-cache regex lists from config. ``key`` is a cache key; ``source_path``
     is the dot-path in config that holds the raw pattern list."""
     if key not in _PATTERN_CACHE:
         raw = cfg.get(source_path) or []
-        _PATTERN_CACHE[key] = [re.compile(p) for p in raw]
+        _PATTERN_CACHE[key] = [re.compile(p, flags) for p in raw]
     return _PATTERN_CACHE[key]
 
 
@@ -810,9 +810,9 @@ def _detect_task_solicit_question(text: str) -> bool:
     if not last:
         return False
 
-    cues_raw = cfg.get("post_filter.task_solicit_cues") or []
-    for raw_pattern in cues_raw:
-        if re.search(raw_pattern, last, re.IGNORECASE):
+    cues = _compiled("task_solicit", "post_filter.task_solicit_cues", flags=re.IGNORECASE)
+    for pat in cues:
+        if pat.search(last):
             return True
     return False
 
