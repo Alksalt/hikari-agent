@@ -1034,6 +1034,19 @@ tools:
     example: "checkin_control(action='skip_tomorrow')"
     presentation_hint: null
 
+  - id: "mcp__hikari_utility__capabilities_overview"
+    bucket: 1
+    server: hikari_utility
+    gate: null
+    access_mode: read
+    untrusted_output: false
+    wrap_patterns: []
+    domain: meta
+    operation: read
+    description: "what can you do help capabilities features overview discover how to use"
+    example: "capabilities_overview()"
+    presentation_hint: null
+
   - id: "mcp__hikari_utility__accountability_create"
     bucket: 1
     server: hikari_utility

@@ -1130,6 +1130,11 @@ telegram:
       menu_text: "what can you do"
       phrase: "what can you do?"
 
+capabilities:
+  # Domains hidden from the user-facing "what can you do" answer —
+  # internal plumbing, not capabilities the owner would ask for.
+  hidden_domains: [meta, router, dispatch, orchestration, tooling, runtime, skills]
+
 evening_diary:
   enabled: true
   hour: 22                        # local hour for the daily diary composition

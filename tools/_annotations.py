@@ -117,6 +117,9 @@ ANNOTATIONS_BY_TOOL: dict[str, ToolAnnotations] = {
     # checkin_control writes runtime flags and schedule skip_dates —
     # local state, not destructive.
     "checkin_control": ANN_WRITE_LOCAL,
+    # capabilities_overview reads the tool catalog + command menu config —
+    # pure local read, no side effects.
+    "capabilities_overview": ANN_READ_LOCAL,
     # --- apple_notes (local osascript; iCloud sync is async/out-of-band) ---
     "note_read": ANN_READ_LOCAL,
     "note_search": ANN_READ_LOCAL,
