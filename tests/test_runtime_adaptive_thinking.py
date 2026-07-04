@@ -1,4 +1,7 @@
-"""Phase B — Item 2: adaptive thinking + medium effort in ClaudeAgentOptions."""
+"""Phase B — Item 2: adaptive thinking + cfg-driven effort in ClaudeAgentOptions.
+
+Default effort is "high" (sonnet-5 respects effort strictly; see
+tests/test_runtime_effort_cfg.py for the cfg-override coverage)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -24,4 +27,4 @@ def _isolated_db(tmp_path: Path, monkeypatch):
 def test_build_options_sets_adaptive_thinking_and_effort():
     opts = runtime._build_options(resume=None)
     assert opts.thinking == {"type": "adaptive"}
-    assert opts.effort == "medium"
+    assert opts.effort == "high"

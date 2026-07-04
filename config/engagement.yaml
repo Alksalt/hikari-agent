@@ -1060,6 +1060,9 @@ runtime:
   # Env-var overrides still take precedence: HIKARI_MODEL, HIKARI_MODEL_FALLBACK.
   model_primary: "claude-sonnet-5"
   model_fallback: "claude-sonnet-4-6"  # MUST differ from primary — SDK refuses identical model+fallback
+  # Per-turn reasoning/tool-use effort. sonnet-5 respects this strictly;
+  # medium = literal minimal scoping (felt "dumber"). Default high.
+  effort: "high"
   default_max_turns: 4            # per-turn cap for chat-path SDK calls; substituted into assets/PERSONA.md via {max_turns}
   # Wall-clock budget for the SDK turn loop. Chat default fits a single
   # quick MCP roundtrip + reply; scheduled actions get headroom for

@@ -203,6 +203,9 @@ _AUX_REFLECTION_SYSTEM = (
 # flag "what would API pricing have cost" so /cockpit status can alert at the
 # $200/mo Max-credit equivalent threshold. Verified: 2026-05-27.
 _MODEL_RATES_USD_PER_1M: dict[str, tuple[float, float]] = {
+    # Main chat model since 2026-07-02. Sticker $3/$15 (intro $2/$10 through
+    # 2026-08-31 — we log sticker). Verified 2026-07-04.
+    "claude-sonnet-5":                 (3.00, 15.00),
     "claude-sonnet-4-6":               (3.00, 15.00),
     "claude-sonnet-4-5":               (3.00, 15.00),
     "claude-opus-4-7":                 (15.00, 75.00),
@@ -832,9 +835,12 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         max_budget_usd=max_budget_usd,
         resume=resume,
         permission_mode="acceptEdits",
-        # Phase B — Item 2: adaptive thinking + medium effort
+        # Phase B — Item 2: adaptive thinking + cfg-driven effort
         thinking={"type": "adaptive"},
-        effort="medium",
+        # Sonnet-5 respects effort strictly: medium under-reaches for tools
+        # and reasoning on agentic turns (official migration guide). Default
+        # high; xhigh reserved for explicit escalation via cfg.
+        effort=str(cfg.get("runtime.effort", "high")),
         # Phase B — Item 1: 1h prompt-cache TTL request via Anthropic beta.
         # Gated by config so the user can disable without code change.
         betas=(

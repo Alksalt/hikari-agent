@@ -1,5 +1,7 @@
 # Cheap OpenRouter Models — Memory Extraction & Classification
 
+> Main chat path runs `claude-sonnet-5` via OAuth SDK (config `runtime.model_primary`) — not an aux model; listed here so cost-map coverage is checked when models change. Rates in `agents/runtime.py:_MODEL_RATES_USD_PER_1M`.
+
 **Budget:** ≤ $1.50 per 1M tokens (in or out)
 **Use case:** Memory extraction, intent classification, structured output, RAG snippet ranking, lightweight agentic loops
 **Verified:** May 23, 2026 via OpenRouter listings + community sources
