@@ -283,6 +283,50 @@ def _build_reflection_prompt(
     )
 
 
+async def apply_new_facts(data: dict) -> int:
+    """Apply data['new_facts'] to the fact store. Extracted from
+    run_daily_reflection so the backfill script can reuse the exact
+    guard/insert/embed/link path. Returns number applied."""
+    entity_block = data.get("entities") or []
+    applied = 0
+    for f in data.get("new_facts") or []:
+        try:
+            subj = _safe_fact_field(f["subject"], field="subject")
+            pred = _safe_fact_field(f["predicate"], field="predicate")
+            obj = _safe_fact_field(f["object"], field="object")
+            src_text = _safe_fact_field(
+                f.get("source_text") or f"{subj} {pred} {obj}",
+                field="source_text",
+            )
+            if not subj or not pred or not obj:
+                logger.warning("skipped fact with injection-shaped field: %r", f)
+                continue
+            raw_mid = f.get("source_message_id")
+            source_message_id: int | None = None
+            if raw_mid:
+                try:
+                    source_message_id = int(raw_mid) or None
+                except (ValueError, TypeError):
+                    pass
+            fact_id = db.insert_fact(
+                subject=subj, predicate=pred, object_=obj,
+                importance=int(f.get("importance") or 5),
+                confidence=float(f.get("confidence") or 0.9),
+                attribution="hikari_inferred",
+                source="inferred",
+                source_message_id=source_message_id,
+                source_span_hash=db.span_hash(src_text or f"{subj} {pred} {obj}"),
+                fact_category=_normalize_category(f.get("category")),
+            )
+            await _embed_fact(fact_id, subj, pred, obj)
+            mentioned = _entities_for_fact(subj, obj, entity_block)
+            db.fact_entities_link(fact_id, mentioned)
+            applied += 1
+        except (KeyError, ValueError, TypeError):
+            logger.warning("skipped malformed new_fact: %r", f)
+    return applied
+
+
 async def run_daily_reflection() -> bool:
     """Returns True if reflection ran and applied at least one update."""
     # Phase 11: purge stale scratch entries first (non-blocking — reflection
@@ -348,44 +392,9 @@ async def run_daily_reflection() -> bool:
                 db.runtime_set("last_reflection_skipped", datetime.now(UTC).isoformat())
                 data = {}
 
-    entity_block = data.get("entities") or []
-    applied = 0
-    for f in data.get("new_facts") or []:
-        try:
-            subj = _safe_fact_field(f["subject"], field="subject")
-            pred = _safe_fact_field(f["predicate"], field="predicate")
-            obj = _safe_fact_field(f["object"], field="object")
-            src_text = _safe_fact_field(
-                f.get("source_text") or f"{subj} {pred} {obj}",
-                field="source_text",
-            )
-            if not subj or not pred or not obj:
-                logger.warning("skipped fact with injection-shaped field: %r", f)
-                continue
-            raw_mid = f.get("source_message_id")
-            source_message_id: int | None = None
-            if raw_mid:
-                try:
-                    source_message_id = int(raw_mid) or None
-                except (ValueError, TypeError):
-                    pass
-            fact_id = db.insert_fact(
-                subject=subj, predicate=pred, object_=obj,
-                importance=int(f.get("importance") or 5),
-                confidence=float(f.get("confidence") or 0.9),
-                attribution="hikari_inferred",
-                source="inferred",
-                source_message_id=source_message_id,
-                source_span_hash=db.span_hash(src_text or f"{subj} {pred} {obj}"),
-                fact_category=_normalize_category(f.get("category")),
-            )
-            await _embed_fact(fact_id, subj, pred, obj)
-            mentioned = _entities_for_fact(subj, obj, entity_block)
-            db.fact_entities_link(fact_id, mentioned)
-            applied += 1
-        except (KeyError, ValueError, TypeError):
-            logger.warning("skipped malformed new_fact: %r", f)
+    applied = await apply_new_facts(data)
 
+    entity_block = data.get("entities") or []
     for entry in data.get("supersede") or []:
         try:
             old_id = int(entry["old_fact_id"])
