@@ -243,7 +243,9 @@ async def gatekeeper_can_use_tool(
 
     spec, match_kind = _resolve_spec_and_kind(tool_name)
     if spec is None:
-        # Unknown tool — fall through to deny-safe default.
+        # Deny must never be silent: the 2026-07-04 deferral incident showed
+        # calls can die pre-handler leaving zero telemetry.
+        logger.warning("gatekeeper deny: %s not found in tool registry", tool_name)
         return PermissionResultDeny(message=f"refused: {tool_name} not found in tool registry")
 
     gate = spec.gate

@@ -1236,6 +1236,16 @@ async def log_tool_failure(
         error = str(input_data.get("error") or input_data.get("tool_response") or "")
     logger.warning("tool failure: tool=%s tool_use_id=%s error=%s",
                    tool_name, tool_use_id, error[:300])
+    try:
+        db.tool_calls_insert(
+            tool_id=tool_name or "unknown",
+            duration_ms=0,
+            success=False,
+            error_class="HookReportedFailure",
+            output_size=0,
+        )
+    except Exception:
+        logger.debug("log_tool_failure: telemetry insert failed", exc_info=True)
     return {}
 
 
