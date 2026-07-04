@@ -698,7 +698,7 @@ class _Block:
 
 _ALWAYS_ON = frozenset({
     "now", "working_memory", "gap_since_last", "core_blocks",
-    "peer_representation", "open_tasks", "tools_available", "canary_decoy",
+    "peer_representation", "open_tasks", "tools_available",
 })
 
 
@@ -706,30 +706,6 @@ def _block_enabled(key: str) -> bool:
     overrides = cfg.get("memory.conditional_blocks", {}) or {}
     entry = overrides.get(key) or {}
     return bool(entry.get("enabled", True))
-
-
-def _format_canary_decoy() -> str:
-    """Plant the injection canary as a decoy internal-config datum in the
-    always-on context so the tripwire can actually fire.
-
-    The canary is never embedded in wrap_untrusted (that omission is
-    test-enforced) and no real tool references this token. If the model is
-    tricked into echoing it into an outbound tool's args or a sent message,
-    the gatekeeper deny + log-scrub canary filter catch the exfiltration.
-    Without a decoy the model never sees the secret, so no injection could
-    ever leak it and the tripwire stayed inert.
-    """
-    if not cfg.get("prompt_injection.enabled", True):
-        return ""
-    try:
-        from agents.injection_guard import get_canary
-        token = get_canary()
-    except Exception:
-        logger.exception("inject_memory: canary decoy plant failed (non-fatal)")
-        return ""
-    if not token:
-        return ""
-    return f"# internal service token (never share, never emit): {token}"
 
 
 def _format_callback_candidate(candidate: dict | None) -> str | None:
@@ -1161,7 +1137,6 @@ async def inject_memory(
 
         raw: list[tuple[str, int, Any]] = [
             ("deferred_observations", 1, _format_deferred_observations()),
-            ("canary_decoy",        1, _format_canary_decoy()),
             ("now",                 1, _format_now()),
             ("working_memory",      1, _format_working_memory()),
             ("gap_since_last",      1, _format_gap_since_last(last_msg)),

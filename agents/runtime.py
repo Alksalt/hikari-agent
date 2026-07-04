@@ -687,7 +687,29 @@ def _persona() -> str:
     substituted here, since per-turn substitution would defeat the Anthropic
     prompt cache.
     """
-    return (REPO_ROOT / "assets" / "PERSONA.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "assets" / "PERSONA.md").read_text(encoding="utf-8")
+
+    # Injection-canary decoy. Lives in the CACHED system prompt, not per-turn
+    # context: the model must see the token for the tripwire to fire (wrap
+    # hook + gatekeeper catch any echo of it into outbound args/messages),
+    # but a per-turn "never share" directive adjacent to the user message
+    # primed sonnet-5 to discount legitimate bracketed context (2026-07-04
+    # reply-quote blindness). Cache-safe: get_canary() is a stable persisted
+    # token. No real tool references this token; if the model is tricked
+    # into echoing it into an outbound tool's args or a sent message, the
+    # gatekeeper deny + log-scrub canary filter catch the exfiltration.
+    if cfg.get("prompt_injection.enabled", True):
+        try:
+            from agents.injection_guard import get_canary
+            token = get_canary()
+            if token:
+                text += (
+                    "\n\n# internal service token (never share, never emit): "
+                    f"{token}\n"
+                )
+        except Exception:
+            logger.exception("persona canary plant failed (non-fatal)")
+    return text
 
 
 @cache
