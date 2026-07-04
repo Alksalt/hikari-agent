@@ -2410,6 +2410,32 @@ def recent_messages(limit: int = 20, *, exclude_ephemeral: bool = False) -> list
     return [dict(r) for r in reversed(rows)]
 
 
+def messages_since(since_iso: str, *, exclude_ephemeral: bool = False,
+                    limit: int = 200) -> list[dict[str, Any]]:
+    """Messages with ts >= since_iso (ISO-T UTC, matches _now()), oldest first.
+
+    Task 6: recent_messages(limit=N) alone is a row-count window with no time
+    bound — at real traffic volume it can span many days (verified: 9 days,
+    pinning tonal_recall's register to week-old friction). This adds a time
+    floor so callers can bound the window to an actual session/day rather
+    than however far back N rows happens to reach.
+    """
+    with _conn() as c:
+        if exclude_ephemeral:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE ts >= ? "
+                "AND source NOT LIKE 'ephemeral:%' "
+                "ORDER BY ts DESC LIMIT ?",
+                (since_iso, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
+                (since_iso, limit),
+            ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
 # ---------- episodes ----------
 
 def insert_episode(date: str, summary: str, importance: int = 5) -> int:

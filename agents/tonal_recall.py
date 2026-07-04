@@ -7,6 +7,7 @@ a single tonal token. Writes the result to session.emotional_register.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from agents.runtime import run_aux_composition
 from storage import db
@@ -28,18 +29,26 @@ _SYSTEM_PROMPT = (
 )
 
 _MAX_MESSAGES = 40
+_WINDOW_HOURS = 24   # caller is the daily 09:00 reflection — "session" = last day
+_MIN_MESSAGES = 4    # thinner than this = no real session; don't classify
 
 
 def _fetch_recent_messages() -> list[dict]:
-    """Return the most recent messages for the just-ended session, oldest first.
+    """Messages from the last _WINDOW_HOURS, oldest first, capped at _MAX_MESSAGES.
 
     A UTC calendar-date filter (``date(ts) = date('now')``) doesn't work here:
     ``ts`` is stored in UTC but the only caller is the 09:00-LOCAL daily
     reflection, so an evening session in a timezone behind UTC lands on UTC
-    date D-1 and would return zero rows. Grabbing the last ``_MAX_MESSAGES``
-    messages sidesteps the boundary entirely.
+    date D-1 and would return zero rows. A rolling 24h window sidesteps the
+    boundary without needing a calendar-date match.
+
+    A fixed row-count window with no time bound classified 9 days of history
+    as one "session" at real traffic volume (2026-07-04: register stuck on
+    'tense' from week-old friction). Time-bound the window; the row cap only
+    protects the prompt size within it.
     """
-    return db.recent_messages(limit=_MAX_MESSAGES, exclude_ephemeral=True)
+    since = (datetime.now(UTC) - timedelta(hours=_WINDOW_HOURS)).isoformat()
+    return db.messages_since(since, exclude_ephemeral=True, limit=_MAX_MESSAGES)
 
 
 def _build_prompt(messages: list[dict]) -> str:
@@ -55,6 +64,34 @@ def _build_prompt(messages: list[dict]) -> str:
     )
 
 
+def _persist_register(register: str, session_id: str) -> None:
+    """Write `register` to the single session row (id=1).
+
+    Extracted (Task 6) so both the thin-window gate and the normal
+    end-of-classification path share one write path. Behavior is unchanged
+    from the original inline block: a missing session row (rowcount == 0)
+    logs a warning but does not raise; a DB failure during the write logs
+    and re-raises so the caller decides whether to propagate or swallow it.
+    """
+    try:
+        with db._conn() as conn:
+            cur = conn.execute(
+                "UPDATE session SET emotional_register = ? WHERE id = 1",
+                (register,),
+            )
+            if cur.rowcount == 0:
+                logger.warning(
+                    "tonal_recall: session row id=1 missing — emotional_register not persisted "
+                    "(session_id=%s, register=%s)",
+                    session_id, register,
+                )
+    except Exception:
+        logger.exception(
+            "tonal_recall: failed to write emotional_register for session %s", session_id
+        )
+        raise
+
+
 async def compute_session_register(session_id: str) -> str:
     """Classify the session's emotional register and persist it.
 
@@ -66,8 +103,23 @@ async def compute_session_register(session_id: str) -> str:
         logger.exception("tonal_recall: failed to fetch messages for session %s", session_id)
         return "neutral"
 
-    if not messages:
-        logger.info("tonal_recall: no messages found for session %s", session_id)
+    if len(messages) < _MIN_MESSAGES:
+        # A stale register (e.g. 'tense' from friction days ago) must not
+        # survive a window this thin — persist 'neutral' directly rather
+        # than leaving whatever value was already there. Also covers the
+        # zero-message case the old code special-cased separately.
+        logger.info(
+            "tonal_recall: only %d messages in the last %dh for session %s — "
+            "persisting neutral (stale register must not survive)",
+            len(messages), _WINDOW_HOURS, session_id,
+        )
+        try:
+            _persist_register("neutral", session_id)
+        except Exception:
+            logger.exception(
+                "tonal_recall: failed to persist neutral for thin window (session %s)",
+                session_id,
+            )
         return "neutral"
 
     prompt = _build_prompt(messages)
@@ -93,23 +145,7 @@ async def compute_session_register(session_id: str) -> str:
             )
             register = "neutral"
 
-    try:
-        with db._conn() as conn:
-            cur = conn.execute(
-                "UPDATE session SET emotional_register = ? WHERE id = 1",
-                (register,),
-            )
-            if cur.rowcount == 0:
-                logger.warning(
-                    "tonal_recall: session row id=1 missing — emotional_register not persisted "
-                    "(session_id=%s, register=%s)",
-                    session_id, register,
-                )
-    except Exception:
-        logger.exception(
-            "tonal_recall: failed to write emotional_register for session %s", session_id
-        )
-        raise
+    _persist_register(register, session_id)
 
     logger.info("tonal_recall: session %s register = %s", session_id, register)
     return register

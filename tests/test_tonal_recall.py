@@ -68,6 +68,37 @@ def _insert_message_at(role: str, content: str, ts: str):
         )
 
 
+def _iso(*, days_ago: float = 0, hours_ago: float = 0) -> str:
+    """ISO-T UTC timestamp offset into the past, matching storage.db._now()'s
+    format exactly (so string comparison against a since_iso cutoff behaves
+    the same way it does in production)."""
+    from datetime import UTC, datetime, timedelta
+    return (datetime.now(UTC) - timedelta(days=days_ago, hours=hours_ago)).isoformat()
+
+
+def _insert_msg(*, ts: str, content: str, role: str = "user") -> None:
+    """Task 6: insert a message at an exact ISO-T timestamp (as opposed to
+    _insert_message's SQLite datetime('now'), which doesn't let a test place
+    a row at an arbitrary point relative to the 24h window cutoff)."""
+    _insert_message_at(role, content, ts)
+
+
+def _set_register(register: str) -> None:
+    """Seed the session row (if absent) and force emotional_register to
+    `register`, simulating a stale value left over from a prior session."""
+    _seed_session_row()
+    from storage import db
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE session SET emotional_register = ? WHERE id = 1",
+            (register,),
+        )
+
+
+def _get_register() -> str | None:
+    return _get_emotional_register()
+
+
 # ---------------------------------------------------------------------------
 # 1. LLM returns 'warm' → emotional_register = 'warm'
 # ---------------------------------------------------------------------------
@@ -78,6 +109,10 @@ async def test_returns_warm_and_persists(monkeypatch):
     _seed_session_row()
     _insert_message("user", "you're the best, i'm so happy today")
     _insert_message("assistant", "...noted.")
+    # Task 6: min-message gate requires >= _MIN_MESSAGES in the 24h window
+    # before classification runs — pad with recent filler.
+    _insert_message("user", "still here")
+    _insert_message("assistant", "mm")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         return "warm"
@@ -98,6 +133,11 @@ async def test_unexpected_token_falls_back_to_neutral(monkeypatch):
 
     _seed_session_row()
     _insert_message("user", "hello")
+    # Task 6: min-message gate — pad above _MIN_MESSAGES so this actually
+    # reaches the LLM call and exercises the unexpected-token fallback
+    # (rather than short-circuiting on the thin-window gate).
+    for i in range(3):
+        _insert_message("user", f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         return "confusing_label"
@@ -139,6 +179,11 @@ async def test_db_update_failure_reraises(monkeypatch):
 
     _seed_session_row()
     _insert_message("user", "test message")
+    # Task 6: min-message gate — pad above _MIN_MESSAGES so this reaches the
+    # persist call (and its write failure) instead of short-circuiting on
+    # the thin-window gate.
+    for i in range(3):
+        _insert_message("user", f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         return "tense"
@@ -190,6 +235,11 @@ async def test_llm_failure_returns_neutral(monkeypatch):
 
     _seed_session_row()
     _insert_message("user", "something happened")
+    # Task 6: min-message gate — pad above _MIN_MESSAGES so this reaches the
+    # LLM call (and its failure) instead of short-circuiting on the
+    # thin-window gate.
+    for i in range(3):
+        _insert_message("user", f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         raise ConnectionError("OpenRouter down")
@@ -219,6 +269,12 @@ async def test_missing_session_row_logs_warning(monkeypatch, caplog):
 
     # Intentionally do NOT call _seed_session_row() — session table is empty.
     _insert_message("user", "something interesting today")
+    # Task 6: min-message gate — pad above _MIN_MESSAGES so this reaches the
+    # persist call (and its missing-row warning) instead of short-circuiting
+    # on the thin-window gate (which would also warn, but for the wrong
+    # reason and with the wrong resulting register).
+    for i in range(3):
+        _insert_message("user", f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         return "warm"
@@ -240,6 +296,10 @@ async def test_all_allowed_registers_persist(register, monkeypatch):
 
     _seed_session_row()
     _insert_message("user", "some content for the session")
+    # Task 6: min-message gate — pad above _MIN_MESSAGES so this reaches the
+    # LLM call instead of short-circuiting on the thin-window gate.
+    for i in range(3):
+        _insert_message("user", f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         return register
@@ -257,19 +317,22 @@ async def test_all_allowed_registers_persist(register, monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_message_from_prior_utc_date_still_classified(monkeypatch):
-    """A message stamped with yesterday's UTC date (e.g. an evening-local
-    session in a timezone behind UTC) must still be included — the 09:00-LOCAL
-    daily reflection is the only caller, and a same-UTC-day filter would drop
-    it entirely, silently keeping the register at 'neutral' forever."""
-    from datetime import UTC, datetime, timedelta
-
+    """A message stamped with yesterday's UTC date but still inside the last
+    24h (e.g. an evening-local session in a timezone behind UTC) must still
+    be included — a UTC-*calendar-date* filter would drop it (it lands on
+    UTC date D-1), silently keeping the register at 'neutral' forever. Task 6
+    replaced calendar-date keying with a rolling 24h window, so this now
+    also doubles as a same-window-crosses-midnight regression: the message
+    is 20h old (< _WINDOW_HOURS), just on the other side of UTC midnight."""
     from agents import tonal_recall
 
     _seed_session_row()
-    yesterday_ts = (datetime.now(UTC) - timedelta(days=1, hours=1)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    _insert_message_at("user", "this was a rough one, need to talk", yesterday_ts)
+    yesterday_ts = _iso(hours_ago=20)
+    _insert_msg(ts=yesterday_ts, content="this was a rough one, need to talk")
+    # Task 6: min-message gate requires >= _MIN_MESSAGES in the window before
+    # classification runs at all — pad with recent filler.
+    for i in range(3):
+        _insert_msg(ts=_iso(hours_ago=1), content=f"filler-{i}")
 
     async def _fake_aux(prompt, *, system=None, max_tokens=16):
         assert "rough one" in prompt
@@ -280,3 +343,58 @@ async def test_message_from_prior_utc_date_still_classified(monkeypatch):
     result = await tonal_recall.compute_session_register("test-session-001")
     assert result == "significant"
     assert _get_emotional_register() == "significant"
+
+
+# ---------------------------------------------------------------------------
+# 9. Task 6 — 24h window excludes messages older than the window
+# ---------------------------------------------------------------------------
+
+async def test_window_excludes_old_messages(monkeypatch):
+    """c72cf0d's global recent_messages(limit=40) spanned 9 days at real
+    traffic volume and pinned the register to a stale 'tense' from week-old
+    friction. A message 9 days old must not reach the classification prompt."""
+    from agents import tonal_recall
+
+    _seed_session_row()
+    _insert_msg(ts=_iso(days_ago=9), content="OLD-TENSE-FIGHT")
+    for i in range(5):
+        _insert_msg(ts=_iso(hours_ago=2), content=f"fresh-{i}")
+
+    captured: dict = {}
+
+    async def _fake_aux(prompt, *, system=None, max_tokens=16):
+        captured["prompt"] = prompt
+        return "neutral"
+
+    monkeypatch.setattr("agents.tonal_recall.run_aux_composition", _fake_aux)
+
+    await tonal_recall.compute_session_register("test-session-001")
+    assert "OLD-TENSE-FIGHT" not in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# 10. Task 6 — thin window (<4 messages in 24h) persists 'neutral', no LLM call
+# ---------------------------------------------------------------------------
+
+async def test_thin_window_persists_neutral(monkeypatch):
+    """A stale register must not survive a thin window: fewer than
+    _MIN_MESSAGES messages in the last 24h persists 'neutral' directly and
+    skips the LLM call entirely, overwriting whatever register was left
+    over from a prior (now-stale) session."""
+    from agents import tonal_recall
+
+    _set_register("tense")
+    _insert_msg(ts=_iso(hours_ago=1), content="hi")
+
+    called = []
+
+    async def _fake_aux(prompt, *, system=None, max_tokens=16):
+        called.append(1)
+        return "warm"
+
+    monkeypatch.setattr("agents.tonal_recall.run_aux_composition", _fake_aux)
+
+    result = await tonal_recall.compute_session_register("test-session-001")
+    assert result == "neutral"
+    assert not called
+    assert _get_register() == "neutral"
