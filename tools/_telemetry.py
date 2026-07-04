@@ -3,12 +3,23 @@ success bool, error class capture, and untrusted-output size. Writes a row
 to the tool_calls table on every invocation."""
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any
 
 from storage import db
+
+logger = logging.getLogger(__name__)
+
+# The SDK silently replaces any MCP tool result past its 25k-token output cap
+# with an error the model sees INSTEAD of the data, while this wrapper still
+# records success=1 (the handler itself returned fine) — that's how the
+# 2026-07-04 jobhunt_radar 174KB result became invisible. Warn well before
+# the cap (25k tokens ≈ 100KB of text) so oversized tools show up in the log
+# next to their success row.
+_OUTPUT_WARN_CHARS = 80_000
 
 
 def instrumented(tool_id: str):
@@ -31,6 +42,13 @@ def instrumented(tool_id: str):
                                 output_size += len(text)
                 except Exception:
                     pass
+                if output_size > _OUTPUT_WARN_CHARS:
+                    logger.warning(
+                        "tool %s returned %d chars — likely past the SDK's "
+                        "25k-token MCP output cap; the model may see a "
+                        "size-limit error instead of this result",
+                        tool_id, output_size,
+                    )
                 return result
             except Exception as exc:
                 success = False

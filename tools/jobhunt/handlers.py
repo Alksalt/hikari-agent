@@ -132,10 +132,21 @@ async def radar(args: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001 — no 
     lines += _render_section("interviews upcoming", interviews, _fmt_interview)
     lines.append(_fmt_pipeline(summary))
 
+    # data is capped to the same _SECTION_CAP slice the narrative shows:
+    # tools._response.ok JSON-dumps `data` into the tool text, and every row
+    # carries 4 wrap_untrusted banners — 71 uncapped rows once produced a
+    # 174KB result that blew the SDK's 25k-token MCP output cap, leaving the
+    # model with only a size-limit error. Totals keep the full counts
+    # queryable; per-org detail goes through jobhunt_org.
     data = {
-        "outreach_due": due,
-        "application_deadlines": deadlines,
-        "interviews_upcoming": interviews,
+        "outreach_due": due[:_SECTION_CAP],
+        "application_deadlines": deadlines[:_SECTION_CAP],
+        "interviews_upcoming": interviews[:_SECTION_CAP],
+        "totals": {
+            "outreach_due": len(due),
+            "application_deadlines": len(deadlines),
+            "interviews_upcoming": len(interviews),
+        },
         "pipeline_summary": summary,
     }
     return _ok("\n".join(lines), data=data, presentation_hint="list_of_records")

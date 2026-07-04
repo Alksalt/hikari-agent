@@ -259,11 +259,53 @@ async def test_radar_sections_capped_at_five_with_count_note(tmp_path, monkeypat
     result = await handlers.radar({})
     text = result["content"][0]["text"]
     due = result["data"]["outreach_due"]
-    assert len(due) == 8                    # full data preserved
+    assert len(due) == 5                    # data capped like the narrative
+    assert result["data"]["totals"]["outreach_due"] == 8
     assert "outreach due (8)" in text
     assert "+3 more" in text                 # 8 - 5 shown = 3 more
     # 5 org bullet lines rendered even though all 8 due entries share touch "1"
     assert text.count("touch 1") == 5
+
+
+async def test_radar_output_bounded_with_many_fat_rows(tmp_path, monkeypatch):
+    """Regression for 2026-07-04: 71 overdue rows, each with 4 free-text
+    fields carrying the full wrap_untrusted banner, put 174KB into the tool
+    result (tool_calls row: output_size=174046) — past the SDK's 25k-token
+    MCP output cap, so the model saw only a size-limit error instead of the
+    radar. The `data` payload must be capped at _SECTION_CAP per section
+    (totals preserved) so output size is bounded regardless of row count."""
+    outreach_dir = tmp_path / "outreach"
+    rows = [
+        {
+            "organisasjon": f"Firma {i}", "gruppe": "G1", "status": "Sendt",
+            "kontaktperson": f"Kontakt {i}",
+            "kontakt_epost": f"k{i}@firma.no",
+            "oppfolging_dato": "2026-06-25",
+            "varm_hook": "h" * 400,
+            "notater": "n" * 600,
+        }
+        for i in range(80)
+    ]
+    _write_outreach_db(outreach_dir, rows)
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir,
+        "job_search": tmp_path / "no-job-search",
+        "prep": tmp_path / "no-prep",
+    })
+    from tools.jobhunt import handlers
+    monkeypatch.setattr(handlers, "_today", lambda: TODAY)
+
+    result = await handlers.radar({})
+    text = result["content"][0]["text"]
+    data = result["data"]
+    assert len(data["outreach_due"]) == 5
+    assert data["totals"] == {
+        "outreach_due": 80,
+        "application_deadlines": 0,
+        "interviews_upcoming": 0,
+    }
+    assert "outreach due (80)" in text
+    assert len(text.encode("utf-8")) < 25_000
 
 
 # --------------------------------------------------------------------------

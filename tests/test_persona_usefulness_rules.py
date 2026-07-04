@@ -38,3 +38,12 @@ def test_persona_bans_application_followup_nudges():
     # Sprint 2 Task 5: owner decision 2026-06-25 — submitted applications
     # never get a follow-up nudge; only outreach touches have cadence.
     assert "applications get no nudges" in PERSONA
+
+
+def test_persona_bans_fabricated_background_work():
+    # 2026-07-04: /jobs turn — jobhunt_radar blew the SDK output cap and
+    # Hikari replied "digging through it in the background" with no dispatch
+    # call in the turn (tool_calls + background_tasks both confirm). The
+    # rail names the only two real background mechanisms.
+    assert "never claim background work" in PERSONA
+    assert "there is no background me" in PERSONA

@@ -92,3 +92,32 @@ async def test_output_size_sums_text_blocks():
             "SELECT output_size FROM tool_calls WHERE tool_id = 'multi_block'"
         ).fetchone()
     assert row["output_size"] == 5  # len("abc") + len("de")
+
+
+@pytest.mark.asyncio
+async def test_oversized_output_logs_warning(caplog):
+    """Outputs likely to blow the SDK's 25k-token MCP cap get a WARNING —
+    otherwise the row says success=1 while the model saw only a size-limit
+    error (the invisible 2026-07-04 jobhunt_radar failure mode)."""
+    import tools._telemetry as tel
+
+    @instrumented("fat_tool")
+    async def fat_tool(args):
+        return {"content": [{"type": "text", "text": "x" * (tel._OUTPUT_WARN_CHARS + 1)}]}
+
+    with caplog.at_level("WARNING", logger="tools._telemetry"):
+        await fat_tool({})
+
+    assert any("fat_tool" in r.message and "cap" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_normal_output_no_warning(caplog):
+    @instrumented("thin_tool")
+    async def thin_tool(args):
+        return {"content": [{"type": "text", "text": "small"}]}
+
+    with caplog.at_level("WARNING", logger="tools._telemetry"):
+        await thin_tool({})
+
+    assert not caplog.records
