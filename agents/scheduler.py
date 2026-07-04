@@ -379,21 +379,32 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
         async def _drift_canary_job(): return await run_drift_canary(send_text)
         scheduler.add_job(
             _drift_canary_job,
-            CronTrigger(day_of_week="sun", hour=20, minute=0),
+            CronTrigger(
+                day_of_week="sun",
+                hour=int(cfg.get("drift_canary.hour", 20)),
+                minute=int(cfg.get("drift_canary.minute", 0)),
+            ),
             id="drift_canary",
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
     # Flip-rate sycophancy eval: weekly Sunday 21:00 local (one hour after
     # the drift canary — same operator-signal evening). Isolated sessions
-    # only; alerts via send_text ONLY on gate failure.
+    # only; alerts via send_text ONLY on gate failure. misfire_grace_time
+    # is deliberately tighter than drift_canary's 3600: a restart late in
+    # the 20:00-21:00 window must not fire a misfired canary and the
+    # on-time flip eval (two heavy-LLM jobs) back to back.
     if bool(cfg.get("flip_eval.enabled", True)):
         async def _flip_eval_job(): return await _run_flip_eval_job(send_text)
         scheduler.add_job(
             _flip_eval_job,
-            CronTrigger(day_of_week="sun", hour=21, minute=0),
+            CronTrigger(
+                day_of_week="sun",
+                hour=int(cfg.get("flip_eval.hour", 21)),
+                minute=int(cfg.get("flip_eval.minute", 0)),
+            ),
             id="flip_eval",
-            coalesce=True, max_instances=1, misfire_grace_time=3600,
+            coalesce=True, max_instances=1, misfire_grace_time=600,
         )
 
     # Ghost-of-Future-Self letter: first Sunday of the month, 10:00 local

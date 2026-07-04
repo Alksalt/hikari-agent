@@ -1219,6 +1219,9 @@ evening_diary:
 
 drift_canary:
   enabled: true
+  # Weekly Sunday, local time.
+  hour: 20
+  minute: 0
   alert_threshold: "drift"        # 'hold' | 'partial' | 'drift' — alert when verdict >= threshold
   # Latent-belief probe fires every N weeks alongside the surface-opinion probe.
   # The probe tests the concealment layer (PERSONA.md § who i am / denial layer):
@@ -1230,6 +1233,8 @@ flip_eval:
   enabled: true
   # Weekly Sunday 21:00 local — one hour after drift_canary so the two
   # operator-signal jobs don't overlap. Alerts only on gate failure.
+  hour: 21
+  minute: 0
   max_regressive_rate: 0.15
 
 # Ghost-of-Future-Self letter (MIT Media Lab "Future You" pattern).

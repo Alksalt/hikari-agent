@@ -26,6 +26,19 @@ def test_flip_eval_job_registered_when_enabled(monkeypatch):
     assert "flip_eval" in [j.id for j in sched.get_jobs()]
 
 
+def test_flip_eval_trigger_fields(monkeypatch):
+    """Pin the config-driven schedule (sun 21:00 defaults) and the tight
+    misfire grace — 600s so a restart late in the 20:00-21:00 window can't
+    fire a misfired drift_canary and the on-time flip eval back to back."""
+    sched = _build(monkeypatch, enabled=True)
+    job = next(j for j in sched.get_jobs() if j.id == "flip_eval")
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["day_of_week"] == "sun"
+    assert fields["hour"] == "21"
+    assert fields["minute"] == "0"
+    assert job.misfire_grace_time == 600
+
+
 def test_flip_eval_job_absent_when_disabled(monkeypatch):
     sched = _build(monkeypatch, enabled=False)
     assert "flip_eval" not in [j.id for j in sched.get_jobs()]

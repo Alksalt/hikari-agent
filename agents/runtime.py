@@ -1418,11 +1418,10 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
                             max_budget_usd: float = 0.20) -> str:
     """Single in-character turn without session resume.
 
-    Used by:
-      - Anti-sycophancy eval tests (tests/persona/test_sycophancy.py) —
-        fires SycEval / ELEPHANT prompts at a fresh persona session and
-        scores the response via DeepSeek (``run_reflection_call``).
-      - drift_canary weekly hard-opinion probe (agents.drift_canary).
+    Sole caller: the anti-sycophancy eval tests
+    (tests/persona/test_sycophancy.py) — fires SycEval / ELEPHANT prompts
+    at a fresh persona session. (drift_canary probes go through
+    ``run_visible_proactive``, not here.)
 
     Differs from ``run_user_turn`` / ``run_visible_proactive`` in three ways:
       - No session resume — every call is a fresh conversation.
@@ -1431,13 +1430,16 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
       - No shared ``_RUN_LOCK`` — these calls never resume the live session,
         so they cannot race with user turns or proactive jobs.
 
-    The full persona + MCP servers + hooks are kept so the response is
-    representative of how Hikari actually talks today.
+    Persona + MCP servers are kept so the response is representative;
+    memory injection is disabled (same contract as
+    ``run_isolated_dialogue``) so eval turns neither mutate live
+    runtime_state nor vary with whatever memory happens to be loaded.
     """
     options = _build_options(
         resume=None,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
+        inject_memory_enabled=False,  # eval sessions must not mutate live runtime_state
     )
     parts: list[str] = []
     async with ClaudeSDKClient(options=options) as client:

@@ -97,3 +97,29 @@ async def test_dialogue_disables_memory_injection(monkeypatch):
         await runtime.run_isolated_dialogue(["q1", "q2"])
 
     assert seen.get("inject_memory_enabled") is False
+
+
+@pytest.mark.asyncio
+async def test_isolated_turn_disables_memory_injection(monkeypatch):
+    """Same contract for the single-turn sibling used by the @slow persona
+    eval — parity with run_isolated_dialogue."""
+    _FakeClient.instances.clear()
+    import agents.runtime as runtime
+
+    seen: dict = {}
+    real_build = runtime._build_options
+
+    def spy_build(**kwargs):
+        seen.update(kwargs)
+        return real_build(**kwargs)
+
+    with (
+        patch.object(runtime, "_build_options", spy_build),
+        patch.object(runtime, "ClaudeSDKClient", _FakeClient),
+        patch.object(runtime, "AssistantMessage", _FakeAssistantMessage),
+        patch.object(runtime, "TextBlock", _FakeBlock),
+    ):
+        reply = await runtime.run_isolated_turn("q1")
+
+    assert reply == "first reply"
+    assert seen.get("inject_memory_enabled") is False
