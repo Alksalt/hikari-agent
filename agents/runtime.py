@@ -1453,6 +1453,52 @@ async def run_isolated_turn(prompt: str, *, max_turns: int = 3,
     return "".join(parts).strip()
 
 
+async def run_isolated_dialogue(
+    prompts: list[str],
+    *,
+    max_turns: int = 3,
+    max_budget_usd: float = 0.60,
+) -> list[str]:
+    """Multi-turn in-character dialogue without session resume.
+
+    Generalizes ``run_isolated_turn``: ONE ClaudeSDKClient session, each
+    prompt in ``prompts`` sent as a sequential query so later prompts see
+    the earlier exchange (needed by the flip-rate eval: question → her
+    answer → scripted pushback → her second answer). Same isolation
+    contract: no resume, no ``messages`` write-back, no ``_RUN_LOCK``.
+    Full persona + MCP servers + hooks are kept so responses are
+    representative of how Hikari actually talks today.
+
+    Returns one reply string per prompt (empty string when a turn
+    produced no text). Returns ``[]`` for an empty prompt list without
+    spawning a client.
+    """
+    if not prompts:
+        return []
+    options = _build_options(
+        resume=None,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+    )
+    replies: list[str] = []
+    async with ClaudeSDKClient(options=options) as client:
+        for prompt in prompts:
+            parts: list[str] = []
+            await client.query(prompt)
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            parts.append(block.text)
+                elif isinstance(msg, ResultMessage):
+                    if msg.subtype != "success":
+                        logger.warning(
+                            "isolated dialogue turn ended subtype=%s", msg.subtype
+                        )
+            replies.append("".join(parts).strip())
+    return replies
+
+
 async def run_internal_text(
     prompt: str,
     *,
