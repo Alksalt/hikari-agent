@@ -805,6 +805,17 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
     # Phase E: wire the gatekeeper can_use_tool hook. Imported lazily so tests
     # that mock the registry still work; the callable itself is stateless.
     from tools.gatekeeper_can_use_tool import gatekeeper_can_use_tool
+
+    # Native CLI tool deferral (ToolSearch) broke tool calling when the
+    # registry crossed the CLI's auto-defer threshold (2026-07-04:
+    # reminder_create called with {} seven times — schema invisible to the
+    # model). No per-tool control exists upstream; kill it globally.
+    # Flip runtime.tool_search_enabled to true only after verifying the
+    # deferred-schema bug is fixed in the bundled CLI.
+    env_overrides: dict[str, str] = {}
+    if not bool(cfg.get("runtime.tool_search_enabled", False)):
+        env_overrides["ENABLE_TOOL_SEARCH"] = "false"
+
     return ClaudeAgentOptions(
         model=model or MODEL_PRIMARY,
         fallback_model=MODEL_FALLBACK,
@@ -831,6 +842,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
             if bool(cfg.get("runtime.cache_ttl_1h_enabled", True))
             else []
         ),
+        env=env_overrides,
     )
 
 

@@ -1071,6 +1071,11 @@ runtime:
   chat_max_budget_usd: 0.50         # per-turn $ cap for chat-path SDK calls
   cache_ttl_1h_enabled: true
   agent_sdk_monthly_credit_usd: 200  # Anthropic Agent SDK credit bucket (separate from interactive plan)
+  # Native CLI ToolSearch deferral. false = all tool schemas in context every
+  # turn (prefix-cached). Deferral broke reminder_create with empty-{} calls
+  # on 2026-07-04 (registry crossed the CLI auto-defer threshold). Re-enable
+  # only after the upstream deferred-schema bug is confirmed fixed.
+  tool_search_enabled: false
 
 reflection:
   near_dup_cosine_threshold: 0.92    # embedding dedup sensitivity
