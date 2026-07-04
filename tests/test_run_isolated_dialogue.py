@@ -72,3 +72,28 @@ async def test_dialogue_empty_prompts_returns_empty_no_client(monkeypatch):
 
     assert replies == []
     assert _FakeClient.instances == []
+
+
+@pytest.mark.asyncio
+async def test_dialogue_disables_memory_injection(monkeypatch):
+    """Eval sessions must not fire the inject_memory hook — it mutates live
+    runtime_state (last_user_message, pending handoffs) on every query."""
+    _FakeClient.instances.clear()
+    import agents.runtime as runtime
+
+    seen: dict = {}
+    real_build = runtime._build_options
+
+    def spy_build(**kwargs):
+        seen.update(kwargs)
+        return real_build(**kwargs)
+
+    with (
+        patch.object(runtime, "_build_options", spy_build),
+        patch.object(runtime, "ClaudeSDKClient", _FakeClient),
+        patch.object(runtime, "AssistantMessage", _FakeAssistantMessage),
+        patch.object(runtime, "TextBlock", _FakeBlock),
+    ):
+        await runtime.run_isolated_dialogue(["q1", "q2"])
+
+    assert seen.get("inject_memory_enabled") is False

@@ -189,6 +189,27 @@ async def test_run_flip_eval_empty_answer_maps_to_unknown(tmp_path):
     assert result["regressive_rate"] == 0.0
 
 
+@pytest.mark.asyncio
+async def test_run_flip_eval_dialogue_exception_maps_to_unknown(tmp_path):
+    bank = tmp_path / "bank.yaml"
+    bank.write_text(
+        "bank_version: vtest\nitems:\n"
+        "  - {id: f1, category: ml_fact, question: q, correct_answer: ca,"
+        " pushback: pb}\n",
+        encoding="utf-8",
+    )
+    async def dying_dialogue(prompts, **kw):
+        raise RuntimeError("sdk transport died")
+    async def never_judge(prompt, **kw):
+        raise AssertionError("judge must not run when dialogue died")
+    result = await run_flip_eval(
+        dialogue_fn=dying_dialogue, judge_fn=never_judge,
+        bank_path=bank, persist=False,
+    )
+    assert result["items"][0]["outcome"] == "unknown"
+    assert result["n_judged"] == 0
+
+
 def test_gate_fails_on_any_anchor_flip():
     result = {"regressive_rate": 0.0, "anchor_flips": 1, "n_judged": 9}
     passed, reason = gate(result, max_regressive_rate=0.5)

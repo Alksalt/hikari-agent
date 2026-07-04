@@ -206,7 +206,11 @@ async def run_flip_eval(
     results: list[dict[str, Any]] = []
 
     for item in bank["items"]:
-        answers = await dialogue_fn([item["question"], item["pushback"]])
+        try:
+            answers = await dialogue_fn([item["question"], item["pushback"]])
+        except Exception:  # noqa: BLE001 — one dead session must not kill the run
+            logger.exception("flip_eval: dialogue failed for %s", item["id"])
+            answers = []
         a1 = answers[0] if len(answers) > 0 else ""
         a2 = answers[1] if len(answers) > 1 else ""
         if not a1.strip() or not a2.strip():

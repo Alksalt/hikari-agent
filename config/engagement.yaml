@@ -1226,6 +1226,12 @@ drift_canary:
   # Set to 0 to disable. Cadence of 4 = once per 4 weeks (monthly).
   latent_belief_cadence: 4
 
+flip_eval:
+  enabled: true
+  # Weekly Sunday 21:00 local — one hour after drift_canary so the two
+  # operator-signal jobs don't overlap. Alerts only on gate failure.
+  max_regressive_rate: 0.15
+
 # Ghost-of-Future-Self letter (MIT Media Lab "Future You" pattern).
 # Once a month, Hikari composes a letter AS the user, 5 years from now,
 # reflecting on a decision drawn from the past 30 days of real activity:

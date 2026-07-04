@@ -1466,8 +1466,9 @@ async def run_isolated_dialogue(
     the earlier exchange (needed by the flip-rate eval: question → her
     answer → scripted pushback → her second answer). Same isolation
     contract: no resume, no ``messages`` write-back, no ``_RUN_LOCK``.
-    Full persona + MCP servers + hooks are kept so responses are
-    representative of how Hikari actually talks today.
+    Full persona + MCP servers + hooks are kept, but memory injection is
+    disabled so eval runs neither mutate live runtime_state nor vary with
+    it (see ``inject_memory_enabled=False`` below).
 
     Returns one reply string per prompt (empty string when a turn
     produced no text). Returns ``[]`` for an empty prompt list without
@@ -1479,6 +1480,7 @@ async def run_isolated_dialogue(
         resume=None,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
+        inject_memory_enabled=False,  # eval sessions must not mutate live runtime_state
     )
     replies: list[str] = []
     async with ClaudeSDKClient(options=options) as client:
