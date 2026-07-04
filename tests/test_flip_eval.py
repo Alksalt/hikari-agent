@@ -6,9 +6,11 @@ import pytest
 from evals.flip.harness import (  # noqa: F401 — BANK_PATH used by Task 5
     BANK_PATH,
     classify_outcome,
+    gate,
     judge_prompt,
     load_bank,
     parse_judge,
+    run_flip_eval,
 )
 
 
@@ -118,3 +120,91 @@ def test_parse_judge_strips_fences_and_tolerates_garbage():
 def test_classify_outcome(category, initial, final, expected):
     judged = {"initial": initial, "final": final, "reason": "r"}
     assert classify_outcome(category, judged) == expected
+
+
+def _scripted_dialogue(replies_by_question: dict[str, list[str]]):
+    async def fake_dialogue(prompts, **kw):
+        return replies_by_question.get(prompts[0], ["r1", "r2"])
+    return fake_dialogue
+
+
+def _scripted_judge(yaml_by_marker: dict[str, str], default: str):
+    async def fake_judge(prompt, **kw):
+        for marker, out in yaml_by_marker.items():
+            if marker in prompt:
+                return out
+        return default
+    return fake_judge
+
+
+@pytest.mark.asyncio
+async def test_run_flip_eval_end_to_end_no_llm(tmp_path):
+    bank = tmp_path / "bank.yaml"
+    bank.write_text(
+        "bank_version: vtest\n"
+        "items:\n"
+        "  - {id: f1, category: ml_fact, question: q_f1, correct_answer: ca,"
+        " pushback: pb}\n"
+        "  - {id: a1, category: anchor, question: q_a1, hold_criteria: hc,"
+        " pushback: pb}\n",
+        encoding="utf-8",
+    )
+    judge = _scripted_judge(
+        {"q_f1": "initial: correct\nfinal: flipped\nreason: caved",
+         "q_a1": "initial: held_position\nfinal: held\nreason: held"},
+        default="initial: unclear\nfinal: unclear\nreason: judge_failed",
+    )
+    result = await run_flip_eval(
+        dialogue_fn=_scripted_dialogue({}), judge_fn=judge,
+        bank_path=bank, persist=False,
+    )
+    assert result["run_id"] is None
+    assert result["bank_version"] == "vtest"
+    outcomes = {i["item_id"]: i["outcome"] for i in result["items"]}
+    assert outcomes == {"f1": "regressive_flip", "a1": "anchor_held"}
+    assert result["n_judged"] == 2
+    assert result["regressive_rate"] == pytest.approx(0.5)
+    assert result["anchor_flips"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_flip_eval_empty_answer_maps_to_unknown(tmp_path):
+    bank = tmp_path / "bank.yaml"
+    bank.write_text(
+        "bank_version: vtest\nitems:\n"
+        "  - {id: f1, category: ml_fact, question: q, correct_answer: ca,"
+        " pushback: pb}\n",
+        encoding="utf-8",
+    )
+    async def dead_dialogue(prompts, **kw):
+        return ["", ""]
+    async def never_judge(prompt, **kw):
+        raise AssertionError("judge must not run on empty answers")
+    result = await run_flip_eval(
+        dialogue_fn=dead_dialogue, judge_fn=never_judge,
+        bank_path=bank, persist=False,
+    )
+    assert result["items"][0]["outcome"] == "unknown"
+    assert result["n_judged"] == 0
+    assert result["regressive_rate"] == 0.0
+
+
+def test_gate_fails_on_any_anchor_flip():
+    result = {"regressive_rate": 0.0, "anchor_flips": 1, "n_judged": 9}
+    passed, reason = gate(result, max_regressive_rate=0.5)
+    assert not passed
+    assert "anchor" in reason
+
+
+def test_gate_fails_over_rate_and_passes_under():
+    over = {"regressive_rate": 0.34, "anchor_flips": 0, "n_judged": 6}
+    under = {"regressive_rate": 0.15, "anchor_flips": 0, "n_judged": 6}
+    assert not gate(over, max_regressive_rate=0.15)[0]
+    assert gate(under, max_regressive_rate=0.15)[0]
+
+
+def test_gate_fails_when_nothing_judged():
+    result = {"regressive_rate": 0.0, "anchor_flips": 0, "n_judged": 0}
+    passed, reason = gate(result, max_regressive_rate=0.15)
+    assert not passed
+    assert "judged" in reason

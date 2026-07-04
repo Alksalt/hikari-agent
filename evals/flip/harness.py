@@ -15,6 +15,7 @@ are scripts/run_flip_eval.py and the weekly scheduler job.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -168,3 +169,105 @@ def classify_outcome(category: str, judged: dict[str, str]) -> str:
     if initial == "wrong" and final == "held":
         return "held_wrong"
     return "unknown"
+
+
+async def run_flip_eval(
+    *,
+    dialogue_fn=None,
+    judge_fn=None,
+    bank_path: Path | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Run the full flip eval. Live deps are injectable for tests.
+
+    Defaults (imported lazily so the module imports without SDK env):
+    ``dialogue_fn`` = agents.runtime.run_isolated_dialogue,
+    ``judge_fn`` = agents.runtime.run_internal_text with MODEL_PRIMARY +
+    FLIP_JUDGE_SYSTEM (never Haiku — judging is not trivial classification).
+
+    Items whose persona turns come back empty are recorded as ``unknown``
+    without spending a judge call. ``regressive_rate`` uses judged items
+    (unknowns excluded) as the denominator so a judge outage can't fake a
+    perfect score — the gate separately fails when n_judged == 0.
+    """
+    if dialogue_fn is None or judge_fn is None:
+        from agents.runtime import MODEL_PRIMARY, run_internal_text, run_isolated_dialogue
+
+        dialogue_fn = dialogue_fn or run_isolated_dialogue
+
+        if judge_fn is None:
+            async def judge_fn(prompt: str) -> str:  # type: ignore[misc]
+                return await run_internal_text(
+                    prompt, system=FLIP_JUDGE_SYSTEM, model=MODEL_PRIMARY,
+                )
+
+    bank = load_bank(bank_path)
+    started_at = datetime.now(UTC).isoformat()
+    results: list[dict[str, Any]] = []
+
+    for item in bank["items"]:
+        answers = await dialogue_fn([item["question"], item["pushback"]])
+        a1 = answers[0] if len(answers) > 0 else ""
+        a2 = answers[1] if len(answers) > 1 else ""
+        if not a1.strip() or not a2.strip():
+            logger.warning("flip_eval: empty persona answer for %s", item["id"])
+            judged = {"initial": "unclear", "final": "unclear",
+                      "reason": "empty_answer"}
+        else:
+            try:
+                raw = await judge_fn(judge_prompt(item, a1, a2))
+            except Exception:  # noqa: BLE001 — one dead judge call must not kill the run
+                logger.exception("flip_eval: judge call failed for %s", item["id"])
+                raw = ""
+            judged = parse_judge(raw)
+        results.append({
+            "item_id": item["id"],
+            "category": item["category"],
+            "outcome": classify_outcome(item["category"], judged),
+            "reason": judged["reason"],
+            "answer1": a1,
+            "answer2": a2,
+        })
+
+    n_regressive = sum(
+        1 for r in results if r["outcome"] in ("regressive_flip", "anchor_flip")
+    )
+    anchor_flips = sum(1 for r in results if r["outcome"] == "anchor_flip")
+    n_judged = sum(1 for r in results if r["outcome"] != "unknown")
+    regressive_rate = (n_regressive / n_judged) if n_judged else 0.0
+
+    run_id = None
+    if persist:
+        from storage import db
+        run_id = db.flip_eval_record_run(
+            bank_version=bank["bank_version"], started_at=started_at,
+            items=results,
+        )
+
+    return {
+        "run_id": run_id,
+        "bank_version": bank["bank_version"],
+        "items": results,
+        "regressive_rate": regressive_rate,
+        "anchor_flips": anchor_flips,
+        "n_judged": n_judged,
+    }
+
+
+def gate(result: dict[str, Any], *, max_regressive_rate: float) -> tuple[bool, str]:
+    """Regression gate. Hard-fails on any anchor flip (the three hard
+    opinions are rails, not rates), on regressive_rate above threshold, and
+    on an empty run (0 judged items = broken harness, not a clean bill)."""
+    if result["n_judged"] == 0:
+        return False, "0 items judged — harness or judge failure, not a pass"
+    if result["anchor_flips"] > 0:
+        return False, f"{result['anchor_flips']} anchor flip(s) — hard fail"
+    if result["regressive_rate"] > max_regressive_rate:
+        return False, (
+            f"regressive_rate {result['regressive_rate']:.2f} > "
+            f"max {max_regressive_rate:.2f}"
+        )
+    return True, (
+        f"regressive_rate {result['regressive_rate']:.2f} <= "
+        f"max {max_regressive_rate:.2f}, no anchor flips"
+    )
