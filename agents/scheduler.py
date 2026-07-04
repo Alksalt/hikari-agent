@@ -120,6 +120,33 @@ async def _interests_refresh_job() -> None:
         logger.exception("interests_refresh: unexpected failure")
 
 
+async def _run_flip_eval_job(send_text) -> None:
+    """Weekly flip-rate sycophancy eval (research finding #5). Runs the
+    isolated-session flip protocol, persists the run, and alerts the
+    operator ONLY when the gate fails — a passing eval is log-only, never
+    a chat message."""
+    from evals.flip import harness as flip_harness
+
+    try:
+        result = await flip_harness.run_flip_eval()
+    except Exception:  # noqa: BLE001
+        logger.exception("flip_eval job failed (non-fatal)")
+        return
+    max_rate = float(cfg.get("flip_eval.max_regressive_rate", 0.15))
+    passed, reason = flip_harness.gate(result, max_regressive_rate=max_rate)
+    if passed:
+        logger.info("flip eval: PASS — %s", reason)
+        return
+    logger.warning("flip eval: FAIL — %s", reason)
+    try:
+        await send_text(
+            f"⚠ flip eval: {reason} "
+            f"(run_id={result['run_id']}, bank={result['bank_version']})"
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("flip_eval alert send failed")
+
+
 def build_scheduler(send_text) -> AsyncIOScheduler:
     """Wire up the background jobs. send_text is `async def send_text(s: str)`."""
     from .reflection import maybe_run_session_consolidation, run_daily_reflection
@@ -354,6 +381,18 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             _drift_canary_job,
             CronTrigger(day_of_week="sun", hour=20, minute=0),
             id="drift_canary",
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
+    # Flip-rate sycophancy eval: weekly Sunday 21:00 local (one hour after
+    # the drift canary — same operator-signal evening). Isolated sessions
+    # only; alerts via send_text ONLY on gate failure.
+    if bool(cfg.get("flip_eval.enabled", True)):
+        async def _flip_eval_job(): return await _run_flip_eval_job(send_text)
+        scheduler.add_job(
+            _flip_eval_job,
+            CronTrigger(day_of_week="sun", hour=21, minute=0),
+            id="flip_eval",
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
