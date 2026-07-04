@@ -423,6 +423,34 @@ CREATE TABLE IF NOT EXISTS drift_canary_answers (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Flip-rate sycophancy eval (research finding #5, 2026-07-04). One row per
+-- eval run + one row per bank item asked. Counters are denormalized onto the
+-- run row so trend queries never join. Tables are brand-new — indexes live
+-- in _migrate_flip_eval_indexes, keeping the bootstrap pass index-free.
+CREATE TABLE IF NOT EXISTS flip_eval_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    n_items INTEGER NOT NULL,
+    n_regressive INTEGER NOT NULL,    -- regressive_flip + anchor_flip
+    n_progressive INTEGER NOT NULL,
+    n_anchor_flips INTEGER NOT NULL,
+    n_unknown INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS flip_eval_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES flip_eval_runs(id),
+    item_id TEXT NOT NULL,
+    category TEXT NOT NULL,           -- 'ml_fact' | 'anchor'
+    outcome TEXT NOT NULL,            -- held_correct|held_wrong|regressive_flip|progressive_flip|anchor_held|anchor_flip|unknown
+    reason TEXT,
+    answer1 TEXT,
+    answer2 TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Ghost-of-Future-Self letters: monthly LLM-composed letter written AS the
 -- user 5 years from now (MIT Media Lab Future You project pattern). One
 -- row per month_iso (YYYY-MM), persisted both here (queryable) and as a
@@ -545,6 +573,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_drift_sycophancy_column",
     "migrate_media_outbox_status_sending",
     "migrate_capability_offers",
+    "migrate_flip_eval_indexes",
 ]
 
 # Process-level sentinel: schema setup + idempotent migrations only run on the
@@ -711,6 +740,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_drift_sycophancy_column", _migrate_drift_sycophancy_column, tag="migrate_drift_sycophancy_column")
     run_once(conn, "migrate_media_outbox_status_sending", _migrate_media_outbox_status_sending, tag="migrate_media_outbox_status_sending")
     run_once(conn, "migrate_capability_offers", _migrate_capability_offers, tag="migrate_capability_offers")
+    run_once(conn, "migrate_flip_eval_indexes", _migrate_flip_eval_indexes, tag="migrate_flip_eval_indexes")
     # Commit any pending implicit transaction left open by migrations that
     # called conn.commit() internally (releasing SAVEPOINTs early) — the
     # ledger INSERT for those migrations stays in a Python-managed implicit
@@ -983,6 +1013,19 @@ def _migrate_drift_canary_indexes(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS drift_canary_verdict "
         "ON drift_canary_answers(verdict)"
+    )
+
+
+def _migrate_flip_eval_indexes(conn: sqlite3.Connection) -> None:
+    """Flip-eval indexes. Tables live in _SCHEMA (brand-new); indexes stay in
+    the migration fn per MEMORY.md schema-migration-ordering. Idempotent."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS flip_eval_items_run "
+        "ON flip_eval_items(run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS flip_eval_runs_created "
+        "ON flip_eval_runs(created_at DESC)"
     )
 
 
@@ -3106,6 +3149,53 @@ def drift_canary_recent_by_probe(probe_key: str, limit: int = 5) -> list[dict]:
             "WHERE probe_key = ? "
             "ORDER BY created_at DESC, id DESC LIMIT ?",
             (probe_key, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- flip_eval (flip-rate sycophancy eval) ----------
+
+def flip_eval_record_run(
+    *, bank_version: str, started_at: str, items: list[dict],
+) -> int:
+    """Persist one flip-eval run + its per-item rows. Counters are computed
+    here (single writer) so every reader sees consistent numbers.
+    ``n_regressive`` includes anchor flips — an anchor reversal is the worst
+    regressive outcome, not a separate benign category."""
+    n_regressive = sum(
+        1 for i in items if i["outcome"] in ("regressive_flip", "anchor_flip")
+    )
+    n_progressive = sum(1 for i in items if i["outcome"] == "progressive_flip")
+    n_anchor_flips = sum(1 for i in items if i["outcome"] == "anchor_flip")
+    n_unknown = sum(1 for i in items if i["outcome"] == "unknown")
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO flip_eval_runs "
+            "(bank_version, started_at, n_items, n_regressive, n_progressive, "
+            "n_anchor_flips, n_unknown) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (bank_version, started_at, len(items), n_regressive,
+             n_progressive, n_anchor_flips, n_unknown),
+        )
+        run_id = cur.lastrowid
+        for i in items:
+            c.execute(
+                "INSERT INTO flip_eval_items "
+                "(run_id, item_id, category, outcome, reason, answer1, answer2) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (run_id, i["item_id"], i["category"], i["outcome"],
+                 i.get("reason"), i.get("answer1"), i.get("answer2")),
+            )
+    return run_id
+
+
+def flip_eval_recent_runs(limit: int = 10) -> list[dict]:
+    """Newest-first flip-eval run rows (trend view)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, bank_version, started_at, n_items, n_regressive, "
+            "n_progressive, n_anchor_flips, n_unknown, created_at "
+            "FROM flip_eval_runs ORDER BY created_at DESC, id DESC LIMIT ?",
+            (int(limit),),
         ).fetchall()
     return [dict(r) for r in rows]
 
