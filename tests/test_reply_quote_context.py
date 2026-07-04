@@ -66,15 +66,21 @@ def test_build_reply_context_bot_quote_attributes_to_hikari():
     assert ctx is not None
     assert "Hikari" in ctx
     assert "tea first, then code." in ctx
+    assert "The user replied to this earlier message" in ctx
+    assert "> tea first, then code." in ctx
+    assert "refers to that quoted message" in ctx
 
 
 def test_build_reply_context_user_quote_attributes_to_user():
     from agents.telegram_bridge import _build_reply_context
     ctx = _build_reply_context(_quoted(text="my flight is at 6", is_bot=False))
     assert ctx is not None
-    assert "the user (earlier)" in ctx
+    assert "the user" in ctx
     assert "my flight is at 6" in ctx
     assert "Hikari" not in ctx
+    assert "The user replied to this earlier message" in ctx
+    assert "> my flight is at 6" in ctx
+    assert "refers to that quoted message" in ctx
 
 
 def test_build_reply_context_uses_caption_when_no_text():
@@ -111,7 +117,7 @@ def test_build_reply_context_truncates_long_body():
 
 @pytest.mark.asyncio
 async def test_reply_context_forwarded_but_not_persisted():
-    reply_ctx = "[The user is replying to this earlier message from you (Hikari, earlier) ...]"
+    reply_ctx = "The user replied to this earlier message from you (Hikari) — quoted: ..."
     user_text = "explain that more"
     captured: list[str] = []
 
