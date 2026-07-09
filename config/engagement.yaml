@@ -786,3 +786,13 @@ ytmusic:
   # Browser cookie auth blob path (see scripts/setup_ytmusic.md).
   browser_json_path_env: "YTMUSIC_BROWSER_JSON_PATH"
   default_history_limit: 5
+
+job_handoff:
+  # Phase 3 of the job-search autoscan pipeline: ../job-search/autoscan.py
+  # appends notification mirrors (hot leads / digests / frist warnings) to the
+  # file below; the heartbeat consumes unprocessed entries and stamps them.
+  # Entries older than max_age_hours are ignored (stale job news is noise).
+  enabled: true
+  path: "/Users/ol/agents/hikari-agent-daily-checkin/data/job_search_handoff.md"
+  max_entries: 2
+  max_age_hours: 72

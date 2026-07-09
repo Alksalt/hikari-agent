@@ -26,6 +26,7 @@ from storage import db
 
 from . import cadence
 from . import config as cfg
+from . import job_handoff
 from .hooks import _resolve_local_tz_name
 from .runtime import run_internal_control, run_visible_proactive
 
@@ -195,7 +196,7 @@ def _record_sent(idx: int) -> None:
     db.runtime_set("last_proactive_sent", datetime.now(UTC).isoformat())
 
 
-def _build_prompt(mood: str, seed: str) -> str:
+def _build_prompt(mood: str, seed: str, job_entries: list[dict] | None = None) -> str:
     open_tasks = db.open_tasks()
     recent = db.recent_episodes(limit=1)
     extras = ""
@@ -205,6 +206,13 @@ def _build_prompt(mood: str, seed: str) -> str:
         )
     if recent:
         extras += f"\n\nrecent_episode_summary:\n{recent[0]['summary'][:400]}"
+    if job_entries:
+        # Job-ad titles/employers are third-party text from the open web —
+        # wrap as untrusted data, same as the gcal reminder path.
+        from .injection_guard import wrap_untrusted
+        extras += "\n\njob_search_update:\n" + wrap_untrusted(
+            "job_search_update", job_handoff.format_lines(job_entries)[:600]
+        )
     return (
         f"You are using the schedule-heartbeat skill. Generate one proactive message.\n"
         f"mood: {mood}\nexcuse_template: {seed}\n{extras}\n\n"
@@ -230,7 +238,12 @@ async def maybe_send_heartbeat(send_text) -> bool:
         logger.info("cadence governor vetoed heartbeat: %s", reason)
         return False
 
-    prompt = _build_prompt(mood, seed)
+    try:
+        job_entries = job_handoff.pull_unprocessed()
+    except Exception:
+        logger.exception("job handoff pull failed (non-fatal)")
+        job_entries = []
+    prompt = _build_prompt(mood, seed, job_entries)
     try:
         text = (await run_proactive(prompt)).strip()
     except Exception:
@@ -265,6 +278,13 @@ async def maybe_send_heartbeat(send_text) -> bool:
         )
     _record_sent(idx)
     cadence.record_proactive_sent()
+    if job_entries:
+        # Stamp only after a confirmed send — mirrors autoscan's rule that the
+        # handoff never claims phantom deliveries.
+        try:
+            job_handoff.mark_processed(job_entries)
+        except Exception:
+            logger.exception("job handoff mark_processed failed (non-fatal)")
     logger.info("heartbeat sent (source=%s)", source)
     return True
 
