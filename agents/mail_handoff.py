@@ -57,7 +57,7 @@ def pull_unprocessed() -> list[dict]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        logger.exception("job_handoff: read failed")
+        logger.exception("mail_handoff: read failed")
         return []
     for i, line in enumerate(lines):
         m = _ENTRY.match(line)
@@ -105,7 +105,7 @@ def mark_processed(entries: list[dict]) -> None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        logger.exception("job_handoff: re-read before mark failed")
+        logger.exception("mail_handoff: re-read before mark failed")
         return
     for e in entries:
         marked = e["raw"].replace(
@@ -115,4 +115,4 @@ def mark_processed(entries: list[dict]) -> None:
     try:
         path.write_text(text, encoding="utf-8")
     except OSError:
-        logger.exception("job_handoff: write failed")
+        logger.exception("mail_handoff: write failed")
