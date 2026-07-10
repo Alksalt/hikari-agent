@@ -313,6 +313,9 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
         + "\n\nrules:\n"
         "- 3-6 items MAX across all sections, most urgent first. tier them: "
         "needs action today > important > fyi.\n"
+        "- every 'handoff:' line MUST appear as its own bullet (pre-triaged "
+        "escalations from mail-triage) — these do not count against the 3-6 "
+        "item budget.\n"
         "- auto-replies, out-of-office, no-reply receipts and anything tagged "
         "[is_auto_reply] are NEVER 'needs action' or 'important' — fyi at most, "
         "usually skip entirely.\n"
@@ -340,8 +343,18 @@ async def maybe_send_daily_brief(send_text) -> bool:
     if not allowed:
         logger.info("daily_brief: cadence vetoed: %s", reason)
         return False
-    sections = await collect_sections()
-    prompt = compose_prompt(sections)
+    try:
+        sections = await collect_sections()
+        prompt = compose_prompt(sections)
+    except Exception:
+        # C3(b): collect_sections()/compose_prompt() were the one uncaught gap in
+        # this function — a crash here used to leave _FORCE_RUN_KEY=="1" wedged,
+        # which makes should_fire_now() return True unconditionally forever,
+        # reproducing the identical crash on every poll with zero operator-facing
+        # signal (review 2026-07-10, silent-failures C3).
+        logger.exception("daily_brief: collect_sections/compose_prompt failed")
+        db.runtime_set(_FORCE_RUN_KEY, None)
+        return False
     if prompt is None:
         # Empty day is a COMPLETED day: mark fired, clear force, stay silent.
         db.runtime_set(_LAST_FIRED_KEY, now_local.date().isoformat())
@@ -354,6 +367,12 @@ async def maybe_send_daily_brief(send_text) -> bool:
         logger.exception("daily_brief: composition failed")
         return False
     if not text or text.upper().startswith("NO_MESSAGE") or looks_like_sdk_error(text):
+        # C3(a): this branch previously treated a genuine SDK/auth error identically
+        # to "nothing to report today" with zero log line distinguishing any of the
+        # three cases (review 2026-07-10, silent-failures C3).
+        reason = ("empty" if not text else
+                 "sdk-error" if looks_like_sdk_error(text) else "NO_MESSAGE")
+        logger.info("daily_brief: no-send (%s): %r", reason, text[:200] if text else "")
         db.runtime_set(_LAST_FIRED_KEY, now_local.date().isoformat())
         db.runtime_set(_FORCE_RUN_KEY, None)
         return False

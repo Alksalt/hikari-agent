@@ -64,6 +64,83 @@ def test_compose_prompt_returns_none_when_empty():
         {"weather": None, "email": None, "calendar": None}) is None
 
 
+def test_compose_prompt_states_handoff_budget_exemption():
+    """B8(c), review 2026-07-10: handoff: lines (pre-triaged mail-triage
+    escalations) must be called out as exempt from the 3-6 item budget, or the
+    composer can silently drop a real escalation just because weather/email/
+    calendar noise already filled the quota."""
+    sections = {"weather": None, "email": None, "calendar": None,
+               "jobhunt": {"due_touches": [], "deadlines": [], "interviews": [],
+                           "replies": [], "handoff": [
+                               {"summary": "svar: x", "details": []}]}}
+    prompt = daily_brief.compose_prompt(sections)
+    assert "handoff:" in prompt
+    assert "do not count against the 3-6" in prompt
+
+
+@pytest.mark.asyncio
+async def test_collect_sections_crash_clears_force_flag_and_returns_false(fresh_db, monkeypatch):
+    """B8(a)/C3(b) fix: a crash inside collect_sections()/compose_prompt() used
+    to leave _FORCE_RUN_KEY wedged at '1' (a user-requested forced brief),
+    which makes should_fire_now() return True unconditionally on every future
+    poll — reproducing the identical crash forever with zero operator-facing
+    signal. Now it must clear the flag and return False instead."""
+    tz = daily_brief._resolve_local_tz()
+    now = datetime.now(tz).replace(hour=3, minute=0, second=0, microsecond=0)  # outside any window
+    monkeypatch.setattr(daily_brief, "_now_local", lambda: now)
+
+    from storage import db as _db
+    _db.runtime_set(daily_brief._FORCE_RUN_KEY, "1")
+
+    import agents.cadence as _cadence
+    monkeypatch.setattr(_cadence, "can_send", lambda *a, **kw: (True, "ok"))
+
+    async def _boom():
+        raise RuntimeError("collect_sections exploded")
+    monkeypatch.setattr(daily_brief, "collect_sections", _boom)
+
+    sent = []
+
+    async def _send(text):
+        sent.append(text)
+        return True
+
+    result = await daily_brief.maybe_send_daily_brief(_send)
+
+    assert result is False
+    assert sent == []
+    assert _db.runtime_get(daily_brief._FORCE_RUN_KEY) != "1"
+
+
+@pytest.mark.asyncio
+async def test_no_send_branch_logs_distinguishing_reason(fresh_db, monkeypatch, caplog):
+    """B8(b)/C3(a) fix: the no-send branch (empty / NO_MESSAGE / sdk-error) used
+    to log NOTHING, treating a genuine SDK/auth error identically to "nothing
+    to report today" with zero trace. Now it logs one info line naming which
+    of the three cases fired."""
+    tz = daily_brief._resolve_local_tz()
+    now = datetime.now(tz).replace(hour=7, minute=2)
+    monkeypatch.setattr(daily_brief, "_now_local", lambda: now)
+
+    import agents.cadence as _cadence
+    monkeypatch.setattr(_cadence, "can_send", lambda *a, **kw: (True, "ok"))
+
+    async def _fake_sections():
+        return {"weather": {"forecast": {}, "label": "x", "reasons": ["r"]},
+               "email": None, "calendar": None}
+    monkeypatch.setattr(daily_brief, "collect_sections", _fake_sections)
+
+    async def _fake_run_visible_proactive(prompt):
+        return "Failed to authenticate. API Error: 401 socket closed"
+    monkeypatch.setattr(daily_brief, "run_visible_proactive", _fake_run_visible_proactive)
+
+    with caplog.at_level("INFO", logger="agents.daily_brief"):
+        result = await daily_brief.maybe_send_daily_brief(lambda text: None)
+
+    assert result is False
+    assert any("no-send (sdk-error)" in r.message for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_skips_silently_when_empty(fresh_db, monkeypatch):
     tz = daily_brief._resolve_local_tz()
