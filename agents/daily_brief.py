@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from agents import config as cfg
+from agents import mail_handoff
 from agents.daily_checkin import (
     _resolve_local_tz,
     fetch_calendar_events,
@@ -108,14 +109,18 @@ async def _collect_weather() -> dict[str, Any] | None:
 
 async def _collect_jobhunt() -> dict[str, Any] | None:
     """Job-hunt radar section: due outreach touches, application deadlines,
-    upcoming interviews, and NEW Gmail replies from known contacts.
+    upcoming interviews, NEW Gmail replies from known contacts (legacy
+    reply_radar, off by default since 2026-07-10 — see
+    ``jobhunt.reply_radar_enabled``), and unprocessed job-search mail_handoff
+    entries (autoscan.py notify_hikari + mail_triage.py escalations).
 
-    Config-gated on ``jobhunt.enabled`` (checked FIRST, before any reader or
-    the reply-radar Gmail query run — an owner who disables job-hunt tracking
-    gets zero extra DB reads / MCP calls, not just an omitted section).
-    Readers never raise (see ``tools/jobhunt/readers.py`` docstring); missing
-    roots simply yield empty lists, which — like an empty reply scan —
-    collapse this whole section to ``None``.
+    Config-gated on ``jobhunt.enabled`` (checked FIRST, before any reader, the
+    reply-radar Gmail query, or the mail_handoff file read — an owner who
+    disables job-hunt tracking gets zero extra DB reads / MCP calls / file
+    reads, not just an omitted section). Readers never raise (see
+    ``tools/jobhunt/readers.py`` docstring); missing roots simply yield empty
+    lists, which — like an empty reply scan or empty handoff — collapse this
+    whole section to ``None``.
     """
     if not bool(cfg.get("jobhunt.enabled", True)):
         return None
@@ -126,13 +131,15 @@ async def _collect_jobhunt() -> dict[str, Any] | None:
     due = jobhunt_readers.outreach_due(today)
     deadlines = jobhunt_readers.application_deadlines(today)
     interviews = jobhunt_readers.interviews_upcoming(today)
-    try:
-        replies = await reply_radar.scan(today)
-    except Exception:
-        logger.exception("daily_brief: jobhunt reply radar failed")
-        replies = []
+    replies = []
+    if bool(cfg.get("jobhunt.reply_radar_enabled", True)):
+        try:
+            replies = await reply_radar.scan(today)
+        except Exception:
+            logger.exception("daily_brief: jobhunt reply radar failed")
+    handoff = mail_handoff.pull_unprocessed()
 
-    if not (due or deadlines or interviews or replies):
+    if not (due or deadlines or interviews or replies or handoff):
         return None
 
     return {
@@ -140,6 +147,7 @@ async def _collect_jobhunt() -> dict[str, Any] | None:
         "deadlines": deadlines[:top_n],
         "interviews": interviews[:top_n],
         "replies": replies[:top_n],
+        "handoff": handoff,
     }
 
 
@@ -284,6 +292,12 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
             org = wrap_untrusted(jt, r.get("org_or_employer", ""))
             subj = wrap_untrusted(jt, r.get("subject", ""))
             jh_lines.append(f"  - reply from {frm} ({org}) — {subj} — want me to pull up the thread?")
+        for e in jobhunt.get("handoff") or []:
+            summary = wrap_untrusted("mail_handoff", e.get("summary", ""))
+            det = "; ".join(e.get("details") or [])
+            det_w = f" ({wrap_untrusted('mail_handoff', det)})" if det else ""
+            auto = " [is_auto_reply]" if "autosvar" in (e.get("summary", "").lower()) else ""
+            jh_lines.append(f"  - handoff: {summary}{det_w}{auto}")
         blocks.append("jobhunt:\n" + "\n".join(jh_lines))
 
     if not blocks:
@@ -299,6 +313,9 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
         + "\n\nrules:\n"
         "- 3-6 items MAX across all sections, most urgent first. tier them: "
         "needs action today > important > fyi.\n"
+        "- auto-replies, out-of-office, no-reply receipts and anything tagged "
+        "[is_auto_reply] are NEVER 'needs action' or 'important' — fyi at most, "
+        "usually skip entirely.\n"
         "- every item you include ends with a concrete next action "
         "(reply / delete / prep / bring an umbrella) — not a status.\n"
         "- keep [#id] tokens verbatim when naming an email.\n"
@@ -361,6 +378,12 @@ async def maybe_send_daily_brief(send_text) -> bool:
     if result.status != "sent":
         logger.info("daily_brief: gate aborted (%s)", result.reason)
         return False
+    jh = sections.get("jobhunt") or {}
+    if jh.get("handoff"):
+        try:
+            mail_handoff.mark_processed(jh["handoff"])
+        except Exception:
+            logger.exception("daily_brief: mark_processed failed (entries stay unprocessed)")
     db.runtime_set(_LAST_FIRED_KEY, now_local.date().isoformat())
     db.runtime_set(_FORCE_RUN_KEY, None)
     cadence.record_ceremony_sent("daily_brief")

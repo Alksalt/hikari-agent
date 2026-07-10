@@ -130,6 +130,10 @@ jobhunt:
   touch_lookahead_days: 1      # outreach touches due through tomorrow
   overdue_grace_days: 14       # ...and up to this many days overdue
   reply_lookback_days: 2       # gmail reply-radar window
+  # 2026-07-10: reply detection moved to job-search/mail_triage.py (spec:
+  # job-search docs/superpowers/specs/2026-07-10-email-cleaner-design.md).
+  # The radar re-surfaced already-read mail (no watermark) — disabled, code kept.
+  reply_radar_enabled: false
   interview_brief_hour: 17     # evening-before prep briefing (local)
   notater_tail_chars: 240
   prep_file_char_cap: 4000     # per-file read cap in prep_files()
@@ -146,6 +150,12 @@ jobhunt:
   # parsed fresh from candidate_profile.md's do-not-cite section at call
   # time; this is what the lint uses when that file/section is missing.
   private_repo_names: ["NorMedBench", "fhir-safety-harness", "tg-bot-logger", "llm-social-agent"]
+
+mail_handoff:
+  enabled: true
+  path: "/Users/ol/agents/hikari-agent/data/mail_handoff.md"
+  max_entries: 5
+  max_age_hours: 72
 
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation
