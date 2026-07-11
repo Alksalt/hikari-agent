@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta
-from pathlib import Path
 
-from agents import config as cfg
 from agents import mail_handoff
 
 
