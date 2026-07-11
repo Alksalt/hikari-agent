@@ -1,5 +1,7 @@
 # hikari-agent — operator runbook
 
+![CI](https://github.com/Alksalt/hikari-agent/actions/workflows/ci.yml/badge.svg)
+
 Single-user Telegram agent on the Claude Agent SDK. Runs on a Max
 subscription's $200/mo Agent SDK quota (no API-key billing). Sprint 6B
 made the README the operator runbook: install, monitor, recover without
