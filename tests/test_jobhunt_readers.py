@@ -406,6 +406,111 @@ def test_interviews_upcoming_jobs_source_never_uses_followup_date(tmp_path, monk
     assert solo["source"] == "jobs"
 
 
+def test_interviews_upcoming_suppresses_jobs_row_for_past_held_interview(tmp_path, monkeypatch):
+    """Real DNB regression: index.md has a PAST-dated row (interview already
+    held), jobs.db still carries Status='Interview' awaiting outcome. The
+    jobs row must be suppressed entirely — no "date TBD" duplicate for an
+    interview that already happened."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI (RAI)", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Follow-up date": "2026-07-10"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| DNB Bank ASA | Platform Engineer, Radical AI (RAI) | T0 | Prepped |"
+        " 2026-06-29 11:15 | Mock drill | companies/dnb-radical-ai/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb_entries = [i for i in interviews if "dnb" in i["org"].lower()]
+    assert dnb_entries == []
+
+
+def test_interviews_upcoming_future_index_row_still_emits_dated_entry(tmp_path, monkeypatch):
+    """Sanity companion to the past-held-interview suppression test: a
+    FUTURE-dated index row must still emit a dated prep entry as before —
+    the fix must not regress the existing future-date path."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Follow-up date": "2026-07-10"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| DNB Bank ASA | Platform Engineer, Radical AI (RAI) | T0 | Prepped |"
+        " 2026-07-20 11:15 | Mock drill | companies/dnb-radical-ai/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb_entries = [i for i in interviews if "dnb" in i["org"].lower()]
+    assert len(dnb_entries) == 1
+    merged = dnb_entries[0]
+    assert merged["source"] == "prep"
+    assert merged["date"] == "2026-07-20"
+    assert merged["slug"] == "dnb-radical-ai"
+
+
+def test_interviews_upcoming_jobs_row_without_index_match_still_emits_date_none(tmp_path, monkeypatch):
+    """A jobs Interview row with NO matching index row at all (past or
+    future) must still emit date=None exactly as before — unmatched
+    behavior is unchanged by the past-row suppression fix."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Some Role", "Arbeidsgiver": "Unmatched Corp",
+         "Status": "Interview"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| Totally Different Co | Other Role | T0 | Prepped |"
+        " 2026-06-01 09:00 | done | companies/totally-different-co/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    unmatched = next(i for i in interviews if i["org"] == "Unmatched Corp")
+    assert unmatched["date"] is None
+    assert unmatched["source"] == "jobs"
+
+
 def test_interviews_upcoming_merges_jobs_and_index_dnb_triple(tmp_path, monkeypatch):
     """Real-world triple that MUST merge into one entry: jobs "DNB Bank ASA
     (Radical AI)" vs index "DNB Bank ASA" vs slug dnb-radical-ai. The merged

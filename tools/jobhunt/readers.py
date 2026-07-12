@@ -273,6 +273,13 @@ def interviews_upcoming(today: date) -> list[dict]:
     # date=None.
     jobs_entries: list[dict] = []
     prep_entries: list[dict] = []
+    # Every index.md row with a parseable Interview date, past OR future —
+    # used ONLY for jobs-row fuzzy suppression below, never emitted itself
+    # unless also future-dated (in which case it's already in prep_entries).
+    # A past-dated row means the interview was already conducted: the
+    # matching jobs row must be suppressed entirely, not surfaced as a
+    # "date TBD" duplicate of an interview that already happened.
+    dated_index_orgs: list[str] = []
 
     root = _root("job_search")
     if root is not None and (root / "job_search.db").exists():
@@ -305,9 +312,10 @@ def interviews_upcoming(today: date) -> list[dict]:
                         parsed = date.fromisoformat(d10)
                     except ValueError:
                         continue
+                    company = (row.get("Company") or "").strip()
+                    dated_index_orgs.append(company)
                     if parsed < today:
                         continue
-                    company = (row.get("Company") or "").strip()
                     folder = (row.get("Folder") or "").strip().rstrip("/")
                     slug = folder.rsplit("/", 1)[-1] if folder else _slugify(company)
                     prep_entries.append({
@@ -322,11 +330,15 @@ def interviews_upcoming(today: date) -> list[dict]:
 
     # Union-dedup: index-sourced entries (dated, prep_state-aware) always
     # win over jobs-sourced entries for the same employer. A jobs row that
-    # fuzzy-matches an index row's company is dropped rather than emitted as
-    # a second, undated duplicate.
+    # fuzzy-matches a FUTURE index row is dropped rather than emitted as a
+    # second, undated duplicate (the future entry already covers it). A jobs
+    # row that fuzzy-matches only a PAST index row is dropped too — the
+    # interview already happened, so it must not surface as "date TBD". Only
+    # a jobs row with no matching index row at all (past or future) keeps
+    # its date=None entry.
     out = list(prep_entries)
     for job_entry in jobs_entries:
-        if any(_fuzzy_company_match(job_entry["org"], p["org"]) for p in prep_entries):
+        if any(_fuzzy_company_match(job_entry["org"], org) for org in dated_index_orgs):
             continue
         out.append(job_entry)
 
