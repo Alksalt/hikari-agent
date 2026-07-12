@@ -38,6 +38,7 @@ _JOBS_COLUMNS = [
     "Stilling", "Arbeidsgiver", "Sted", "Status", "Soknadsfrist",
     "Stilling URL", "Contact name", "Contact email", "Next action",
     "Notater", "Applied date", "Follow-up date", "Outcome", "page_id",
+    "Interview date",
 ]
 
 
@@ -547,6 +548,104 @@ def test_interviews_upcoming_merges_jobs_and_index_dnb_triple(tmp_path, monkeypa
     assert merged["org"] == "DNB Bank ASA"
     assert merged["date"] == "2026-07-05"
     assert merged["slug"] == "dnb-radical-ai"
+
+
+def test_interviews_upcoming_jobs_interview_date_future_emits_dated_entry_no_index_needed(
+    tmp_path, monkeypatch,
+):
+    """Task 3 (2026-07-12 backlog wave): jobs.db's OWN "Interview date"
+    column, once mail_triage starts writing it, is now the primary dated
+    source for a jobs-sourced entry — no get_hired_prep/index.md row is
+    needed at all."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Interview date": "2026-08-05"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)   # no index.md at all
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb = next(i for i in interviews if "dnb" in i["org"].lower())
+    assert dnb["date"] == "2026-08-05"
+    assert dnb["source"] == "jobs"
+    # No Folder to borrow a slug from (no index.md row) -- slugified straight
+    # from the Arbeidsgiver name, same as any other undated jobs-only entry.
+    assert dnb["slug"] == "dnb-bank-asa-radical-ai"
+
+
+def test_interviews_upcoming_jobs_interview_date_past_is_suppressed(tmp_path, monkeypatch):
+    """A past jobs.Interview date means the interview already happened — the
+    row must be suppressed entirely, never surfaced as a stale entry."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Some Role", "Arbeidsgiver": "Past Interview Corp",
+         "Status": "Interview", "Interview date": "2026-06-29"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    assert not any("past interview corp" in i["org"].lower() for i in interviews)
+
+
+def test_interviews_upcoming_jobs_interview_date_empty_falls_back_to_index(
+    tmp_path, monkeypatch,
+):
+    """An empty "Interview date" column must behave EXACTLY as before the
+    column existed — index.md stays the fallback dated source, and an
+    unmatched row still emits date=None."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Interview date": ""},
+        {"Stilling": "Some Role", "Arbeidsgiver": "Unmatched Corp",
+         "Status": "Interview", "Interview date": ""},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| DNB Bank ASA | Platform Engineer, Radical AI (RAI) | T0 | Prepped |"
+        " 2026-07-20 11:15 | Mock drill | companies/dnb-radical-ai/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb = next(i for i in interviews if "dnb" in i["org"].lower())
+    assert dnb["source"] == "prep"        # index.md fallback still wins here
+    assert dnb["date"] == "2026-07-20"
+    unmatched = next(i for i in interviews if i["org"] == "Unmatched Corp")
+    assert unmatched["date"] is None      # unmatched row: unchanged fallback
+    assert unmatched["source"] == "jobs"
 
 
 # --------------------------------------------------------------------------

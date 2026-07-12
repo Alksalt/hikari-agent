@@ -265,16 +265,20 @@ def _parse_index_md(path: Path) -> list[dict]:
 
 
 def interviews_upcoming(today: date) -> list[dict]:
-    # jobs.db has no reliable interview-date column. "Follow-up date" is a
-    # banned-legacy field: it is provably wrong for interview dating (the
-    # real DNB row carries Follow-up date 2026-07-10 for an interview that
-    # actually happened 2026-06-29 per index.md). index.md is the ONLY
-    # dated source for interviews — jobs-sourced rows always carry
-    # date=None.
+    # jobs.db's own "Interview date" column (Task 3, 2026-07-12 backlog wave)
+    # is now the PRIMARY dated source for a jobs-sourced entry when set —
+    # mail_triage's interview-invite escalation writes it directly, closing
+    # the DNB "date TBD" bug. "Follow-up date" remains a banned-legacy field:
+    # it is provably wrong for interview dating (the real DNB row carried
+    # Follow-up date 2026-07-10 for an interview that actually happened
+    # 2026-06-29 per index.md) and is never read here. index.md stays the
+    # FALLBACK dated source only for a jobs row whose own "Interview date"
+    # column is empty/unparseable — exactly today's behavior for that case.
     jobs_entries: list[dict] = []
     prep_entries: list[dict] = []
     # Every index.md row with a parseable Interview date, past OR future —
-    # used ONLY for jobs-row fuzzy suppression below, never emitted itself
+    # used ONLY for jobs-row fuzzy suppression below (and only for a jobs row
+    # with no date of its own — see the union loop), never emitted itself
     # unless also future-dated (in which case it's already in prep_entries).
     # A past-dated row means the interview was already conducted: the
     # matching jobs row must be suppressed entirely, not surfaced as a
@@ -286,10 +290,30 @@ def interviews_upcoming(today: date) -> list[dict]:
         try:
             with _ro_conn(root / "job_search.db") as conn:
                 rows = conn.execute(
-                    "SELECT Arbeidsgiver FROM jobs WHERE Status = 'Interview'"
+                    'SELECT Arbeidsgiver, "Interview date" AS interview_date FROM jobs'
+                    " WHERE Status = 'Interview'"
                 ).fetchall()
             for r in rows:
                 company = r["Arbeidsgiver"] or ""
+                raw_date = (r["interview_date"] or "").strip()
+                parsed_date = None
+                if raw_date:
+                    try:
+                        parsed_date = date.fromisoformat(raw_date[:10])
+                    except ValueError:
+                        parsed_date = None
+                if parsed_date is not None:
+                    if parsed_date < today:
+                        continue   # already happened -- suppress, no "date TBD" dupe
+                    # A real recorded date wins outright over index.md for this
+                    # org (see the union loop: only date=None entries are
+                    # subject to the dated_index_orgs fuzzy-suppression check).
+                    jobs_entries.append({
+                        "org": company, "slug": _slugify(company),
+                        "date": parsed_date.isoformat(), "source": "jobs",
+                        "prep_state": None,
+                    })
+                    continue
                 jobs_entries.append({
                     "org": company,
                     "slug": _slugify(company),
@@ -328,17 +352,22 @@ def interviews_upcoming(today: date) -> list[dict]:
             except Exception:
                 logger.exception("jobhunt: interviews_upcoming prep failed")
 
-    # Union-dedup: index-sourced entries (dated, prep_state-aware) always
-    # win over jobs-sourced entries for the same employer. A jobs row that
+    # Union-dedup: index-sourced entries (dated, prep_state-aware) win over an
+    # UNDATED jobs-sourced entry for the same employer. A jobs row that
     # fuzzy-matches a FUTURE index row is dropped rather than emitted as a
     # second, undated duplicate (the future entry already covers it). A jobs
     # row that fuzzy-matches only a PAST index row is dropped too — the
     # interview already happened, so it must not surface as "date TBD". Only
     # a jobs row with no matching index row at all (past or future) keeps
-    # its date=None entry.
+    # its date=None entry. A jobs entry that already carries its OWN date
+    # (from the "Interview date" column above) is never subject to this
+    # index-suppression check — it is preferred over index.md by construction
+    # and is appended unconditionally.
     out = list(prep_entries)
     for job_entry in jobs_entries:
-        if any(_fuzzy_company_match(job_entry["org"], org) for org in dated_index_orgs):
+        if job_entry["date"] is None and any(
+            _fuzzy_company_match(job_entry["org"], org) for org in dated_index_orgs
+        ):
             continue
         out.append(job_entry)
 
