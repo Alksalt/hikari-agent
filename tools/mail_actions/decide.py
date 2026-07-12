@@ -7,6 +7,7 @@ from typing import Any
 from claude_agent_sdk import tool
 
 from agents import mail_decisions, mail_handoff
+from agents.injection_guard import wrap_untrusted
 from tools._annotations import annotations_for
 from tools._response import ok as _ok
 
@@ -45,7 +46,13 @@ async def mail_action_decide(args: dict[str, Any]) -> dict[str, Any]:
 
     success, result = mail_handoff.decide(action_id, option_id)
     if not success:
-        return _ok(f"beslutning avvist for handling {action_id}: {result}")
+        # `result` here is the owner CLI's raw stderr/stdout text — the CLI
+        # boundary can echo attacker-influenced mail content back in a
+        # rejection message, so it is untrusted the same as any other
+        # external string reaching a composed prompt. Mirrors
+        # tools/wiki/morning_brief.py's `safe_err` wrap of a parser exception.
+        safe_result = wrap_untrusted("mail_actions_cli", str(result))
+        return _ok(f"beslutning avvist for handling {action_id}: {safe_result}")
     return _ok(
         f"registrerte alternativ {option_number} for handling {action_id}",
         data={"action_id": action_id, "option_number": option_number, "option_id": option_id},

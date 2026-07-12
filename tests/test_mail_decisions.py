@@ -334,3 +334,26 @@ async def test_decide_tool_surfaces_rejection_message_from_owner_cli(monkeypatch
 
     result = await decide_tool.mail_action_decide.handler({"action_id": 17, "option_number": 1})
     assert "allerede løst" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_decide_tool_wraps_rejection_message_as_untrusted(monkeypatch):
+    """The owner CLI's rejection text (result.stderr/stdout) is an external
+    string reaching a tool response that later feeds a composed prompt —
+    same trust boundary as any other CLI/tool output. It must be wrapped
+    with wrap_untrusted before being interpolated into the returned
+    message, mirroring tools/wiki/morning_brief.py's safe_err pattern."""
+    from tools.mail_actions import decide as decide_tool
+
+    row = _ask_user_row(action_id=17)
+    monkeypatch.setattr(decide_tool.mail_decisions, "fetch_current_row", lambda aid: row)
+    monkeypatch.setattr(
+        decide_tool.mail_handoff, "decide",
+        lambda aid, oid, note="": (False, "Handling 17 er allerede løst"),
+    )
+
+    result = await decide_tool.mail_action_decide.handler({"action_id": 17, "option_number": 1})
+    text = str(result)
+    assert "<<<HIKARI_UNTRUSTED_BEGIN>>>" in text
+    assert "<<<HIKARI_UNTRUSTED_END>>>" in text
+    assert "Handling 17 er allerede løst" in text

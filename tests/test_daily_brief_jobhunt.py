@@ -447,3 +447,42 @@ def test_compose_prompt_rules_never_important_for_auto_replies():
     assert prompt is not None
     assert "[is_auto_reply] are NEVER" in prompt
     assert "usually skip entirely" in prompt
+
+
+# --------------------------------------------------------------------------
+# composer — verbatim-survival rule for ask-user 'question:' blocks
+# --------------------------------------------------------------------------
+
+def test_compose_prompt_rules_protect_question_blocks_verbatim():
+    """The composer used to give 'handoff:' lines a survival guarantee
+    (own bullet, exempt from the 3-6 item budget) but said nothing about
+    ask-user 'question:' blocks — leaving the composing LLM free to
+    compress, renumber, or drop numbered options / the [action #id] token.
+    This asserts the rules text now gives questions the same protection,
+    explicitly."""
+    prompt = daily_brief.compose_prompt(_jobhunt_sections())
+    assert prompt is not None
+    assert "'question:' block" in prompt
+    assert "own bullet" in prompt
+    assert "VERBATIM" in prompt
+    assert "same numbers, same order, same labels" in prompt
+    assert "[action #id]" in prompt
+    assert "Never drop, paraphrase, renumber, merge, or summarize" in prompt
+    assert "Questions never count against the 3-6 item budget" in prompt
+
+
+def test_compose_prompt_ask_user_question_renders_alongside_verbatim_rule():
+    """A rendered ask-user question block (own bullet, numbered options,
+    [action #id] token) coexists in the same prompt as the static
+    verbatim-survival rule protecting it — the composing LLM sees both the
+    content and the instruction not to touch it."""
+    prompt = daily_brief.compose_prompt(_sections_with_ask_user(action_id=99))
+    assert prompt is not None
+    # rendered content
+    assert "  - question:" in prompt
+    assert "[action #99]" in prompt
+    assert "1. " in prompt and "ja, send til ny adresse" in prompt
+    assert "2. " in prompt and "nei, behold gammel" in prompt
+    # protecting rule
+    assert "VERBATIM" in prompt
+    assert "Questions never count against the 3-6 item budget" in prompt
