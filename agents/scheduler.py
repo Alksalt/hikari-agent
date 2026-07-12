@@ -326,6 +326,26 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             **_jobhunt_context_kwargs,
         )
 
+    # Sprint 2 (Task 6): ask-user mail-action question loop. Every
+    # mail_decisions.poll_interval_minutes, pushes each un-asked URGENT
+    # ask-user mail action immediately via the proactive gate; non-urgent
+    # ones are left for the morning brief (daily_brief's jobhunt composer
+    # renders them as numbered questions). Gated on jobhunt.enabled like
+    # the other jobhunt jobs, plus its own mail_decisions.enabled.
+    if bool(cfg.get("jobhunt.enabled", True)) and bool(cfg.get("mail_decisions.enabled", True)):
+        from agents.mail_decisions import poll_and_ask
+        md_poll_min = int(cfg.get("mail_decisions.poll_interval_minutes", 15))
+
+        async def _mail_decisions_job():
+            return await poll_and_ask(send_text)
+
+        scheduler.add_job(
+            _mail_decisions_job,
+            IntervalTrigger(minutes=md_poll_min),
+            id="mail_decisions_poll",
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+
     # Phase 8: monthly memory prune. Episodes older than the configured
     # retention window get dropped (their embeddings + FTS rows too). Runs
     # at 04:00 on the 1st of each month. Backup launchd (03:00 daily) has

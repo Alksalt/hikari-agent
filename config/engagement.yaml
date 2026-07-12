@@ -155,7 +155,26 @@ mail_handoff:
   enabled: true
   path: "/Users/ol/agents/hikari-agent/data/mail_handoff.md"
   max_entries: 5
-  max_age_hours: 72
+
+# Durable job-search mail actions. Hikari crosses the repository boundary only
+# through this owner CLI; the Markdown handoff above is used if the CLI fails.
+mail_actions:
+  enabled: true
+  cli_path: "/Users/ol/agents/job-search/mail_actions_cli.py"
+  low_priority_cap: 5
+  timeout_seconds: 10
+  # agents/mail_decisions.fetch_current_row re-fetches by a known action id
+  # before recording a decide() — a generous cap so low-priority list
+  # truncation never hides the one action the user is actively answering.
+  decide_lookup_cap: 1000
+
+# Ask-user question loop (Sprint 2, Task 6) — pushes urgent (priority 0)
+# un-asked ask-user mail actions immediately via the proactive gate;
+# non-urgent ones wait for the morning brief instead (daily_brief's jobhunt
+# composer renders them as numbered questions). See agents/mail_decisions.py.
+mail_decisions:
+  enabled: true
+  poll_interval_minutes: 15
 
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation

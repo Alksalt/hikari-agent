@@ -427,6 +427,66 @@ tools:
   # --------------------------------------------------------------------------
   # hikari_utility (bucket 1) — explicit names for untrusted/wrap; rest auto
   # --------------------------------------------------------------------------
+  - id: "mcp__hikari_utility__mail_action_acknowledge"
+    bucket: 1
+    server: hikari_utility
+    gate: gatekeeper
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: mail_actions
+    operation: write
+    risk_tier: medium
+    credentials: null
+    description: "acknowledge resolve or snooze one surfaced email action by exact id"
+    example: "mail_action_acknowledge(action_id=20)"
+    presentation_hint: scalar
+
+  - id: "mcp__hikari_utility__mail_action_resolve"
+    bucket: 1
+    server: hikari_utility
+    gate: gatekeeper
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: mail_actions
+    operation: write
+    risk_tier: medium
+    credentials: null
+    description: "resolve one surfaced email action by exact id"
+    example: "mail_action_resolve(action_id=20, note='done')"
+    presentation_hint: scalar
+
+  - id: "mcp__hikari_utility__mail_action_snooze"
+    bucket: 1
+    server: hikari_utility
+    gate: gatekeeper
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: mail_actions
+    operation: write
+    risk_tier: medium
+    credentials: null
+    description: "snooze one surfaced email action by exact id and ISO timestamp"
+    example: "mail_action_snooze(action_id=20, until_iso='2026-07-20T09:00:00Z')"
+    presentation_hint: scalar
+
+  - id: "mcp__hikari_utility__mail_action_decide"
+    bucket: 1
+    server: hikari_utility
+    gate: gatekeeper
+    access_mode: write
+    untrusted_output: false
+    wrap_patterns: []
+    domain: mail_actions
+    operation: write
+    risk_tier: medium
+    credentials: null
+    description: "answer one ask-user email question by exact id and 1-based option number"
+    example: "mail_action_decide(action_id=20, option_number=2)"
+    presentation_hint: scalar
+
   - id: "mcp__hikari_utility__translate"
     bucket: 1
     server: hikari_utility
@@ -634,12 +694,14 @@ tools:
   - id: "mcp__hikari_utility__voice_outbound_send"
     bucket: 1
     server: hikari_utility
-    gate: null
+    gate: gatekeeper
+    gate_timeout_sec: 120
+    access_mode: write
     untrusted_output: false
     wrap_patterns: []
     domain: media
     operation: write
-    risk_tier: low
+    risk_tier: high
     credentials: ELEVENLABS_API_KEY
     description: "send outbound voice call message speak elevenlabs telegram call user"
     example: "voice_outbound_send(text='hey. sleep.', force=False)"

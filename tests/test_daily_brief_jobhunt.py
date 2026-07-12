@@ -398,6 +398,47 @@ def test_compose_prompt_jobhunt_handoff_non_autosvar_not_tagged():
     assert prompt.count("[is_auto_reply]") == 1
 
 
+# --------------------------------------------------------------------------
+# composer — ask-user handoff entries render as numbered questions (Task 6)
+# --------------------------------------------------------------------------
+
+def _sections_with_ask_user(action_id=42):
+    sections = _jobhunt_sections()
+    sections["jobhunt"] = {
+        "due_touches": [], "deadlines": [], "interviews": [], "replies": [],
+        "handoff": [{
+            "action_id": action_id, "stamp": "2026-07-12 08:00",
+            "summary": "Feil adresse — send søknad til ny kontakt?",
+            "details": [], "kind": "ask-user", "priority": 1, "surface_count": 0,
+            "options": [
+                {"id": "a", "label": "ja, send til ny adresse"},
+                {"id": "b", "label": "nei, behold gammel"},
+            ],
+        }],
+    }
+    return sections
+
+
+def test_compose_prompt_ask_user_renders_numbered_question():
+    prompt = daily_brief.compose_prompt(_sections_with_ask_user())
+    assert prompt is not None
+    assert "  - question:" in prompt
+    assert "Feil adresse" in prompt
+    assert "[action #42]" in prompt
+    assert "1. " in prompt and "ja, send til ny adresse" in prompt
+    assert "2. " in prompt and "nei, behold gammel" in prompt
+    assert "HIKARI_UNTRUSTED" in prompt
+
+
+def test_compose_prompt_ask_user_does_not_use_generic_handoff_line():
+    """An ask-user entry must never fall through to the generic
+    'handoff: mail action (tier)...' rendering — that line has no numbered
+    options for the user to answer against."""
+    prompt = daily_brief.compose_prompt(_sections_with_ask_user())
+    assert prompt is not None
+    assert "handoff: mail action" not in prompt
+
+
 def test_compose_prompt_rules_never_important_for_auto_replies():
     """The 2026-07-10 rules-hardening line: auto-replies/out-of-office/
     no-reply and [is_auto_reply]-tagged items are never 'needs action' or
