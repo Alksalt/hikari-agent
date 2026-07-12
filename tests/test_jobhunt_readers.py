@@ -648,6 +648,113 @@ def test_interviews_upcoming_jobs_interview_date_empty_falls_back_to_index(
     assert unmatched["source"] == "jobs"
 
 
+def test_interviews_upcoming_jobs_interview_date_wins_drops_duplicate_index_entry(
+    tmp_path, monkeypatch,
+):
+    """Review fix (2026-07-12): a jobs row with its OWN "Interview date" set
+    that ALSO fuzzy-matches a future get_hired_prep/index.md row for the same
+    org used to emit BOTH — the jobs entry (source="jobs") AND the index
+    entry (source="prep") — double-booking the same interview in the hikari
+    brief. jobs wins: exactly one entry, the jobs one, and the index/prep
+    duplicate for that org is dropped."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Interview date": "2026-07-20"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| DNB Bank ASA | Platform Engineer, Radical AI (RAI) | T0 | Prepped |"
+        " 2026-07-20 11:15 | Mock drill | companies/dnb-radical-ai/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb_entries = [i for i in interviews if "dnb" in i["org"].lower()]
+    assert len(dnb_entries) == 1
+    assert dnb_entries[0]["source"] == "jobs"
+    assert dnb_entries[0]["date"] == "2026-07-20"
+
+
+def test_interviews_upcoming_jobs_interview_date_no_index_match_single_entry(
+    tmp_path, monkeypatch,
+):
+    """Companion sanity check: a jobs Interview date with no index.md row at
+    all for that org must still emit exactly one entry (no suppression logic
+    accidentally drops it when there is nothing to suppress against)."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Some Role", "Arbeidsgiver": "Solo Interview Corp",
+         "Status": "Interview", "Interview date": "2026-08-05"},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    matches = [i for i in interviews if i["org"] == "Solo Interview Corp"]
+    assert len(matches) == 1
+    assert matches[0]["source"] == "jobs"
+    assert matches[0]["date"] == "2026-08-05"
+
+
+def test_interviews_upcoming_empty_jobs_date_with_index_row_single_prep_entry(
+    tmp_path, monkeypatch,
+):
+    """Companion sanity check: an EMPTY jobs Interview date with a matching
+    index.md row must still emit exactly one entry (the prep one, unchanged
+    fallback behaviour) — the jobs-wins fix must not touch this path."""
+    from tools.jobhunt import readers
+
+    outreach_dir = tmp_path / "outreach"
+    job_search_dir = tmp_path / "job-search"
+    prep_dir = tmp_path / "get_hired_prep"
+
+    _write_outreach_db(outreach_dir, [])
+    _write_job_search_db(job_search_dir, [
+        {"Stilling": "Platform Engineer, Radical AI", "Arbeidsgiver": "DNB Bank ASA (Radical AI)",
+         "Status": "Interview", "Interview date": ""},
+    ])
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    (prep_dir / "index.md").write_text(
+        "| Company | Role | Tier | Stage | Interview date | Next step | Folder |\n"
+        "|---------|------|------|-------|----------------|-----------|--------|\n"
+        "| DNB Bank ASA | Platform Engineer, Radical AI (RAI) | T0 | Prepped |"
+        " 2026-07-20 11:15 | Mock drill | companies/dnb-radical-ai/ |\n",
+        encoding="utf-8",
+    )
+
+    _patch_cfg(monkeypatch, {
+        "outreach": outreach_dir, "job_search": job_search_dir, "prep": prep_dir,
+    })
+
+    interviews = readers.interviews_upcoming(TODAY)
+    dnb_entries = [i for i in interviews if "dnb" in i["org"].lower()]
+    assert len(dnb_entries) == 1
+    assert dnb_entries[0]["source"] == "prep"
+    assert dnb_entries[0]["date"] == "2026-07-20"
+
+
 # --------------------------------------------------------------------------
 # org_context
 # --------------------------------------------------------------------------

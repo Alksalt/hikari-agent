@@ -359,11 +359,22 @@ def interviews_upcoming(today: date) -> list[dict]:
     # row that fuzzy-matches only a PAST index row is dropped too — the
     # interview already happened, so it must not surface as "date TBD". Only
     # a jobs row with no matching index row at all (past or future) keeps
-    # its date=None entry. A jobs entry that already carries its OWN date
-    # (from the "Interview date" column above) is never subject to this
-    # index-suppression check — it is preferred over index.md by construction
-    # and is appended unconditionally.
-    out = list(prep_entries)
+    # its date=None entry.
+    #
+    # A jobs entry that already carries its OWN date (from the "Interview
+    # date" column above) is never subject to that index-suppression check —
+    # it is preferred over index.md by construction. But "preferred" must
+    # mean jobs WINS, not "wins in addition to" — a jobs-dated entry that
+    # fuzzy-matches a prep entry (review fix, 2026-07-12: the DNB thread has
+    # both jobs."Interview date" and a matching index.md row for the same
+    # interview) must drop that prep duplicate rather than emit both.
+    jobs_dated_orgs = [j["org"] for j in jobs_entries if j["date"] is not None]
+    out = [
+        prep_entry for prep_entry in prep_entries
+        if not any(
+            _fuzzy_company_match(org, prep_entry["org"]) for org in jobs_dated_orgs
+        )
+    ]
     for job_entry in jobs_entries:
         if job_entry["date"] is None and any(
             _fuzzy_company_match(job_entry["org"], org) for org in dated_index_orgs
