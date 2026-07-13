@@ -713,6 +713,19 @@ def _persona() -> str:
 
 
 @cache
+def _system_prompt_file() -> dict[str, str]:
+    """Return the SDK file-form prompt so the canary never enters argv.
+
+    ``claude-agent-sdk`` passes string system prompts as a literal
+    ``--system-prompt`` argument. SDK 0.2.110's file form puts only a
+    non-secret path there; the materializer owns atomicity and permissions.
+    """
+    from agents.system_prompt import materialize_system_prompt
+
+    return materialize_system_prompt(_persona())
+
+
+@cache
 def _memory_server():
     return create_sdk_mcp_server(name="hikari_memory", tools=memory_tools.ALL_TOOLS)
 
@@ -847,7 +860,7 @@ def _build_options(*, resume: str | None, max_turns: int = DEFAULT_MAX_TURNS,
         cwd=str(REPO_ROOT),
         setting_sources=["project"],
         skills="all",
-        system_prompt=_persona(),
+        system_prompt=_system_prompt_file(),
         agents=registry.subagents(),
         mcp_servers=mcp_servers,
         allowed_tools=allowed,

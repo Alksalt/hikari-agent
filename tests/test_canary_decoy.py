@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import stat
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +44,88 @@ def test_persona_contains_canary_when_injection_enabled(monkeypatch):
     assert "CANARY-XYZ" in text
     assert "never share" in text.lower()
     runtime._persona.cache_clear()
+
+
+def test_sdk_argv_uses_private_prompt_file_not_literal_canary(monkeypatch, tmp_path):
+    """The canary stays visible to Claude without becoming a process argument."""
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
+
+    from agents import runtime, system_prompt
+
+    canary = "CANARY-ARGV-REGRESSION"
+    prompt_dir = tmp_path / "runtime"
+    monkeypatch.setattr(system_prompt, "SYSTEM_PROMPT_DIR", prompt_dir)
+    monkeypatch.setattr("agents.injection_guard.get_canary", lambda: canary)
+    runtime._persona.cache_clear()
+    runtime._system_prompt_file.cache_clear()
+
+    options = runtime._build_options(resume=None)
+    assert isinstance(options.system_prompt, dict)
+    prompt_path = Path(options.system_prompt["path"])
+    assert prompt_path.parent == prompt_dir
+    assert canary in prompt_path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(prompt_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(prompt_path.parent.stat().st_mode) == 0o700
+
+    transport = SubprocessCLITransport(prompt="", options=options)
+    transport._cli_path = "/usr/bin/claude"
+    command = transport._build_command()
+    assert "--system-prompt-file" in command
+    assert "--system-prompt" not in command
+    assert canary not in command
+
+    runtime._system_prompt_file.cache_clear()
+    runtime._persona.cache_clear()
+
+
+def test_prompt_materializations_do_not_clobber_each_other(tmp_path):
+    """Concurrent test/worker processes must never share one mutable path."""
+    from agents.system_prompt import materialize_system_prompt
+
+    first = materialize_system_prompt("first-canary", directory=tmp_path)
+    second = materialize_system_prompt("second-canary", directory=tmp_path)
+    first_path = Path(first["path"])
+    second_path = Path(second["path"])
+
+    assert first_path != second_path
+    assert first_path.read_text(encoding="utf-8") == "first-canary"
+    assert second_path.read_text(encoding="utf-8") == "second-canary"
+
+
+def test_runtime_reuses_its_private_prompt_file(monkeypatch, tmp_path):
+    """Reconnects in one daemon keep the same immutable, current prompt."""
+    from agents import runtime, system_prompt
+
+    canary = "CANARY-RECONNECT-REGRESSION"
+    monkeypatch.setattr(system_prompt, "SYSTEM_PROMPT_DIR", tmp_path)
+    monkeypatch.setattr("agents.injection_guard.get_canary", lambda: canary)
+    runtime._persona.cache_clear()
+    runtime._system_prompt_file.cache_clear()
+
+    first = runtime._system_prompt_file()
+    second = runtime._system_prompt_file()
+    prompt_path = Path(first["path"])
+
+    assert second == first
+    assert prompt_path.read_text(encoding="utf-8").endswith(f"{canary}\n")
+
+    runtime._system_prompt_file.cache_clear()
+    runtime._persona.cache_clear()
+
+
+def test_prompt_materializer_rejects_symlink_directory(tmp_path):
+    from agents.system_prompt import materialize_system_prompt
+
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "linked"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        materialize_system_prompt("secret", directory=link_dir)
+    assert list(real_dir.iterdir()) == []
 
 
 def test_inject_memory_block_list_has_no_canary():
