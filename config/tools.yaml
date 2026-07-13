@@ -1412,24 +1412,6 @@ tools:
     example: "gmail_reply_to_email(thread_id='...', body='...')"
     presentation_hint: null
 
-  - id: "mcp__google_workspace__gmail_bulk_delete_messages"
-    bucket: 3
-    server: google_workspace
-    gate: gatekeeper
-    untrusted_output: false
-    wrap_patterns: []
-    scopes:
-      provider: google
-      required: ["https://mail.google.com/"]
-      action: "nuke them"
-    domain: gmail
-    operation: write
-    risk_tier: critical
-    credentials: GOOGLE_WORKSPACE_*
-    description: "delete bulk remove archive email messages gmail inbox"
-    example: "gmail_bulk_delete_messages(query='from:spam@...')"
-    presentation_hint: null
-
   - id: "mcp__google_workspace__delete_calendar_event"
     bucket: 3
     server: google_workspace
@@ -1997,7 +1979,9 @@ tools:
     gate: null
     access_mode: read
     untrusted_output: true
-    wrap_patterns: []
+    # Keep the server-wide untrusted-output wrapper without exposing a
+    # server-wide tool allowlist wildcard.
+    wrap_patterns: ["^mcp__google_workspace__"]
     scopes:
       provider: google
       required: ["https://www.googleapis.com/auth/gmail.modify"]
@@ -2237,24 +2221,6 @@ tools:
     description: "list read slides in google slides presentation deck"
     example: "get_slides(presentation_id='...')"
     presentation_hint: list_of_records
-
-  # Google Workspace — wildcard catch-all (fail-closed: unknown tools denied)
-  # access_mode=write so any future upstream tool resolves wildcard+write →
-  # gatekeeper_can_use_tool.py:120 deny fires → safe.
-  - id: "mcp__google_workspace__*"
-    bucket: 3
-    server: google_workspace
-    gate: null
-    access_mode: write
-    untrusted_output: true
-    wrap_patterns: ["^mcp__google_workspace__"]
-    domain: google_workspace
-    operation: read
-    risk_tier: low
-    credentials: GOOGLE_WORKSPACE_*
-    description: "any other google workspace tool fallback gmail calendar drive docs sheets slides"
-    example: "* wildcard for GW tools"
-    presentation_hint: null
 
   # Notion — gated (writes)
   - id: "mcp__notion__API-patch-block-children"
@@ -3447,7 +3413,54 @@ subagents:
   drive_gmail:
     model: sonnet
     tools:
-      - "mcp__google_workspace__*"
+      # Explicit allowlist: upstream additions and bulk-delete stay undiscoverable
+      # until they receive a deliberate registry review.
+      - "mcp__google_workspace__gmail_send_email"
+      - "mcp__google_workspace__gmail_reply_to_email"
+      - "mcp__google_workspace__delete_calendar_event"
+      - "mcp__google_workspace__drive_delete_file"
+      - "mcp__google_workspace__create_calendar_event"
+      - "mcp__google_workspace__drive_delete_folder"
+      - "mcp__google_workspace__drive_upload_file"
+      - "mcp__google_workspace__create_gmail_draft"
+      - "mcp__google_workspace__delete_gmail_draft"
+      - "mcp__google_workspace__gmail_send_draft"
+      - "mcp__google_workspace__drive_create_folder"
+      - "mcp__google_workspace__docs_create_document"
+      - "mcp__google_workspace__docs_append_text"
+      - "mcp__google_workspace__docs_insert_text"
+      - "mcp__google_workspace__docs_prepend_text"
+      - "mcp__google_workspace__docs_insert_image"
+      - "mcp__google_workspace__docs_batch_update"
+      - "mcp__google_workspace__sheets_create_spreadsheet"
+      - "mcp__google_workspace__sheets_add_sheet"
+      - "mcp__google_workspace__sheets_delete_sheet"
+      - "mcp__google_workspace__sheets_append_rows"
+      - "mcp__google_workspace__sheets_write_range"
+      - "mcp__google_workspace__sheets_clear_range"
+      - "mcp__google_workspace__create_presentation"
+      - "mcp__google_workspace__create_presentation_from_markdown"
+      - "mcp__google_workspace__create_slide"
+      - "mcp__google_workspace__delete_slide"
+      - "mcp__google_workspace__duplicate_slide"
+      - "mcp__google_workspace__add_text_to_slide"
+      - "mcp__google_workspace__add_formatted_text_to_slide"
+      - "mcp__google_workspace__add_bulleted_list_to_slide"
+      - "mcp__google_workspace__add_table_to_slide"
+      - "mcp__google_workspace__add_slide_notes"
+      - "mcp__google_workspace__query_gmail_emails"
+      - "mcp__google_workspace__gmail_get_message_details"
+      - "mcp__google_workspace__gmail_get_attachment_content"
+      - "mcp__google_workspace__calendar_get_events"
+      - "mcp__google_workspace__calendar_get_event_details"
+      - "mcp__google_workspace__drive_search_files"
+      - "mcp__google_workspace__drive_read_file_content"
+      - "mcp__google_workspace__drive_list_shared_drives"
+      - "mcp__google_workspace__docs_get_document_metadata"
+      - "mcp__google_workspace__docs_get_content_as_markdown"
+      - "mcp__google_workspace__sheets_read_range"
+      - "mcp__google_workspace__get_presentation"
+      - "mcp__google_workspace__get_slides"
     description_path: "agents/subagents/prompts/drive_gmail.description.md"
     prompt_path: "agents/subagents/prompts/drive_gmail.prompt.md"
 

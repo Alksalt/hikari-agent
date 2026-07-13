@@ -22,6 +22,7 @@ import hmac
 import logging
 import os
 import sqlite3
+import stat
 import threading
 import time
 from collections.abc import Iterable
@@ -563,6 +564,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_sprint_a_tables",
     "migrate_fts_porter_tokenizer",
     "migrate_proactive_events_reason_contract",
+    "migrate_proactive_delivery_receipts",
     "migrate_phase_b_schema_tables",
     "migrate_phase_l_self_representation",
     "migrate_phase_n_facts_source_backfill",
@@ -619,6 +621,47 @@ def _reset_schema_sentinel() -> None:
             pass
 
 
+def _ensure_db_file_owner_only(path: Path) -> None:
+    """Secure-create or repair the SQLite file to owner read/write only.
+
+    ``sqlite3.connect`` otherwise creates according to the process umask,
+    which can leave mail/contact metadata world-readable. Open without
+    following symlinks, verify a regular file, then enforce mode 0600 before
+    SQLite sees the path. Errors fail closed.
+    """
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"Hikari DB path is not a regular file: {path}")
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
+def _repair_db_sidecar_permissions(path: Path) -> None:
+    """Repair SQLite WAL/SHM permissions after journal initialization.
+
+    The containing data directory is already owner-only, but explicit 0600
+    modes keep backups and copied artifacts safe too. Missing sidecars are
+    normal; existing symlinks or non-regular files fail closed.
+    """
+    for artifact in (Path(f"{path}-wal"), Path(f"{path}-shm")):
+        if not artifact.exists() and not artifact.is_symlink():
+            continue
+        flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(artifact, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"Hikari DB sidecar is not a regular file: {artifact}")
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+
+
 def _get_pooled_conn() -> sqlite3.Connection:
     """Return the per-thread cached SQLite connection. Lazy-init on first call
     per thread. Re-inits if _DB_PATH changed since the last call (covers test
@@ -633,6 +676,7 @@ def _get_pooled_conn() -> sqlite3.Connection:
         except Exception:
             pass
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_db_file_owner_only(_DB_PATH)
     c = sqlite3.connect(_DB_PATH, check_same_thread=True)
     c.row_factory = sqlite3.Row
     c.enable_load_extension(True)
@@ -647,6 +691,7 @@ def _get_pooled_conn() -> sqlite3.Connection:
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA foreign_keys=ON")
     _ensure_schema(c)
+    _repair_db_sidecar_permissions(_DB_PATH)
     _LOCAL.conn = c
     _LOCAL.path = _DB_PATH
     return c
@@ -730,6 +775,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_sprint_a_tables", _migrate_sprint_a_tables, tag="migrate_sprint_a_tables")
     run_once(conn, "migrate_fts_porter_tokenizer", _migrate_fts_porter_tokenizer, tag="migrate_fts_porter_tokenizer")
     run_once(conn, "migrate_proactive_events_reason_contract", _migrate_proactive_events_reason_contract, tag="migrate_proactive_events_reason_contract")
+    run_once(conn, "migrate_proactive_delivery_receipts", _migrate_proactive_delivery_receipts, tag="migrate_proactive_delivery_receipts")
     run_once(conn, "migrate_phase_b_schema_tables", _migrate_phase_b_schema_tables, tag="migrate_phase_b_schema_tables")
     run_once(conn, "migrate_phase_l_self_representation", _migrate_phase_l_self_representation, tag="migrate_phase_l_self_representation")
     run_once(conn, "migrate_phase_n_facts_source_backfill", _migrate_phase_n_facts_source_backfill, tag="migrate_phase_n_facts_source_backfill")
@@ -961,6 +1007,28 @@ def _migrate_proactive_events_status(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_proactive_events_dedup "
         "ON proactive_events(source, dedup_key, sent_at) WHERE dedup_key IS NOT NULL"
+    )
+
+
+def _migrate_proactive_delivery_receipts(conn: sqlite3.Connection) -> None:
+    """Persistent exact-action receipts for producers that require durable dedup.
+
+    Unlike ``proactive_events``, this table is not pruned on the engagement
+    audit retention schedule. The primary key is the idempotency boundary.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS proactive_delivery_receipts (
+            source TEXT NOT NULL,
+            dedup_key TEXT NOT NULL,
+            event_id INTEGER NOT NULL,
+            telegram_message_id INTEGER,
+            delivered_at TEXT NOT NULL,
+            PRIMARY KEY (source, dedup_key)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_delivery_receipts_event "
+        "ON proactive_delivery_receipts(event_id)"
     )
 
 
@@ -3633,6 +3701,78 @@ def proactive_event_update_terminal(
         c.execute(
             f"UPDATE proactive_events SET {', '.join(sets)} WHERE id = ?",
             params,
+        )
+
+
+def proactive_delivery_receipt_exists(source: str, dedup_key: str) -> bool:
+    """Return whether a durable delivery receipt exists for this exact action."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM proactive_delivery_receipts "
+            "WHERE source = ? AND dedup_key = ? LIMIT 1",
+            (str(source), str(dedup_key)),
+        ).fetchone()
+    return row is not None
+
+
+def proactive_event_commit_sent_with_receipt(
+    event_id: int,
+    *,
+    source: str,
+    dedup_key: str,
+    status: str,
+    telegram_message_id: int | None = None,
+    payload_json: str | None = None,
+    anchor: str | None = None,
+    why_now: str | None = None,
+    suggested_action: str | None = None,
+    confidence: float | None = None,
+    controls_json: str | None = None,
+    data_checked_json: str | None = None,
+) -> None:
+    """Atomically commit a sent event and its persistent idempotency receipt."""
+    if status != "sent":
+        raise ValueError("durable delivery receipts require status='sent'")
+    if not str(source).strip() or not str(dedup_key).strip():
+        raise ValueError("durable delivery receipt requires source and dedup_key")
+
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE proactive_events SET "
+            "status = 'sent', payload_json = COALESCE(?, payload_json), "
+            "telegram_message_id = COALESCE(?, telegram_message_id), "
+            "aborted_reason = NULL, anchor = COALESCE(?, anchor), "
+            "why_now = COALESCE(?, why_now), "
+            "suggested_action = COALESCE(?, suggested_action), "
+            "confidence = COALESCE(?, confidence), "
+            "controls_json = COALESCE(?, controls_json), "
+            "data_checked_json = COALESCE(?, data_checked_json) "
+            "WHERE id = ? AND status = 'reserved'",
+            (
+                payload_json,
+                telegram_message_id,
+                anchor,
+                why_now,
+                suggested_action,
+                confidence,
+                controls_json,
+                data_checked_json,
+                int(event_id),
+            ),
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise RuntimeError(f"proactive event {event_id} was not reserved")
+        c.execute(
+            "INSERT INTO proactive_delivery_receipts "
+            "(source, dedup_key, event_id, telegram_message_id, delivered_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                str(source),
+                str(dedup_key),
+                int(event_id),
+                telegram_message_id,
+                _now(),
+            ),
         )
 
 

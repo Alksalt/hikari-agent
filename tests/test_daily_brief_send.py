@@ -7,6 +7,7 @@ tests/test_daily_brief_collect.py / tests/test_proactive_backoff.py).
 from __future__ import annotations
 
 import importlib
+import inspect
 from datetime import datetime
 
 import pytest
@@ -64,7 +65,7 @@ def test_compose_prompt_returns_none_when_empty():
         {"weather": None, "email": None, "calendar": None}) is None
 
 
-def test_compose_prompt_states_handoff_budget_exemption():
+def test_compose_prompt_ignores_injected_handoff_section():
     """B8(c), review 2026-07-10: handoff: lines (pre-triaged mail-triage
     escalations) must be called out as exempt from the 3-6 item budget, or the
     composer can silently drop a real escalation just because weather/email/
@@ -74,8 +75,7 @@ def test_compose_prompt_states_handoff_budget_exemption():
                            "replies": [], "handoff": [
                                {"summary": "svar: x", "details": []}]}}
     prompt = daily_brief.compose_prompt(sections)
-    assert "handoff:" in prompt
-    assert "do not count against the 3-6" in prompt
+    assert prompt is None
 
 
 @pytest.mark.asyncio
@@ -130,9 +130,9 @@ async def test_no_send_branch_logs_distinguishing_reason(fresh_db, monkeypatch, 
                "email": None, "calendar": None}
     monkeypatch.setattr(daily_brief, "collect_sections", _fake_sections)
 
-    async def _fake_run_visible_proactive(prompt):
+    async def _fake_run_internal_text(prompt, **kwargs):
         return "Failed to authenticate. API Error: 401 socket closed"
-    monkeypatch.setattr(daily_brief, "run_visible_proactive", _fake_run_visible_proactive)
+    monkeypatch.setattr(daily_brief, "run_internal_text", _fake_run_internal_text)
 
     with caplog.at_level("INFO", logger="agents.daily_brief"):
         result = await daily_brief.maybe_send_daily_brief(lambda text: None)
@@ -168,7 +168,7 @@ async def test_orchestrator_skips_silently_when_empty(fresh_db, monkeypatch):
 #
 # Mirrors the established mocking idiom for the full send path
 # (tests/test_conversational_tools.py::test_force_flag_cleared_on_successful_send):
-# cadence.can_send + collect_sections + run_visible_proactive + the
+# cadence.can_send + collect_sections + stateless no-tools composition + the
 # module-local `from agents.proactive_gate import reserve_and_send` import
 # (patched on the proactive_gate module itself, since it's a deferred
 # import resolved fresh at call time).
@@ -183,9 +183,9 @@ def _patch_successful_send_path(monkeypatch, sections):
         return sections
     monkeypatch.setattr(daily_brief, "collect_sections", _fake_sections)
 
-    async def _fake_run_visible_proactive(prompt):
+    async def _fake_run_internal_text(prompt, **kwargs):
         return "morning brief text."
-    monkeypatch.setattr(daily_brief, "run_visible_proactive", _fake_run_visible_proactive)
+    monkeypatch.setattr(daily_brief, "run_internal_text", _fake_run_internal_text)
 
     import agents.proactive_gate as _pg
     from agents.proactive_gate import ReservationResult
@@ -196,7 +196,7 @@ def _patch_successful_send_path(monkeypatch, sections):
 
 
 @pytest.mark.asyncio
-async def test_mark_processed_called_after_successful_send_with_handoff(fresh_db, monkeypatch):
+async def test_daily_brief_never_marks_mail_actions_after_send(fresh_db, monkeypatch):
     tz = daily_brief._resolve_local_tz()
     now = datetime.now(tz).replace(hour=7, minute=2, second=0, microsecond=0)
     monkeypatch.setattr(daily_brief, "_now_local", lambda: now)
@@ -205,19 +205,16 @@ async def test_mark_processed_called_after_successful_send_with_handoff(fresh_db
                          "stamp": "2026-07-09 08:00", "summary": "svar: x", "details": []}]
     sections = {
         "weather": None, "email": None, "calendar": None,
-        "jobhunt": {"due_touches": [], "deadlines": [], "interviews": [],
+        "jobhunt": {"due_touches": [{"org": "Acme", "touch": "1", "due": "today"}],
+                    "deadlines": [], "interviews": [],
                     "replies": [], "handoff": handoff_entries},
     }
     _patch_successful_send_path(monkeypatch, sections)
-
-    marked = []
-    monkeypatch.setattr(daily_brief.mail_handoff, "mark_processed", lambda entries: marked.append(entries))
 
     async def _send(text):
         return True
 
     assert await daily_brief.maybe_send_daily_brief(_send) is True
-    assert marked == [handoff_entries]
 
 
 @pytest.mark.asyncio
@@ -230,14 +227,11 @@ async def test_mark_processed_not_called_when_no_handoff(fresh_db, monkeypatch):
 
     sections = {
         "weather": None, "email": None, "calendar": None,
-        "jobhunt": {"due_touches": [], "deadlines": [], "interviews": [],
+        "jobhunt": {"due_touches": [{"org": "Acme", "touch": "1", "due": "today"}],
+                    "deadlines": [], "interviews": [],
                     "replies": [], "handoff": []},
     }
     _patch_successful_send_path(monkeypatch, sections)
-
-    def _boom(entries):
-        raise AssertionError("mark_processed must not run with no handoff entries")
-    monkeypatch.setattr(daily_brief.mail_handoff, "mark_processed", _boom)
 
     async def _send(text):
         return True
@@ -246,10 +240,8 @@ async def test_mark_processed_not_called_when_no_handoff(fresh_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mark_processed_exception_does_not_block_send_success(fresh_db, monkeypatch):
-    """mark_processed is wrapped in try/except in maybe_send_daily_brief —
-    a raise there must not turn a successful send into a reported failure
-    (entries simply stay unprocessed and get retried next brief)."""
+async def test_injected_handoff_never_calls_legacy_mark_processed(fresh_db, monkeypatch):
+    """Injected legacy handoff data cannot create a delivery-state write."""
     tz = daily_brief._resolve_local_tz()
     now = datetime.now(tz).replace(hour=7, minute=2, second=0, microsecond=0)
     monkeypatch.setattr(daily_brief, "_now_local", lambda: now)
@@ -258,16 +250,20 @@ async def test_mark_processed_exception_does_not_block_send_success(fresh_db, mo
                          "stamp": "2026-07-09 08:00", "summary": "svar: x", "details": []}]
     sections = {
         "weather": None, "email": None, "calendar": None,
-        "jobhunt": {"due_touches": [], "deadlines": [], "interviews": [],
+        "jobhunt": {"due_touches": [{"org": "Acme", "touch": "1", "due": "today"}],
+                    "deadlines": [], "interviews": [],
                     "replies": [], "handoff": handoff_entries},
     }
     _patch_successful_send_path(monkeypatch, sections)
-
-    def _raise(entries):
-        raise RuntimeError("disk full")
-    monkeypatch.setattr(daily_brief.mail_handoff, "mark_processed", _raise)
 
     async def _send(text):
         return True
 
     assert await daily_brief.maybe_send_daily_brief(_send) is True
+
+
+def test_daily_brief_source_has_no_mail_delivery_state_transition():
+    source = inspect.getsource(daily_brief)
+    assert "mail_handoff" not in source
+    assert "mark_processed" not in source
+    assert "reply_radar" not in source

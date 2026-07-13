@@ -147,7 +147,6 @@ async def test_apple_events_writes_do_not_trigger_defer_hook(tool_name, monkeypa
 _GW_GATEKEEPER_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
     "mcp__google_workspace__gmail_reply_to_email",
-    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
     "mcp__google_workspace__create_calendar_event",
@@ -164,11 +163,8 @@ def test_gw_tools_are_gatekeeper_gated(tool_name):
     )
 
 
-def test_gmail_bulk_delete_is_gatekeeper_gated():
-    """Phase E non-regression: gmail_bulk_delete_messages must be gatekeeper-gated."""
+def test_gmail_bulk_delete_is_not_registered():
+    """Bulk deletion is hidden entirely instead of being approval-gated."""
     from tools._tools_yaml import load_registry
     spec = load_registry()._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
-    assert spec is not None
-    assert spec.gate == "gatekeeper", (
-        "gmail_bulk_delete_messages must have gate: gatekeeper after Phase E migration"
-    )
+    assert spec is None

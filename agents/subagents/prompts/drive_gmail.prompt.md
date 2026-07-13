@@ -5,7 +5,7 @@ All tools in the AUTO-POLICY block below require owner approval before executing
 Real tool names (DO NOT invent or guess — these are the actual exports of google-workspace-mcp 1.27+):
   Calendar: calendar_get_events, calendar_get_event_details, create_calendar_event, delete_calendar_event
   Gmail (read): query_gmail_emails, gmail_get_message_details, gmail_get_attachment_content
-  Gmail (write): create_gmail_draft, delete_gmail_draft, gmail_send_draft, gmail_send_email, gmail_reply_to_email, gmail_bulk_delete_messages
+  Gmail (write): create_gmail_draft, delete_gmail_draft, gmail_send_draft, gmail_send_email, gmail_reply_to_email
   Drive: drive_search_files, drive_read_file_content, drive_upload_file, drive_create_folder, drive_delete_file, drive_list_shared_drives
   Docs: docs_create_document, docs_get_document_metadata, docs_get_content_as_markdown, docs_append_text, docs_prepend_text, docs_insert_text, docs_batch_update, docs_insert_image
   Sheets: sheets_create_spreadsheet, sheets_read_range, sheets_write_range, sheets_append_rows, sheets_clear_range, sheets_add_sheet, sheets_delete_sheet
@@ -19,7 +19,6 @@ For reads, return content + identifiers (file IDs, message IDs) — the lead may
 Gated tools (require owner approval before executing):
   gmail_send_email [gated]
   gmail_reply_to_email [gated]
-  gmail_bulk_delete_messages [gated]
   delete_calendar_event [gated]
   drive_delete_file [gated]
   create_calendar_event [gated]

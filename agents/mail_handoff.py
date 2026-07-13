@@ -33,6 +33,7 @@ _ENTRY = re.compile(
 _DETAIL_PREFIX = "    - "
 _PRIORITY_URGENT = 0
 _PRIORITY_IMPORTANT = 1
+_ATTENTION_CLASSES = {"push_now", "silent_hold", "silent_file"}
 
 
 def _path() -> Path | None:
@@ -140,6 +141,20 @@ def _structured_actions() -> list[dict] | None:
         if not isinstance(options, list):
             options = []
         headline = str(row.get("headline") or row.get("kind") or "mail action")
+        raw_attention = row.get("attention_class")
+        if raw_attention in _ATTENTION_CLASSES:
+            attention_class = str(raw_attention)
+        elif raw_attention in (None, ""):
+            # Compatibility only for rows created before attention_class.
+            attention_class = (
+                "push_now" if priority == _PRIORITY_URGENT
+                else "silent_hold" if priority == _PRIORITY_IMPORTANT
+                else "silent_file"
+            )
+        else:
+            # Unknown explicit values must never become user-visible by
+            # accidentally falling back to priority.
+            attention_class = "silent_hold"
         out.append({
             "action_id": action_id,
             "source": "structured",
@@ -148,6 +163,7 @@ def _structured_actions() -> list[dict] | None:
             "details": [str(item) for item in details[:8]],
             "kind": str(row.get("kind") or ""),
             "priority": priority,
+            "attention_class": attention_class,
             "surface_count": int(row.get("surface_count") or 0),
             "options": [
                 {"id": str(opt.get("id") or ""), "label": str(opt.get("label") or "")}
@@ -208,6 +224,11 @@ def _pull_legacy() -> list[dict]:
             "details": details[:4],
             "kind": summary.split(":", 1)[0].strip().lower(),
             "priority": priority,
+            "attention_class": (
+                "push_now" if priority == _PRIORITY_URGENT
+                else "silent_hold" if priority == _PRIORITY_IMPORTANT
+                else "silent_file"
+            ),
             "surface_count": 1 if match["status"].startswith("surfaced") else 0,
         }
         (urgent if priority <= _PRIORITY_IMPORTANT else low).append(entry)

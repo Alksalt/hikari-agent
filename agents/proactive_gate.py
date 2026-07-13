@@ -236,6 +236,7 @@ async def reserve_and_send(
     payload_json: str = "{}",
     dedup_key: str | None = None,
     dedup_window_minutes: int = 60,
+    durable_dedup: bool = False,
     chat_id: int | None = None,
     db=None,
     candidate: Any = None,
@@ -247,6 +248,8 @@ async def reserve_and_send(
     ``candidate`` is an optional TriggerCandidate (or any duck-typed object)
     whose reason-contract fields (anchor, why_now, suggested_action, confidence,
     controls, data_checked) are written to the proactive_events row at send time.
+    ``durable_dedup`` stores a non-expiring exact-key receipt and is intended
+    for one-shot external actions, not recurring reminders.
     """
     if db is None:
         from storage import db as _db_mod
@@ -287,7 +290,11 @@ async def reserve_and_send(
             abort_reason = "quiet_hours"
         elif _snooze_active(db, producer_id):
             abort_reason = "snooze"
-        elif dedup_key and db.proactive_event_dedup_hit(
+        elif dedup_key and durable_dedup and db.proactive_delivery_receipt_exists(
+            producer_id, dedup_key
+        ):
+            abort_reason = "dedup"
+        elif dedup_key and not durable_dedup and db.proactive_event_dedup_hit(
             producer_id, dedup_key, dedup_window_minutes
         ):
             abort_reason = "dedup"
@@ -312,16 +319,29 @@ async def reserve_and_send(
             return ReservationResult("aborted", "send_failed", None, event_id, final_text)
 
         # 4. Commit terminal (full payload + reason-contract confirmation).
-        db.proactive_event_update_terminal(
-            event_id, status="sent", telegram_message_id=tg_id,
-            payload_json=payload_json,   # commit full payload only on success
-            anchor=reason.get("anchor"),
-            why_now=reason.get("why_now"),
-            suggested_action=reason.get("suggested_action"),
-            confidence=reason.get("confidence"),
-            controls_json=reason.get("controls_json"),
-            data_checked_json=reason.get("data_checked_json"),
-        )
+        terminal_kwargs = {
+            "status": "sent",
+            "telegram_message_id": tg_id,
+            "payload_json": payload_json,
+            "anchor": reason.get("anchor"),
+            "why_now": reason.get("why_now"),
+            "suggested_action": reason.get("suggested_action"),
+            "confidence": reason.get("confidence"),
+            "controls_json": reason.get("controls_json"),
+            "data_checked_json": reason.get("data_checked_json"),
+        }
+        if durable_dedup and dedup_key:
+            # Commit the sent event and its non-expiring delivery receipt in
+            # one SQLite transaction. The receipt survives event pruning and
+            # lets the owner mark-surfaced recovery run without a resend.
+            db.proactive_event_commit_sent_with_receipt(
+                event_id,
+                source=producer_id,
+                dedup_key=dedup_key,
+                **terminal_kwargs,
+            )
+        else:
+            db.proactive_event_update_terminal(event_id, **terminal_kwargs)
 
         # 5. Post-send hooks keyed on dedup_key prefix.
         if dedup_key and dedup_key.startswith("decision_resolve_due:"):

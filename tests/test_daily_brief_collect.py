@@ -89,6 +89,13 @@ async def test_collect_sections_email_present_when_only_deletable_nonzero(monkey
     async def no_events():
         return []
     monkeypatch.setattr(daily_brief, "fetch_email_buckets", deletable_only_email)
+    original_get = daily_brief.cfg.get
+    monkeypatch.setattr(
+        daily_brief.cfg, "get",
+        lambda key, default=None: True
+        if key == "daily_brief.include_generic_email"
+        else original_get(key, default),
+    )
     monkeypatch.setattr(daily_brief, "fetch_calendar_events", no_events)
     monkeypatch.setattr(daily_brief, "_resolve_location", lambda: None)
     sections = await daily_brief.collect_sections()
@@ -96,3 +103,25 @@ async def test_collect_sections_email_present_when_only_deletable_nonzero(monkey
     assert sections["email"]["deletable"]["count"] == 3
     assert sections["calendar"] is None
     assert sections["weather"] is None
+
+
+@pytest.mark.asyncio
+async def test_collect_sections_dedicated_mailbox_never_queries_generic_email(monkeypatch, fresh_db):
+    async def must_not_fetch():
+        raise AssertionError("generic Gmail buckets must stay off for the dedicated mailbox")
+
+    async def no_events():
+        return []
+
+    original_get = daily_brief.cfg.get
+    monkeypatch.setattr(
+        daily_brief.cfg, "get",
+        lambda key, default=None: False
+        if key == "daily_brief.include_generic_email"
+        else original_get(key, default),
+    )
+    monkeypatch.setattr(daily_brief, "fetch_email_buckets", must_not_fetch)
+    monkeypatch.setattr(daily_brief, "fetch_calendar_events", no_events)
+    monkeypatch.setattr(daily_brief, "_resolve_location", lambda: None)
+    sections = await daily_brief.collect_sections()
+    assert sections["email"] is None

@@ -9,6 +9,7 @@ tests/test_mail_handoff.py.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 from unittest.mock import AsyncMock
 
@@ -40,6 +41,7 @@ def _ask_user_row(action_id=17, priority=0, surface_count=0, decision=None, **ov
         "id": action_id,
         "kind": "ask-user",
         "priority": priority,
+        "attention_class": "push_now",
         "headline": "Feil adresse — send søknad til ny kontakt?",
         "details": [],
         "options": [
@@ -49,6 +51,23 @@ def _ask_user_row(action_id=17, priority=0, surface_count=0, decision=None, **ov
         "decision": decision,
         "surface_count": surface_count,
         "created_at": "2026-07-12T08:00:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+def _urgent_mail_row(action_id=31, kind="intervju", surface_count=0, **overrides):
+    row = {
+        "id": action_id,
+        "kind": kind,
+        "priority": 0,
+        "attention_class": "push_now",
+        "headline": "Intervjuinvitasjon fra Acme",
+        "details": ["torsdag kl. 09:00", "Teams"],
+        "options": [],
+        "decision": None,
+        "surface_count": surface_count,
+        "created_at": "2026-07-13T08:00:00Z",
     }
     row.update(overrides)
     return row
@@ -68,6 +87,33 @@ def test_unasked_ask_user_rows_filters_kind_decision_and_surface_count(monkeypat
     ]
     out = mail_decisions.unasked_ask_user_rows(rows)
     assert [r["id"] for r in out] == [1]
+
+
+def test_unasked_priority_zero_rows_includes_interview_and_question_only_once():
+    rows = [
+        _urgent_mail_row(action_id=1),
+        _urgent_mail_row(action_id=2, kind="offer", surface_count=1),
+        _ask_user_row(action_id=3),
+        _ask_user_row(action_id=4, priority=1),
+        {"id": 5, "kind": "status", "priority": 2, "surface_count": 0},
+    ]
+    assert [r["id"] for r in mail_decisions.unasked_priority_zero_rows(rows)] == [1, 3]
+
+
+def test_explicit_attention_class_is_authoritative_and_unknown_fails_closed():
+    rows = [
+        _urgent_mail_row(action_id=1, attention_class="push_now"),
+        _urgent_mail_row(action_id=2, attention_class="silent_hold"),
+        _urgent_mail_row(action_id=3, attention_class="silent_file"),
+        _urgent_mail_row(action_id=4, attention_class="future_value"),
+    ]
+    assert [r["id"] for r in mail_decisions.unasked_priority_zero_rows(rows)] == [1]
+
+
+def test_legacy_priority_zero_row_without_attention_class_still_pushes():
+    row = _urgent_mail_row(action_id=9)
+    row.pop("attention_class")
+    assert mail_decisions.unasked_priority_zero_rows([row]) == [row]
 
 
 def test_list_payload_returns_none_when_cli_unavailable(monkeypatch):
@@ -104,6 +150,40 @@ async def test_urgent_ask_user_row_sends_exactly_once_with_options_and_action_id
 
 
 @pytest.mark.asyncio
+async def test_urgent_interview_row_sends_immediately_with_details(monkeypatch):
+    row = _urgent_mail_row(action_id=31)
+    monkeypatch.setattr(mail_decisions, "_list_payload", lambda **kw: [row])
+    marked = []
+    monkeypatch.setattr(
+        mail_decisions.mail_handoff, "mark_surfaced",
+        lambda entries: marked.append(entries) or True,
+    )
+
+    send = AsyncMock(return_value=("ok", 1, True))
+    assert await mail_decisions.poll_and_ask(send) == 1
+    text = send.call_args.args[0]
+    assert "Intervjuinvitasjon fra Acme" in text
+    assert "torsdag kl. 09:00" in text
+    assert "[action #31]" in text
+    assert marked == [[{"action_id": 31}]]
+    from storage import db
+    assert db.proactive_delivery_receipt_exists(
+        "mail_decisions", "mail_decisions:legacy:31"
+    )
+
+
+def test_delivery_dedup_key_hashes_stable_owner_identity():
+    first = _urgent_mail_row(action_id=31, dedup_key="message:abc:interview")
+    rebuilt = _urgent_mail_row(action_id=999, dedup_key="message:abc:interview")
+    key = mail_decisions._delivery_dedup_key(first)
+    assert key == mail_decisions._delivery_dedup_key(rebuilt)
+    assert "message:abc" not in key
+    assert mail_decisions._delivery_dedup_key(_urgent_mail_row(action_id=7)) == (
+        "mail_decisions:legacy:7"
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_urgent_ask_user_row_never_sent_proactively(monkeypatch):
     row = _ask_user_row(action_id=18, priority=1)  # important, not urgent
     monkeypatch.setattr(mail_decisions, "_list_payload", lambda **kw: [row])
@@ -118,7 +198,7 @@ async def test_non_urgent_ask_user_row_never_sent_proactively(monkeypatch):
 
     assert n == 0
     send.assert_not_awaited()
-    assert marked == []  # non-urgent rows are left untouched for the brief
+    assert marked == []  # silent rows remain only in the owner log
 
 
 @pytest.mark.asyncio
@@ -200,6 +280,10 @@ async def test_poll_and_ask_survives_mark_surfaced_exception(monkeypatch):
     send = AsyncMock(return_value=("ok", 1, True))
     n = await mail_decisions.poll_and_ask(send)
     assert n == 1  # still counted as sent
+    # The durable Hikari receipt owns delivery independently of the job DB.
+    # A later recovery poll retries mark-surfaced but never Telegram delivery.
+    assert await mail_decisions.poll_and_ask(send) == 0
+    send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -212,6 +296,45 @@ async def test_multiple_urgent_rows_each_get_one_send(monkeypatch):
     n = await mail_decisions.poll_and_ask(send)
     assert n == 2
     assert send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_polls_send_same_action_once(monkeypatch):
+    row = _urgent_mail_row(action_id=66)
+    monkeypatch.setattr(mail_decisions, "_list_payload", lambda **kw: [row])
+    monkeypatch.setattr(mail_decisions.mail_handoff, "mark_surfaced", lambda entries: True)
+    send = AsyncMock(return_value=("ok", 66, True))
+
+    results = await asyncio.gather(
+        mail_decisions.poll_and_ask(send),
+        mail_decisions.poll_and_ask(send),
+    )
+
+    assert sorted(results) == [0, 1]
+    send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dedup_receipt_recovers_owner_surface_without_resending(monkeypatch):
+    from agents.proactive_gate import ReservationResult
+    import agents.proactive_gate as gate
+
+    row = _urgent_mail_row(action_id=77)
+    monkeypatch.setattr(mail_decisions, "_list_payload", lambda **kw: [row])
+    marked = []
+    monkeypatch.setattr(
+        mail_decisions.mail_handoff, "mark_surfaced",
+        lambda entries: marked.append(entries) or True,
+    )
+
+    async def dedup(**kwargs):
+        return ReservationResult("aborted", "dedup", None, 4, "")
+
+    monkeypatch.setattr(gate, "reserve_and_send", dedup)
+    send = AsyncMock(return_value=("must not send", None, False))
+    assert await mail_decisions.poll_and_ask(send) == 0
+    send.assert_not_awaited()
+    assert marked == [[{"action_id": 77}]]
 
 
 # --------------------------------------------------------------------------

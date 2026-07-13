@@ -32,12 +32,10 @@ def registry():
     return _load_yaml(DEFAULT_YAML_PATH)
 
 
-def test_access_mode_write_on_google_workspace_wildcard(registry):
-    # Phase 0.2 reviewer-fix: wildcard flipped to write so unknown future tools
-    # resolve wildcard+write → gatekeeper deny fires → fail-closed.
-    spec = registry._resolve("mcp__google_workspace__*")
-    assert spec is not None
-    assert spec.access_mode == "write"
+def test_google_workspace_has_no_wildcard(registry):
+    # Unknown upstream tools must be absent from discovery, not merely denied
+    # after the model has already seen them.
+    assert registry._resolve("mcp__google_workspace__*") is None
 
 
 def test_access_mode_write_on_apple_events(registry):
@@ -78,11 +76,10 @@ def test_resolve_with_kind_explicit(registry):
     assert kind == "explicit"
 
 
-def test_resolve_with_kind_wildcard(registry):
+def test_resolve_with_kind_unknown_google_workspace_tool(registry):
     spec, kind = registry._resolve_with_kind("mcp__google_workspace__some_future_tool")
-    assert spec is not None
-    assert kind == "wildcard"
-    assert spec.id == "mcp__google_workspace__*"
+    assert spec is None
+    assert kind is None
 
 
 def test_resolve_with_kind_unknown(registry):

@@ -143,3 +143,8 @@ async def test_exempt_sources_never_suppressed(fresh_db):
         return (text, 1, True)
 
     assert await proactive_backoff.run_backoff_sweep(fake_send) == []
+
+
+def test_mail_attention_alerts_are_exempt_from_ignore_backoff():
+    exempt = set(proactive_backoff._cfg("exempt_sources", []) or [])
+    assert "mail_decisions" in exempt

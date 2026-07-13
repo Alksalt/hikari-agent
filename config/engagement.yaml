@@ -83,6 +83,7 @@ proactive_backoff:
     - reminder
     - reminder_fire
     - daily_brief
+    - mail_decisions     # important email is an alert; silence is normal, not rejection
     - backoff_notice
     - morning_brief      # legacy; disabled in Task 3 but keep exempt for safety
     - daily_checkin      # legacy; disabled in Task 3
@@ -105,6 +106,9 @@ daily_brief:
   default_time: "07:00"          # HH:MM 24h, local clock
   poll_interval_minutes: 5
   voice_max_budget_usd: 0.06
+  # olealt25@gmail.com is dedicated to job search/outreach. Its own triage
+  # policy, not Gmail category heuristics, owns the attention decision.
+  include_generic_email: false
   # Weather appears only when notable:
   weather_rain_prob_threshold_pct: 40
   weather_temp_delta_threshold_c: 5
@@ -168,13 +172,12 @@ mail_actions:
   # truncation never hides the one action the user is actively answering.
   decide_lookup_cap: 1000
 
-# Ask-user question loop (Sprint 2, Task 6) — pushes urgent (priority 0)
-# un-asked ask-user mail actions immediately via the proactive gate;
-# non-urgent ones wait for the morning brief instead (daily_brief's jobhunt
-# composer renders them as numbered questions). See agents/mail_decisions.py.
+# Dedicated job-search mailbox attention loop. Every priority-0 action is
+# pushed once; ordinary status/noise stays in the owner log and never enters
+# the daily brief.
 mail_decisions:
   enabled: true
-  poll_interval_minutes: 15
+  poll_interval_minutes: 1
 
 approvals:
   # Phase 8: collapsed to a single tier. CONFIRM-SEND is the only confirmation

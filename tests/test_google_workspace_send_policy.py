@@ -29,7 +29,6 @@ def _reload_config(tmp_path: Path, monkeypatch):
 _GATEKEEPER_GATED_TOOLS = [
     "mcp__google_workspace__gmail_send_email",
     "mcp__google_workspace__gmail_reply_to_email",
-    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
     "mcp__google_workspace__create_calendar_event",

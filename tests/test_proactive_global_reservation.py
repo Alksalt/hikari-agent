@@ -147,6 +147,52 @@ async def test_dedup_hit_aborts_second(_isolated_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_durable_dedup_survives_event_retention(_isolated_db, monkeypatch):
+    """Exact mail-action receipts outlive the prunable engagement audit row."""
+    import importlib
+
+    from agents import proactive_gate
+    importlib.reload(proactive_gate)
+    monkeypatch.setattr(proactive_gate, "_is_quiet_now", lambda _db=None: False)
+    sends = []
+
+    async def send(text):
+        sends.append(text)
+        return (text, 808, True)
+
+    first = await proactive_gate.reserve_and_send(
+        send_text_fn=send,
+        producer_id="mail_decisions",
+        pattern="urgent_mail_action",
+        text="interview",
+        dedup_key="mail_decisions:808",
+        durable_dedup=True,
+        db=_isolated_db,
+    )
+    assert first.status == "sent"
+
+    old = (datetime.now(UTC) - timedelta(days=120)).isoformat()
+    with _isolated_db._conn() as c:
+        c.execute("UPDATE proactive_events SET sent_at = ? WHERE id = ?", (old, first.event_id))
+    assert _isolated_db.prune_proactive_events(older_than_days=90) == 1
+    assert _isolated_db.proactive_delivery_receipt_exists(
+        "mail_decisions", "mail_decisions:808"
+    )
+
+    second = await proactive_gate.reserve_and_send(
+        send_text_fn=send,
+        producer_id="mail_decisions",
+        pattern="urgent_mail_action",
+        text="interview again",
+        dedup_key="mail_decisions:808",
+        durable_dedup=True,
+        db=_isolated_db,
+    )
+    assert second.reason == "dedup"
+    assert sends == ["interview"]
+
+
+@pytest.mark.asyncio
 async def test_empty_text_short_circuits(_isolated_db, monkeypatch):
     import importlib
 

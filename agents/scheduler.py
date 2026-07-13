@@ -326,12 +326,9 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             **_jobhunt_context_kwargs,
         )
 
-    # Sprint 2 (Task 6): ask-user mail-action question loop. Every
-    # mail_decisions.poll_interval_minutes, pushes each un-asked URGENT
-    # ask-user mail action immediately via the proactive gate; non-urgent
-    # ones are left for the morning brief (daily_brief's jobhunt composer
-    # renders them as numbered questions). Gated on jobhunt.enabled like
-    # the other jobhunt jobs, plus its own mail_decisions.enabled.
+    # Dedicated-mailbox attention loop. Every mail_decisions.poll_interval_minutes,
+    # pushes every not-yet-delivered priority-0 mail action via the proactive
+    # gate. Lower-priority mail stays in the operational log only.
     if bool(cfg.get("jobhunt.enabled", True)) and bool(cfg.get("mail_decisions.enabled", True)):
         from agents.mail_decisions import poll_and_ask
         md_poll_min = int(cfg.get("mail_decisions.poll_interval_minutes", 15))

@@ -10,7 +10,6 @@ _EXPECTED_GATEKEEPER_TOOLS = {
     "mcp__hikari_utility__python_run",
     "mcp__google_workspace__gmail_send_email",
     "mcp__google_workspace__gmail_reply_to_email",
-    "mcp__google_workspace__gmail_bulk_delete_messages",
     "mcp__google_workspace__delete_calendar_event",
     "mcp__google_workspace__drive_delete_file",
     "mcp__google_workspace__create_calendar_event",
@@ -41,6 +40,11 @@ def test_no_defer_gated_tools_remain():
     registry = load_registry()
     deferred = {t.id for t in registry.specs() if t.gate == "defer"}
     assert not deferred, f"defer-gated tools still present: {deferred}"
+
+
+def test_gmail_bulk_delete_removed_from_registry():
+    registry = load_registry()
+    assert registry._resolve("mcp__google_workspace__gmail_bulk_delete_messages") is None
 
 
 @pytest.mark.parametrize("tool_id", sorted(_EXPECTED_GATEKEEPER_TOOLS))

@@ -24,7 +24,7 @@ _BASE = {
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
 }
-_BULK_DELETE = "mcp__google_workspace__gmail_bulk_delete_messages"  # needs full-mail
+_GMAIL_SEND = "mcp__google_workspace__gmail_send_email"  # needs gmail.modify
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +64,7 @@ async def test_probe_scopes_under_scoped_flags_missing():
     with patch("auth.providers.get_provider", return_value=_fake_provider(granted)):
         status, missing = await probe_google_scopes()
     assert status == "under_scoped"
-    assert "https://mail.google.com/" in missing
+    assert "https://www.googleapis.com/auth/gmail.modify" in missing
 
 
 @pytest.mark.asyncio
@@ -106,7 +106,7 @@ async def test_precheck_enforce_fails_open_on_empty_google(monkeypatch):
     monkeypatch.setenv("AUTH_PRECHECK_OVERRIDE", "enforce")
     from agents.hooks import _precheck_scopes
     with patch("auth.providers.get_provider", return_value=_fake_provider(set())):
-        out = await _precheck_scopes(_BULK_DELETE, {})
+        out = await _precheck_scopes(_GMAIL_SEND, {})
     assert out is None
 
 
@@ -114,9 +114,9 @@ async def test_precheck_enforce_fails_open_on_empty_google(monkeypatch):
 async def test_precheck_enforce_denies_when_genuinely_missing(monkeypatch):
     monkeypatch.setenv("AUTH_PRECHECK_OVERRIDE", "enforce")
     from agents.hooks import _precheck_scopes
-    granted = {"https://www.googleapis.com/auth/gmail.modify"}  # non-empty, lacks full-mail
+    granted = {"https://www.googleapis.com/auth/calendar"}  # non-empty, lacks gmail.modify
     with patch("auth.providers.get_provider", return_value=_fake_provider(granted)):
-        out = await _precheck_scopes(_BULK_DELETE, {})
+        out = await _precheck_scopes(_GMAIL_SEND, {})
     assert out is not None
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -126,6 +126,6 @@ async def test_precheck_enforce_allows_when_covered(monkeypatch):
     monkeypatch.setenv("AUTH_PRECHECK_OVERRIDE", "enforce")
     from agents.hooks import _precheck_scopes
     with patch("auth.providers.get_provider",
-               return_value=_fake_provider({"https://mail.google.com/"})):
-        out = await _precheck_scopes(_BULK_DELETE, {})
+               return_value=_fake_provider({"https://www.googleapis.com/auth/gmail.modify"})):
+        out = await _precheck_scopes(_GMAIL_SEND, {})
     assert out is None

@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from agents import config as cfg
-from agents import mail_handoff
 from agents.daily_checkin import (
     _resolve_local_tz,
     fetch_calendar_events,
@@ -27,7 +26,6 @@ from agents.morning_brief import _resolve_location
 from agents.runtime import MODEL_PRIMARY, looks_like_sdk_error, run_internal_text
 from storage import db
 from tools.jobhunt import readers as jobhunt_readers
-from tools.jobhunt import reply_radar
 from tools.weather import fetch_forecast
 
 logger = logging.getLogger(__name__)
@@ -109,19 +107,15 @@ async def _collect_weather() -> dict[str, Any] | None:
 
 async def _collect_jobhunt() -> dict[str, Any] | None:
     """Job-hunt radar section: due outreach touches, application deadlines,
-    upcoming interviews, NEW Gmail replies from known contacts (legacy
-    reply_radar, off by default since 2026-07-10 — see
-    ``jobhunt.reply_radar_enabled``), and unprocessed job-search mail_handoff
-    entries. Structured actions come from the job-search owner CLI; the
-    append-only Markdown handoff remains a compatibility fallback.
+    and upcoming interviews from the tracking databases.
 
     Config-gated on ``jobhunt.enabled`` (checked FIRST, before any reader, the
-    reply-radar Gmail query, or the mail_handoff file read — an owner who
-    disables job-hunt tracking gets zero extra DB reads / MCP calls / file
-    reads, not just an omitted section). Readers never raise (see
-    ``tools/jobhunt/readers.py`` docstring); missing roots simply yield empty
-    lists, which — like an empty reply scan or empty handoff — collapse this
-    whole section to ``None``.
+    legacy reply-radar Gmail query, or the mail-action owner CLI — an owner who
+    disables job-hunt tracking gets zero extra DB reads / MCP calls. Email
+    attention has exactly one delivery owner: ``agents.mail_decisions``.
+    The morning brief never reads, renders, or marks mail actions. Readers
+    never raise (see ``tools/jobhunt/readers.py`` docstring); missing roots
+    simply yield empty lists and collapse this whole section to ``None``.
     """
     if not bool(cfg.get("jobhunt.enabled", True)):
         return None
@@ -132,33 +126,29 @@ async def _collect_jobhunt() -> dict[str, Any] | None:
     due = jobhunt_readers.outreach_due(today)
     deadlines = jobhunt_readers.application_deadlines(today)
     interviews = jobhunt_readers.interviews_upcoming(today)
-    replies = []
-    if bool(cfg.get("jobhunt.reply_radar_enabled", True)):
-        try:
-            replies = await reply_radar.scan(today)
-        except Exception:
-            logger.exception("daily_brief: jobhunt reply radar failed")
-    handoff = mail_handoff.pull_unprocessed()
-
-    if not (due or deadlines or interviews or replies or handoff):
+    if not (due or deadlines or interviews):
         return None
 
     return {
         "due_touches": due[:top_n],
         "deadlines": deadlines[:top_n],
         "interviews": interviews[:top_n],
-        "replies": replies[:top_n],
-        "handoff": handoff,
+        # Retain the stable dict shape for old callers. These are deliberately
+        # empty; mail_decisions is the sole user-visible mail delivery owner.
+        "replies": [],
+        "handoff": [],
     }
 
 
 async def collect_sections() -> dict[str, Any]:
     """Gather all sections. None = no signal = omitted from the brief."""
     weather = await _collect_weather()
-    email = await fetch_email_buckets()
-    if not (email.get("unread_personal") or email.get("calendar_invites")
-            or int((email.get("deletable") or {}).get("count") or 0) > 0):
-        email = None
+    email = None
+    if bool(_c("include_generic_email", False)):
+        email = await fetch_email_buckets()
+        if not (email.get("unread_personal") or email.get("calendar_invites")
+                or int((email.get("deletable") or {}).get("count") or 0) > 0):
+            email = None
     calendar = await fetch_calendar_events()
     if not calendar:
         calendar = None
@@ -288,39 +278,8 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
             org = wrap_untrusted(jt, e.get("org", ""))
             when = e.get("date") or "date TBD"
             jh_lines.append(f"  - {org} — {when} — want the prep brief?")
-        for r in jobhunt.get("replies") or []:
-            frm = wrap_untrusted(jt, r.get("from", ""))
-            org = wrap_untrusted(jt, r.get("org_or_employer", ""))
-            subj = wrap_untrusted(jt, r.get("subject", ""))
-            jh_lines.append(f"  - reply from {frm} ({org}) — {subj} — want me to pull up the thread?")
-        for e in jobhunt.get("handoff") or []:
-            action_id = f" [action #{e['action_id']}]" if e.get("action_id") is not None else ""
-            # Task 6: ask-user mail actions render as a numbered question
-            # (headline + numbered option labels) instead of the generic
-            # handoff summary line — the user answers via mail_action_decide
-            # with the action id + option number shown here.
-            if str(e.get("kind") or "") == "ask-user":
-                headline = wrap_untrusted("mail_handoff", e.get("summary", ""))
-                opt_lines = [
-                    "    {n}. {label}".format(
-                        n=i,
-                        label=wrap_untrusted(
-                            "mail_handoff", str(opt.get("label") or opt.get("id") or "")
-                        ),
-                    )
-                    for i, opt in enumerate(e.get("options") or [], start=1)
-                ]
-                jh_lines.append(f"  - question: {headline}{action_id}")
-                jh_lines.extend(opt_lines)
-                continue
-            summary = wrap_untrusted("mail_handoff", e.get("summary", ""))
-            det = "; ".join(e.get("details") or [])
-            det_w = f" ({wrap_untrusted('mail_handoff', det)})" if det else ""
-            auto = " [is_auto_reply]" if "autosvar" in (e.get("summary", "").lower()) else ""
-            priority = int(e.get("priority", 2))
-            tier = "urgent" if priority == 0 else "important" if priority == 1 else "normal"
-            jh_lines.append(f"  - handoff: mail action ({tier}){action_id}: {summary}{det_w}{auto}")
-        blocks.append("jobhunt:\n" + "\n".join(jh_lines))
+        if jh_lines:
+            blocks.append("jobhunt:\n" + "\n".join(jh_lines))
 
     if not blocks:
         return None
@@ -335,17 +294,6 @@ def compose_prompt(sections: dict[str, Any]) -> str | None:
         + "\n\nrules:\n"
         "- 3-6 items MAX across all sections, most urgent first. tier them: "
         "needs action today > important > fyi.\n"
-        "- every 'handoff:' mail action line MUST appear as its own bullet (pre-triaged "
-        "actions from mail-triage) — these do not count against the 3-6 "
-        "item budget.\n"
-        "- every 'question:' block (an ask-user email question) MUST appear as its "
-        "own bullet, in full: keep its numbered options VERBATIM — same numbers, "
-        "same order, same labels — and keep the '[action #id]' token exactly as "
-        "shown. Never drop, paraphrase, renumber, merge, or summarize a question or "
-        "its options. Questions never count against the 3-6 item budget.\n"
-        "- auto-replies, out-of-office, no-reply receipts and anything tagged "
-        "[is_auto_reply] are NEVER 'needs action' or 'important' — fyi at most, "
-        "usually skip entirely.\n"
         "- every item you include ends with a concrete next action "
         "(reply / delete / prep / bring an umbrella) — not a status.\n"
         "- keep [#id] tokens verbatim when naming an email.\n"
@@ -432,16 +380,6 @@ async def maybe_send_daily_brief(send_text) -> bool:
     if result.status != "sent":
         logger.info("daily_brief: gate aborted (%s)", result.reason)
         return False
-    jh = sections.get("jobhunt") or {}
-    if jh.get("handoff"):
-        try:
-            # Compatibility function name; semantics are mark-surfaced only.
-            # A successful Telegram send must never imply acknowledgement or
-            # resolution. Urgent/important actions therefore repeat later.
-            if not mail_handoff.mark_processed(jh["handoff"]):
-                logger.warning("daily_brief: owner rejected mark-surfaced; actions will repeat")
-        except Exception:
-            logger.exception("daily_brief: mark-surfaced failed (actions stay pending)")
     db.runtime_set(_LAST_FIRED_KEY, now_local.date().isoformat())
     db.runtime_set(_FORCE_RUN_KEY, None)
     cadence.record_ceremony_sent("daily_brief")

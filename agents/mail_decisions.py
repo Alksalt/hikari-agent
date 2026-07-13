@@ -1,4 +1,4 @@
-"""Ask-user question loop for job-search mail actions (Sprint 2, Task 6).
+"""Immediate delivery loop for priority-0 job-search mail actions.
 
 The job-search repository (``mail_actions_cli.py`` / ``mail_state.py``) emits
 ``kind='ask-user'`` mail actions carrying enumerated options when mail_triage
@@ -6,11 +6,10 @@ cannot deterministically resolve an inbound email on its own. This module is
 the Hikari-side half of that loop:
 
   - ``poll_and_ask`` (scheduler job, every ``mail_decisions.poll_interval_minutes``)
-    pushes each un-asked *urgent* (priority 0) ask-user action immediately
-    through ``agents.proactive_gate.reserve_and_send``. Non-urgent ask-user
-    actions are intentionally left alone here — they surface instead in the
-    morning brief (``agents/daily_brief.py``'s composer renders them as
-    numbered questions from the same owner-CLI ``list`` payload).
+    pushes every not-yet-surfaced priority-0 action immediately through
+    ``agents.proactive_gate.reserve_and_send``. This includes interviews,
+    offers, assessments, concrete questions/invites, and urgent ask-user
+    actions. Lower-priority mail remains a silent operational record.
   - ``fetch_current_row`` re-fetches the live owner-CLI payload for the chat
     tool (``tools/mail_actions/decide.py``) so option-number -> option-id
     mapping always comes from the CLI's current state, never from whatever
@@ -31,6 +30,7 @@ list.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
@@ -43,8 +43,10 @@ logger = logging.getLogger(__name__)
 
 _SOURCE = "mail_handoff"
 _PRODUCER_ID = "mail_decisions"
-_PATTERN = "urgent_question"
+_PATTERN = "urgent_mail_action"
 _PRIORITY_URGENT = 0
+_ATTENTION_PUSH_NOW = "push_now"
+_ATTENTION_CLASSES = {_ATTENTION_PUSH_NOW, "silent_hold", "silent_file"}
 
 
 def _low_priority_cap() -> int:
@@ -96,6 +98,34 @@ def _priority(row: dict) -> int:
         return 2
 
 
+def _attention_class(row: dict) -> str | None:
+    """Return the explicit attention contract, with legacy compatibility.
+
+    New owner rows are authoritative: only an exact ``push_now`` value may
+    enter the immediate-delivery path. Rows created before ``attention_class``
+    existed retain the old priority-0 behavior so an in-flight interview is
+    not lost during rollout. Unknown explicit values fail closed.
+    """
+    if "attention_class" not in row or row.get("attention_class") in (None, ""):
+        return _ATTENTION_PUSH_NOW if _priority(row) == _PRIORITY_URGENT else None
+    value = str(row.get("attention_class") or "").strip()
+    return value if value in _ATTENTION_CLASSES else None
+
+
+def _delivery_dedup_key(row: dict) -> str:
+    """Build a stable, PII-minimal receipt key for one owner action.
+
+    The owner ``dedup_key`` survives local action-id reuse and database
+    reconstruction. Hashing avoids copying sender/message identifiers into
+    Hikari's receipt table. Pre-schema rows fall back to their action id.
+    """
+    owner_key = str(row.get("dedup_key") or "").strip()
+    if owner_key:
+        digest = hashlib.sha256(owner_key.encode("utf-8")).hexdigest()[:32]
+        return f"{_PRODUCER_ID}:owner:{digest}"
+    return f"{_PRODUCER_ID}:legacy:{row.get('id')}"
+
+
 def unasked_ask_user_rows(rows: list[dict] | None = None) -> list[dict]:
     """Filter to ask-user rows that are undecided and not yet surfaced once.
 
@@ -109,6 +139,26 @@ def unasked_ask_user_rows(rows: list[dict] | None = None) -> list[dict]:
     return [
         row for row in rows
         if _is_ask_user(row) and row.get("decision") is None and _surface_count(row) == 0
+    ]
+
+
+def unasked_priority_zero_rows(rows: list[dict] | None = None) -> list[dict]:
+    """Return undelivered ``push_now`` priority-0 actions.
+
+    Explicit attention classes are authoritative. Legacy rows without the new
+    field remain compatible through priority 0. The owner CLI already excludes
+    resolved/acknowledged rows; ask-user rows additionally require no decision.
+    """
+    if rows is None:
+        rows = _list_payload()
+    if not rows:
+        return []
+    return [
+        row for row in rows
+        if _attention_class(row) == _ATTENTION_PUSH_NOW
+        and _priority(row) == _PRIORITY_URGENT
+        and _surface_count(row) == 0
+        and (not _is_ask_user(row) or row.get("decision") is None)
     ]
 
 
@@ -126,21 +176,31 @@ def _format_question(row: dict) -> str:
     return "\n".join(lines)
 
 
-async def poll_and_ask(send_text) -> int:
-    """Scheduler entry point. Pushes each un-asked URGENT ask-user action
-    immediately via the proactive gate; returns the number actually sent.
+def _format_attention(row: dict) -> str:
+    """Render an urgent action without asking an LLM to rewrite email data."""
+    if _is_ask_user(row):
+        return _format_question(row)
+    action_id = row.get("id")
+    headline = wrap_untrusted(_SOURCE, str(row.get("headline") or "").strip())
+    lines = [headline]
+    for detail in (row.get("details") or [])[:4]:
+        lines.append(f"• {wrap_untrusted(_SOURCE, str(detail))}")
+    lines.append(f"[action #{action_id}]")
+    return "\n".join(lines)
 
-    Non-urgent ask-user rows are intentionally not touched here — they wait
-    for the morning brief instead, which surfaces (and marks-surfaced) them
-    through the existing ``mail_handoff``/``daily_brief`` pipeline.
+
+async def poll_and_ask(send_text) -> int:
+    """Push each not-yet-delivered priority-0 action through the proactive gate.
+
+    Lower-priority rows remain silent in the owner log. Returns the number of
+    Telegram messages actually sent during this poll.
     """
     if not bool(cfg.get("jobhunt.enabled", True)):
         return 0
     if not bool(cfg.get("mail_decisions.enabled", True)):
         return 0
 
-    rows = unasked_ask_user_rows()
-    urgent = [row for row in rows if _priority(row) == _PRIORITY_URGENT]
+    urgent = unasked_priority_zero_rows()
     if not urgent:
         return 0
 
@@ -149,23 +209,38 @@ async def poll_and_ask(send_text) -> int:
     sent = 0
     for row in urgent:
         action_id = row.get("id")
-        text = _format_question(row)
+        delivery_key = _delivery_dedup_key(row)
+        text = _format_attention(row)
+        ask_user = _is_ask_user(row)
         result = await reserve_and_send(
             send_text_fn=send_text,
             producer_id=_PRODUCER_ID,
             pattern=_PATTERN,
             text=text,
             payload_json=json.dumps({"action_id": action_id}),
-            dedup_key=f"{_PRODUCER_ID}:{action_id}",
+            dedup_key=delivery_key,
+            durable_dedup=True,
             candidate={
                 "anchor": f"mail_action_{action_id}",
-                "why_now": "urgent ask-user mail action awaiting a choice",
-                "suggested_action": "choose an option",
+                "why_now": "priority-0 job-search mail action",
+                "suggested_action": "choose an option" if ask_user else "open the mail thread",
                 "confidence": 0.9,
                 "controls": {},
                 "data_checked": ["mail_actions"],
             },
         )
+        if result.reason == "dedup":
+            # The dedup store only matches a prior status='sent' event. This is
+            # the recovery path for "Telegram sent, owner mark-surfaced failed":
+            # stamp the owner now without sending a duplicate.
+            try:
+                mail_handoff.mark_surfaced([{"action_id": action_id}])
+            except Exception:
+                logger.exception(
+                    "mail_decisions: dedup receipt recovery failed for action_id=%s",
+                    action_id,
+                )
+            continue
         if result.status != "sent":
             logger.info(
                 "mail_decisions: gate skipped action_id=%s (%s)",

@@ -114,8 +114,8 @@ async def test_gated_tool_approve_returns_allow(monkeypatch):
     task = asyncio.create_task(_approve())
 
     result = await mod.gatekeeper_can_use_tool(
-        "mcp__google_workspace__gmail_bulk_delete_messages",
-        {"query": "label:trash"},
+        "mcp__google_workspace__gmail_send_email",
+        {"to": "owner@example.com", "subject": "test", "body": "test"},
         _FakeContext("tu_can_use_001"),
     )
     await task
@@ -160,8 +160,8 @@ async def test_gated_tool_reject_returns_deny(monkeypatch):
     task = asyncio.create_task(_reject())
 
     result = await mod.gatekeeper_can_use_tool(
-        "mcp__google_workspace__gmail_bulk_delete_messages",
-        {"query": "label:trash"},
+        "mcp__google_workspace__gmail_send_email",
+        {"to": "owner@example.com", "subject": "test", "body": "test"},
         _FakeContext("tu_can_use_002"),
     )
     await task
@@ -169,23 +169,19 @@ async def test_gated_tool_reject_returns_deny(monkeypatch):
     assert "rejected" in result.message
 
 
-# ---------- yaml registry: gmail_bulk_delete now has gate=gatekeeper ----------
+# ---------- yaml registry: gmail_bulk_delete is hard-disabled ----------
 
-def test_gmail_bulk_delete_gate_is_gatekeeper():
-    """After Phase E, gmail_bulk_delete_messages must have gate: gatekeeper in the registry."""
+def test_gmail_bulk_delete_absent_from_registry():
+    """The destructive bulk-delete capability must not be registered."""
     from tools._tools_yaml import load_registry
     reg = load_registry()
     spec = reg._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
-    assert spec is not None
-    assert spec.gate == "gatekeeper"
+    assert spec is None
 
 
-def test_gmail_bulk_delete_is_gatekeeper_gated():
-    """Phase 6C: gmail_bulk_delete_messages must be gatekeeper-gated (not defer, which is dead)."""
+def test_gmail_bulk_delete_absent_from_allowed_names():
+    """No wildcard may make the removed capability reachable again."""
     from tools._tools_yaml import load_registry
     reg = load_registry()
-    spec = reg._resolve("mcp__google_workspace__gmail_bulk_delete_messages")
-    assert spec is not None
-    assert spec.gate == "gatekeeper", (
-        "gmail_bulk_delete_messages must have gate: gatekeeper"
-    )
+    assert "mcp__google_workspace__gmail_bulk_delete_messages" not in reg.allowed_tool_names()
+    assert "mcp__google_workspace__*" not in reg.allowed_tool_names()

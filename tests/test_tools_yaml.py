@@ -86,7 +86,8 @@ class TestAllowedToolNames:
         "mcp__hikari_dispatch__dispatch_claude_session",
         "mcp__apple_events__*",
         "mcp__github__*",
-        "mcp__google_workspace__*",
+        "mcp__google_workspace__query_gmail_emails",
+        "mcp__google_workspace__gmail_send_email",
         "mcp__notion__*",
         "mcp__playwright__*",
     ]
@@ -135,7 +136,6 @@ class TestGatekeeperGated:
         for tool in [
             "mcp__google_workspace__gmail_send_email",
             "mcp__google_workspace__gmail_reply_to_email",
-            "mcp__google_workspace__gmail_bulk_delete_messages",
         ]:
             spec = registry._resolve(tool)
             assert spec is not None and spec.gate == "gatekeeper", (

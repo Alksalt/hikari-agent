@@ -75,6 +75,7 @@ def test_structured_actions_take_precedence_over_fallback(monkeypatch):
         "details": ["09:00", "Teams"],
         "kind": "interview_invite",
         "priority": 0,
+        "attention_class": "push_now",
         "surface_count": 2,
         "options": [],
     }]
@@ -106,9 +107,23 @@ def test_structured_actions_passes_through_ask_user_options(monkeypatch):
     )
     entries = mail_handoff.pull_unprocessed()
     assert entries[0]["kind"] == "ask-user"
+    assert entries[0]["attention_class"] == "push_now"  # legacy priority-0 row
     assert entries[0]["options"] == [
         {"id": "a", "label": "ja, ny adresse"},
         {"id": "b", "label": "nei, dropp"},
+    ]
+
+
+def test_structured_actions_preserve_explicit_attention_and_fail_closed(monkeypatch):
+    payload = [
+        {"id": 1, "priority": 0, "attention_class": "silent_hold"},
+        {"id": 2, "priority": 0, "attention_class": "future_value"},
+        {"id": 3, "priority": 2, "attention_class": "silent_file"},
+    ]
+    monkeypatch.setattr(mail_handoff, "_run_cli", lambda *a, **kw: payload)
+    entries = mail_handoff.pull_unprocessed()
+    assert [entry["attention_class"] for entry in entries] == [
+        "silent_hold", "silent_hold", "silent_file",
     ]
 
 

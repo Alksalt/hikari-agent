@@ -1,6 +1,6 @@
-"""Stream A + B allowlist regression.
+"""External and local allowlist regression.
 
-Stream A: mcp__google_workspace__* and mcp__notion__* added to the main allowlist.
+Google Workspace uses explicit tool names so unreviewed upstream tools stay hidden.
 Stream B: Read, Glob, Grep removed; mcp__hikari_utility__read_attachment replaces them.
 Stream D: mcp__hikari_scratch__* removed (scratch tool deleted).
 """
@@ -25,12 +25,11 @@ def _get_allowed_tools() -> list[str]:
 
 
 def test_google_workspace_in_allowlist():
-    """Stream A: mcp__google_workspace__* wildcard must be in the allowlist."""
+    """Reviewed Google Workspace tools, but no catch-all, are allowlisted."""
     tools = _get_allowed_tools()
-    assert any("google_workspace" in t for t in tools), (
-        "mcp__google_workspace__* not found in allowed_tool_names(); "
-        "Stream A added it so Hikari can call workspace tools directly"
-    )
+    assert "mcp__google_workspace__query_gmail_emails" in tools
+    assert "mcp__google_workspace__gmail_send_email" in tools
+    assert "mcp__google_workspace__*" not in tools
 
 
 def test_notion_in_allowlist():

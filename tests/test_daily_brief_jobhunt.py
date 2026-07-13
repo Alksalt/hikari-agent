@@ -57,11 +57,6 @@ def _no_weather_email_calendar(monkeypatch):
     monkeypatch.setattr(daily_brief, "fetch_email_buckets", no_email)
     monkeypatch.setattr(daily_brief, "fetch_calendar_events", no_events)
     monkeypatch.setattr(daily_brief, "_resolve_location", lambda: None)
-    # Guard against reading the REAL data/mail_handoff.md on disk (same class
-    # of incident as the conftest.py _block_live_mcp_calls guard) — once
-    # job-search's autoscan/mail_triage start appending real entries, an
-    # unmocked collector test must not silently pick them up.
-    monkeypatch.setattr(daily_brief.mail_handoff, "pull_unprocessed", lambda: [])
 
 
 def _patch_cfg(monkeypatch, **overrides):
@@ -95,10 +90,6 @@ def _write_outreach_db(dir_: Path, rows: list[dict]) -> Path:
     return db_path
 
 
-async def _no_replies(_today):
-    return []
-
-
 # --------------------------------------------------------------------------
 # gate: jobhunt.enabled
 # --------------------------------------------------------------------------
@@ -114,16 +105,6 @@ async def test_collect_jobhunt_none_when_disabled(fresh_db, monkeypatch, _no_wea
     monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", _boom)
     monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", _boom)
 
-    async def _boom_async(_today):
-        raise AssertionError("reply_radar must not run when jobhunt.enabled=False")
-
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _boom_async)
-
-    def _boom_handoff():
-        raise AssertionError("mail_handoff must not be read when jobhunt.enabled=False")
-
-    monkeypatch.setattr(daily_brief.mail_handoff, "pull_unprocessed", _boom_handoff)
-
     sections = await daily_brief.collect_sections()
     assert sections["jobhunt"] is None
 
@@ -137,8 +118,6 @@ async def test_collect_jobhunt_none_when_all_readers_empty(fresh_db, monkeypatch
     monkeypatch.setattr(daily_brief.jobhunt_readers, "outreach_due", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", lambda today: [])
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _no_replies)
-
     sections = await daily_brief.collect_sections()
     assert sections["jobhunt"] is None
     # existing sections stay None too — the jobhunt wiring must not leak signal
@@ -157,8 +136,6 @@ async def test_collect_jobhunt_none_when_roots_missing(fresh_db, monkeypatch, tm
         "jobhunt.roots.job_search": str(tmp_path / "no-job-search"),
         "jobhunt.roots.prep": str(tmp_path / "no-prep"),
     })
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _no_replies)
-
     sections = await daily_brief.collect_sections()
     assert sections["jobhunt"] is None
 
@@ -176,20 +153,12 @@ async def test_collect_jobhunt_populated_and_capped_top_3(fresh_db, monkeypatch,
                   "next_action": ""} for i in range(5)]
     interviews = [{"org": f"IOrg{i}", "slug": f"i{i}", "date": "2026-07-06",
                    "source": "prep", "prep_state": "Prepped"} for i in range(5)]
-    replies = [{"from": f"c{i}@x.no", "org_or_employer": f"ROrg{i}",
-                "subject": "hi", "gmail_thread_id": f"t{i}", "message_id": f"m{i}"}
-               for i in range(5)]
-
     monkeypatch.setattr(daily_brief.jobhunt_readers, "outreach_due", lambda today: due)
     monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", lambda today: deadlines)
     monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", lambda today: interviews)
 
-    async def _replies(_today):
-        return replies
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _replies)
-    # Real engagement.yaml disables reply_radar by default (2026-07-10
-    # retirement) — force it on here since this test's whole point is
-    # verifying the top_n cap applies uniformly across all four reader kinds.
+    # Even if the retired flag is re-enabled, mail_decisions remains the only
+    # user-visible mail delivery owner.
     _patch_cfg(monkeypatch, **{"jobhunt.reply_radar_enabled": True})
 
     sections = await daily_brief.collect_sections()
@@ -198,7 +167,7 @@ async def test_collect_jobhunt_populated_and_capped_top_3(fresh_db, monkeypatch,
     assert len(jh["due_touches"]) == 3
     assert len(jh["deadlines"]) == 3
     assert len(jh["interviews"]) == 3
-    assert len(jh["replies"]) == 3
+    assert jh["replies"] == []
     # cap preserves original (earliest/most-relevant-first) ordering
     assert [e["org"] for e in jh["due_touches"]] == ["Org0", "Org1", "Org2"]
     # handoff key always present (dict shape), empty here (fixture-stubbed)
@@ -231,8 +200,6 @@ async def test_collect_jobhunt_excludes_mote_row_at_section_level(fresh_db, monk
         "jobhunt.roots.job_search": str(tmp_path / "no-job-search"),
         "jobhunt.roots.prep": str(tmp_path / "no-prep"),
     })
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _no_replies)
-
     sections = await daily_brief.collect_sections()
     jh = sections["jobhunt"]
     assert jh is not None
@@ -246,27 +213,28 @@ async def test_collect_jobhunt_excludes_mote_row_at_section_level(fresh_db, monk
 # --------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_collect_jobhunt_includes_handoff_entries(fresh_db, monkeypatch, _no_weather_email_calendar):
-    """mail_handoff.pull_unprocessed() output surfaces in jh['handoff'],
-    uncapped by jobhunt_top_n (already capped upstream by
-    mail_handoff.max_entries) — and alone is enough signal to lift the
-    section out of None."""
-    handoff_entries = [
-        {"raw": f"- [2026-07-09 08:00] svar: entry {i} — status: unprocessed",
-         "stamp": "2026-07-09 08:00", "summary": f"svar: entry {i}", "details": []}
-        for i in range(4)
-    ]
+async def test_collect_jobhunt_never_reads_or_surfaces_mail_handoff(
+        fresh_db, monkeypatch, _no_weather_email_calendar):
+    """mail_decisions is the sole owner of user-visible mail actions."""
     monkeypatch.setattr(daily_brief.jobhunt_readers, "outreach_due", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", lambda today: [])
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _no_replies)
-    monkeypatch.setattr(daily_brief.mail_handoff, "pull_unprocessed", lambda: handoff_entries)
+    source = inspect.getsource(daily_brief)
+    assert "reply_radar.scan" not in source
+    assert "mail_handoff.pull_unprocessed" not in source
 
     sections = await daily_brief.collect_sections()
-    jh = sections["jobhunt"]
-    assert jh is not None
-    assert jh["handoff"] == handoff_entries
-    assert len(jh["handoff"]) == 4   # top_n=3 does NOT truncate handoff
+    assert sections["jobhunt"] is None
+
+
+@pytest.mark.asyncio
+async def test_collect_jobhunt_suppresses_all_mail_actions_even_push_now(
+        fresh_db, monkeypatch, _no_weather_email_calendar):
+    monkeypatch.setattr(daily_brief.jobhunt_readers, "outreach_due", lambda today: [])
+    monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", lambda today: [])
+    monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", lambda today: [])
+    sections = await daily_brief.collect_sections()
+    assert sections["jobhunt"] is None
 
 
 @pytest.mark.asyncio
@@ -276,10 +244,6 @@ async def test_collect_jobhunt_skips_reply_radar_when_disabled(fresh_db, monkeyp
     all — not just that its result is discarded."""
     _patch_cfg(monkeypatch, **{"jobhunt.reply_radar_enabled": False})
 
-    async def _boom_async(_today):
-        raise AssertionError("reply_radar must not run when reply_radar_enabled=False")
-
-    monkeypatch.setattr(daily_brief.reply_radar, "scan", _boom_async)
     monkeypatch.setattr(daily_brief.jobhunt_readers, "outreach_due", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "application_deadlines", lambda today: [])
     monkeypatch.setattr(daily_brief.jobhunt_readers, "interviews_upcoming", lambda today: [])
@@ -318,7 +282,7 @@ def test_compose_prompt_jobhunt_next_actions_present():
     assert "draft touch" in prompt
     assert "apply?" in prompt
     assert "want the prep brief?" in prompt
-    assert "want me to pull up the thread?" in prompt
+    assert "want me to pull up the thread?" not in prompt
 
 
 def test_compose_prompt_jobhunt_wraps_untrusted_content():
@@ -367,35 +331,28 @@ def _sections_with_handoff(summary, details=None):
     return sections
 
 
-def test_compose_prompt_jobhunt_handoff_line_present_and_wrapped():
+def test_compose_prompt_ignores_injected_handoff_lines():
     prompt = daily_brief.compose_prompt(
         _sections_with_handoff("svar: Svar fra kari@kommune.no",
                                 ["emne: SV: Velferdsteknologi"]))
-    assert prompt is not None
-    assert "  - handoff:" in prompt
-    assert "HIKARI_UNTRUSTED" in prompt
-    assert "svar: Svar fra kari@kommune.no" in prompt
-    assert "emne: SV: Velferdsteknologi" in prompt
+    assert prompt is None
 
 
-def test_compose_prompt_jobhunt_handoff_autosvar_tagged_is_auto_reply():
+def test_compose_prompt_ignores_injected_handoff_autoreply():
     """The static rules line always mentions '[is_auto_reply]' once; an
     autosvar-summary handoff entry adds a SECOND occurrence — the per-item
     tag on its own rendered line."""
     prompt = daily_brief.compose_prompt(
         _sections_with_handoff("autosvar: Ute av kontoret"))
-    assert prompt is not None
-    assert prompt.count("[is_auto_reply]") == 2
-    assert "autosvar: Ute av kontoret" in prompt
+    assert prompt is None
 
 
-def test_compose_prompt_jobhunt_handoff_non_autosvar_not_tagged():
+def test_compose_prompt_ignores_injected_handoff_non_autoreply():
     """Only the static rules-line mention of '[is_auto_reply]' appears —
     this non-autosvar entry gets no per-item tag."""
     prompt = daily_brief.compose_prompt(
         _sections_with_handoff("svar: Svar fra kari@kommune.no"))
-    assert prompt is not None
-    assert prompt.count("[is_auto_reply]") == 1
+    assert prompt is None
 
 
 # --------------------------------------------------------------------------
@@ -419,15 +376,9 @@ def _sections_with_ask_user(action_id=42):
     return sections
 
 
-def test_compose_prompt_ask_user_renders_numbered_question():
+def test_compose_prompt_ignores_injected_ask_user_question():
     prompt = daily_brief.compose_prompt(_sections_with_ask_user())
-    assert prompt is not None
-    assert "  - question:" in prompt
-    assert "Feil adresse" in prompt
-    assert "[action #42]" in prompt
-    assert "1. " in prompt and "ja, send til ny adresse" in prompt
-    assert "2. " in prompt and "nei, behold gammel" in prompt
-    assert "HIKARI_UNTRUSTED" in prompt
+    assert prompt is None
 
 
 def test_compose_prompt_ask_user_does_not_use_generic_handoff_line():
@@ -435,8 +386,7 @@ def test_compose_prompt_ask_user_does_not_use_generic_handoff_line():
     'handoff: mail action (tier)...' rendering — that line has no numbered
     options for the user to answer against."""
     prompt = daily_brief.compose_prompt(_sections_with_ask_user())
-    assert prompt is not None
-    assert "handoff: mail action" not in prompt
+    assert prompt is None
 
 
 def test_compose_prompt_rules_never_important_for_auto_replies():
@@ -445,15 +395,14 @@ def test_compose_prompt_rules_never_important_for_auto_replies():
     'important'."""
     prompt = daily_brief.compose_prompt(_jobhunt_sections())
     assert prompt is not None
-    assert "[is_auto_reply] are NEVER" in prompt
-    assert "usually skip entirely" in prompt
+    assert "[is_auto_reply]" not in prompt
 
 
 # --------------------------------------------------------------------------
 # composer — verbatim-survival rule for ask-user 'question:' blocks
 # --------------------------------------------------------------------------
 
-def test_compose_prompt_rules_protect_question_blocks_verbatim():
+def test_compose_prompt_has_no_mail_question_block_rules():
     """The composer used to give 'handoff:' lines a survival guarantee
     (own bullet, exempt from the 3-6 item budget) but said nothing about
     ask-user 'question:' blocks — leaving the composing LLM free to
@@ -462,27 +411,11 @@ def test_compose_prompt_rules_protect_question_blocks_verbatim():
     explicitly."""
     prompt = daily_brief.compose_prompt(_jobhunt_sections())
     assert prompt is not None
-    assert "'question:' block" in prompt
-    assert "own bullet" in prompt
-    assert "VERBATIM" in prompt
-    assert "same numbers, same order, same labels" in prompt
-    assert "[action #id]" in prompt
-    assert "Never drop, paraphrase, renumber, merge, or summarize" in prompt
-    assert "Questions never count against the 3-6 item budget" in prompt
+    assert "'question:' block" not in prompt
+    assert "handoff:" not in prompt
 
 
-def test_compose_prompt_ask_user_question_renders_alongside_verbatim_rule():
-    """A rendered ask-user question block (own bullet, numbered options,
-    [action #id] token) coexists in the same prompt as the static
-    verbatim-survival rule protecting it — the composing LLM sees both the
-    content and the instruction not to touch it."""
+def test_compose_prompt_never_renders_ask_user_question():
+    """Even a fully formed injected row cannot create a second mail surface."""
     prompt = daily_brief.compose_prompt(_sections_with_ask_user(action_id=99))
-    assert prompt is not None
-    # rendered content
-    assert "  - question:" in prompt
-    assert "[action #99]" in prompt
-    assert "1. " in prompt and "ja, send til ny adresse" in prompt
-    assert "2. " in prompt and "nei, behold gammel" in prompt
-    # protecting rule
-    assert "VERBATIM" in prompt
-    assert "Questions never count against the 3-6 item budget" in prompt
+    assert prompt is None
