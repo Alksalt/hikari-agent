@@ -828,6 +828,7 @@ def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
 
     Pass order:
       0. Canary leak (catastrophic — blocks outright)
+      0b. Untrusted-wrapper scrub (deterministic strip of wrap_untrusted armor)
       1. Click-Allow backstop (deterministic replacement)
       2. Fabricated external-data backstop
       3. Markdown strip (deterministic, gated by strip_markdown_enabled)
@@ -855,6 +856,30 @@ def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
             )
     except Exception:  # noqa: BLE001
         logger.exception("canary check failed (non-fatal)")
+
+    # Untrusted-wrapper scrub — wrap_untrusted armor (the [UNTRUSTED CONTENT
+    # ...] banner and <<<HIKARI_UNTRUSTED_*>>> delimiters) is prompt-layer
+    # defense and must never reach the user. Deterministic composers that
+    # interpolate wrapped strings (mail_decisions questions) and LLM composers
+    # under "keep VERBATIM" rules (daily_brief handoff lines) both carry it
+    # through; strip it here on every outbound path and leave a trail.
+    try:
+        from agents.injection_guard import strip_wrappers_for_display
+        scrubbed = strip_wrappers_for_display(text)
+        if scrubbed != text:
+            logger.warning(
+                "post_filter: untrusted-wrapper armor leaked into outbound "
+                "(source=%s) — stripped %d chars",
+                source, len(text) - len(scrubbed),
+            )
+            db.append_thought(
+                f"post_filter[{source or 'chat'}]: stripped untrusted-wrapper "
+                f"armor from outbound text ({len(text)} -> {len(scrubbed)} "
+                "chars) — a composer is echoing wrap_untrusted markers."
+            )
+            text = scrubbed
+    except Exception:  # noqa: BLE001
+        logger.exception("wrapper scrub failed (non-fatal)")
 
     # Click-Allow backstop — deterministic replacement; wins before all other
     # passes so a hallucinated permission UI never ships.

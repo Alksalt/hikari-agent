@@ -138,6 +138,39 @@ def wrap_untrusted(tool_name: str, content: str) -> str:
     )
 
 
+# Outbound display scrub. _BANNER_RE tolerates any inner variation of the
+# standing-instruction text (markdown-strip may have removed the ** around
+# "data only"; an LLM may reflow the line) — everything from the literal
+# prefix to the first ']' is armor. The *_ESCAPED variants produced by
+# _escape_delimiters are deliberately NOT stripped: they mark attacker-forged
+# delimiters and must stay surface-visible to a human.
+_BANNER_RE = re.compile(r"\[UNTRUSTED CONTENT FROM TOOL[^\]]*\]")
+_MARKER_RE = re.compile(r"<<<HIKARI_UNTRUSTED_(?:BEGIN|END)>>>")
+
+
+def strip_wrappers_for_display(text: str) -> str:
+    """Remove ``wrap_untrusted`` armor (banner + delimiters) from user-facing
+    text, preserving the inner content.
+
+    The wrapper is prompt-layer defense: it exists so an LLM treats the
+    content as data. It must never reach a human. Two paths leak it outbound:
+    deterministic sends that interpolate wrapped strings directly (e.g.
+    ``mail_decisions._format_question`` → Telegram), and LLM composers whose
+    "keep VERBATIM" rules make the model copy the armor along with the data
+    (the 2026-07-13/14 daily-brief leak). ``post_filter.filter_outgoing``
+    calls this on every outbound message as the deterministic backstop.
+    """
+    if not text or "UNTRUSTED" not in text:
+        return text
+    out = _MARKER_RE.sub("", _BANNER_RE.sub("", text))
+    if out == text:
+        return text
+    # Collapse the whitespace holes the removals leave behind.
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
 def outbound_contains_canary(text: str) -> bool:
     """Detect canary leakage in outbound text. Used by log_scrub + send wrappers."""
     if not _enabled() or not text:
