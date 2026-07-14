@@ -17,6 +17,23 @@ import pytest
 
 from agents import runtime, sdk_pool
 from tools import gatekeeper_can_use_tool as gk
+from tools.reminders.create import action_approval_sha256, encode_action_seed
+
+
+def _sealed_action(seed: str = "do the thing", *, target: str = "abc") -> str:
+    args = {
+        "when_iso": "2026-07-12T12:00:00+00:00",
+        "text": "test action",
+        "kind": "action",
+        "recurrence": "every_n_minutes:20",
+        "max_fires": 2,
+        "seed_prompt": seed,
+        "allowed_tools": ["mcp__notion__API-post-page"],
+        "allowed_targets": [target],
+    }
+    return encode_action_seed(
+        args, role="seed", approval_sha256=action_approval_sha256(args)
+    )
 
 
 def test_context_vars_default_to_inactive():
@@ -51,7 +68,7 @@ async def test_run_scheduled_action_sets_context_vars_then_clears():
 
     with patch.object(runtime, "_invoke_sdk", _fake_invoke_sdk):
         result = await runtime.run_scheduled_action(
-            "do the thing", timeout_s=240, max_budget_usd=0.5, max_turns=8,
+            _sealed_action(), timeout_s=240, max_budget_usd=0.5, max_turns=8,
         )
 
     assert result == "ok"
@@ -78,7 +95,7 @@ async def test_run_scheduled_action_defaults_from_config():
         return "ok"
 
     with patch.object(runtime, "_invoke_sdk", _fake_invoke_sdk):
-        await runtime.run_scheduled_action("default budgets")
+        await runtime.run_scheduled_action(_sealed_action("default budgets"))
 
     assert observed["timeout"] == 180.0
     assert observed["max_turns"] == 6
@@ -93,7 +110,7 @@ async def test_run_scheduled_action_resets_contextvars_on_exception():
 
     with patch.object(runtime, "_invoke_sdk", _fake_invoke_sdk):
         with pytest.raises(RuntimeError, match="simulated"):
-            await runtime.run_scheduled_action("explode")
+            await runtime.run_scheduled_action(_sealed_action("explode"))
 
     assert runtime.current_turn_timeout() is None
     assert sdk_pool.in_autonomous_window() is False
@@ -146,6 +163,10 @@ async def test_gatekeeper_bypasses_notion_write_in_autonomous_action(monkeypatch
     from tools.gatekeeper import GATEKEEPER
     monkeypatch.setattr(GATEKEEPER, "request", request_mock)
 
+    binding_token = runtime._CURRENT_ACTION_BINDING.set({
+        "allowed_tools": frozenset({"mcp__notion__API-post-page"}),
+        "allowed_targets": frozenset({"abc"}),
+    })
     sdk_pool.set_autonomous_window(True)
     try:
         result = await gk.gatekeeper_can_use_tool(
@@ -155,9 +176,123 @@ async def test_gatekeeper_bypasses_notion_write_in_autonomous_action(monkeypatch
         )
     finally:
         sdk_pool.set_autonomous_window(False)
+        runtime._CURRENT_ACTION_BINDING.reset(binding_token)
 
     assert isinstance(result, PermissionResultAllow)
     request_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_action_refuses_altered_seed_before_sdk():
+    sealed = _sealed_action("approved seed")
+    altered = sealed.replace("approved seed", "attacker changed seed")
+    with patch.object(runtime, "_invoke_sdk", AsyncMock()) as invoke:
+        with pytest.raises(ValueError, match="hash mismatch"):
+            await runtime.run_scheduled_action(altered)
+    invoke.assert_not_awaited()
+    assert runtime.current_action_binding() is None
+    assert sdk_pool.in_autonomous_window() is False
+
+
+@pytest.mark.asyncio
+async def test_gatekeeper_denies_autonomous_write_to_unapproved_target(monkeypatch):
+    from claude_agent_sdk.types import PermissionResultDeny
+
+    class _StubSpec:
+        gate = "gatekeeper"
+        access_mode = "write"
+
+    monkeypatch.setattr(gk, "_resolve_spec_and_kind",
+                        lambda name: (_StubSpec(), "exact"))
+    monkeypatch.setattr(gk, "_resolve_chat_id", lambda: 12345)
+    binding_token = runtime._CURRENT_ACTION_BINDING.set({
+        "allowed_tools": frozenset({"mcp__notion__API-post-page"}),
+        "allowed_targets": frozenset({"approved-db"}),
+    })
+    sdk_pool.set_autonomous_window(True)
+    try:
+        result = await gk.gatekeeper_can_use_tool(
+            "mcp__notion__API-post-page",
+            {"parent": {"data_source_id": "attacker-db"}, "properties": {}},
+            _FakeContext(),
+        )
+    finally:
+        sdk_pool.set_autonomous_window(False)
+        runtime._CURRENT_ACTION_BINDING.reset(binding_token)
+
+    assert isinstance(result, PermissionResultDeny)
+    assert "scope" in result.message
+
+
+@pytest.mark.asyncio
+async def test_gatekeeper_denies_unapproved_relation_target(monkeypatch):
+    from claude_agent_sdk.types import PermissionResultDeny
+
+    class _StubSpec:
+        gate = "gatekeeper"
+        access_mode = "write"
+
+    monkeypatch.setattr(gk, "_resolve_spec_and_kind",
+                        lambda name: (_StubSpec(), "exact"))
+    monkeypatch.setattr(gk, "_resolve_chat_id", lambda: 12345)
+    binding_token = runtime._CURRENT_ACTION_BINDING.set({
+        "allowed_tools": frozenset({"mcp__notion__API-post-page"}),
+        "allowed_targets": frozenset({"approved-db"}),
+    })
+    sdk_pool.set_autonomous_window(True)
+    try:
+        result = await gk.gatekeeper_can_use_tool(
+            "mcp__notion__API-post-page",
+            {
+                "parent": {"data_source_id": "approved-db"},
+                "properties": {"Related": {"relation": [{"id": "unapproved-page"}]}},
+            },
+            _FakeContext(),
+        )
+    finally:
+        sdk_pool.set_autonomous_window(False)
+        runtime._CURRENT_ACTION_BINDING.reset(binding_token)
+
+    assert isinstance(result, PermissionResultDeny)
+    assert "scope" in result.message
+
+
+@pytest.mark.asyncio
+async def test_gatekeeper_denies_tainted_content_in_bound_autonomous_write(monkeypatch):
+    from claude_agent_sdk.types import PermissionResultDeny
+
+    class _StubSpec:
+        gate = "gatekeeper"
+        access_mode = "write"
+
+    monkeypatch.setattr(gk, "_resolve_spec_and_kind",
+                        lambda name: (_StubSpec(), "exact"))
+    monkeypatch.setattr(gk, "_resolve_chat_id", lambda: 12345)
+    monkeypatch.setattr(
+        gk,
+        "flag_args_with_untrusted_content",
+        lambda args, chat_id: ["evil.example"],
+    )
+    binding_token = runtime._CURRENT_ACTION_BINDING.set({
+        "allowed_tools": frozenset({"mcp__notion__API-post-page"}),
+        "allowed_targets": frozenset({"approved-db"}),
+    })
+    sdk_pool.set_autonomous_window(True)
+    try:
+        result = await gk.gatekeeper_can_use_tool(
+            "mcp__notion__API-post-page",
+            {
+                "parent": {"data_source_id": "approved-db"},
+                "properties": {"url": "https://evil.example/injected"},
+            },
+            _FakeContext(),
+        )
+    finally:
+        sdk_pool.set_autonomous_window(False)
+        runtime._CURRENT_ACTION_BINDING.reset(binding_token)
+
+    assert isinstance(result, PermissionResultDeny)
+    assert "untrusted" in result.message
 
 
 @pytest.mark.asyncio

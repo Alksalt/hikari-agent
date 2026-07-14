@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -198,3 +198,20 @@ async def test_voice_id_unset_refuses(_good_env, _mood_focused, monkeypatch):
     monkeypatch.setattr(vob, "_voice_id", lambda: None)
     result = await _handler(vob)({"text": "hello"})
     assert _result_text(result) == "refused: voice_id_unset"
+
+
+@pytest.mark.asyncio
+async def test_direct_voice_handler_refuses_canary_before_egress(monkeypatch):
+    import agents.injection_guard as guard
+    import tools.voice_outbound as vob
+
+    monkeypatch.setattr(
+        guard,
+        "flag_args_with_untrusted_content",
+        lambda args: (True, "canary_in_outbound_args"),
+    )
+    tts = AsyncMock()
+    monkeypatch.setattr(vob, "_tts_mp3", tts)
+    result = await _handler(vob)({"text": "stolen system secret", "force": True})
+    assert _result_text(result) == "refused: canary_in_outbound_args"
+    tts.assert_not_awaited()

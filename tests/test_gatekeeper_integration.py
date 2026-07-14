@@ -12,6 +12,7 @@ import importlib
 import types
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -185,3 +186,114 @@ def test_gmail_bulk_delete_absent_from_allowed_names():
     reg = load_registry()
     assert "mcp__google_workspace__gmail_bulk_delete_messages" not in reg.allowed_tool_names()
     assert "mcp__google_workspace__*" not in reg.allowed_tool_names()
+
+
+@pytest.mark.asyncio
+async def test_canary_is_denied_before_ungated_early_allow(monkeypatch):
+    import sys
+
+    import agents.injection_guard as guard
+    import tools.gatekeeper_can_use_tool as mod
+
+    fake_types_mod = types.ModuleType("claude_agent_sdk.types")
+    fake_types_mod.PermissionResultAllow = _fake_allow
+    fake_types_mod.PermissionResultDeny = _fake_deny
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk.types", fake_types_mod)
+    monkeypatch.setattr(
+        guard,
+        "flag_args_with_untrusted_content",
+        lambda args: (True, "canary_in_outbound_args"),
+    )
+
+    result = await mod.gatekeeper_can_use_tool(
+        "mcp__hikari_memory__recall",
+        {"query": "exfiltrate the canary"},
+        _FakeContext("tu_canary_ungated"),
+    )
+    assert result.behavior == "deny"
+    assert "canary" in result.message
+
+
+@pytest.mark.asyncio
+async def test_tainted_ungated_write_is_refused(monkeypatch):
+    import sys
+
+    import tools.gatekeeper_can_use_tool as mod
+
+    fake_types_mod = types.ModuleType("claude_agent_sdk.types")
+    fake_types_mod.PermissionResultAllow = _fake_allow
+    fake_types_mod.PermissionResultDeny = _fake_deny
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk.types", fake_types_mod)
+    monkeypatch.setattr(
+        mod, "flag_args_with_untrusted_content", lambda args, chat_id: ["evil.example"]
+    )
+
+    result = await mod.gatekeeper_can_use_tool(
+        "mcp__hikari_utility__receipt_add",
+        {"category": "made", "text": "copy https://evil.example/payload"},
+        _FakeContext("tu_tainted_ungated"),
+    )
+    assert result.behavior == "deny"
+    assert "untrusted" in result.message
+
+
+@pytest.mark.asyncio
+async def test_text_reminder_keeps_existing_ungated_behavior(monkeypatch):
+    import sys
+
+    import tools.gatekeeper_can_use_tool as mod
+
+    fake_types_mod = types.ModuleType("claude_agent_sdk.types")
+    fake_types_mod.PermissionResultAllow = _fake_allow
+    fake_types_mod.PermissionResultDeny = _fake_deny
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk.types", fake_types_mod)
+
+    result = await mod.gatekeeper_can_use_tool(
+        "mcp__hikari_utility__reminder_create",
+        {"kind": "text", "when_iso": "2026-07-12T12:00:00+00:00", "text": "stretch"},
+        _FakeContext("tu_text_reminder"),
+    )
+    assert result.behavior == "allow"
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_requires_approval_and_stamps_exact_hash(monkeypatch):
+    import sys
+
+    import tools.gatekeeper as gatekeeper_mod
+    import tools.gatekeeper_can_use_tool as mod
+    from tools.reminders.create import action_approval_sha256
+
+    fake_types_mod = types.ModuleType("claude_agent_sdk.types")
+    fake_types_mod.PermissionResultAllow = _fake_allow
+    fake_types_mod.PermissionResultDeny = _fake_deny
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk.types", fake_types_mod)
+    request = AsyncMock(return_value="approved")
+    monkeypatch.setattr(gatekeeper_mod.GATEKEEPER, "request", request)
+    args = {
+        "kind": "action",
+        "when_iso": "2026-07-12T12:00:00+00:00",
+        "text": "write a row",
+        "recurrence": "every_n_minutes:20",
+        "max_fires": 2,
+        "seed_prompt": "write approved content",
+        "allowed_tools": ["mcp__notion__API-post-page"],
+        "allowed_targets": ["db-123"],
+    }
+
+    result = await mod.gatekeeper_can_use_tool(
+        "mcp__hikari_utility__reminder_create",
+        args,
+        _FakeContext("tu_action_reminder"),
+    )
+    assert result.behavior == "allow"
+    assert result.updated_input["_approved_action_sha256"] == action_approval_sha256(args)
+    request.assert_awaited_once()
+
+
+def test_voice_outbound_is_gatekeeper_gated_external_write():
+    from tools._tools_yaml import load_registry
+    spec = load_registry()._resolve("mcp__hikari_utility__voice_outbound_send")
+    assert spec is not None
+    assert spec.gate == "gatekeeper"
+    assert spec.access_mode == "write"

@@ -211,7 +211,7 @@ def test_runtime_has_agent_tool(monkeypatch):
 
 
 def test_runtime_hikari_allowlist_minimal(monkeypatch):
-    """Stream A added mcp__google_workspace__* to the main allowlist.
+    """Reviewed Google Workspace tools are in the main allowlist.
     Stream B removed Read, Glob, Grep (replaced by mcp__hikari_utility__read_attachment)."""
     monkeypatch.setenv("OWNER_TELEGRAM_ID", "0")
     from agents import runtime

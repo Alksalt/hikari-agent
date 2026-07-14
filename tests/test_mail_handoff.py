@@ -151,6 +151,76 @@ def test_mark_surfaced_uses_owner_cli_and_never_acknowledges(monkeypatch):
     assert calls == [(('mark-surfaced', '3', '9'), {})]
 
 
+def test_mark_delivered_passes_durable_receipt_to_owner(monkeypatch):
+    calls = []
+
+    def fake_invoke(*args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mail_handoff, "_invoke_cli", fake_invoke)
+    assert mail_handoff.mark_delivered(
+        action_id=17,
+        event_id=44,
+        dedup_key="mail_decisions:owner:abc123",
+        telegram_message_id=9001,
+    )
+    assert calls == [(
+        "mark-delivered", "17",
+        "--event-id", "44",
+        "--dedup-key", "mail_decisions:owner:abc123",
+        "--telegram-message-id", "9001",
+    )]
+
+
+def test_mark_delivered_legacy_fallback_only_when_subcommand_missing(monkeypatch):
+    monkeypatch.setattr(
+        mail_handoff,
+        "_invoke_cli",
+        lambda *args: SimpleNamespace(
+            returncode=2,
+            stdout="",
+            stderr="argument command: invalid choice: 'mark-delivered'",
+        ),
+    )
+    surfaced = []
+    monkeypatch.setattr(
+        mail_handoff,
+        "mark_surfaced",
+        lambda entries: surfaced.append(entries) or True,
+    )
+    assert mail_handoff.mark_delivered(
+        action_id=17,
+        event_id=44,
+        dedup_key="mail_decisions:legacy:17",
+        telegram_message_id=None,
+    )
+    assert surfaced == [[{"action_id": 17}]]
+
+
+def test_mark_delivered_write_failure_stays_pending(monkeypatch):
+    monkeypatch.setattr(
+        mail_handoff,
+        "_invoke_cli",
+        lambda *args: SimpleNamespace(
+            returncode=1, stdout="", stderr="database is locked"
+        ),
+    )
+    monkeypatch.setattr(
+        mail_handoff,
+        "mark_surfaced",
+        lambda entries: (_ for _ in ()).throw(
+            AssertionError("must not downgrade a real receipt failure")
+        ),
+    )
+    assert not mail_handoff.mark_delivered(
+        action_id=17,
+        event_id=44,
+        dedup_key="mail_decisions:legacy:17",
+        telegram_message_id=9001,
+    )
+
+
 def test_ack_resolve_and_snooze_use_owner_cli(monkeypatch):
     calls = []
     monkeypatch.setattr(

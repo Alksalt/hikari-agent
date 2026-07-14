@@ -7,6 +7,8 @@ returns immediately.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import sys
 from datetime import UTC, datetime, timedelta
@@ -30,6 +32,105 @@ _DEFAULT_ACTION_BUDGET_USD = 0.40
 # must not exceed this. Prevents a malformed schedule from silently
 # burning through the subscription budget.
 _DEFAULT_TOTAL_BUDGET_CAP_USD = 5.0
+
+# Autonomous action reminders are deliberately narrower than interactive
+# Hikari turns.  The owner approves an exact seed plus an exact set of Notion
+# tools and object IDs; the sealed envelope below carries that consent from
+# creation time to every later fire.
+ACTION_ALLOWED_TOOLS = frozenset({
+    "mcp__notion__API-post-page",
+    "mcp__notion__API-patch-page",
+    "mcp__notion__API-create-a-data-source",
+    "mcp__notion__API-update-a-data-source",
+    "mcp__notion__API-patch-block-children",
+    "mcp__notion__API-update-a-block",
+    "mcp__notion__API-create-a-comment",
+})
+_ACTION_ENVELOPE_PREFIX = "HIKARI_ACTION_V1:"
+
+
+def _normalized_string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return sorted({str(item).strip() for item in value if str(item).strip()})
+
+
+def action_approval_payload(args: dict[str, Any]) -> dict[str, Any]:
+    """Return the security-sensitive bytes covered by owner approval."""
+    return {
+        "when_iso": str(args.get("when_iso") or "").strip(),
+        "text": str(args.get("text") or "").strip(),
+        "kind": str(args.get("kind") or "text").strip().lower(),
+        "recurrence": str(args.get("recurrence") or "").strip(),
+        "max_fires": int(args.get("max_fires") or 0),
+        "seed_prompt": str(args.get("seed_prompt") or "").strip(),
+        "summary_prompt": str(args.get("summary_prompt") or "").strip(),
+        "budget_usd_per_fire": float(args.get("budget_usd_per_fire") or 0),
+        "timeout_s": int(args.get("timeout_s") or 0),
+        "allowed_tools": _normalized_string_list(args.get("allowed_tools")),
+        "allowed_targets": _normalized_string_list(args.get("allowed_targets")),
+    }
+
+
+def action_approval_sha256(args: dict[str, Any]) -> str:
+    payload = action_approval_payload(args)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def encode_action_seed(
+    args: dict[str, Any], *, role: str, approval_sha256: str
+) -> str:
+    """Seal one approved action prompt and its execution scope for storage."""
+    payload = action_approval_payload(args)
+    envelope = {
+        "version": 1,
+        "role": role,
+        "approval_payload": payload,
+        "approval_sha256": approval_sha256,
+    }
+    return _ACTION_ENVELOPE_PREFIX + json.dumps(
+        envelope, sort_keys=True, separators=(",", ":")
+    )
+
+
+def decode_action_seed(stored: str) -> tuple[str, dict[str, Any]]:
+    """Verify a stored action envelope and return (prompt, binding).
+
+    The scheduler may append a human-readable fire counter after the first
+    line.  That context is preserved, while the approved seed itself remains
+    hash-bound and cannot be silently replaced between approval and firing.
+    """
+    first_line, separator, suffix = str(stored or "").partition("\n")
+    if not first_line.startswith(_ACTION_ENVELOPE_PREFIX):
+        raise ValueError("scheduled action is missing an approved seed envelope")
+    try:
+        envelope = json.loads(first_line[len(_ACTION_ENVELOPE_PREFIX):])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("scheduled action seed envelope is malformed") from exc
+    if envelope.get("version") != 1 or envelope.get("role") not in {"seed", "summary"}:
+        raise ValueError("scheduled action seed envelope has an unsupported format")
+    payload = envelope.get("approval_payload")
+    if not isinstance(payload, dict):
+        raise ValueError("scheduled action seed envelope has no approval payload")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    actual_sha = hashlib.sha256(canonical.encode()).hexdigest()
+    approved_sha = str(envelope.get("approval_sha256") or "")
+    if not approved_sha or actual_sha != approved_sha:
+        raise ValueError("scheduled action seed approval hash mismatch")
+    role = envelope["role"]
+    prompt_key = "seed_prompt" if role == "seed" else "summary_prompt"
+    prompt = str(payload.get(prompt_key) or "").strip()
+    if not prompt:
+        raise ValueError(f"scheduled action {role} prompt is empty")
+    if separator and suffix:
+        prompt = f"{prompt}\n{suffix}"
+    binding = {
+        "approval_sha256": approved_sha,
+        "allowed_tools": frozenset(_normalized_string_list(payload.get("allowed_tools"))),
+        "allowed_targets": frozenset(_normalized_string_list(payload.get("allowed_targets"))),
+    }
+    return prompt, binding
 
 
 @tool(
@@ -74,12 +175,16 @@ _DEFAULT_TOTAL_BUDGET_CAP_USD = 5.0
         "(if set) runs as a final wrap-up turn whose text IS pushed to Telegram. "
         "budget_usd_per_fire and timeout_s override the defaults (0.40 USD / 180 s) "
         "per fire. The total cost (max_fires × budget) is capped at create time. "
+        "Action reminders also require allowed_tools (exact Notion tool IDs) and "
+        "allowed_targets (exact Notion page/block/data-source IDs); every later "
+        "autonomous write is constrained to that approved scope. "
         "kind='text' (default) is the existing static-text reminder."
     ),
     {"when_iso": str, "text": str, "lead_minutes": int, "repeat": str,
      "recurrence": str, "sync_to_gcal": bool, "sync_to_apple": bool,
      "kind": str, "seed_prompt": str, "max_fires": int,
-     "summary_prompt": str, "budget_usd_per_fire": float, "timeout_s": int},
+     "summary_prompt": str, "budget_usd_per_fire": float, "timeout_s": int,
+     "allowed_tools": list, "allowed_targets": list},
     annotations=annotations_for("reminder_create"),
 )
 async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +207,8 @@ async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
     budget_usd_per_fire = float(budget_raw) if budget_raw not in (None, "", 0) else None
     timeout_raw = args.get("timeout_s")
     timeout_s = int(timeout_raw) if timeout_raw not in (None, "", 0) else None
+    allowed_tools = _normalized_string_list(args.get("allowed_tools"))
+    allowed_targets = _normalized_string_list(args.get("allowed_targets"))
 
     if kind not in {"text", "action"}:
         return _ok(f"refused: kind must be 'text' or 'action', got {kind!r}")
@@ -143,11 +250,32 @@ async def reminder_create(args: dict[str, Any]) -> dict[str, Any]:
                 f"refused: total budget ${total:.2f} ({max_fires} × ${per_fire:.2f}) "
                 f"exceeds cap ${cap:.2f}. lower max_fires or budget_usd_per_fire."
             )
+        if not allowed_tools:
+            return _ok("refused: kind='action' requires allowed_tools")
+        unsupported_tools = sorted(set(allowed_tools) - ACTION_ALLOWED_TOOLS)
+        if unsupported_tools:
+            return _ok(
+                "refused: action allowed_tools contains unsupported tool(s): "
+                + ", ".join(unsupported_tools)
+            )
+        if not allowed_targets:
+            return _ok("refused: kind='action' requires allowed_targets")
+        expected_sha = action_approval_sha256(args)
+        approved_sha = str(args.get("_approved_action_sha256") or "")
+        if not approved_sha or approved_sha != expected_sha:
+            return _ok("refused: action reminder bytes were not explicitly approved")
         # Action reminders are background work — they must not also mirror
         # to user-visible calendars/apple-reminders (those represent the
         # *schedule* of fires, not the work). Force both off.
         sync_to_gcal = False
         sync_to_apple = False
+        seed_prompt = encode_action_seed(
+            args, role="seed", approval_sha256=approved_sha
+        )
+        if summary_prompt:
+            summary_prompt = encode_action_seed(
+                args, role="summary", approval_sha256=approved_sha
+            )
 
     rid = db.reminder_insert(
         fire_at=when.isoformat(),

@@ -1,6 +1,6 @@
-"""Tests for agents/jobhunt_context.py — weekly job-hunt context-pack
-refresh (Sprint 2, Task 6): distills ``candidate_profile.md`` (job_search
-root) + ``goals.md`` (prep root) into the always-on ``jobhunt_context``
+"""Tests for agents/jobhunt_context.py — source-aware job-hunt context-pack
+refresh (Sprint 2, Task 6): distills ``candidate_profile.md`` and
+``DECISIONS.md`` (job_search root) + ``goals.md`` (prep root) into the always-on ``jobhunt_context``
 core_block via a mocked ``run_internal_text``.
 
 Fix pass 2: the NEVER CITE section is deterministic — Python appends it
@@ -13,7 +13,9 @@ tests/test_daily_checkin_schedule.py and tests/test_jobhunt_readers.py.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -21,18 +23,49 @@ import pytest
 
 from agents import config as cfg
 
-# What the (mocked) LLM produces — four sections, NO NEVER CITE.
+_CANONICAL_LANES = (
+    "ACTIVE: hands-on e-health systems/implementation; private healthtech/"
+    "digital-medicine delivery; junior tech (health IT first); soft-setting "
+    "miljøterapeut (gated) | OPPORTUNISTIC: research/study coordination; "
+    "register coordination (>=80%); coding/DRG"
+)
+_CANONICAL_NON_GOALS = (
+    "doctor/LIS; quality/patient-safety as an active lane; public-health "
+    "administration/staff; pharma/CRO/MSL/medical-advisor; senior/lead/"
+    "principal/chief roles; hard-setting miljøterapeut"
+)
+
+# What the (mocked) LLM produces — four current sections, NO NEVER CITE.
 _LLM_BLOCK = (
     "PITCH: clinician who builds agentic AI systems. two sentences here.\n"
-    "LANES: e-helse, helsedata, kvalitet\n"
+    f"LANES: {_CANONICAL_LANES}\n"
     "PUBLIC REPOS OK TO CITE: hikari-agent, omsorgsradar, medspacy-no\n"
-    "NON-GOALS: not a lege/LIS role\n"
+    f"NON-GOALS: {_CANONICAL_NON_GOALS}\n"
 )
 
 # What refresh_jobhunt_context() assembles from _LLM_BLOCK: the LLM part
 # plus the deterministic NEVER CITE section built from the
 # _patch_cfg-pinned private-repo list below.
 _FINAL_BLOCK = _LLM_BLOCK.strip() + "\nNEVER CITE: NorMedBench, fhir-safety-harness"
+
+
+def _source_digest(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+
+
+def _assert_current_snapshot(block: str | None, job_search_dir: Path, prep_dir: Path) -> None:
+    assert block is not None
+    profile_hash = _source_digest(job_search_dir / "candidate_profile.md")[:16]
+    decisions_hash = _source_digest(job_search_dir / "DECISIONS.md")[:16]
+    goals_hash = _source_digest(prep_dir / "goals.md")[:16]
+    assert block.startswith(_FINAL_BLOCK + "\nSOURCE SNAPSHOT: ")
+    assert "SOURCE SNAPSHOT: taxonomy:2026-07-14-v2" in block
+    assert f"candidate_profile.md sha256:{profile_hash}" in block
+    assert f"DECISIONS.md sha256:{decisions_hash}" in block
+    assert f"goals.md sha256:{goals_hash}" in block
+    assert re.search(r"refreshed_utc:\d{4}-\d{2}-\d{2}T.*\+00:00$", block)
 
 
 @pytest.fixture()
@@ -65,6 +98,34 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_current_taxonomy_sources(job_search_dir: Path, prep_dir: Path) -> None:
+    _write(
+        prep_dir / "goals.md",
+        "## Current target role taxonomy\n"
+        "1. **Hands-on e-health systems / implementation**\n"
+        "2. **Private healthtech / digital medicine delivery**\n"
+        "3. **Junior tech, preferably health IT**\n"
+        "4. **Opportunistic medical-master bridge roles** — research, register, coding/DRG.\n"
+        "5. **Miljøterapeut only in a soft setting**\n"
+        "## Non-goals\n"
+        "- Not a lege/LIS role.\n"
+        "- Not public-health administration/staff functions.\n"
+        "- Quality/patient-safety/improvement is no longer an active lane.\n"
+        "- Not pharma/CRO work, and not senior/lead/principal/chief titles.\n",
+    )
+    _write(
+        job_search_dir / "DECISIONS.md",
+        "- **Offentlige forvaltnings-/stabsroller er blokkert:** hands-on IT remains in.\n"
+        "- **Farma er blokkert fullstendig:** no MSL/medical-advisor work.\n"
+        "- **Ny målstack (2026-07-09):** e-helse, helsetek, junior tech, soft setting.\n"
+        "- **Miljøterapeut myk-setting-gate:** hard settings are excluded.\n"
+        "- **Junior-tech-unntak:** junior tech remains active.\n"
+        "- **Kommunale «rådgiver»-roller blokkeres.\n"
+        "- **Medisinskfaglig rådgiver** krever autorisasjon.\n"
+        "- **Senior-titler er blokkert.**\n",
+    )
+
+
 @pytest.fixture()
 def sources(tmp_path):
     """job_search + prep roots each carrying their one source file."""
@@ -76,11 +137,7 @@ def sources(tmp_path):
         "## Public repos\nhikari-agent, omsorgsradar\n"
         "## Never cite\nnormedbench, fhir-safety-harness\n",
     )
-    _write(
-        prep_dir / "goals.md",
-        "## Target taxonomy\ne-helse, helsedata\n"
-        "## Non-goals\nnot a lege role\n",
-    )
+    _write_current_taxonomy_sources(job_search_dir, prep_dir)
     return job_search_dir, prep_dir
 
 
@@ -98,11 +155,14 @@ async def test_distill_writes_block(fresh_db, monkeypatch, sources):
 
     await jobhunt_context.refresh_jobhunt_context()
 
-    assert fresh_db.get_core_block("jobhunt_context") == _FINAL_BLOCK
+    _assert_current_snapshot(
+        fresh_db.get_core_block("jobhunt_context"), job_search_dir, prep_dir
+    )
     mock.assert_awaited_once()
     _, kwargs = mock.call_args
     assert kwargs["model"] == jobhunt_context.MODEL_HAIKU
     assert kwargs["max_tokens"] == 800
+    assert "must be queried live" in kwargs["system"]
 
 
 async def test_distill_prompt_embeds_both_source_texts(fresh_db, monkeypatch, sources):
@@ -117,7 +177,35 @@ async def test_distill_prompt_embeds_both_source_texts(fresh_db, monkeypatch, so
 
     prompt = mock.call_args[0][0]
     assert "builds agentic AI + health data tools" in prompt
-    assert "not a lege role" in prompt
+    assert "Ny målstack" in prompt
+    assert "Not a lege/LIS role" in prompt
+    assert "operational history is not live state" in prompt
+    assert f"LANES: {_CANONICAL_LANES}" in prompt
+    assert f"NON-GOALS: {_CANONICAL_NON_GOALS}" in prompt
+    assert "Kald outreach fokuseres" not in prompt
+
+
+async def test_decisions_prompt_excludes_arbitrary_operational_tail(
+    fresh_db, monkeypatch, sources
+):
+    job_search_dir, prep_dir = sources
+    with (job_search_dir / "DECISIONS.md").open("a", encoding="utf-8") as f:
+        f.write(
+            "- **mail_triage RE-ARMERT:** dry_run=false; last scan healthy; "
+            "42 messages archived.\n"
+        )
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    await jobhunt_context.refresh_jobhunt_context()
+
+    prompt = mock.call_args.args[0]
+    assert "Ny målstack" in prompt
+    assert "mail_triage RE-ARMERT" not in prompt
+    assert "42 messages archived" not in prompt
 
 
 async def test_public_list_beyond_old_cap_reaches_prompt(fresh_db, monkeypatch, tmp_path):
@@ -136,6 +224,7 @@ async def test_public_list_beyond_old_cap_reaches_prompt(fresh_db, monkeypatch, 
     )
     assert profile.find("gevinstkompass") > 4000
     _write(job_search_dir / "candidate_profile.md", profile)
+    _write_current_taxonomy_sources(job_search_dir, prep_dir)
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
 
     from agents import jobhunt_context
@@ -173,7 +262,14 @@ async def test_llm_omits_never_cite_python_appends_it(fresh_db, monkeypatch, sou
 
     block = fresh_db.get_core_block("jobhunt_context")
     assert block is not None
-    assert block.endswith("NEVER CITE: NorMedBench, fhir-safety-harness")
+    assert f"LANES: {_CANONICAL_LANES}" in block
+    assert f"NON-GOALS: {_CANONICAL_NON_GOALS}" in block
+    assert "LANES: y" not in block
+    assert "NON-GOALS: z" not in block
+    assert (
+        "\nNEVER CITE: NorMedBench, fhir-safety-harness\nSOURCE SNAPSHOT: "
+        in block
+    )
 
 
 async def test_llm_emitted_never_cite_is_excised_and_replaced(fresh_db, monkeypatch, sources):
@@ -201,7 +297,75 @@ async def test_llm_emitted_never_cite_is_excised_and_replaced(fresh_db, monkeypa
     assert block is not None
     assert "NEVER CITE: none" not in block
     assert block.count("NEVER CITE") == 1
-    assert block.endswith("NEVER CITE: NorMedBench, fhir-safety-harness")
+    assert (
+        "\nNEVER CITE: NorMedBench, fhir-safety-harness\nSOURCE SNAPSHOT: "
+        in block
+    )
+
+
+@pytest.mark.parametrize(
+    "model_output",
+    [
+        "PITCH: mail_triage is armed and last scan healthy",
+        "PITCH: mail_triage dry_run=false",
+        "PITCH: reply_intent enabled",
+        "PITCH: last run healthy",
+        "PITCH: pipeline health is green",
+        "PITCH: counts: 42",
+        "PITCH: delivery_status=sent",
+    ],
+)
+async def test_operational_status_output_keeps_previous_block(
+    fresh_db, monkeypatch, sources, model_output
+):
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=model_output)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    assert await jobhunt_context.refresh_jobhunt_context() is False
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+    assert fresh_db.runtime_get("jobhunt_context_source_fingerprint") is None
+    assert fresh_db.runtime_get("jobhunt_context_refreshed_at") is None
+
+
+@pytest.mark.parametrize(
+    "model_output",
+    [
+        "PITCH: x\nLANES: kvalitet\nPUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z",
+        "PITCH: x\nLANES: patient safety\nPUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z",
+        "PITCH: x\nLANES: public-health administration\nPUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z",
+        "PITCH: x\nLANES: pharma, medical advisor\nPUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z",
+        (
+            "PITCH: x\nLANES: ACTIVE: e-health, research, helsedata | "
+            "OPPORTUNISTIC: register, DRG\n"
+            "PUBLIC REPOS OK TO CITE: hikari-agent\nNON-GOALS: z"
+        ),
+        (
+            "PITCH: x\nLANES: ACTIVE: y | OPPORTUNISTIC: research\n"
+            "PUBLIC REPOS OK TO CITE: hikari-agent\n"
+            "NON-GOALS: e-health and junior tech"
+        ),
+    ],
+)
+async def test_stale_or_contradictory_taxonomy_keeps_previous_block(
+    fresh_db, monkeypatch, sources, model_output
+):
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
+
+    from agents import jobhunt_context
+    monkeypatch.setattr(
+        jobhunt_context, "run_internal_text", AsyncMock(return_value=model_output)
+    )
+
+    assert await jobhunt_context.refresh_jobhunt_context() is False
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+    assert fresh_db.runtime_get("jobhunt_context_source_fingerprint") is None
 
 
 async def test_final_block_contains_all_four_default_names(fresh_db, monkeypatch, sources):
@@ -255,7 +419,12 @@ async def test_oversized_result_keeps_old_block(fresh_db, monkeypatch, sources):
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    too_long = "PITCH: x\nLANES: " + ("z" * 1700)
+    too_long = (
+        "PITCH: " + ("z" * 1700) + "\n"
+        f"LANES: {_CANONICAL_LANES}\n"
+        "PUBLIC REPOS OK TO CITE: hikari-agent\n"
+        f"NON-GOALS: {_CANONICAL_NON_GOALS}"
+    )
     monkeypatch.setattr(
         jobhunt_context, "run_internal_text", AsyncMock(return_value=too_long)
     )
@@ -274,8 +443,17 @@ async def test_borderline_llm_part_fails_after_assembly(fresh_db, monkeypatch, s
     fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
-    # 1590 chars raw (< 1600); + "\nNEVER CITE: ..." (45 chars) -> > 1600.
-    borderline = "PITCH: x\nLANES: " + ("z" * 1574)
+    # Exactly 1590 raw chars (< 1600); deterministic receipt/source metadata
+    # then pushes the final assembled block over the cap.
+    skeleton = (
+        "PITCH: \n"
+        f"LANES: {_CANONICAL_LANES}\n"
+        "PUBLIC REPOS OK TO CITE: hikari-agent\n"
+        f"NON-GOALS: {_CANONICAL_NON_GOALS}"
+    )
+    pad = 1590 - len(skeleton)
+    assert pad > 0
+    borderline = skeleton.replace("PITCH: ", "PITCH: " + ("z" * pad), 1)
     assert len(borderline) == 1590
     monkeypatch.setattr(
         jobhunt_context, "run_internal_text", AsyncMock(return_value=borderline)
@@ -389,13 +567,15 @@ async def test_both_sources_empty_file_is_noop(fresh_db, monkeypatch, tmp_path):
     assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
 
 
-async def test_one_source_present_still_distills(fresh_db, monkeypatch, tmp_path):
-    """Interface note: 'Both missing/empty -> no-op'. If only one of the two
-    is present, distillation still proceeds (not a no-op)."""
+async def test_missing_canonical_taxonomy_sources_keeps_previous_block(
+    fresh_db, monkeypatch, tmp_path
+):
+    """A profile alone cannot safely define current active/blocked lanes."""
     job_search_dir = tmp_path / "job-search"
     prep_dir = tmp_path / "prep-missing"
     _write(job_search_dir / "candidate_profile.md", "core pitch present\n")
     _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
 
     from agents import jobhunt_context
     mock = AsyncMock(return_value=_LLM_BLOCK)
@@ -403,30 +583,131 @@ async def test_one_source_present_still_distills(fresh_db, monkeypatch, tmp_path
 
     await jobhunt_context.refresh_jobhunt_context()
 
-    mock.assert_awaited_once()
-    assert fresh_db.get_core_block("jobhunt_context") == _FINAL_BLOCK
+    mock.assert_not_awaited()
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+
+
+async def test_drifted_canonical_taxonomy_keeps_previous_block(
+    fresh_db, monkeypatch, sources
+):
+    job_search_dir, prep_dir = sources
+    goals_path = prep_dir / "goals.md"
+    goals_path.write_text(
+        goals_path.read_text(encoding="utf-8").replace(
+            "3. **Junior tech, preferably health IT**\n", ""
+        ),
+        encoding="utf-8",
+    )
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    assert await jobhunt_context.refresh_jobhunt_context() is False
+    mock.assert_not_awaited()
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+
+
+async def test_unchanged_sources_skip_but_decisions_edit_refreshes_immediately(
+    fresh_db, monkeypatch, sources
+):
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    assert await jobhunt_context.refresh_jobhunt_context() is True
+    assert await jobhunt_context.refresh_jobhunt_context() is False
+    assert mock.await_count == 1
+
+    with (job_search_dir / "DECISIONS.md").open("a", encoding="utf-8") as f:
+        f.write("- **Senior-titler er blokkert:** no lead/principal roles.\n")
+    assert await jobhunt_context.refresh_jobhunt_context() is True
+    assert mock.await_count == 2
+    _assert_current_snapshot(
+        fresh_db.get_core_block("jobhunt_context"), job_search_dir, prep_dir
+    )
+
+
+async def test_daily_fallback_refreshes_unchanged_sources(
+    fresh_db, monkeypatch, sources
+):
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+
+    assert await jobhunt_context.refresh_jobhunt_context() is True
+    fresh_db.runtime_set(
+        "jobhunt_context_refreshed_at",
+        (dt.datetime.now(dt.UTC) - dt.timedelta(hours=25)).isoformat(),
+    )
+    assert await jobhunt_context.refresh_jobhunt_context() is True
+    assert mock.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("trigger_name", "trigger_sql"),
+    [
+        (
+            "fail_context_block",
+            """CREATE TRIGGER fail_context_block BEFORE UPDATE ON core_blocks
+               WHEN OLD.label = 'jobhunt_context'
+               BEGIN SELECT RAISE(ABORT, 'fail context block'); END""",
+        ),
+        (
+            "fail_context_fingerprint",
+            """CREATE TRIGGER fail_context_fingerprint BEFORE INSERT ON runtime_state
+               WHEN NEW.key = 'jobhunt_context_source_fingerprint'
+               BEGIN SELECT RAISE(ABORT, 'fail fingerprint'); END""",
+        ),
+        (
+            "fail_context_timestamp",
+            """CREATE TRIGGER fail_context_timestamp BEFORE INSERT ON runtime_state
+               WHEN NEW.key = 'jobhunt_context_refreshed_at'
+               BEGIN SELECT RAISE(ABORT, 'fail timestamp'); END""",
+        ),
+    ],
+)
+async def test_atomic_snapshot_failure_at_each_boundary_retries_next_poll(
+    fresh_db, monkeypatch, sources, trigger_name, trigger_sql
+):
+    job_search_dir, prep_dir = sources
+    _patch_cfg(monkeypatch, {"job_search": job_search_dir, "prep": prep_dir})
+    fresh_db.upsert_core_block("jobhunt_context", "OLD BLOCK")
+
+    from agents import jobhunt_context
+    mock = AsyncMock(return_value=_LLM_BLOCK)
+    monkeypatch.setattr(jobhunt_context, "run_internal_text", mock)
+    with fresh_db._conn() as con:
+        con.execute(trigger_sql)
+
+    assert await jobhunt_context.refresh_jobhunt_context() is False
+    assert fresh_db.get_core_block("jobhunt_context") == "OLD BLOCK"
+    assert fresh_db.runtime_get("jobhunt_context_source_fingerprint") is None
+    assert fresh_db.runtime_get("jobhunt_context_refreshed_at") is None
+
+    with fresh_db._conn() as con:
+        con.execute(f"DROP TRIGGER {trigger_name}")
+    assert await jobhunt_context.refresh_jobhunt_context() is True
+    assert mock.await_count == 2
+    _assert_current_snapshot(
+        fresh_db.get_core_block("jobhunt_context"), job_search_dir, prep_dir
+    )
 
 
 # ---------------------------------------------------------------------------
 # startup-run-when-absent scheduler wiring
 # ---------------------------------------------------------------------------
 
-def test_scheduler_registers_next_run_time_only_when_block_absent(fresh_db, monkeypatch):
-    """CronTrigger(day_of_week='mon', hour=5, minute=30) always registers,
-    but the job is only given an explicit ``next_run_time`` add_job kwarg
-    (pulling its first fire to "now") when jobhunt_context is currently
-    absent — so the feature works the day it ships, not next Monday. When
-    the block already exists, no override is passed and the job waits for
-    apscheduler's normal computed next-Monday fire.
-
-    Spies on ``AsyncIOScheduler.add_job`` directly rather than inspecting
-    ``Job.next_run_time`` post-hoc: apscheduler only populates that
-    attribute once a job has an explicit override or the scheduler has
-    actually started, so a never-started scheduler's un-overridden jobs
-    raise AttributeError on access -- the add_job call site is the only
-    place the "did we ask for an immediate fire" decision is observable
-    before start().
-    """
+def test_scheduler_always_registers_immediate_source_poll(fresh_db, monkeypatch):
+    """The first hash comparison runs at startup regardless of block presence."""
     import apscheduler.schedulers.asyncio as aio_mod
 
     from agents.scheduler import build_scheduler
@@ -444,7 +725,6 @@ def test_scheduler_registers_next_run_time_only_when_block_absent(fresh_db, monk
     async def noop(_t: str) -> None:
         return None
 
-    # Case 1: block absent at build time -> next_run_time override present.
     build_scheduler(noop)
     assert len(calls) == 1
     assert "next_run_time" in calls[0]
@@ -453,15 +733,15 @@ def test_scheduler_registers_next_run_time_only_when_block_absent(fresh_db, monk
         absent_next_run - dt.datetime.now(absent_next_run.tzinfo)
     ).total_seconds() < 5
 
-    # Case 2: block present at build time -> no override, normal weekly cron.
+    # A legacy/pre-existing block still needs an immediate fingerprint check.
     calls.clear()
     fresh_db.upsert_core_block("jobhunt_context", "PITCH: x\nNEVER CITE: y\n")
     build_scheduler(noop)
     assert len(calls) == 1
-    assert "next_run_time" not in calls[0]
+    assert "next_run_time" in calls[0]
 
 
-def test_scheduler_job_trigger_is_weekly_monday_0530(fresh_db, monkeypatch):
+def test_scheduler_job_trigger_is_five_minute_source_poll(fresh_db, monkeypatch):
     from agents.scheduler import build_scheduler
 
     async def noop(_t: str) -> None:
@@ -470,7 +750,7 @@ def test_scheduler_job_trigger_is_weekly_monday_0530(fresh_db, monkeypatch):
     sched = build_scheduler(noop)
     job = sched.get_job("jobhunt_context_refresh")
     assert job is not None
-    assert str(job.trigger) == "cron[day_of_week='mon', hour='5', minute='30']"
+    assert str(job.trigger) == "interval[0:05:00]"
 
 
 def test_scheduler_gated_on_jobhunt_enabled(fresh_db, monkeypatch):

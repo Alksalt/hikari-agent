@@ -19,10 +19,11 @@ Like ``agents/mail_handoff.py``, this module never opens ``job_search.db``
 directly — every read/write crosses the process boundary through
 ``mail_actions_cli.py`` (via ``mail_handoff._run_cli`` / ``mail_handoff.decide``).
 
-"Asked" tracking mirrors how ``mail_handoff`` tracks surfacing: after a
-successful proactive send we call the owner CLI's ``mark-surfaced`` (via
-``mail_handoff.mark_surfaced``), which stamps ``surfaced_at`` and increments
-``surface_count``. Urgent/important actions keep repeating in the owner's
+Delivery tracking is receipt-based: ``reserve_and_send`` atomically commits a
+durable Hikari receipt (event id + Telegram message id) before this module calls
+the owner CLI's ``mark-delivered``.  The owner can therefore distinguish queued
+from delivered and recover a callback failure without a duplicate Telegram
+send.  Urgent/important actions keep repeating in the owner's
 ``list`` output until acknowledged (that's the owner's own semantics — see
 ``mail_state.pending_actions``), so we use ``surface_count == 0`` as our own
 "not yet asked" gate rather than relying on the row disappearing from the
@@ -33,20 +34,58 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from agents import config as cfg
 from agents import mail_handoff
-from agents.injection_guard import wrap_untrusted
+from agents.injection_guard import escape_untrusted_delimiters_for_display
 
 logger = logging.getLogger(__name__)
 
-_SOURCE = "mail_handoff"
 _PRODUCER_ID = "mail_decisions"
 _PATTERN = "urgent_mail_action"
 _PRIORITY_URGENT = 0
 _ATTENTION_PUSH_NOW = "push_now"
 _ATTENTION_CLASSES = {_ATTENTION_PUSH_NOW, "silent_hold", "silent_file"}
+_DISPLAY_SOURCE_LABEL = "Jobbpost"
+_HEADLINE_MAX_CHARS = 240
+_DETAIL_MAX_CHARS = 320
+_OPTION_MAX_CHARS = 180
+
+
+def _sanitize_display_field(value: Any, *, max_chars: int) -> str:
+    """Return a bounded single-line string safe for direct chat rendering.
+
+    Mail action fields originate outside Hikari.  Replace whitespace and all
+    Unicode control/format characters with plain spaces, neutralize forged
+    prompt-envelope delimiters, and cap the result without invoking an LLM.
+    """
+    raw = escape_untrusted_delimiters_for_display(str(value or ""))
+    visible = "".join(
+        " " if char.isspace() or unicodedata.category(char).startswith("C") else char
+        for char in raw
+    )
+    visible = re.sub(r" +", " ", visible).strip()
+    if max_chars <= 0:
+        return ""
+    if len(visible) <= max_chars:
+        return visible
+    if max_chars == 1:
+        return "…"
+    return visible[: max_chars - 1].rstrip() + "…"
+
+
+def _display_action_id(row: dict) -> str:
+    """Return only the numeric owner id used by the decision tool."""
+    raw = row.get("id")
+    if isinstance(raw, bool):
+        return "?"
+    try:
+        return str(int(raw))
+    except (TypeError, ValueError, OverflowError):
+        return "?"
 
 
 def _low_priority_cap() -> int:
@@ -126,6 +165,25 @@ def _delivery_dedup_key(row: dict) -> str:
     return f"{_PRODUCER_ID}:legacy:{row.get('id')}"
 
 
+def _owner_mark_delivered(
+    row: dict,
+    *,
+    delivery_key: str,
+    event_id: int,
+    telegram_message_id: int | None,
+) -> bool:
+    action_id = row.get("id")
+    if action_id is None:
+        logger.error("mail_decisions: cannot receipt owner row without action id")
+        return False
+    return mail_handoff.mark_delivered(
+        action_id=int(action_id),
+        event_id=int(event_id),
+        dedup_key=delivery_key,
+        telegram_message_id=telegram_message_id,
+    )
+
+
 def unasked_ask_user_rows(rows: list[dict] | None = None) -> list[dict]:
     """Filter to ask-user rows that are undecided and not yet surfaced once.
 
@@ -163,15 +221,19 @@ def unasked_priority_zero_rows(rows: list[dict] | None = None) -> list[dict]:
 
 
 def _format_question(row: dict) -> str:
-    """headline + numbered option labels + ``[action #id]``, every external
-    string wrapped as untrusted (headline/options originate from inbound
-    email content the mail-triage pipeline could not fully resolve)."""
-    action_id = row.get("id")
-    headline = wrap_untrusted(_SOURCE, str(row.get("headline") or "").strip())
-    lines = [headline]
+    """Render a source-attributed question without prompt-only envelopes."""
+    action_id = _display_action_id(row)
+    headline = _sanitize_display_field(
+        row.get("headline"), max_chars=_HEADLINE_MAX_CHARS
+    ) or "(uten overskrift)"
+    lines = [_DISPLAY_SOURCE_LABEL, headline]
     for i, opt in enumerate(row.get("options") or [], start=1):
-        label = str(opt.get("label") or opt.get("id") or "")
-        lines.append(f"{i}. {wrap_untrusted(_SOURCE, label)}")
+        if isinstance(opt, dict):
+            label = opt.get("label") or opt.get("id") or ""
+        else:
+            label = opt
+        safe_label = _sanitize_display_field(label, max_chars=_OPTION_MAX_CHARS)
+        lines.append(f"{i}. {safe_label or '(alternativ uten tekst)'}")
     lines.append(f"[action #{action_id}]")
     return "\n".join(lines)
 
@@ -180,11 +242,15 @@ def _format_attention(row: dict) -> str:
     """Render an urgent action without asking an LLM to rewrite email data."""
     if _is_ask_user(row):
         return _format_question(row)
-    action_id = row.get("id")
-    headline = wrap_untrusted(_SOURCE, str(row.get("headline") or "").strip())
-    lines = [headline]
+    action_id = _display_action_id(row)
+    headline = _sanitize_display_field(
+        row.get("headline"), max_chars=_HEADLINE_MAX_CHARS
+    ) or "(uten overskrift)"
+    lines = [_DISPLAY_SOURCE_LABEL, headline]
     for detail in (row.get("details") or [])[:4]:
-        lines.append(f"• {wrap_untrusted(_SOURCE, str(detail))}")
+        safe_detail = _sanitize_display_field(detail, max_chars=_DETAIL_MAX_CHARS)
+        if safe_detail:
+            lines.append(f"• {safe_detail}")
     lines.append(f"[action #{action_id}]")
     return "\n".join(lines)
 
@@ -230,14 +296,32 @@ async def poll_and_ask(send_text) -> int:
             },
         )
         if result.reason == "dedup":
-            # The dedup store only matches a prior status='sent' event. This is
-            # the recovery path for "Telegram sent, owner mark-surfaced failed":
-            # stamp the owner now without sending a duplicate.
+            # A durable dedup hit proves an earlier Telegram send. Re-read the
+            # original receipt and replay only the owner callback, never send.
             try:
-                mail_handoff.mark_surfaced([{"action_id": action_id}])
+                from storage import db
+                receipt = db.proactive_delivery_receipt_get(
+                    _PRODUCER_ID, delivery_key
+                )
+                if receipt is None:
+                    logger.error(
+                        "mail_decisions: dedup hit without durable receipt for "
+                        "action_id=%s", action_id,
+                    )
+                    continue
+                if not _owner_mark_delivered(
+                    row,
+                    delivery_key=delivery_key,
+                    event_id=int(receipt["event_id"]),
+                    telegram_message_id=receipt.get("telegram_message_id"),
+                ):
+                    logger.warning(
+                        "mail_decisions: owner delivery recovery remains pending "
+                        "for action_id=%s", action_id,
+                    )
             except Exception:
                 logger.exception(
-                    "mail_decisions: dedup receipt recovery failed for action_id=%s",
+                    "mail_decisions: delivery receipt recovery failed for action_id=%s",
                     action_id,
                 )
             continue
@@ -248,15 +332,21 @@ async def poll_and_ask(send_text) -> int:
             )
             continue
         try:
-            if not mail_handoff.mark_surfaced([{"action_id": action_id}]):
+            if not _owner_mark_delivered(
+                row,
+                delivery_key=delivery_key,
+                event_id=result.event_id,
+                telegram_message_id=result.telegram_message_id,
+            ):
                 logger.warning(
-                    "mail_decisions: owner rejected mark-surfaced for action_id=%s "
-                    "— question may repeat next poll", action_id,
+                    "mail_decisions: owner rejected delivery receipt for "
+                    "action_id=%s — durable recovery will retry next poll",
+                    action_id,
                 )
         except Exception:
             logger.exception(
-                "mail_decisions: mark-surfaced failed for action_id=%s "
-                "— question may repeat next poll", action_id,
+                "mail_decisions: owner delivery callback failed for action_id=%s "
+                "— durable recovery will retry next poll", action_id,
             )
         sent += 1
     return sent

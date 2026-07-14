@@ -106,6 +106,28 @@ def test_outbound_canary_detector():
     assert not injection_guard.outbound_contains_canary("clean text")
 
 
+def test_outbound_untrusted_envelope_detector_requires_complete_ordered_pair():
+    envelope = injection_guard.wrap_untrusted("mcp__test", "external data")
+    assert injection_guard.outbound_contains_untrusted_envelope(envelope)
+    assert not injection_guard.outbound_contains_untrusted_envelope(
+        "<<<HIKARI_UNTRUSTED_BEGIN>>> incomplete"
+    )
+    assert not injection_guard.outbound_contains_untrusted_envelope(
+        "<<<HIKARI_UNTRUSTED_END>>> then <<<HIKARI_UNTRUSTED_BEGIN>>>"
+    )
+
+
+def test_display_escape_neutralizes_both_prompt_delimiters():
+    raw = (
+        "before <<<HIKARI_UNTRUSTED_BEGIN>>> middle "
+        "<<<HIKARI_UNTRUSTED_END>>> after"
+    )
+    escaped = injection_guard.escape_untrusted_delimiters_for_display(raw)
+    assert "<<<HIKARI_UNTRUSTED_BEGIN>>>" not in escaped
+    assert "<<<HIKARI_UNTRUSTED_END>>>" not in escaped
+    assert escaped.count("[forged internal delimiter]") == 2
+
+
 def test_flag_args_with_canary():
     canary = injection_guard.get_canary()
     flag, reason = injection_guard.flag_args_with_untrusted_content(
@@ -160,6 +182,24 @@ def test_filter_outgoing_blocks_canary_leak():
     assert res.refusal_short_replaced
     assert canary not in res.text
     assert res.refusal_hits == ["canary_leak"]
+
+
+def test_filter_outgoing_blocks_complete_untrusted_envelope_without_unwrapping():
+    wrapped = injection_guard.wrap_untrusted("mail_handoff", "attacker payload")
+    res = post_filter.filter_outgoing(wrapped)
+    assert res.refusal_short_replaced
+    assert res.refusal_hits == ["untrusted_envelope_leak"]
+    assert "attacker payload" not in res.text
+    assert "HIKARI_UNTRUSTED" not in res.text
+    assert "internt format ble blokkert" in res.text
+
+
+def test_filter_outgoing_canary_block_keeps_precedence_over_envelope_block():
+    canary = injection_guard.get_canary()
+    wrapped = injection_guard.wrap_untrusted("mail_handoff", f"leak {canary}")
+    res = post_filter.filter_outgoing(wrapped)
+    assert res.refusal_hits == ["canary_leak"]
+    assert res.text == "..."
 
 
 # ---------- observability ----------

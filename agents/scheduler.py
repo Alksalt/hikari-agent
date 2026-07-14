@@ -296,34 +296,29 @@ def build_scheduler(send_text) -> AsyncIOScheduler:
             coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
-    # Sprint 2 (Task 6): weekly job-hunt context-pack refresh. Distills
+    # Sprint 2 (Task 6): source-aware job-hunt context-pack refresh. Distills
     # candidate_profile.md + goals.md into the always-on ``jobhunt_context``
     # core_block (core-injected into every turn — the pitch/lanes/do-not-cite
-    # list are known without a tool call). Weekly Monday 05:30 local, ahead
-    # of interview_brief's daily cron and clear of the 09:00 daily_reflection.
-    # Also fires ONCE at scheduler startup when the block is currently
-    # absent (fresh install / first deploy) via an explicit next_run_time
-    # override on this registration only — subsequent fires follow the
-    # normal Monday 05:30 cron schedule computed from the actual last fire
-    # time. Gated on jobhunt.enabled like the other jobhunt jobs.
+    # list are known without a tool call). A cheap interval poll compares
+    # trusted-source SHA-256 fingerprints; unchanged sources skip the LLM.
+    # Source edits therefore propagate within the configured poll window and
+    # jobhunt_context enforces a daily fallback refresh. First poll is immediate.
+    # Gated on jobhunt.enabled like the other jobhunt jobs.
     if bool(cfg.get("jobhunt.enabled", True)):
         from agents.jobhunt_context import refresh_jobhunt_context
-        from storage import db as _jobhunt_db
-
         async def _jobhunt_context_job():
             return await refresh_jobhunt_context()
 
-        _jobhunt_context_kwargs: dict = dict(
-            id="jobhunt_context_refresh",
-            coalesce=True, max_instances=1, misfire_grace_time=3600,
+        import datetime as _dt
+        context_poll_min = max(
+            1, int(cfg.get("jobhunt.context_refresh_poll_minutes", 5))
         )
-        if _jobhunt_db.get_core_block("jobhunt_context") is None:
-            import datetime as _dt
-            _jobhunt_context_kwargs["next_run_time"] = _dt.datetime.now(tz)
         scheduler.add_job(
             _jobhunt_context_job,
-            CronTrigger(day_of_week="mon", hour=5, minute=30),
-            **_jobhunt_context_kwargs,
+            IntervalTrigger(minutes=context_poll_min),
+            id="jobhunt_context_refresh",
+            next_run_time=_dt.datetime.now(tz),
+            coalesce=True, max_instances=1, misfire_grace_time=3600,
         )
 
     # Dedicated-mailbox attention loop. Every mail_decisions.poll_interval_minutes,

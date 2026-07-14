@@ -14,9 +14,9 @@ What this module provides:
      The LLM is told explicitly to treat anything inside the delimiters as
      untrusted text to summarize, never as instructions to execute.
 
-  2. **Canary token** (``get_canary()``) — a random per-install secret
-     embedded in the wrapper and in audit_log writes. If a canary token
-     ever appears in outbound text, that's a strong exfiltration signal.
+  2. **Canary token** (``get_canary()``) — a random per-install detection
+     secret. If a canary token ever appears in outbound text, that's a strong
+     exfiltration signal.
      :func:`outbound_contains_canary` runs in the log scrubber.
 
   3. **Untrusted-origin flagging** (``looks_like_untrusted_url``,
@@ -106,6 +106,23 @@ def _escape_delimiters(content: str) -> str:
     )
 
 
+def escape_untrusted_delimiters_for_display(content: str) -> str:
+    """Neutralize prompt-only delimiters in text rendered directly to a user.
+
+    Direct-display paths must not use :func:`wrap_untrusted`: its warning and
+    envelope are prompt instructions for an LLM, not user-facing formatting.
+    This helper keeps an attempted forged marker visible without emitting a
+    real marker that the outbound envelope backstop would (correctly) block.
+    """
+    if not content:
+        return content
+    return (
+        content
+        .replace(_OPEN, "[forged internal delimiter]")
+        .replace(_CLOSE, "[forged internal delimiter]")
+    )
+
+
 def wrap_untrusted(tool_name: str, content: str) -> str:
     """Wrap content with the untrusted delimiters + standing instruction.
 
@@ -149,6 +166,21 @@ def outbound_contains_canary(text: str) -> bool:
     if not canary:
         return False
     return canary in text
+
+
+def outbound_contains_untrusted_envelope(text: str) -> bool:
+    """Return True when outbound text contains a complete prompt envelope.
+
+    A complete, ordered begin/end pair is an internal formatting leak.  It is
+    blocked at egress rather than unwrapped because mechanically unwrapping an
+    attacker-controlled envelope would turn its contents into trusted output.
+    The check is intentionally independent of ``prompt_injection.enabled``:
+    internal prompt syntax should never be shipped to a user in either mode.
+    """
+    if not text:
+        return False
+    open_at = text.find(_OPEN)
+    return open_at >= 0 and text.find(_CLOSE, open_at + len(_OPEN)) >= 0
 
 
 def extract_urls(text: str) -> list[str]:

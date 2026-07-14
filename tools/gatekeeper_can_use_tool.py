@@ -31,10 +31,11 @@ from typing import Any
 
 from agents import config as cfg
 from agents.injection_guard import _walk_strings  # shared deep-walk helper
+from tools.reminders.create import ACTION_ALLOWED_TOOLS
 
 logger = logging.getLogger(__name__)
 
-# Tools the user has pre-authorized for autonomous (scheduled) action turns.
+# Tools the user may explicitly pre-authorize for autonomous action turns.
 # When ``agents.sdk_pool.in_autonomous_window()`` is True, these bypass the
 # per-call CONFIRM-SEND approval. Scope is intentionally narrow: Notion
 # writes only. Other gated ops (gmail send, calendar delete, github merge,
@@ -43,15 +44,12 @@ logger = logging.getLogger(__name__)
 #
 # Canary tripwire (above the bypass) still applies — autonomous mode never
 # silences exfiltration detection, only the user-facing CONFIRM-SEND.
-_AUTONOMOUS_ACTION_SAFE_TOOLS = frozenset({
-    "mcp__notion__API-post-page",
-    "mcp__notion__API-patch-page",
-    "mcp__notion__API-create-a-data-source",
-    "mcp__notion__API-update-a-data-source",
-    "mcp__notion__API-patch-block-children",
-    "mcp__notion__API-update-a-block",
-    "mcp__notion__API-create-a-comment",
-})
+
+_AUTONOMOUS_ACTION_SAFE_TOOLS = ACTION_ALLOWED_TOOLS
+
+_AUTONOMOUS_TARGET_FIELDS = {
+    "id", "object_id", "page_id", "block_id", "data_source_id",
+}
 
 _CRITICAL_FIELDS = {
     # recipients / addressees
@@ -72,7 +70,35 @@ _CRITICAL_FIELDS = {
     "body", "html_body", "content", "text", "message",
     "title", "subject", "name",
     "values", "range",
+    # autonomous-action consent scope
+    "seed_prompt", "summary_prompt", "allowed_tools", "allowed_targets",
 }
+
+
+def _target_ids(value: Any) -> set[str]:
+    """Collect Notion object IDs named by a tool input."""
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _AUTONOMOUS_TARGET_FIELDS and item not in (None, ""):
+                found.add(str(item).strip())
+            found.update(_target_ids(item))
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            found.update(_target_ids(item))
+    return {item for item in found if item}
+
+
+def _autonomous_call_matches_binding(
+    tool_name: str, input_args: dict, binding: dict | None
+) -> bool:
+    if not binding or tool_name not in binding.get("allowed_tools", ()):
+        return False
+    targets = _target_ids(input_args)
+    allowed_targets = set(binding.get("allowed_targets", ()))
+    # Every autonomous write must name at least one approved object, and all
+    # object IDs in the call must stay inside that exact approved scope.
+    return bool(targets) and targets <= allowed_targets
 
 
 def _gate_for(tool_name: str) -> str | None:
@@ -251,6 +277,16 @@ async def gatekeeper_can_use_tool(
     gate = spec.gate
     access_mode = spec.access_mode
 
+    # Ordinary text reminders preserve their existing no-prompt behavior.
+    # Action reminders, which schedule later writes, always require an explicit
+    # owner approval even though both modes share one registry entry.
+    is_action_reminder = (
+        tool_name == "mcp__hikari_utility__reminder_create"
+        and str(input.get("kind") or "text").strip().lower() == "action"
+    )
+    if is_action_reminder:
+        gate = "gatekeeper"
+
     if gate is None and match_kind == "wildcard" and access_mode in {"write", "destructive"}:
         logger.warning(
             "wildcard write/destructive without gate: %s (mode=%s)",
@@ -263,7 +299,59 @@ async def gatekeeper_can_use_tool(
             )
         )
 
+    # Canary tripwire must precede every allow path, including registry entries
+    # that are intentionally ungated.  Fail closed for mutation/egress if the
+    # safety check itself errors.
+    try:
+        from agents.injection_guard import (  # noqa: PLC0415
+            flag_args_with_untrusted_content as _legacy_flag,
+        )
+        taint_flag, taint_reason = _legacy_flag(input)
+        if taint_flag and (taint_reason or "").startswith("canary_in"):
+            logger.warning(
+                "gatekeeper_can_use_tool: canary leak in outbound args for %s",
+                tool_name,
+            )
+            return PermissionResultDeny(
+                message=f"gatekeeper denied: canary token in outbound args ({taint_reason})"
+            )
+    except Exception:
+        logger.exception(
+            "gatekeeper_can_use_tool: canary check failed for %s", tool_name
+        )
+        if access_mode in {"write", "destructive"}:
+            return PermissionResultDeny(message="gatekeeper safety check failed closed")
+
+    try:
+        chat_id = _resolve_chat_id()
+    except RuntimeError as exc:
+        chat_id = None
+        chat_id_error = exc
+    else:
+        chat_id_error = None
+
+    # URL taint also runs before the ungated early return.  An ungated mutation
+    # has no consent UI in which to surface the warning, so refuse it.  Gated
+    # calls continue below with a prominent badge for owner judgement.
+    try:
+        taint_hits = flag_args_with_untrusted_content(
+            input, chat_id=str(chat_id) if chat_id is not None else None
+        )
+    except Exception:
+        logger.debug(
+            "gatekeeper_can_use_tool: url-taint check failed for %s",
+            tool_name, exc_info=True,
+        )
+        taint_hits = []
     if gate != "gatekeeper":
+        if taint_hits and access_mode in {"write", "destructive"}:
+            logger.warning(
+                "gatekeeper_can_use_tool: refused tainted ungated mutation %s",
+                tool_name,
+            )
+            return PermissionResultDeny(
+                message="refused: untrusted URL/domain in ungated outbound args"
+            )
         return PermissionResultAllow(updated_input=input)
 
     # Consent-to-bytes binding for skill_approve. The owner reads the exact
@@ -292,6 +380,13 @@ async def gatekeeper_can_use_tool(
             )
         approval_input = {**input, "_approved_sha256": _sha}
 
+    if is_action_reminder:
+        from tools.reminders.create import action_approval_sha256  # noqa: PLC0415
+        approval_input = {
+            **input,
+            "_approved_action_sha256": action_approval_sha256(input),
+        }
+
     tool_use_id = getattr(context, "tool_use_id", None) or (
         "synth-"
         + hashlib.sha256(
@@ -299,44 +394,44 @@ async def gatekeeper_can_use_tool(
         ).hexdigest()[:24]
     )
     deadline = _deadline_for(tool_name)
-    summary = _summarize(tool_name, input)
-
-    try:
-        chat_id = _resolve_chat_id()
-    except RuntimeError as e:
-        logger.error("gatekeeper_can_use_tool: cannot resolve chat_id: %s", e)
-        return PermissionResultDeny(message=f"gatekeeper config error: {e}")
-
-    # Canary tripwire — definitive exfiltration indicator. Always hard-deny.
-    try:
-        from agents.injection_guard import (  # noqa: PLC0415
-            flag_args_with_untrusted_content as _legacy_flag,
+    summary = _summarize(tool_name, approval_input)
+    if is_action_reminder and "CRITICAL FIELDS EXCEED 2000 CHARS" in summary:
+        return PermissionResultDeny(
+            message="refused: action approval payload is too large to review safely"
         )
-        taint_flag, taint_reason = _legacy_flag(input)
-        if taint_flag and (taint_reason or "").startswith("canary_in"):
-            logger.warning(
-                "gatekeeper_can_use_tool: canary leak in outbound args for %s",
-                tool_name,
-            )
-            return PermissionResultDeny(
-                message=f"gatekeeper denied: canary token in outbound args ({taint_reason})"
-            )
-    except Exception:
-        logger.debug(
-            "gatekeeper_can_use_tool: canary check failed for %s", tool_name, exc_info=True
-        )
+
+    if chat_id is None:
+        logger.error("gatekeeper_can_use_tool: cannot resolve chat_id: %s", chat_id_error)
+        return PermissionResultDeny(message=f"gatekeeper config error: {chat_id_error}")
 
     # Autonomous action bypass — scheduled action reminders pre-authorize
     # a narrow set of writes (Notion only). Canary tripwire above still
     # applies; this only skips the per-call CONFIRM-SEND prompt.
     try:
-        from agents import sdk_pool  # noqa: PLC0415
+        from agents import runtime, sdk_pool  # noqa: PLC0415
         if sdk_pool.in_autonomous_window() and tool_name in _AUTONOMOUS_ACTION_SAFE_TOOLS:
-            logger.info(
-                "gatekeeper_can_use_tool: autonomous-action bypass for %s",
+            if taint_hits:
+                logger.warning(
+                    "gatekeeper_can_use_tool: tainted autonomous action denied for %s",
+                    tool_name,
+                )
+                return PermissionResultDeny(
+                    message="refused: autonomous action contains untrusted URL/domain content"
+                )
+            binding = runtime.current_action_binding()
+            if _autonomous_call_matches_binding(tool_name, input, binding):
+                logger.info(
+                    "gatekeeper_can_use_tool: bound autonomous-action bypass for %s",
+                    tool_name,
+                )
+                return PermissionResultAllow(updated_input=input)
+            logger.warning(
+                "gatekeeper_can_use_tool: autonomous action exceeded approved scope for %s",
                 tool_name,
             )
-            return PermissionResultAllow(updated_input=input)
+            return PermissionResultDeny(
+                message="refused: autonomous action call exceeds approved tool/target scope"
+            )
     except Exception:
         logger.debug(
             "gatekeeper_can_use_tool: autonomous-action check failed for %s",
@@ -347,13 +442,6 @@ async def gatekeeper_can_use_tool(
     # but don't hard-deny. Legitimate workflows (reply to an email that
     # contained a URL, draft a doc that references a fetched page) need
     # the operator's judgement, not a refusal.
-    try:
-        taint_hits = flag_args_with_untrusted_content(input, chat_id=str(chat_id))
-    except Exception:
-        logger.debug(
-            "gatekeeper_can_use_tool: url-taint check failed for %s", tool_name, exc_info=True
-        )
-        taint_hits = []
     if taint_hits:
         preview = ", ".join(taint_hits[:3])
         more = f" +{len(taint_hits) - 3} more" if len(taint_hits) > 3 else ""
@@ -372,7 +460,7 @@ async def gatekeeper_can_use_tool(
             tool_use_id=tool_use_id,
             tool_name=tool_name,
             chat_id=chat_id,
-            args=input,
+            args=approval_input,
             summary=summary,
             deadline=deadline,
             gate_kind=gate,

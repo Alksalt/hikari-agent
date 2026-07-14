@@ -2,13 +2,11 @@
 
 Three passes, all driven by ``config/engagement.yaml``:
 
-  0. **Canary leak detector** — if the outbound text contains the per-install
-     injection canary token, refuse to send and log a CRITICAL alert. The
-     canary is only ever placed inside ``wrap_untrusted`` blocks (see
-     ``agents.injection_guard``); finding it outbound means an attacker's
-     untrusted-content block bypassed the LLM's data/instruction boundary.
-     Replaces the outbound message with a curt "..." instead of shipping
-     potentially-exfiltrated content.
+  0. **Injection-boundary leak detectors** — if outbound text contains the
+     per-install injection canary token or a complete ``wrap_untrusted``
+     envelope, refuse to send and log a CRITICAL alert. A canary leak is a
+     possible exfiltration signal; an envelope leak means prompt-only internal
+     formatting reached the user-facing boundary. Neither is ever unwrapped.
 
 1. **Refusal-voice filter** — catches Claude's default assistant patter
    ("I cannot help with that as an AI", "I'd be happy to assist") that leaks
@@ -67,6 +65,9 @@ logger = logging.getLogger(__name__)
 # constant: maximum action-line tokens `[...]` per outbound turn.
 
 _ACTION_LINE_MAX = 2
+_UNTRUSTED_ENVELOPE_REPLACEMENT = (
+    "kunne ikke vise meldingen trygt — internt format ble blokkert."
+)
 
 
 # ---------- markdown strip ----------
@@ -828,13 +829,14 @@ def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
 
     Pass order:
       0. Canary leak (catastrophic — blocks outright)
-      1. Click-Allow backstop (deterministic replacement)
-      2. Fabricated external-data backstop
-      3. Markdown strip (deterministic, gated by strip_markdown_enabled)
-      4. Regex counters + stage-aware caps (action-line strip, sentence/romaji log)
-      5. Trailing task-question gate (routes to LLM rewrite)
-      6. Refusal-voice filter
-      7. Sycophancy guard
+      1. Prompt-only envelope leak (blocks outright; never unwraps)
+      2. Click-Allow backstop (deterministic replacement)
+      3. Fabricated external-data backstop
+      4. Markdown strip (deterministic, gated by strip_markdown_enabled)
+      5. Regex counters + stage-aware caps (action-line strip, sentence/romaji log)
+      6. Trailing task-question gate (routes to LLM rewrite)
+      7. Refusal-voice filter
+      8. Sycophancy guard
     """
     # Canary leak check runs first — catastrophic, never let through.
     try:
@@ -855,6 +857,29 @@ def filter_outgoing(text: str, *, source: str | None = None) -> FilterResult:
             )
     except Exception:  # noqa: BLE001
         logger.exception("canary check failed (non-fatal)")
+
+    # Prompt-only untrusted envelopes must never reach a user.  Do not unwrap:
+    # doing so would bless attacker-controlled envelope contents as display
+    # text.  Canary detection stays first so a message containing both keeps
+    # the stronger exfiltration signal and existing canary behavior.
+    try:
+        from agents.injection_guard import outbound_contains_untrusted_envelope
+        if outbound_contains_untrusted_envelope(text):
+            logger.critical(
+                "post_filter: UNTRUSTED ENVELOPE LEAK in outbound message — "
+                "blocked. len=%d preview=%r", len(text), text[:120],
+            )
+            return FilterResult(
+                text=_UNTRUSTED_ENVELOPE_REPLACEMENT,
+                refusal_short_replaced=True,
+                refusal_hits=["untrusted_envelope_leak"],
+                sycophancy_triggered=False,
+                sycophancy_violations=[],
+                needs_llm_rewrite=False,
+                rewrite_instruction=None,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("untrusted envelope check failed (non-fatal)")
 
     # Click-Allow backstop — deterministic replacement; wins before all other
     # passes so a hallucinated permission UI never ships.

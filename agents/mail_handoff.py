@@ -293,6 +293,53 @@ def mark_surfaced(entries: list[dict]) -> bool:
     return ok
 
 
+def mark_delivered(
+    *,
+    action_id: int,
+    event_id: int,
+    dedup_key: str,
+    telegram_message_id: int | None,
+) -> bool:
+    """Persist Hikari's durable Telegram receipt in the owner repository.
+
+    This is deliberately a stronger transition than ``mark_surfaced``: the
+    owner receives the Hikari event id, PII-minimal durable dedup key, and the
+    Telegram message id (when the transport exposes one).  It may therefore
+    distinguish queued/pending from actually delivered and reconcile a crash
+    after Telegram send without accepting a duplicate notification.
+
+    During a rolling deployment only, an owner CLI that does not know the
+    ``mark-delivered`` subcommand falls back to legacy ``mark-surfaced``.
+    Every other non-zero response is a real write failure and remains pending.
+    """
+    args = [
+        "mark-delivered", str(int(action_id)),
+        "--event-id", str(int(event_id)),
+        "--dedup-key", str(dedup_key),
+    ]
+    if telegram_message_id is not None:
+        args.extend(["--telegram-message-id", str(int(telegram_message_id))])
+    result = _invoke_cli(*args)
+    if result is None:
+        return False
+    if result.returncode == 0:
+        return True
+
+    stderr = str(result.stderr or "").strip()
+    if "invalid choice: 'mark-delivered'" in stderr:
+        logger.warning(
+            "mail_actions: owner CLI lacks mark-delivered; using legacy "
+            "mark-surfaced during rolling deployment"
+        )
+        return mark_surfaced([{"action_id": int(action_id)}])
+
+    logger.error(
+        "mail_actions: owner rejected delivery receipt for action_id=%s: %s",
+        action_id, stderr[:500],
+    )
+    return False
+
+
 def mark_processed(entries: list[dict]) -> bool:
     """Compatibility name: this intentionally performs *only* mark-surfaced."""
     return mark_surfaced(entries)

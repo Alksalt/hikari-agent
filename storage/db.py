@@ -556,6 +556,7 @@ KNOWN_MIGRATIONS: list[str] = [
     "migrate_graph_outbox",
     "migrate_oauth_tokens_to_hash",
     "migrate_oauth_tokens_add_hash_columns",
+    "migrate_oauth_tokens_redact_plaintext",
     "migrate_background_tasks_cancel",
     "migrate_media_events",
     "migrate_drop_persona_drift_probes",
@@ -765,6 +766,7 @@ def _migrate_tasks_decay_columns(conn: sqlite3.Connection) -> None:
     run_once(conn, "migrate_graph_outbox", _migrate_graph_outbox, tag="migrate_graph_outbox")
     run_once(conn, "migrate_oauth_tokens_to_hash", _migrate_oauth_tokens_to_hash, tag="migrate_oauth_tokens_to_hash")
     run_once(conn, "migrate_oauth_tokens_add_hash_columns", _migrate_oauth_tokens_add_hash_columns, tag="migrate_oauth_tokens_add_hash_columns")
+    run_once(conn, "migrate_oauth_tokens_redact_plaintext", _migrate_oauth_tokens_redact_plaintext, tag="migrate_oauth_tokens_redact_plaintext")
     run_once(conn, "migrate_background_tasks_cancel", _migrate_background_tasks_cancel, tag="migrate_background_tasks_cancel")
     run_once(conn, "migrate_media_events", _migrate_media_events, tag="migrate_media_events")
     run_once(conn, "migrate_drop_persona_drift_probes", _migrate_drop_persona_drift_probes, tag="migrate_drop_persona_drift_probes")
@@ -2095,6 +2097,34 @@ def upsert_core_block(label: str, content: str) -> None:
             "updated_at = excluded.updated_at",
             (label, content, _now()),
         )
+
+
+def upsert_core_block_snapshot(
+    label: str,
+    content: str,
+    runtime_values: dict[str, str | int | float],
+) -> None:
+    """Atomically publish a core block and its runtime snapshot metadata.
+
+    Freshness readers must never observe a new source fingerprint with an old
+    block (or the reverse).  All writes share the ``_conn`` transaction; any
+    statement failure rolls the complete snapshot back.
+    """
+    if not runtime_values:
+        raise ValueError("core block snapshot requires runtime metadata")
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO core_blocks (label, content, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(label) DO UPDATE SET content = excluded.content, "
+            "updated_at = excluded.updated_at",
+            (label, content, _now()),
+        )
+        for key, value in runtime_values.items():
+            c.execute(
+                "INSERT INTO runtime_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(key), str(value)),
+            )
 
 
 def get_core_block(label: str) -> str | None:
@@ -3715,6 +3745,23 @@ def proactive_delivery_receipt_exists(source: str, dedup_key: str) -> bool:
     return row is not None
 
 
+def proactive_delivery_receipt_get(source: str, dedup_key: str) -> dict | None:
+    """Return the durable send receipt used for cross-process recovery.
+
+    ``mail_decisions`` uses this after a durable-dedup hit to replay the owner
+    acknowledgement without sending a second Telegram message.  The key is
+    already a PII-minimal hash; no message body or owner payload is stored here.
+    """
+    with _conn() as c:
+        row = c.execute(
+            "SELECT source, dedup_key, event_id, telegram_message_id, delivered_at "
+            "FROM proactive_delivery_receipts "
+            "WHERE source = ? AND dedup_key = ? LIMIT 1",
+            (str(source), str(dedup_key)),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def proactive_event_commit_sent_with_receipt(
     event_id: int,
     *,
@@ -5068,8 +5115,9 @@ def oauth_token_mint(client_id: str, token_type: str,
                      ttl_seconds: int = 3600) -> str:
     """Issue an opaque access or refresh token. Returns the plaintext token.
 
-    Stores both the plaintext token (for backward compat during migration) and
-    the sha256 hash columns so all lookups can use the hashed path."""
+    Only SHA-256 digests are persisted. The legacy ``token`` and
+    ``parent_token`` columns remain for schema compatibility, but contain the
+    same digests as their explicit hash columns."""
     from datetime import timedelta
     if token_type not in ("access", "refresh"):
         raise ValueError(f"invalid token_type: {token_type!r}")
@@ -5082,7 +5130,7 @@ def oauth_token_mint(client_id: str, token_type: str,
             "INSERT INTO oauth_tokens (token, client_id, token_type, "
             "parent_token, scope, expires_at, token_hash, parent_token_hash) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (tok, client_id, token_type, parent_token, scope, expires_at, th, pth),
+            (th, client_id, token_type, pth, scope, expires_at, th, pth),
         )
     return tok
 
@@ -5128,7 +5176,7 @@ def _oauth2_token_validate(token: str) -> dict[str, Any] | None:
     th = _oauth_hash(token)
     with _conn() as c:
         row = c.execute(
-            "SELECT token, client_id, token_type, parent_token, scope, "
+            "SELECT client_id, token_type, scope, "
             "expires_at, revoked_at, token_hash FROM oauth_tokens "
             "WHERE token_hash = ?",
             (th,),
@@ -5141,8 +5189,7 @@ def _oauth2_token_validate(token: str) -> dict[str, Any] | None:
             "UPDATE oauth_tokens SET last_used_at = ? WHERE token_hash = ?",
             (_now(), th),
         )
-    return {k: row[k] for k in ("token", "client_id", "token_type",
-                                 "parent_token", "scope", "expires_at",
+    return {k: row[k] for k in ("client_id", "token_type", "scope", "expires_at",
                                  "revoked_at")}
 
 
@@ -5201,7 +5248,7 @@ def oauth_token_consume_refresh(token: str, client_id: str) -> dict[str, Any] | 
     th = _oauth_hash(token)
     with _conn() as c:
         row = c.execute(
-            "SELECT token, client_id, token_type, parent_token, scope, "
+            "SELECT client_id, token_type, scope, "
             "expires_at, revoked_at FROM oauth_tokens WHERE token_hash = ?",
             (th,),
         ).fetchone()
@@ -5690,6 +5737,30 @@ def _migrate_oauth_tokens_add_hash_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS oauth_tokens_parent_hash "
         "ON oauth_tokens(parent_token_hash) WHERE parent_token_hash IS NOT NULL"
     )
+
+
+def _migrate_oauth_tokens_redact_plaintext(conn: sqlite3.Connection) -> None:
+    """Replace legacy persisted OAuth secrets with their existing SHA-256 digests.
+
+    The columns cannot be dropped without rebuilding the table because ``token``
+    is the historical primary key. Keeping the columns but storing only digests
+    preserves compatibility while removing recoverable access/refresh tokens
+    from backups and direct SQLite reads.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(oauth_tokens)").fetchall()}
+    if not {"token", "parent_token", "token_hash", "parent_token_hash"} <= cols:
+        return
+    rows = conn.execute(
+        "SELECT rowid, token, parent_token, token_hash, parent_token_hash FROM oauth_tokens"
+    ).fetchall()
+    for row in rows:
+        token_hash = row[3] or _oauth_hash(row[1])
+        parent_hash = row[4] or _oauth_hash(row[2])
+        conn.execute(
+            "UPDATE oauth_tokens SET token=?, parent_token=?, token_hash=?, "
+            "parent_token_hash=? WHERE rowid=?",
+            (token_hash, parent_hash, token_hash, parent_hash, row[0]),
+        )
 
 
 def _migrate_media_events(conn: sqlite3.Connection) -> None:

@@ -154,6 +154,19 @@ async def _mp3_to_ogg(mp3_bytes: bytes, out_path: Path) -> float:
     annotations=annotations_for("voice_outbound_send"),
 )
 async def voice_outbound_send(args: dict[str, Any]) -> dict[str, Any]:
+    # Defense in depth for direct/internal callers that bypass the SDK
+    # can_use_tool hook.  A canary in the text is a definitive exfiltration
+    # signal and must never reach ElevenLabs or the Telegram media outbox.
+    try:
+        from agents.injection_guard import flag_args_with_untrusted_content
+        tainted, reason = flag_args_with_untrusted_content(args)
+    except Exception:
+        logger.exception("voice_outbound: canary check failed closed")
+        return {"content": [{"type": "text", "text": "refused: safety_check_failed"}]}
+    if tainted and (reason or "").startswith("canary_in"):
+        logger.warning("voice_outbound: refused canary-bearing outbound text")
+        return {"content": [{"type": "text", "text": "refused: canary_in_outbound_args"}]}
+
     text = (args.get("text") or "").strip()
     force = bool(args.get("force", False))
     if not text:

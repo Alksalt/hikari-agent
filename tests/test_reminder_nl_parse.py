@@ -64,15 +64,25 @@ def test_nl_ru_tomorrow_morning(monkeypatch):
 
 
 def test_tz_changes_utc_result(monkeypatch):
-    """The same NL phrase under different HOME_TZ yields different UTC."""
+    """Each HOME_TZ resolves ``tomorrow`` against its own local calendar.
+
+    Near midnight, Kyiv and UTC can already be on different dates.  The old
+    assertion assumed they always shared a calendar day and became a -21h
+    flake in that window.  Validate the exact UTC relationship from the two
+    parsed local dates and Kyiv's offset instead.
+    """
     monkeypatch.setenv("HOME_TZ", "Europe/Kyiv")
     kyiv = _parse_when("завтра о 9")
     monkeypatch.setenv("HOME_TZ", "UTC")
     utc = _parse_when("завтра о 9")
     assert kyiv is not None and utc is not None
-    # Kyiv is ahead of UTC, so 09:00 Kyiv is an earlier UTC instant.
+    kyiv_local = kyiv.astimezone(ZoneInfo("Europe/Kyiv"))
+    utc_local = utc.astimezone(UTC)
+    assert kyiv_local.hour == utc_local.hour == 9
+    date_delta_h = (utc_local.date() - kyiv_local.date()).days * 24
+    kyiv_offset_h = kyiv_local.utcoffset().total_seconds() / 3600
     delta_h = (utc - kyiv).total_seconds() / 3600
-    assert delta_h in (2.0, 3.0), f"expected Kyiv offset 2-3h, got {delta_h}"
+    assert delta_h == date_delta_h + kyiv_offset_h
 
 
 def test_result_is_utc(monkeypatch):

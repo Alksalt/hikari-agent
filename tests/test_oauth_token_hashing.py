@@ -324,3 +324,25 @@ class TestOauth2TokenValidate:
     def test_oauth2_validate_returns_none_for_unknown_token(self, isolated_db):
         _, db = isolated_db
         assert db._oauth2_token_validate("not_a_real_token") is None
+
+    def test_oauth2_plaintext_is_never_persisted(self, isolated_db):
+        conn, db = isolated_db
+        import json
+        conn.execute(
+            "INSERT INTO oauth_clients(client_id, client_name, redirect_uris) "
+            "VALUES ('cli-redact', 'test', ?)",
+            (json.dumps(["http://localhost"]),),
+        )
+        conn.commit()
+        refresh = db.oauth_token_mint("cli-redact", "refresh", ttl_seconds=3600)
+        access = db.oauth_token_mint(
+            "cli-redact", "access", parent_token=refresh, ttl_seconds=3600,
+        )
+        rows = conn.execute(
+            "SELECT token, parent_token, token_hash, parent_token_hash FROM oauth_tokens "
+            "WHERE client_id='cli-redact'"
+        ).fetchall()
+        assert rows
+        assert all(row["token"] not in {access, refresh} for row in rows)
+        assert all(row["token"] == row["token_hash"] for row in rows)
+        assert all(row["parent_token"] == row["parent_token_hash"] for row in rows)

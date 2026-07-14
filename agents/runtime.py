@@ -78,11 +78,23 @@ _CURRENT_TURN_TIMEOUT: ContextVar[float | None] = ContextVar(
     "hikari_current_turn_timeout", default=None
 )
 
+# Exact tool and object scope approved when an action reminder was created.
+# Gatekeeper reads this during a scheduled turn before allowing any autonomous
+# Notion write.  ContextVar keeps concurrent internal turns isolated.
+_CURRENT_ACTION_BINDING: ContextVar[dict | None] = ContextVar(
+    "hikari_current_action_binding", default=None
+)
+
 
 def current_turn_timeout() -> float | None:
     """Return the per-turn timeout override in seconds, or None for the
     default chat-path budget."""
     return _CURRENT_TURN_TIMEOUT.get()
+
+
+def current_action_binding() -> dict | None:
+    """Return the verified scheduled-action scope, or None outside one."""
+    return _CURRENT_ACTION_BINDING.get()
 
 
 # ---------- pending session_id ----------
@@ -1298,11 +1310,11 @@ async def run_scheduled_action(
 ) -> str:
     """Autonomous turn fired by a scheduled action reminder.
 
-    Resumes the live session so context carries between fires; budget elevated
-    (default 180 s, $0.40, 6 turns) for write-heavy MCP work. Sets
-    ``sdk_pool.set_autonomous_window(True)`` inside ``_RUN_LOCK`` so
-    gatekeeper-gated tools tagged ``autonomous_action_safe`` bypass
-    per-write CONFIRM-SEND for the duration of this turn.
+    Verifies the owner-approved seed envelope before resuming the live session;
+    budget is elevated (default 180 s, $0.40, 6 turns) for write-heavy MCP
+    work. Sets ``sdk_pool.set_autonomous_window(True)`` inside ``_RUN_LOCK``;
+    gatekeeper bypasses per-write CONFIRM-SEND only for the exact Notion tools
+    and target IDs carried by that verified approval binding.
 
     The single retry inside ``_invoke_sdk_persistent_live`` still applies — a
     persistent-client SDK timeout is rare and one reconnect typically clears
@@ -1313,6 +1325,9 @@ async def run_scheduled_action(
     in-process MCPs); the only change is timeout/budget headroom and the
     autonomous bypass for whitelisted writes.
     """
+    from tools.reminders.create import decode_action_seed  # noqa: PLC0415
+
+    approved_prompt, action_binding = decode_action_seed(seed_prompt)
     _CURRENT_TURN_ID.set(uuid.uuid4().hex)
     effective_timeout = float(
         timeout_s
@@ -1330,6 +1345,7 @@ async def run_scheduled_action(
         else cfg.get("runtime.scheduled_action_max_budget_usd", 0.40)
     )
     timeout_token = _CURRENT_TURN_TIMEOUT.set(effective_timeout)
+    binding_token = _CURRENT_ACTION_BINDING.set(action_binding)
     try:
         async with _RUN_LOCK:
             sdk_pool.set_autonomous_window(True)
@@ -1337,7 +1353,7 @@ async def run_scheduled_action(
                 _PENDING_SESSION_ID.set(None)
                 _resume_sid = db.get_session_id()
                 result = await _invoke_sdk(
-                    seed_prompt,
+                    approved_prompt,
                     resume=_resume_sid,
                     log_session_id=True,
                     max_turns=effective_max_turns,
@@ -1352,6 +1368,7 @@ async def run_scheduled_action(
             finally:
                 sdk_pool.set_autonomous_window(False)
     finally:
+        _CURRENT_ACTION_BINDING.reset(binding_token)
         _CURRENT_TURN_TIMEOUT.reset(timeout_token)
 
 

@@ -182,8 +182,9 @@ async def test_reminder_snooze_does_not_requeue_when_never_synced():
 @pytest.mark.asyncio
 async def test_action_reminder_happy_path():
     from tools import reminders
+    from tools.reminders.create import action_approval_sha256, decode_action_seed
     fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
-    out = await reminders.reminder_create.handler({
+    args = {
         "when_iso": fire, "text": "autonomous notion write",
         "kind": "action",
         "recurrence": "every_n_minutes:20",
@@ -192,18 +193,58 @@ async def test_action_reminder_happy_path():
         "summary_prompt": "summarize what you wrote",
         "budget_usd_per_fire": 0.40,
         "timeout_s": 180,
-    })
+        "allowed_tools": ["mcp__notion__API-post-page"],
+        "allowed_targets": ["abc123"],
+    }
+    args["_approved_action_sha256"] = action_approval_sha256(args)
+    out = await reminders.reminder_create.handler(args)
     assert "data" in out
     assert out["data"]["kind"] == "action"
     rid = out["data"]["id"]
     row = db.reminder_get(rid)
     assert row["kind"] == "action"
-    assert row["seed_prompt"] == "write the next row to notion db abc123"
+    prompt, binding = decode_action_seed(row["seed_prompt"])
+    assert prompt == "write the next row to notion db abc123"
+    assert binding["allowed_tools"] == frozenset({"mcp__notion__API-post-page"})
+    assert binding["allowed_targets"] == frozenset({"abc123"})
     assert row["max_fires"] == 6
     assert row["recurrence_rule"] == "every_n_minutes:20"
     # Calendar mirroring is forced off for action kind.
     assert row["gcal_sync_pending"] == 0
     assert row["apple_sync_pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_without_approval_binding_refused():
+    from tools import reminders
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    out = await reminders.reminder_create.handler({
+        "when_iso": fire, "text": "x", "kind": "action",
+        "seed_prompt": "do it", "recurrence": "every_n_minutes:20",
+        "max_fires": 2,
+        "allowed_tools": ["mcp__notion__API-post-page"],
+        "allowed_targets": ["abc123"],
+    })
+    assert "explicitly approved" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_action_reminder_refuses_seed_changed_after_approval():
+    from tools import reminders
+    from tools.reminders.create import action_approval_sha256
+    fire = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()
+    args = {
+        "when_iso": fire, "text": "x", "kind": "action",
+        "seed_prompt": "owner approved seed",
+        "recurrence": "every_n_minutes:20", "max_fires": 2,
+        "allowed_tools": ["mcp__notion__API-post-page"],
+        "allowed_targets": ["abc123"],
+    }
+    approved_sha = action_approval_sha256(args)
+    args["seed_prompt"] = "attacker substituted seed"
+    args["_approved_action_sha256"] = approved_sha
+    out = await reminders.reminder_create.handler(args)
+    assert "not explicitly approved" in out["content"][0]["text"]
 
 
 @pytest.mark.asyncio
