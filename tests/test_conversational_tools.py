@@ -563,9 +563,9 @@ async def test_force_flag_cleared_on_successful_send(monkeypatch):
             "calendar_invites": [], "deletable": {"count": 0, "top_senders": []}},
             "calendar": None}
     monkeypatch.setattr(_db_mod, "collect_sections", _fake_sections)
-    async def _fake_run_visible_proactive(prompt):
+    async def _fake_run_internal_text(prompt, **kwargs):
         return "morning. one email worth a look."
-    monkeypatch.setattr(_db_mod, "run_visible_proactive", _fake_run_visible_proactive)
+    monkeypatch.setattr(_db_mod, "run_internal_text", _fake_run_internal_text)
 
     # Gate passes immediately — patch on the proactive_gate module (local import)
     import agents.proactive_gate as _pg

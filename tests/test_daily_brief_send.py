@@ -130,9 +130,9 @@ async def test_no_send_branch_logs_distinguishing_reason(fresh_db, monkeypatch, 
                "email": None, "calendar": None}
     monkeypatch.setattr(daily_brief, "collect_sections", _fake_sections)
 
-    async def _fake_run_visible_proactive(prompt):
+    async def _fake_run_internal_text(prompt, **kwargs):
         return "Failed to authenticate. API Error: 401 socket closed"
-    monkeypatch.setattr(daily_brief, "run_visible_proactive", _fake_run_visible_proactive)
+    monkeypatch.setattr(daily_brief, "run_internal_text", _fake_run_internal_text)
 
     with caplog.at_level("INFO", logger="agents.daily_brief"):
         result = await daily_brief.maybe_send_daily_brief(lambda text: None)
@@ -168,7 +168,7 @@ async def test_orchestrator_skips_silently_when_empty(fresh_db, monkeypatch):
 #
 # Mirrors the established mocking idiom for the full send path
 # (tests/test_conversational_tools.py::test_force_flag_cleared_on_successful_send):
-# cadence.can_send + collect_sections + run_visible_proactive + the
+# cadence.can_send + collect_sections + run_internal_text + the
 # module-local `from agents.proactive_gate import reserve_and_send` import
 # (patched on the proactive_gate module itself, since it's a deferred
 # import resolved fresh at call time).
@@ -183,9 +183,9 @@ def _patch_successful_send_path(monkeypatch, sections):
         return sections
     monkeypatch.setattr(daily_brief, "collect_sections", _fake_sections)
 
-    async def _fake_run_visible_proactive(prompt):
+    async def _fake_run_internal_text(prompt, **kwargs):
         return "morning brief text."
-    monkeypatch.setattr(daily_brief, "run_visible_proactive", _fake_run_visible_proactive)
+    monkeypatch.setattr(daily_brief, "run_internal_text", _fake_run_internal_text)
 
     import agents.proactive_gate as _pg
     from agents.proactive_gate import ReservationResult
